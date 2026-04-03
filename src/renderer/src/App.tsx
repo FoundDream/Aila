@@ -59,6 +59,7 @@ export default function App(): ReactElement | null {
         onAbort={() => void handleAbort()}
         onChange={setInput}
         onKeyDown={handleInputKeyDown}
+        onSettingsClick={() => setSettingsOpen(true)}
         onSubmit={() => void handleSubmit()}
       />
     </div>

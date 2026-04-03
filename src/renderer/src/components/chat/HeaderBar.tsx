@@ -1,6 +1,5 @@
 import type { ReactElement } from 'react'
 import { SessionList } from '@/components/chat/SessionList'
-import { ModelSelector } from '@/components/settings/ModelSelector'
 
 export function HeaderBar({
   onNewSession,
@@ -18,8 +17,6 @@ export function HeaderBar({
   return (
     <header className="flex items-center gap-3 border-b border-[#2a2a2a] px-4 py-2 pl-20 text-xs [-webkit-app-region:drag] select-none">
       <div className="ml-auto flex items-center gap-2 [-webkit-app-region:no-drag]">
-        <ModelSelector onSettingsClick={onSettingsClick} />
-
         {onResumeSession && onDeleteSession && (
           <SessionList
             onResume={onResumeSession}
