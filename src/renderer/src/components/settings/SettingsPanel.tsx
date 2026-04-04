@@ -73,7 +73,7 @@ export function SettingsPanel({
   const unconfigured = providers.filter((provider) => !provider.hasApiKey && provider.isBuiltIn)
 
   const renderModelSection = (): ReactElement => (
-    <div className="grid min-h-0 gap-4 xl:grid-cols-[minmax(0,1.3fr)_minmax(300px,0.7fr)]">
+    <div className="grid min-h-0 gap-3 xl:grid-cols-[minmax(0,1.3fr)_minmax(280px,0.7fr)] xl:gap-4">
       <div className="min-w-0">
         {configured.length > 0 && (
           <section className="mb-5">
@@ -189,7 +189,7 @@ export function SettingsPanel({
         </section>
       </div>
 
-      <aside className="rounded-2xl border border-[var(--term-border)] bg-[linear-gradient(180deg,#f8f4ed_0%,#ece8e0_100%)] p-5">
+      <aside className="hidden rounded-2xl border border-[var(--term-border)] bg-[linear-gradient(180deg,#f8f4ed_0%,#ece8e0_100%)] p-5 xl:block">
         <div className="text-[11px] uppercase tracking-[0.22em] text-[#6c86a7]">Model</div>
         <div className="mt-3 text-lg text-[var(--term-text)]">Provider and model setup</div>
         <p className="mt-3 text-xs leading-6 text-[var(--term-text-soft)]">
@@ -215,20 +215,22 @@ export function SettingsPanel({
   ]
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5">
       <div className="absolute inset-0 bg-[#4d4032]/20 backdrop-blur-[2px]" onClick={onClose} />
 
-      <div className="relative z-10 flex h-[min(760px,calc(100vh-32px))] w-[min(1180px,calc(100vw-32px))] min-w-0 overflow-hidden rounded-[28px] border border-[var(--term-border)] bg-[var(--term-bg)] shadow-[0_28px_100px_rgba(107,81,48,0.18)]">
-        <aside className="flex w-[260px] shrink-0 flex-col border-r border-[var(--term-border)] bg-[linear-gradient(180deg,#f2eadd_0%,#ebe1d2_100%)]">
-          <div className="border-b border-[var(--term-border)] px-5 py-5">
+      <div className="relative z-10 flex h-[min(620px,calc(100vh-24px))] w-[min(820px,calc(100vw-24px))] min-w-0 overflow-hidden rounded-[24px] border border-[var(--term-border)] bg-[var(--term-bg)] shadow-[0_24px_72px_rgba(107,81,48,0.16)] sm:h-[min(640px,calc(100vh-40px))] sm:w-[min(860px,calc(100vw-48px))] xl:rounded-[28px]">
+        <aside className="flex w-[176px] shrink-0 flex-col border-r border-[var(--term-border)] bg-[linear-gradient(180deg,#f2eadd_0%,#ebe1d2_100%)] sm:w-[208px] xl:w-[240px]">
+          <div className="border-b border-[var(--term-border)] px-4 py-4 sm:px-5 sm:py-5">
             <div className="text-[11px] uppercase tracking-[0.22em] text-[#6881a6]">Settings</div>
-            <div className="mt-3 text-lg text-[var(--term-text)]">Workspace control</div>
-            <div className="mt-2 text-xs leading-6 text-[var(--term-text-soft)]">
+            <div className="mt-2 text-base text-[var(--term-text)] sm:mt-3 sm:text-lg">
+              Workspace control
+            </div>
+            <div className="mt-2 hidden text-xs leading-6 text-[var(--term-text-soft)] sm:block">
               Manage model access, memory, and retrieval behavior in one place.
             </div>
           </div>
 
-          <nav className="flex-1 space-y-2 p-3">
+          <nav className="flex flex-1 flex-col gap-2 p-2.5 sm:p-3">
             {navItems.map((item) => {
               const isActive = item.id === activeSection
 
@@ -237,7 +239,7 @@ export function SettingsPanel({
                   key={item.id}
                   type="button"
                   onClick={() => setActiveSection(item.id)}
-                  className={`w-full rounded-2xl px-4 py-3 text-left transition ${
+                  className={`w-full rounded-2xl px-3 py-2.5 text-left transition sm:px-4 sm:py-3 ${
                     isActive
                       ? 'border border-[#c9d7f2] bg-[#edf3ff] text-[#2459bf] shadow-[0_14px_40px_rgba(102,131,177,0.14)]'
                       : 'border border-transparent bg-transparent text-[var(--term-text-soft)] hover:border-[var(--term-border)] hover:bg-[var(--term-surface)]'
@@ -245,7 +247,7 @@ export function SettingsPanel({
                 >
                   <div className="text-sm">{item.label}</div>
                   <div
-                    className={`mt-1 text-[11px] ${isActive ? 'text-[#6f86ac]' : 'text-[var(--term-dim)]'}`}
+                    className={`mt-1 hidden text-[11px] sm:block ${isActive ? 'text-[#6f86ac]' : 'text-[var(--term-dim)]'}`}
                   >
                     {item.description}
                   </div>
@@ -256,12 +258,12 @@ export function SettingsPanel({
         </aside>
 
         <section className="flex min-w-0 flex-1 flex-col">
-          <div className="flex items-start justify-between border-b border-[var(--term-border)] bg-[var(--term-surface-soft)] px-6 py-5">
+          <div className="flex items-start justify-between border-b border-[var(--term-border)] bg-[var(--term-surface-soft)] px-4 py-4 sm:px-5 sm:py-5 md:px-6">
             <div>
               <div className="text-[11px] uppercase tracking-[0.22em] text-[var(--term-dim)]">
                 {activeSection}
               </div>
-              <div className="mt-2 text-lg text-[var(--term-text)]">
+              <div className="mt-2 text-base text-[var(--term-text)] sm:text-lg">
                 {navItems.find((item) => item.id === activeSection)?.label}
               </div>
             </div>
@@ -283,7 +285,7 @@ export function SettingsPanel({
             </button>
           </div>
 
-          <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6">
+          <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-5 sm:py-5 md:px-6 md:py-6">
             {activeSection === 'model' && renderModelSection()}
             {activeSection === 'memory' && <MemorySettings />}
             {activeSection === 'websearch' && (

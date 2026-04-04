@@ -110,7 +110,7 @@ export function MemorySettings(): ReactElement {
   }
 
   return (
-    <div className="grid min-h-0 gap-4 xl:grid-cols-[minmax(0,1.2fr)_minmax(320px,0.8fr)]">
+    <div className="grid min-h-0 gap-3 xl:grid-cols-[minmax(0,1.2fr)_minmax(300px,0.8fr)] xl:gap-4">
       <div className="space-y-3">
         {items.map((item) => {
           const isEditing = editingId === item.id
@@ -208,7 +208,7 @@ export function MemorySettings(): ReactElement {
         })}
       </div>
 
-      <aside className="rounded-2xl border border-[var(--term-border)] bg-[linear-gradient(180deg,#f8f4ed_0%,#ece8e0_100%)] p-5">
+      <aside className="hidden rounded-2xl border border-[var(--term-border)] bg-[linear-gradient(180deg,#f8f4ed_0%,#ece8e0_100%)] p-5 xl:block">
         <div className="text-[11px] uppercase tracking-[0.22em] text-[#6b7f9e]">Memory</div>
         <div className="mt-3 text-lg text-[var(--term-text)]">Preference memory manager</div>
         <p className="mt-3 text-xs leading-6 text-[var(--term-text-soft)]">
