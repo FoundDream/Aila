@@ -73,138 +73,119 @@ export function SettingsPanel({
   const unconfigured = providers.filter((provider) => !provider.hasApiKey && provider.isBuiltIn)
 
   const renderModelSection = (): ReactElement => (
-    <div className="grid min-h-0 gap-3 xl:grid-cols-[minmax(0,1.3fr)_minmax(280px,0.7fr)] xl:gap-4">
-      <div className="min-w-0">
-        {configured.length > 0 && (
-          <section className="mb-5">
-            <h3 className="mb-2 text-[11px] uppercase tracking-wider text-[var(--term-dim)]">
-              Configured
-            </h3>
-            <div className="space-y-1.5">
-              {configured.map((provider) => (
-                <div key={provider.id}>
-                  <button
-                    type="button"
-                    onClick={() => setExpandedId(expandedId === provider.id ? null : provider.id)}
-                    className="flex w-full items-center justify-between rounded-xl border border-[var(--term-border)] bg-[var(--term-surface)] px-3 py-3 text-left text-xs transition hover:bg-[var(--term-surface-soft)]"
+    <div className="min-w-0">
+      {configured.length > 0 && (
+        <section className="mb-5">
+          <h3 className="mb-2 text-[11px] uppercase tracking-wider text-[var(--term-dim)]">
+            Configured
+          </h3>
+          <div className="space-y-1.5">
+            {configured.map((provider) => (
+              <div key={provider.id}>
+                <button
+                  type="button"
+                  onClick={() => setExpandedId(expandedId === provider.id ? null : provider.id)}
+                  className="flex w-full items-center justify-between rounded-xl border border-[var(--term-border)] bg-[var(--term-surface)] px-3 py-3 text-left text-xs transition hover:bg-[var(--term-surface-soft)]"
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="h-1.5 w-1.5 rounded-full bg-[var(--term-cyan)]" />
+                    <span className="text-[var(--term-text)]">{provider.displayName}</span>
+                    <span className="text-[var(--term-dim)]">{provider.models.length} models</span>
+                  </div>
+                  <svg
+                    width="12"
+                    height="12"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    className={`text-[var(--term-dim)] transition ${expandedId === provider.id ? 'rotate-180' : ''}`}
                   >
-                    <div className="flex items-center gap-2">
-                      <span className="h-1.5 w-1.5 rounded-full bg-[var(--term-cyan)]" />
-                      <span className="text-[var(--term-text)]">{provider.displayName}</span>
-                      <span className="text-[var(--term-dim)]">{provider.models.length} models</span>
-                    </div>
-                    <svg
-                      width="12"
-                      height="12"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                      className={`text-[var(--term-dim)] transition ${expandedId === provider.id ? 'rotate-180' : ''}`}
-                    >
-                      <path d="M6 9l6 6 6-6" />
-                    </svg>
-                  </button>
-                  {expandedId === provider.id && (
-                    <div className="mt-2">
-                      <ProviderForm
-                        provider={provider}
-                        onSave={async (updated) => {
-                          await window.api.saveProvider(updated)
-                          void loadProviders()
-                        }}
-                        onDelete={
-                          provider.isBuiltIn
-                            ? undefined
-                            : async () => {
-                                await window.api.deleteProvider(provider.id)
-                                setExpandedId(null)
-                                void loadProviders()
-                              }
-                        }
-                      />
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          </section>
-        )}
-
-        {unconfigured.length > 0 && (
-          <section className="mb-5">
-            <h3 className="mb-2 text-[11px] uppercase tracking-wider text-[var(--term-dim)]">
-              {configured.length === 0 ? 'Add an API key to get started' : 'Available'}
-            </h3>
-            <div className="space-y-1.5">
-              {unconfigured.map((provider) => (
-                <div key={provider.id}>
-                  <button
-                    type="button"
-                    onClick={() => setExpandedId(expandedId === provider.id ? null : provider.id)}
-                    className="flex w-full items-center justify-between rounded-xl border border-[var(--term-border)] bg-[var(--term-surface)] px-3 py-3 text-left text-xs transition hover:bg-[var(--term-surface-soft)]"
-                  >
-                    <span className="text-[var(--term-text-soft)]">{provider.displayName}</span>
-                    <span className="text-[var(--term-dim)]">+ add key</span>
-                  </button>
-                  {expandedId === provider.id && (
-                    <div className="mt-2">
-                      <ProviderForm
-                        provider={provider}
-                        onSave={async (updated) => {
-                          await window.api.saveProvider(updated)
-                          void loadProviders()
-                        }}
-                      />
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          </section>
-        )}
-
-        <section>
-          {!addingCustom ? (
-            <button
-              type="button"
-              onClick={() => setAddingCustom(true)}
-              className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-[var(--term-border)] bg-[var(--term-surface)] px-3 py-3 text-xs text-[var(--term-dim)] transition hover:bg-[var(--term-surface-soft)] hover:text-[var(--term-text)]"
-            >
-              + custom provider
-            </button>
-          ) : (
-            <div className="rounded-2xl border border-[var(--term-border)] bg-[var(--term-surface)] p-3">
-              <ProviderForm
-                provider={null}
-                onSave={async (provider) => {
-                  await window.api.saveProvider(provider)
-                  setAddingCustom(false)
-                  void loadProviders()
-                }}
-                onCancel={() => setAddingCustom(false)}
-              />
-            </div>
-          )}
+                    <path d="M6 9l6 6 6-6" />
+                  </svg>
+                </button>
+                {expandedId === provider.id && (
+                  <div className="mt-2">
+                    <ProviderForm
+                      provider={provider}
+                      onSave={async (updated) => {
+                        await window.api.saveProvider(updated)
+                        void loadProviders()
+                      }}
+                      onDelete={
+                        provider.isBuiltIn
+                          ? undefined
+                          : async () => {
+                              await window.api.deleteProvider(provider.id)
+                              setExpandedId(null)
+                              void loadProviders()
+                            }
+                      }
+                    />
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
         </section>
-      </div>
+      )}
 
-      <aside className="hidden rounded-2xl border border-[var(--term-border)] bg-[linear-gradient(180deg,#f8f4ed_0%,#ece8e0_100%)] p-5 xl:block">
-        <div className="text-[11px] uppercase tracking-[0.22em] text-[#6c86a7]">Model</div>
-        <div className="mt-3 text-lg text-[var(--term-text)]">Provider and model setup</div>
-        <p className="mt-3 text-xs leading-6 text-[var(--term-text-soft)]">
-          Configure API keys, manage providers, and control which models are available to the
-          selector in chat.
-        </p>
-        <div className="mt-6 space-y-3 text-xs">
-          <div className="rounded-xl border border-[#c9d7f2] bg-[#edf3ff] p-3 text-[#2459bf]">
-            {configured.length} configured providers
+      {unconfigured.length > 0 && (
+        <section className="mb-5">
+          <h3 className="mb-2 text-[11px] uppercase tracking-wider text-[var(--term-dim)]">
+            {configured.length === 0 ? 'Add an API key to get started' : 'Available'}
+          </h3>
+          <div className="space-y-1.5">
+            {unconfigured.map((provider) => (
+              <div key={provider.id}>
+                <button
+                  type="button"
+                  onClick={() => setExpandedId(expandedId === provider.id ? null : provider.id)}
+                  className="flex w-full items-center justify-between rounded-xl border border-[var(--term-border)] bg-[var(--term-surface)] px-3 py-3 text-left text-xs transition hover:bg-[var(--term-surface-soft)]"
+                >
+                  <span className="text-[var(--term-text-soft)]">{provider.displayName}</span>
+                  <span className="text-[var(--term-dim)]">+ add key</span>
+                </button>
+                {expandedId === provider.id && (
+                  <div className="mt-2">
+                    <ProviderForm
+                      provider={provider}
+                      onSave={async (updated) => {
+                        await window.api.saveProvider(updated)
+                        void loadProviders()
+                      }}
+                    />
+                  </div>
+                )}
+              </div>
+            ))}
           </div>
-          <div className="rounded-xl border border-[var(--term-border)] bg-[var(--term-surface)] p-3 text-[var(--term-text-soft)]">
-            Built-in providers without keys stay available here until you activate them.
+        </section>
+      )}
+
+      <section>
+        {!addingCustom ? (
+          <button
+            type="button"
+            onClick={() => setAddingCustom(true)}
+            className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-[var(--term-border)] bg-[var(--term-surface)] px-3 py-3 text-xs text-[var(--term-dim)] transition hover:bg-[var(--term-surface-soft)] hover:text-[var(--term-text)]"
+          >
+            + custom provider
+          </button>
+        ) : (
+          <div className="rounded-2xl border border-[var(--term-border)] bg-[var(--term-surface)] p-3">
+            <ProviderForm
+              provider={null}
+              onSave={async (provider) => {
+                await window.api.saveProvider(provider)
+                setAddingCustom(false)
+                void loadProviders()
+              }}
+              onCancel={() => setAddingCustom(false)}
+            />
           </div>
-        </div>
-      </aside>
+        )}
+      </section>
     </div>
   )
 
@@ -218,7 +199,7 @@ export function SettingsPanel({
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5">
       <div className="absolute inset-0 bg-[#4d4032]/20 backdrop-blur-[2px]" onClick={onClose} />
 
-      <div className="relative z-10 flex h-[min(620px,calc(100vh-24px))] w-[min(820px,calc(100vw-24px))] min-w-0 overflow-hidden rounded-[24px] border border-[var(--term-border)] bg-[var(--term-bg)] shadow-[0_24px_72px_rgba(107,81,48,0.16)] sm:h-[min(640px,calc(100vh-40px))] sm:w-[min(860px,calc(100vw-48px))] xl:rounded-[28px]">
+      <div className="relative z-10 flex h-[min(660px,calc(100vh-24px))] w-[min(900px,calc(100vw-24px))] min-w-0 overflow-hidden rounded-[24px] border border-[var(--term-border)] bg-[var(--term-bg)] shadow-[0_24px_72px_rgba(107,81,48,0.16)] sm:h-[min(680px,calc(100vh-40px))] sm:w-[min(940px,calc(100vw-48px))] xl:rounded-[28px]">
         <aside className="flex w-[176px] shrink-0 flex-col border-r border-[var(--term-border)] bg-[linear-gradient(180deg,#f2eadd_0%,#ebe1d2_100%)] sm:w-[208px] xl:w-[240px]">
           <div className="border-b border-[var(--term-border)] px-4 py-4 sm:px-5 sm:py-5">
             <div className="text-[11px] uppercase tracking-[0.22em] text-[#6881a6]">Settings</div>

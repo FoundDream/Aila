@@ -110,128 +110,103 @@ export function MemorySettings(): ReactElement {
   }
 
   return (
-    <div className="grid min-h-0 gap-3 xl:grid-cols-[minmax(0,1.2fr)_minmax(300px,0.8fr)] xl:gap-4">
-      <div className="space-y-3">
-        {items.map((item) => {
-          const isEditing = editingId === item.id
-          const isBusy = saving === item.id
+    <div className="space-y-3">
+      {items.map((item) => {
+        const isEditing = editingId === item.id
+        const isBusy = saving === item.id
 
-          return (
-            <div
-              key={item.id}
-              className="rounded-2xl border border-[var(--term-border)] bg-[var(--term-surface)] p-4 shadow-[0_18px_44px_rgba(132,105,70,0.08)]"
-            >
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <div className="text-[11px] uppercase tracking-[0.18em] text-[var(--term-dim)]">
-                    {formatLabel(item.key)}
-                  </div>
-                  <div className="mt-2 break-words text-sm text-[var(--term-text)]">{item.value}</div>
+        return (
+          <div
+            key={item.id}
+            className="rounded-2xl border border-[var(--term-border)] bg-[var(--term-surface)] p-4 shadow-[0_18px_44px_rgba(132,105,70,0.08)]"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-[11px] uppercase tracking-[0.18em] text-[var(--term-dim)]">
+                  {formatLabel(item.key)}
                 </div>
-                <div className="flex items-center gap-2 text-[10px] uppercase tracking-wider text-[var(--term-dim)]">
-                  <span className="rounded-full border border-[var(--term-border)] px-2 py-1">
-                    {item.sourceType}
-                  </span>
-                  <span>{Math.round(item.confidence * 100)}%</span>
-                </div>
+                <div className="mt-2 break-words text-sm text-[var(--term-text)]">{item.value}</div>
               </div>
-
-              <div className="mt-3 flex flex-wrap gap-3 text-[11px] text-[var(--term-dim)]">
-                <span>{item.evidenceCount} signals</span>
-                <span>updated {formatDate(item.updatedAt)}</span>
+              <div className="flex items-center gap-2 text-[10px] uppercase tracking-wider text-[var(--term-dim)]">
+                <span className="rounded-full border border-[var(--term-border)] px-2 py-1">
+                  {item.sourceType}
+                </span>
+                <span>{Math.round(item.confidence * 100)}%</span>
               </div>
-
-              {item.reason && <p className="mt-3 text-xs leading-6 text-[var(--term-text-soft)]">{item.reason}</p>}
-
-              <div className="mt-4 flex gap-2">
-                <button
-                  type="button"
-                  onClick={() => startEdit(item)}
-                  className="rounded-lg border border-[var(--term-border)] bg-[var(--term-surface-soft)] px-3 py-1.5 text-xs text-[var(--term-text)] transition hover:bg-[#ede3d5]"
-                >
-                  edit
-                </button>
-                <button
-                  type="button"
-                  disabled={isBusy}
-                  onClick={() => void handleDelete(item.id)}
-                  className="rounded-lg border border-[#e4c7ca] bg-[#fff4f4] px-3 py-1.5 text-xs text-[var(--term-red)] transition hover:bg-[#fdeaea] disabled:opacity-50"
-                >
-                  delete
-                </button>
-              </div>
-
-              {isEditing && (
-                <div className="mt-4 space-y-3 rounded-xl border border-[var(--term-border)] bg-[var(--term-surface-soft)] p-3">
-                  <div>
-                    <label className="mb-1 block text-[11px] uppercase tracking-wider text-[var(--term-dim)]">
-                      value
-                    </label>
-                    <input
-                      value={draftValue}
-                      onChange={(event) => setDraftValue(event.target.value)}
-                      className="w-full rounded-lg border border-[var(--term-border)] bg-[var(--term-surface)] px-3 py-2 text-sm text-[var(--term-text)] outline-none transition focus:border-[var(--term-blue)]"
-                    />
-                  </div>
-                  <div>
-                    <label className="mb-1 block text-[11px] uppercase tracking-wider text-[var(--term-dim)]">
-                      reason
-                    </label>
-                    <textarea
-                      value={draftReason}
-                      onChange={(event) => setDraftReason(event.target.value)}
-                      rows={3}
-                      className="w-full resize-none rounded-lg border border-[var(--term-border)] bg-[var(--term-surface)] px-3 py-2 text-sm text-[var(--term-text)] outline-none transition focus:border-[var(--term-blue)]"
-                    />
-                  </div>
-                  <div className="flex gap-2">
-                    <button
-                      type="button"
-                      disabled={isBusy || draftValue.trim().length === 0}
-                      onClick={() => void handleSave(item.id)}
-                      className="rounded-lg bg-[var(--term-blue)] px-3 py-1.5 text-xs text-white transition hover:bg-[#2459bf] disabled:opacity-50"
-                    >
-                      save
-                    </button>
-                    <button
-                      type="button"
-                      onClick={resetEdit}
-                      className="rounded-lg border border-[var(--term-border)] bg-[var(--term-surface)] px-3 py-1.5 text-xs text-[var(--term-text-soft)] transition hover:bg-[#ede3d5]"
-                    >
-                      cancel
-                    </button>
-                  </div>
-                </div>
-              )}
             </div>
-          )
-        })}
-      </div>
 
-      <aside className="hidden rounded-2xl border border-[var(--term-border)] bg-[linear-gradient(180deg,#f8f4ed_0%,#ece8e0_100%)] p-5 xl:block">
-        <div className="text-[11px] uppercase tracking-[0.22em] text-[#6b7f9e]">Memory</div>
-        <div className="mt-3 text-lg text-[var(--term-text)]">Preference memory manager</div>
-        <p className="mt-3 text-xs leading-6 text-[var(--term-text-soft)]">
-          This panel edits the active preference memories that get injected into the assistant
-          system prompt before each turn.
-        </p>
-
-        <div className="mt-6 space-y-3 text-xs text-[var(--term-text-soft)]">
-          <div className="rounded-xl border border-[#c9d7f2] bg-[#edf3ff] p-3">
-            <div className="text-[#2459bf]">{items.length} active memories</div>
-            <div className="mt-1 text-[#6f86ac]">
-              Stored as structured SQLite records, not markdown notes.
+            <div className="mt-3 flex flex-wrap gap-3 text-[11px] text-[var(--term-dim)]">
+              <span>{item.evidenceCount} signals</span>
+              <span>updated {formatDate(item.updatedAt)}</span>
             </div>
+
+            {item.reason && (
+              <p className="mt-3 text-xs leading-6 text-[var(--term-text-soft)]">{item.reason}</p>
+            )}
+
+            <div className="mt-4 flex gap-2">
+              <button
+                type="button"
+                onClick={() => startEdit(item)}
+                className="rounded-lg border border-[var(--term-border)] bg-[var(--term-surface-soft)] px-3 py-1.5 text-xs text-[var(--term-text)] transition hover:bg-[#ede3d5]"
+              >
+                edit
+              </button>
+              <button
+                type="button"
+                disabled={isBusy}
+                onClick={() => void handleDelete(item.id)}
+                className="rounded-lg border border-[#e4c7ca] bg-[#fff4f4] px-3 py-1.5 text-xs text-[var(--term-red)] transition hover:bg-[#fdeaea] disabled:opacity-50"
+              >
+                delete
+              </button>
+            </div>
+
+            {isEditing && (
+              <div className="mt-4 space-y-3 rounded-xl border border-[var(--term-border)] bg-[var(--term-surface-soft)] p-3">
+                <div>
+                  <label className="mb-1 block text-[11px] uppercase tracking-wider text-[var(--term-dim)]">
+                    value
+                  </label>
+                  <input
+                    value={draftValue}
+                    onChange={(event) => setDraftValue(event.target.value)}
+                    className="w-full rounded-lg border border-[var(--term-border)] bg-[var(--term-surface)] px-3 py-2 text-sm text-[var(--term-text)] outline-none transition focus:border-[var(--term-blue)]"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-[11px] uppercase tracking-wider text-[var(--term-dim)]">
+                    reason
+                  </label>
+                  <textarea
+                    value={draftReason}
+                    onChange={(event) => setDraftReason(event.target.value)}
+                    rows={3}
+                    className="w-full resize-none rounded-lg border border-[var(--term-border)] bg-[var(--term-surface)] px-3 py-2 text-sm text-[var(--term-text)] outline-none transition focus:border-[var(--term-blue)]"
+                  />
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    disabled={isBusy || draftValue.trim().length === 0}
+                    onClick={() => void handleSave(item.id)}
+                    className="rounded-lg bg-[var(--term-blue)] px-3 py-1.5 text-xs text-white transition hover:bg-[#2459bf] disabled:opacity-50"
+                  >
+                    save
+                  </button>
+                  <button
+                    type="button"
+                    onClick={resetEdit}
+                    className="rounded-lg border border-[var(--term-border)] bg-[var(--term-surface)] px-3 py-1.5 text-xs text-[var(--term-text-soft)] transition hover:bg-[#ede3d5]"
+                  >
+                    cancel
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
-          <div className="rounded-xl border border-[var(--term-border)] bg-[var(--term-surface)] p-3">
-            <div className="text-[var(--term-text)]">How this works</div>
-            <div className="mt-1 text-[var(--term-text-soft)]">
-              The extractor proposes candidates after a turn, then the reconciler updates the
-              current preference set.
-            </div>
-          </div>
-        </div>
-      </aside>
+        )
+      })}
     </div>
   )
 }

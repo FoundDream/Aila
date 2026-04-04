@@ -58,7 +58,7 @@ export function SessionList({
 
   useEffect(() => {
     if (variant === 'panel' || open) void loadSessions()
-  }, [currentSessionPath, open, loadSessions, variant])
+  }, [open, loadSessions, variant])
 
   // Close on outside click
   useEffect(() => {
@@ -156,9 +156,9 @@ export function SessionList({
   if (variant === 'panel') {
     return (
       <div className="flex h-full min-h-0 flex-col bg-[var(--term-panel)]">
-        <div className="h-11 border-b border-[var(--term-border)] pl-20 [-webkit-app-region:drag] select-none" />
+        <div className="h-8  pl-20 [-webkit-app-region:drag] select-none" />
 
-        <div className="px-4 pb-4 pt-4 [-webkit-app-region:no-drag]">
+        <div className="px-4 pb-4 [-webkit-app-region:no-drag]">
           {onNewSession && (
             <button
               type="button"
