@@ -102,7 +102,7 @@ export function ModelSelector({
   const hasModels = groups.some((g) => g.models.length > 0)
   const triggerClasses =
     variant === 'composer'
-      ? 'flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1 text-left text-[11px] text-[var(--term-text-soft)] transition hover:bg-[var(--term-surface-hover)] hover:text-[var(--term-text)] disabled:opacity-50'
+      ? 'flex max-w-full min-w-0 items-center gap-2 rounded-md px-2 py-1 text-left text-[11px] text-[var(--term-text-soft)] transition hover:bg-[var(--term-surface-hover)] hover:text-[var(--term-text)] disabled:opacity-50'
       : 'flex items-center gap-1.5 rounded px-2 py-1 text-[11px] text-[var(--term-dim)] transition hover:bg-[var(--term-surface-soft)] hover:text-[var(--term-text)] disabled:opacity-50'
   const menuClasses =
     variant === 'composer'
@@ -114,7 +114,7 @@ export function ModelSelector({
       ref={ref}
       className={
         variant === 'composer'
-          ? 'relative min-w-0 flex-1 [-webkit-app-region:no-drag]'
+          ? 'relative inline-block min-w-0 max-w-full [-webkit-app-region:no-drag]'
           : 'relative [-webkit-app-region:no-drag]'
       }
     >
