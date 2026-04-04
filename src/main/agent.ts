@@ -59,8 +59,10 @@ export class AgentService {
   private registry: ProviderRegistry
   private configService: ConfigService
   private memoryService: PreferenceMemoryService
+  private authStorage = AuthStorage.inMemory()
+  private syncedProviderNames = new Set<string>()
   private currentModelKey: string | null = null
-  private modelRegistry: ModelRegistry | null = null
+  private modelRegistry: ModelRegistry = ModelRegistry.create(this.authStorage)
   private currentMemoryContext = ''
   private currentInjectedMemoryIds: string[] = []
   private activeTurn: { userText: string; assistantText: string } | null = null
@@ -191,6 +193,43 @@ export class AgentService {
     return this.currentModelKey
   }
 
+  async refreshProviderConfig(providerId?: string): Promise<void> {
+    this.syncRuntimeApiKeys()
+
+    if (!this.currentModelKey) {
+      this.currentModelKey = this.configService.getActiveModelId()
+      return
+    }
+
+    const parsed = parseModelKey(this.currentModelKey)
+    if (!parsed) {
+      this.currentModelKey = this.configService.getActiveModelId()
+      return
+    }
+
+    if (providerId && parsed.providerId !== providerId) {
+      return
+    }
+
+    const result = this.registry.createModelForId(parsed.providerId, parsed.modelId)
+    if ('error' in result) {
+      this.cleanup()
+      this.currentModelKey = this.configService.getActiveModelId()
+      return
+    }
+
+    if (!this.session) {
+      return
+    }
+
+    try {
+      await this.session.setModel(result)
+    } catch (err) {
+      console.error('[agent] failed to refresh model after provider update:', err)
+      this.cleanup()
+    }
+  }
+
   destroy(): void {
     this.cleanup()
   }
@@ -235,15 +274,7 @@ export class AgentService {
     })
     await resourceLoader.reload()
 
-    // Inject user-configured API keys into AuthStorage so pi-coding-agent can find them
-    const authStorage = AuthStorage.inMemory()
-    for (const provider of this.configService.getProviders()) {
-      if (provider.apiKey) {
-        authStorage.setRuntimeApiKey(provider.provider, provider.apiKey)
-      }
-    }
-    const modelRegistry = ModelRegistry.create(authStorage)
-    this.modelRegistry = modelRegistry
+    this.syncRuntimeApiKeys()
 
     const { session } = await createAgentSession({
       model,
@@ -251,8 +282,8 @@ export class AgentService {
       customTools,
       sessionManager,
       resourceLoader,
-      authStorage,
-      modelRegistry,
+      authStorage: this.authStorage,
+      modelRegistry: this.modelRegistry,
     })
 
     this.session = session
@@ -279,10 +310,31 @@ export class AgentService {
     this.session?.dispose()
     this.session = null as never
     this.unsubscribe = null
-    this.modelRegistry = null
     this.currentMemoryContext = ''
     this.currentInjectedMemoryIds = []
     this.activeTurn = null
+  }
+
+  private syncRuntimeApiKeys(): void {
+    const nextRuntimeKeys = new Map<string, string>()
+
+    for (const provider of this.configService.getProviders()) {
+      if (provider.apiKey) {
+        nextRuntimeKeys.set(String(provider.provider), provider.apiKey)
+      }
+    }
+
+    for (const providerName of this.syncedProviderNames) {
+      if (!nextRuntimeKeys.has(providerName)) {
+        this.authStorage.removeRuntimeApiKey(providerName)
+      }
+    }
+
+    for (const [providerName, apiKey] of nextRuntimeKeys) {
+      this.authStorage.setRuntimeApiKey(providerName, apiKey)
+    }
+
+    this.syncedProviderNames = new Set(nextRuntimeKeys.keys())
   }
 
   private buildUIMessages(sessionManager: SessionManager): UIMessage[] {

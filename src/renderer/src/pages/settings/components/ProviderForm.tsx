@@ -1,5 +1,5 @@
 import type { FormEvent, ReactElement } from 'react'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 
 const PROTOCOL_OPTIONS = [
   {
@@ -84,6 +84,17 @@ export function ProviderForm({
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  useEffect(() => {
+    setApiKey('')
+    setDisplayName(provider?.displayName ?? '')
+    setProtocol(provider?.protocol ?? 'openai-compatible')
+    setBaseUrl(provider?.baseUrl ?? '')
+    setModelInput('')
+    setModels(provider?.models ?? [])
+    setTestResult(null)
+    setError(null)
+  }, [provider])
+
   const handleTest = async (): Promise<void> => {
     if (!provider?.id) return
     setTesting(true)
@@ -160,6 +171,8 @@ export function ProviderForm({
           isBuiltIn: false,
         })
       }
+      setApiKey('')
+      setTestResult(null)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Save failed')
     } finally {

@@ -139,11 +139,13 @@ function registerIpcHandlers(): void {
       ...provider,
       apiKey: nextApiKey,
     })
+    void agentService?.refreshProviderConfig(provider.id)
     mainWindow?.webContents.send('provider:config-changed')
   })
 
   ipcMain.handle('provider:delete', (_event, providerId: string) => {
     configService.deleteProvider(providerId)
+    void agentService?.refreshProviderConfig(providerId)
     mainWindow?.webContents.send('provider:config-changed')
   })
 
