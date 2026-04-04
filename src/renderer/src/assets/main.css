@@ -80,8 +80,10 @@ button {
   border-radius: var(--composer-radius);
   padding: 1px;
   background: var(--term-border);
-  box-shadow: 0 -10px 32px rgba(95, 123, 164, 0.08);
-  transition: box-shadow 0.4s ease;
+  box-shadow: none;
+  transition:
+    background 0.25s ease,
+    border-color 0.25s ease;
 }
 
 .composer-wrapper::before {
@@ -97,20 +99,17 @@ button {
     var(--term-border) 90%
   );
   opacity: 0;
-  transition: opacity 0.4s ease;
+  transition: opacity 0.25s ease;
   animation: rotate-border 3s linear infinite;
   pointer-events: none;
 }
 
 .composer-wrapper.is-typing::before {
-  opacity: 1;
+  opacity: 0.18;
 }
 
 .composer-wrapper.is-typing {
-  box-shadow:
-    0 0 20px rgba(120, 166, 248, 0.08),
-    0 0 8px rgba(77, 143, 175, 0.05),
-    0 -10px 32px rgba(95, 123, 164, 0.1);
+  background: var(--term-border-strong);
 }
 
 .composer-wrapper:focus-within {
@@ -118,7 +117,7 @@ button {
 }
 
 .composer-wrapper.is-typing:focus-within {
-  background: var(--term-border);
+  background: var(--term-border-strong);
 }
 
 .composer-inner {
@@ -128,43 +127,13 @@ button {
 }
 
 .composer-inner::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  z-index: 0;
-  border-radius: inherit;
-  background:
-    radial-gradient(
-      circle at top left,
-      rgba(120, 166, 248, 0.12) 0%,
-      rgba(120, 166, 248, 0.08) 28%,
-      rgba(120, 166, 248, 0.04) 48%,
-      rgba(120, 166, 248, 0.02) 64%,
-      transparent 82%
-    ),
-    radial-gradient(
-      circle at top right,
-      rgba(77, 143, 175, 0.12) 0%,
-      rgba(77, 143, 175, 0.08) 28%,
-      rgba(77, 143, 175, 0.04) 48%,
-      rgba(77, 143, 175, 0.02) 64%,
-      transparent 82%
-    );
-  background-position: top left, top right;
-  background-repeat: no-repeat;
-  background-size: 34px 34px, 34px 34px;
-  opacity: 0;
-  transition: opacity 0.4s ease;
-  pointer-events: none;
-}
-
-.composer-wrapper.is-typing .composer-inner::before {
-  opacity: 1;
+  content: none;
 }
 
 .composer-toolbar {
   border-top-left-radius: calc(var(--composer-radius) - 1px);
   border-top-right-radius: calc(var(--composer-radius) - 1px);
+  background: transparent;
 }
 
 .composer-inner > * {

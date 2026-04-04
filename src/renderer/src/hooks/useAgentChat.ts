@@ -1,11 +1,10 @@
 import type { KeyboardEvent } from 'react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
-import type { Block, ChatConfig, Message, MessageStatus } from '@/types/chat'
+import type { Block, ChatConfig, Message, MessageStatus, QueuedPromptDraft } from '@/types/chat'
 
-interface QueuedPrompt {
+interface QueuedPrompt extends QueuedPromptDraft {
   assistantId: string
-  text: string
 }
 
 interface UseAgentChatResult {
@@ -14,11 +13,14 @@ interface UseAgentChatResult {
   input: string
   isStreaming: boolean
   queuedCount: number
+  queuedPrompts: QueuedPromptDraft[]
   currentSessionPath: string | null
   setInput: (value: string) => void
   handleAbort: () => Promise<void>
   handleInputKeyDown: (event: KeyboardEvent<HTMLTextAreaElement>) => void
   handleSubmit: () => Promise<void>
+  handleEditQueuedPrompt: (promptId: string) => void
+  handleRemoveQueuedPrompt: (promptId: string) => void
   handleNewSession: () => Promise<void>
   handleResumeSession: (sessionPath: string) => Promise<void>
   handleDeleteSession: (sessionPath: string) => Promise<void>
@@ -28,7 +30,7 @@ export function useAgentChat(): UseAgentChatResult {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [isStreaming, setIsStreaming] = useState(false)
-  const [queuedCount, setQueuedCount] = useState(0)
+  const [queuedPrompts, setQueuedPrompts] = useState<QueuedPromptDraft[]>([])
   const [config, setConfig] = useState<ChatConfig | null>(null)
   const [currentSessionPath, setCurrentSessionPath] = useState<string | null>(null)
 
@@ -43,6 +45,7 @@ export function useAgentChat(): UseAgentChatResult {
   const rafRef = useRef<number | null>(null)
 
   const createMessageId = useCallback(() => `msg-${crypto.randomUUID()}`, [])
+  const queuedCount = queuedPrompts.length
   const loadConfig = useCallback(async () => {
     const nextConfig = await window.api.getConfig()
     setConfig(nextConfig)
@@ -106,20 +109,21 @@ export function useAgentChat(): UseAgentChatResult {
   }, [])
 
   const enqueuePrompt = useCallback((prompt: QueuedPrompt) => {
-    promptQueueRef.current = [...promptQueueRef.current, prompt]
-    setQueuedCount(promptQueueRef.current.length)
+    const nextQueue = [...promptQueueRef.current, prompt]
+    promptQueueRef.current = nextQueue
+    setQueuedPrompts(nextQueue.map(({ id, text }) => ({ id, text })))
   }, [])
 
   const dequeuePrompt = useCallback((): QueuedPrompt | null => {
     const [nextPrompt, ...rest] = promptQueueRef.current
     promptQueueRef.current = rest
-    setQueuedCount(rest.length)
+    setQueuedPrompts(rest.map(({ id, text }) => ({ id, text })))
     return nextPrompt ?? null
   }, [])
 
   const clearQueuedPrompts = useCallback(() => {
     promptQueueRef.current = []
-    setQueuedCount(0)
+    setQueuedPrompts([])
     activeAssistantIdRef.current = null
     isStreamingRef.current = false
   }, [])
@@ -215,7 +219,11 @@ export function useAgentChat(): UseAgentChatResult {
       activeAssistantIdRef.current = prompt.assistantId
       isStreamingRef.current = true
       setIsStreaming(true)
-      setAssistantStatus(prompt.assistantId, 'streaming')
+      setMessages((prev) => [
+        ...prev,
+        { id: createMessageId(), role: 'user', content: prompt.text, status: 'done' },
+        { id: prompt.assistantId, role: 'assistant', blocks: [], status: 'streaming' },
+      ])
 
       void window.api.prompt(prompt.text).catch((error) => {
         updateAssistantMessage(prompt.assistantId, (message) => ({
@@ -232,7 +240,7 @@ export function useAgentChat(): UseAgentChatResult {
         processNextPromptRef.current()
       })
     },
-    [setAssistantStatus, updateAssistantMessage],
+    [createMessageId, updateAssistantMessage],
   )
 
   const processNextPrompt = useCallback(() => {
@@ -329,16 +337,50 @@ export function useAgentChat(): UseAgentChatResult {
       return
     }
 
-    const assistantId = createMessageId()
-    setMessages((prev) => [
-      ...prev,
-      { id: createMessageId(), role: 'user', content: text, status: 'done' },
-      { id: assistantId, role: 'assistant', blocks: [], status: 'queued' },
-    ])
     setInput('')
-    enqueuePrompt({ assistantId, text })
-    processNextPrompt()
-  }, [createMessageId, enqueuePrompt, input, processNextPrompt])
+    const prompt: QueuedPrompt = {
+      id: createMessageId(),
+      assistantId: createMessageId(),
+      text,
+    }
+
+    if (isStreamingRef.current || promptQueueRef.current.length > 0) {
+      enqueuePrompt(prompt)
+      return
+    }
+
+    startPrompt(prompt)
+  }, [createMessageId, enqueuePrompt, input, startPrompt])
+
+  const handleEditQueuedPrompt = useCallback(
+    (promptId: string) => {
+      const promptIndex = promptQueueRef.current.findIndex((prompt) => prompt.id === promptId)
+      if (promptIndex < 0) return
+
+      const queuedPrompt = promptQueueRef.current[promptIndex]
+      const rest = promptQueueRef.current.filter((prompt) => prompt.id !== promptId)
+      const currentDraft = input.trim()
+      if (currentDraft) {
+        rest.splice(promptIndex, 0, {
+          id: createMessageId(),
+          assistantId: createMessageId(),
+          text: currentDraft,
+        })
+      }
+
+      promptQueueRef.current = rest
+      setQueuedPrompts(rest.map(({ id, text }) => ({ id, text })))
+      setInput(queuedPrompt.text)
+    },
+    [createMessageId, input],
+  )
+
+  const handleRemoveQueuedPrompt = useCallback((promptId: string) => {
+    const rest = promptQueueRef.current.filter((prompt) => prompt.id !== promptId)
+    if (rest.length === promptQueueRef.current.length) return
+    promptQueueRef.current = rest
+    setQueuedPrompts(rest.map(({ id, text }) => ({ id, text })))
+  }, [])
 
   const handleAbort = useCallback(async () => {
     await window.api.abort()
@@ -414,11 +456,14 @@ export function useAgentChat(): UseAgentChatResult {
     input,
     isStreaming,
     queuedCount,
+    queuedPrompts,
     currentSessionPath,
     setInput,
     handleAbort,
     handleInputKeyDown,
     handleSubmit,
+    handleEditQueuedPrompt,
+    handleRemoveQueuedPrompt,
     handleNewSession,
     handleResumeSession,
     handleDeleteSession,

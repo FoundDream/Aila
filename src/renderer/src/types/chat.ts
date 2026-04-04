@@ -21,6 +21,11 @@ export interface Message {
   status?: MessageStatus
 }
 
+export interface QueuedPromptDraft {
+  id: string
+  text: string
+}
+
 export interface ChatConfig {
   hasApiKey: boolean
 }

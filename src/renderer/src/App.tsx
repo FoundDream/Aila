@@ -16,14 +16,17 @@ export default function App(): ReactElement | null {
     currentSessionPath,
     handleAbort,
     handleDeleteSession,
+    handleEditQueuedPrompt,
     handleInputKeyDown,
     handleNewSession,
+    handleRemoveQueuedPrompt,
     handleResumeSession,
     handleSubmit,
     input,
     isStreaming,
     messages,
     queuedCount,
+    queuedPrompts,
     setInput,
   } = useAgentChat()
   const scrollRef = useAutoScroll([messages])
@@ -58,9 +61,12 @@ export default function App(): ReactElement | null {
               input={input}
               isStreaming={isStreaming}
               queuedCount={queuedCount}
+              queuedPrompts={queuedPrompts}
               onAbort={() => void handleAbort()}
               onChange={setInput}
+              onEditQueuedPrompt={handleEditQueuedPrompt}
               onKeyDown={handleInputKeyDown}
+              onRemoveQueuedPrompt={handleRemoveQueuedPrompt}
               onSettingsClick={() => setSettingsOpen(true)}
               onSubmit={() => void handleSubmit()}
             />
