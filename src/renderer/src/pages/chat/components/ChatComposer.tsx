@@ -8,6 +8,7 @@ import {
   useState,
 } from 'react'
 
+import { Button } from '@/components/Button'
 import { ModelSelector } from '@/pages/chat/components/ModelSelector'
 import type { QueuedPromptDraft } from '@/types/chat'
 
@@ -153,22 +154,24 @@ export function ChatComposer({
                         {prompt.text}
                       </div>
                       <div className="flex shrink-0 items-center gap-0.5">
-                        <button
+                        <Button
                           type="button"
-                          className="rounded px-1 py-0.5 text-[11px] text-[var(--term-dim)] transition hover:text-[var(--term-text)]"
+                          variant="quiet"
+                          size="xs"
                           onClick={() => handleEditQueued(prompt.id)}
                           title="Edit queued prompt"
                         >
                           edit
-                        </button>
-                        <button
+                        </Button>
+                        <Button
                           type="button"
-                          className="rounded px-1 py-0.5 text-[11px] text-[var(--term-dim)] transition hover:text-[var(--term-red)]"
+                          variant="quietDanger"
+                          size="xs"
                           onClick={() => onRemoveQueuedPrompt(prompt.id)}
                           title="Remove queued prompt"
                         >
                           remove
-                        </button>
+                        </Button>
                       </div>
                     </div>
                   ))}
@@ -187,28 +190,26 @@ export function ChatComposer({
                   </span>
                 )}
                 {isStreaming && (
-                  <button
+                  <Button
                     type="button"
-                    className="rounded px-2 py-1 text-[11px] text-[var(--term-red)] transition hover:bg-[var(--term-surface-soft)]"
+                    variant="dangerGhost"
+                    size="xs"
                     onClick={onAbort}
                     title="Stop"
                   >
                     stop
-                  </button>
+                  </Button>
                 )}
-                <button
+                <Button
                   type="button"
-                  className={`rounded px-2 py-1 text-[11px] transition ${
-                    hasInput
-                      ? 'text-[var(--term-blue)] hover:bg-[var(--term-surface-soft)]'
-                      : 'text-[var(--term-dim)]'
-                  }`}
+                  variant={hasInput ? 'ghost' : 'quiet'}
+                  size="xs"
                   onClick={() => void handleSubmit()}
                   disabled={!hasInput}
                   title="Send"
                 >
                   enter
-                </button>
+                </Button>
               </div>
             </div>
           </div>

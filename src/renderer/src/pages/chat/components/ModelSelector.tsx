@@ -1,6 +1,8 @@
 import type { ReactElement } from 'react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
+import { Button } from '@/components/Button'
+
 interface ModelEntry {
   id: string
   name: string
@@ -192,16 +194,17 @@ export function ModelSelector({
           ))}
 
           <div className="bg-[var(--term-surface-soft)] px-3 py-2">
-            <button
+            <Button
               type="button"
+              variant="quiet"
+              size="xs"
               onClick={() => {
                 setOpen(false)
                 onSettingsClick()
               }}
-              className="text-[11px] text-[var(--term-dim)] transition hover:text-[var(--term-text)]"
             >
               manage providers
-            </button>
+            </Button>
           </div>
         </div>
       )}

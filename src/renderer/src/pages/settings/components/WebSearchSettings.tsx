@@ -1,6 +1,7 @@
 import type { FormEvent, ReactElement } from 'react'
 import { useState } from 'react'
 
+import { Button } from '@/components/Button'
 import { SettingsSectionHeading } from '@/pages/settings/components/SettingsSectionHeading'
 
 interface WebSearchData {
@@ -85,13 +86,9 @@ export function WebSearchSettings({
         {saved && <p className="text-[11px] text-[var(--term-cyan)]">saved</p>}
 
         <div className="pt-1">
-          <button
-            type="submit"
-            disabled={saving}
-            className="rounded bg-[var(--term-blue)] px-3 py-1.5 text-[11px] font-medium text-white transition hover:bg-[var(--term-blue-strong)] disabled:opacity-50"
-          >
+          <Button type="submit" variant="primary" disabled={saving}>
             {saving ? 'saving...' : 'save'}
-          </button>
+          </Button>
         </div>
       </form>
     </section>

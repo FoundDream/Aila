@@ -1,6 +1,7 @@
 import type { ReactElement } from 'react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
+import { Button } from '@/components/Button'
 import { DragRegion } from '@/components/DragRegion'
 
 interface SessionSummary {
@@ -162,13 +163,15 @@ export function SessionList({
 
         <div className="px-4 pb-4 [-webkit-app-region:no-drag]">
           {onNewSession && (
-            <button
-              type="button"
+            <Button
               onClick={() => void onNewSession()}
-              className="mt-4 flex h-10 w-full items-center justify-center rounded border border-[var(--term-border)] bg-[var(--term-surface)] text-[12px] text-[var(--term-text-soft)] transition hover:bg-[var(--term-surface-soft)] hover:text-[var(--term-text)]"
+              variant="secondary"
+              size="md"
+              fullWidth
+              className="mt-4"
             >
               + new session
-            </button>
+            </Button>
           )}
         </div>
 

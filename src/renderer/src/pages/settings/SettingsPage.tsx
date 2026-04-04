@@ -1,6 +1,7 @@
 import type { ReactElement } from 'react'
 import { useCallback, useEffect, useState } from 'react'
 
+import { Button } from '@/components/Button'
 import { DragRegion } from '@/components/DragRegion'
 import { MemorySettings } from '@/pages/settings/components/MemorySettings'
 import { ProviderForm } from '@/pages/settings/components/ProviderForm'
@@ -153,13 +154,15 @@ export function SettingsPage({ onBack }: { onBack: () => void }): ReactElement {
 
       <section>
         {!addingCustom ? (
-          <button
-            type="button"
+          <Button
+            variant="secondary"
+            size="md"
+            fullWidth
             onClick={() => setAddingCustom(true)}
-            className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-[var(--term-border)] bg-[var(--term-surface)] px-3 py-3 text-xs text-[var(--term-dim)] transition hover:bg-[var(--term-surface-soft)] hover:text-[var(--term-text)]"
+            className="gap-1.5"
           >
             + custom provider
-          </button>
+          </Button>
         ) : (
           <div className="rounded-2xl border border-[var(--term-border)] bg-[var(--term-surface)] p-3">
             <ProviderForm
@@ -225,13 +228,9 @@ export function SettingsPage({ onBack }: { onBack: () => void }): ReactElement {
         </nav>
 
         <div className="border-t border-[var(--term-border)] p-3">
-          <button
-            type="button"
-            onClick={onBack}
-            className="flex h-10 w-full items-center justify-center rounded border border-[var(--term-border)] bg-[var(--term-surface)] text-[12px] text-[var(--term-text-soft)] transition hover:bg-[var(--term-surface-soft)] hover:text-[var(--term-text)]"
-          >
+          <Button variant="secondary" size="md" fullWidth onClick={onBack}>
             back to chat
-          </button>
+          </Button>
         </div>
       </aside>
 
@@ -247,13 +246,9 @@ export function SettingsPage({ onBack }: { onBack: () => void }): ReactElement {
               {navItems.find((item) => item.id === activeSection)?.label}
             </div>
           </div>
-          <button
-            type="button"
-            onClick={onBack}
-            className="rounded-xl px-3 py-2 text-[12px] text-[var(--term-dim)] transition hover:bg-[var(--term-surface)] hover:text-[var(--term-text)]"
-          >
+          <Button variant="ghost" size="compact" onClick={onBack}>
             close
-          </button>
+          </Button>
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-5 sm:py-5 md:px-6 md:py-6">

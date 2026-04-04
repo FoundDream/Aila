@@ -1,6 +1,8 @@
 import type { ReactElement } from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
+import { Button } from '@/components/Button'
+
 interface MemoryItem {
   id: string
   key: string
@@ -145,21 +147,17 @@ export function MemorySettings(): ReactElement {
             )}
 
             <div className="mt-4 flex gap-2">
-              <button
-                type="button"
-                onClick={() => startEdit(item)}
-                className="rounded-lg border border-[var(--term-border)] bg-[var(--term-surface-soft)] px-3 py-1.5 text-xs text-[var(--term-text)] transition hover:bg-[var(--term-surface-hover)]"
-              >
+              <Button type="button" variant="secondary" onClick={() => startEdit(item)}>
                 edit
-              </button>
-              <button
+              </Button>
+              <Button
                 type="button"
+                variant="danger"
                 disabled={isBusy}
                 onClick={() => void handleDelete(item.id)}
-                className="rounded-lg border border-[#e4c7ca] bg-[#fff4f4] px-3 py-1.5 text-xs text-[var(--term-red)] transition hover:bg-[#fdeaea] disabled:opacity-50"
               >
                 delete
-              </button>
+              </Button>
             </div>
 
             {isEditing && (
@@ -186,21 +184,17 @@ export function MemorySettings(): ReactElement {
                   />
                 </div>
                 <div className="flex gap-2">
-                  <button
+                  <Button
                     type="button"
+                    variant="primary"
                     disabled={isBusy || draftValue.trim().length === 0}
                     onClick={() => void handleSave(item.id)}
-                    className="rounded-lg bg-[var(--term-blue)] px-3 py-1.5 text-xs text-white transition hover:bg-[var(--term-blue-strong)] disabled:opacity-50"
                   >
                     save
-                  </button>
-                  <button
-                    type="button"
-                    onClick={resetEdit}
-                    className="rounded-lg border border-[var(--term-border)] bg-[var(--term-surface)] px-3 py-1.5 text-xs text-[var(--term-text-soft)] transition hover:bg-[var(--term-surface-hover)]"
-                  >
+                  </Button>
+                  <Button type="button" variant="secondary" onClick={resetEdit}>
                     cancel
-                  </button>
+                  </Button>
                 </div>
               </div>
             )}

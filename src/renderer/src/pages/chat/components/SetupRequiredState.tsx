@@ -1,5 +1,7 @@
 import type { ReactElement } from 'react'
 
+import { Button } from '@/components/Button'
+
 export function SetupRequiredState({
   onSettingsClick,
 }: {
@@ -20,13 +22,9 @@ export function SetupRequiredState({
           pick a model.
         </div>
         <div className="mt-4">
-          <button
-            type="button"
-            onClick={onSettingsClick}
-            className="rounded bg-[var(--term-blue)] px-3 py-1.5 text-[11px] font-medium text-white transition hover:bg-[var(--term-blue-strong)]"
-          >
+          <Button variant="primary" onClick={onSettingsClick}>
             open settings
-          </button>
+          </Button>
         </div>
       </div>
     </main>

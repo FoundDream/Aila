@@ -1,6 +1,8 @@
 import type { FormEvent, ReactElement } from 'react'
 import { useEffect, useMemo, useState } from 'react'
 
+import { Button } from '@/components/Button'
+
 const PROTOCOL_OPTIONS = [
   {
     value: 'openai-compatible',
@@ -258,13 +260,14 @@ export function ProviderForm({
                 className="flex items-center justify-between rounded border border-[var(--term-border)] bg-[var(--term-surface-soft)] px-2.5 py-1.5 text-[12px]"
               >
                 <span className="text-[var(--term-text-soft)]">{m.name}</span>
-                <button
+                <Button
                   type="button"
+                  variant="quietDanger"
+                  size="xs"
                   onClick={() => handleRemoveModel(m.id)}
-                  className="text-[var(--term-dim)] hover:text-[var(--term-red)]"
                 >
                   x
-                </button>
+                </Button>
               </div>
             ))}
         </div>
@@ -282,36 +285,27 @@ export function ProviderForm({
             placeholder="model id"
             className={`flex-1 ${inputClass}`}
           />
-          <button
-            type="button"
-            onClick={handleAddModel}
-            className="rounded border border-[var(--term-border)] bg-[var(--term-surface-soft)] px-2.5 py-1.5 text-[11px] text-[var(--term-text-soft)] transition hover:bg-[var(--term-surface-hover)] hover:text-[var(--term-text)]"
-          >
+          <Button type="button" variant="secondary" onClick={handleAddModel}>
             add
-          </button>
+          </Button>
         </div>
       </div>
 
       {error && <p className="text-[11px] text-[var(--term-red)]">{error}</p>}
 
       <div className="flex items-center gap-2 pt-1">
-        <button
-          type="submit"
-          disabled={saving}
-          className="rounded bg-[var(--term-blue)] px-3 py-1.5 text-[11px] font-medium text-white transition hover:bg-[var(--term-blue-strong)] disabled:opacity-50"
-        >
+        <Button type="submit" variant="primary" disabled={saving}>
           {saving ? 'saving...' : 'save'}
-        </button>
+        </Button>
 
         {provider && (
-          <button
-            type="button"
+          <Button
             onClick={() => void handleTest()}
             disabled={testing || !provider.hasApiKey}
-            className="rounded border border-[var(--term-border)] bg-[var(--term-surface-soft)] px-3 py-1.5 text-[11px] text-[var(--term-text-soft)] transition hover:bg-[var(--term-surface-hover)] hover:text-[var(--term-text)] disabled:opacity-50"
+            variant="secondary"
           >
             {testing ? 'testing...' : 'test'}
-          </button>
+          </Button>
         )}
 
         {testResult && (
@@ -323,23 +317,20 @@ export function ProviderForm({
         )}
 
         {onCancel && (
-          <button
-            type="button"
-            onClick={onCancel}
-            className="ml-auto text-[11px] text-[var(--term-dim)] hover:text-[var(--term-text)]"
-          >
+          <Button type="button" variant="ghost" onClick={onCancel} className="ml-auto">
             cancel
-          </button>
+          </Button>
         )}
 
         {onDelete && (
-          <button
+          <Button
             type="button"
+            variant="dangerGhost"
             onClick={() => void onDelete()}
-            className="ml-auto text-[11px] text-[var(--term-red)] hover:text-[#a94a52]"
+            className="ml-auto"
           >
             delete
-          </button>
+          </Button>
         )}
       </div>
     </form>
