@@ -102,7 +102,7 @@ export function ModelSelector({
   const hasModels = groups.some((g) => g.models.length > 0)
   const triggerClasses =
     variant === 'composer'
-      ? 'flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1 text-left text-[11px] text-[var(--term-text-soft)] transition hover:bg-[#ede3d5] hover:text-[var(--term-text)] disabled:opacity-50'
+      ? 'flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1 text-left text-[11px] text-[var(--term-text-soft)] transition hover:bg-[var(--term-surface-hover)] hover:text-[var(--term-text)] disabled:opacity-50'
       : 'flex items-center gap-1.5 rounded px-2 py-1 text-[11px] text-[var(--term-dim)] transition hover:bg-[var(--term-surface-soft)] hover:text-[var(--term-text)] disabled:opacity-50'
   const menuClasses =
     variant === 'composer'
@@ -130,7 +130,9 @@ export function ModelSelector({
           <>
             {variant === 'composer' ? (
               <div className="flex min-w-0 flex-1 items-center gap-2">
-                <span className="min-w-0 flex-1 truncate text-[var(--term-text)]">{displayName}</span>
+                <span className="min-w-0 flex-1 truncate text-[var(--term-text)]">
+                  {displayName}
+                </span>
                 {activeModel && (
                   <div className="hidden shrink-0 items-center gap-1 text-[10px] text-[var(--term-dim)] md:flex">
                     {activeModel.toolUse && <span>tools</span>}
@@ -177,7 +179,7 @@ export function ModelSelector({
                     onClick={() => void handleSelect(group.providerId, model.id)}
                     className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] transition ${
                       isActive
-                        ? 'bg-[#e5eefc] text-[var(--term-text)]'
+                        ? 'bg-[var(--term-accent-soft)] text-[var(--term-text)]'
                         : 'text-[var(--term-text-soft)] hover:bg-[var(--term-surface-soft)] hover:text-[var(--term-text)]'
                     }`}
                   >

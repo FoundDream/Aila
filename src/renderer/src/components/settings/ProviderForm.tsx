@@ -144,7 +144,8 @@ export function ProviderForm({
           return
         }
 
-        const protocolDef = PROTOCOL_OPTIONS.find((p) => p.value === protocol)!
+        const protocolDef =
+          PROTOCOL_OPTIONS.find((p) => p.value === protocol) ?? PROTOCOL_OPTIONS[0]
         const id = provider?.id ?? `custom-${Date.now()}`
 
         await onSave({
@@ -271,7 +272,7 @@ export function ProviderForm({
           <button
             type="button"
             onClick={handleAddModel}
-            className="rounded border border-[var(--term-border)] bg-[var(--term-surface-soft)] px-2.5 py-1.5 text-[11px] text-[var(--term-text-soft)] transition hover:bg-[#ede3d5] hover:text-[var(--term-text)]"
+            className="rounded border border-[var(--term-border)] bg-[var(--term-surface-soft)] px-2.5 py-1.5 text-[11px] text-[var(--term-text-soft)] transition hover:bg-[var(--term-surface-hover)] hover:text-[var(--term-text)]"
           >
             add
           </button>
@@ -284,7 +285,7 @@ export function ProviderForm({
         <button
           type="submit"
           disabled={saving}
-          className="rounded bg-[var(--term-blue)] px-3 py-1.5 text-[11px] font-medium text-white transition hover:bg-[#2459bf] disabled:opacity-50"
+          className="rounded bg-[var(--term-blue)] px-3 py-1.5 text-[11px] font-medium text-white transition hover:bg-[var(--term-blue-strong)] disabled:opacity-50"
         >
           {saving ? 'saving...' : 'save'}
         </button>
@@ -294,7 +295,7 @@ export function ProviderForm({
             type="button"
             onClick={() => void handleTest()}
             disabled={testing || !provider.hasApiKey}
-            className="rounded border border-[var(--term-border)] bg-[var(--term-surface-soft)] px-3 py-1.5 text-[11px] text-[var(--term-text-soft)] transition hover:bg-[#ede3d5] hover:text-[var(--term-text)] disabled:opacity-50"
+            className="rounded border border-[var(--term-border)] bg-[var(--term-surface-soft)] px-3 py-1.5 text-[11px] text-[var(--term-text-soft)] transition hover:bg-[var(--term-surface-hover)] hover:text-[var(--term-text)] disabled:opacity-50"
           >
             {testing ? 'testing...' : 'test'}
           </button>
@@ -322,7 +323,7 @@ export function ProviderForm({
           <button
             type="button"
             onClick={() => void onDelete()}
-            className="ml-auto text-[11px] text-[var(--term-red)] hover:text-[#a73d45]"
+            className="ml-auto text-[11px] text-[var(--term-red)] hover:text-[#a94a52]"
           >
             delete
           </button>

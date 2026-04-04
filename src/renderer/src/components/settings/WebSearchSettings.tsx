@@ -55,7 +55,11 @@ export function WebSearchSettings({
       >
         <div className="flex items-center justify-between text-[12px]">
           <span className="text-[var(--term-text)]">Tavily</span>
-          <span className={settings?.hasTavilyApiKey ? 'text-[var(--term-cyan)]' : 'text-[var(--term-dim)]'}>
+          <span
+            className={
+              settings?.hasTavilyApiKey ? 'text-[var(--term-cyan)]' : 'text-[var(--term-dim)]'
+            }
+          >
             {settings?.hasTavilyApiKey ? 'configured' : 'not configured'}
           </span>
         </div>
@@ -84,7 +88,7 @@ export function WebSearchSettings({
           <button
             type="submit"
             disabled={saving}
-            className="rounded bg-[var(--term-blue)] px-3 py-1.5 text-[11px] font-medium text-white transition hover:bg-[#2459bf] disabled:opacity-50"
+            className="rounded bg-[var(--term-blue)] px-3 py-1.5 text-[11px] font-medium text-white transition hover:bg-[var(--term-blue-strong)] disabled:opacity-50"
           >
             {saving ? 'saving...' : 'save'}
           </button>

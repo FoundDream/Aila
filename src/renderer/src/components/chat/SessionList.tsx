@@ -91,7 +91,7 @@ export function SessionList({
             <div
               key={s.id}
               className={`group flex items-center gap-1 transition ${
-                isCurrent ? 'bg-[#e3ecfb]' : 'hover:bg-[var(--term-surface-soft)]'
+                isCurrent ? 'bg-[var(--term-accent-soft)]' : 'hover:bg-[var(--term-surface-soft)]'
               }`}
             >
               <button
@@ -128,7 +128,7 @@ export function SessionList({
                   void onDelete(s.path)
                   setSessions((prev) => prev.filter((x) => x.path !== s.path))
                 }}
-                className={`mr-2 shrink-0 rounded p-1 text-[var(--term-dim)] transition hover:bg-[#efe3db] hover:text-[var(--term-red)] ${
+                className={`mr-2 shrink-0 rounded p-1 text-[var(--term-dim)] transition hover:bg-[var(--term-surface-hover)] hover:text-[var(--term-red)] ${
                   variant === 'panel' ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
                 }`}
                 title="Delete session"

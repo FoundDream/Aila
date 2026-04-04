@@ -23,7 +23,7 @@ export function SetupRequiredState({
           <button
             type="button"
             onClick={onSettingsClick}
-            className="rounded bg-[var(--term-blue)] px-3 py-1.5 text-[11px] font-medium text-white transition hover:bg-[#2459bf]"
+            className="rounded bg-[var(--term-blue)] px-3 py-1.5 text-[11px] font-medium text-white transition hover:bg-[var(--term-blue-strong)]"
           >
             open settings
           </button>

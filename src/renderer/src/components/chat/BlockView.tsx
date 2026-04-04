@@ -78,7 +78,7 @@ export function BlockView({ block }: { block: Block }): ReactElement | null {
           </svg>
         </button>
         {expanded && block.result && (
-          <pre className="max-h-60 overflow-auto border-t border-[var(--term-border)] bg-[#f4ece1] px-3 py-2 text-[11px] leading-relaxed whitespace-pre-wrap break-all text-[var(--term-text-soft)]">
+          <pre className="max-h-60 overflow-auto border-t border-[var(--term-border)] bg-[var(--term-surface-soft)] px-3 py-2 text-[11px] leading-relaxed whitespace-pre-wrap break-all text-[var(--term-text-soft)]">
             {block.result}
           </pre>
         )}

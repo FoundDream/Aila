@@ -197,12 +197,17 @@ export function SettingsPanel({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5">
-      <div className="absolute inset-0 bg-[#4d4032]/20 backdrop-blur-[2px]" onClick={onClose} />
+      <div
+        className="absolute inset-0 bg-[var(--term-overlay)] backdrop-blur-[2px]"
+        onClick={onClose}
+      />
 
-      <div className="relative z-10 flex h-[min(660px,calc(100vh-24px))] w-[min(900px,calc(100vw-24px))] min-w-0 overflow-hidden rounded-[24px] border border-[var(--term-border)] bg-[var(--term-bg)] shadow-[0_24px_72px_rgba(107,81,48,0.16)] sm:h-[min(680px,calc(100vh-40px))] sm:w-[min(940px,calc(100vw-48px))] xl:rounded-[28px]">
-        <aside className="flex w-[176px] shrink-0 flex-col border-r border-[var(--term-border)] bg-[linear-gradient(180deg,#f2eadd_0%,#ebe1d2_100%)] sm:w-[208px] xl:w-[240px]">
+      <div className="relative z-10 flex h-[min(660px,calc(100vh-24px))] w-[min(900px,calc(100vw-24px))] min-w-0 overflow-hidden rounded-[24px] border border-[var(--term-border)] bg-[var(--term-bg)] shadow-[0_24px_72px_rgba(92,118,154,0.16)] sm:h-[min(680px,calc(100vh-40px))] sm:w-[min(940px,calc(100vw-48px))] xl:rounded-[28px]">
+        <aside className="flex w-[176px] shrink-0 flex-col border-r border-[var(--term-border)] bg-[linear-gradient(180deg,#eef3f9_0%,#e7edf6_100%)] sm:w-[208px] xl:w-[240px]">
           <div className="border-b border-[var(--term-border)] px-4 py-4 sm:px-5 sm:py-5">
-            <div className="text-[11px] uppercase tracking-[0.22em] text-[#6881a6]">Settings</div>
+            <div className="text-[11px] uppercase tracking-[0.22em] text-[var(--term-blue-strong)]">
+              Settings
+            </div>
             <div className="mt-2 text-base text-[var(--term-text)] sm:mt-3 sm:text-lg">
               Workspace control
             </div>
@@ -222,13 +227,13 @@ export function SettingsPanel({
                   onClick={() => setActiveSection(item.id)}
                   className={`w-full rounded-2xl px-3 py-2.5 text-left transition sm:px-4 sm:py-3 ${
                     isActive
-                      ? 'border border-[#c9d7f2] bg-[#edf3ff] text-[#2459bf] shadow-[0_14px_40px_rgba(102,131,177,0.14)]'
+                      ? 'border border-[var(--term-accent-soft-strong)] bg-[var(--term-accent-soft)] text-[var(--term-blue-strong)] shadow-[0_14px_40px_rgba(120,166,248,0.14)]'
                       : 'border border-transparent bg-transparent text-[var(--term-text-soft)] hover:border-[var(--term-border)] hover:bg-[var(--term-surface)]'
                   }`}
                 >
                   <div className="text-sm">{item.label}</div>
                   <div
-                    className={`mt-1 hidden text-[11px] sm:block ${isActive ? 'text-[#6f86ac]' : 'text-[var(--term-dim)]'}`}
+                    className={`mt-1 hidden text-[11px] sm:block ${isActive ? 'text-[#7c94bc]' : 'text-[var(--term-dim)]'}`}
                   >
                     {item.description}
                   </div>

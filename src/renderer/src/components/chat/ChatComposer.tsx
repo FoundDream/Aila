@@ -122,7 +122,7 @@ export function ChatComposer({
                   className={`rounded px-2 py-1 text-[11px] transition ${
                     hasInput
                       ? 'text-[var(--term-blue)] hover:bg-[var(--term-surface-soft)]'
-                      : 'text-[#bda995]'
+                      : 'text-[var(--term-dim)]'
                   }`}
                   onClick={onSubmit}
                   disabled={!hasInput}

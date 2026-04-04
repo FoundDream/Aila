@@ -148,7 +148,7 @@ export function MemorySettings(): ReactElement {
               <button
                 type="button"
                 onClick={() => startEdit(item)}
-                className="rounded-lg border border-[var(--term-border)] bg-[var(--term-surface-soft)] px-3 py-1.5 text-xs text-[var(--term-text)] transition hover:bg-[#ede3d5]"
+                className="rounded-lg border border-[var(--term-border)] bg-[var(--term-surface-soft)] px-3 py-1.5 text-xs text-[var(--term-text)] transition hover:bg-[var(--term-surface-hover)]"
               >
                 edit
               </button>
@@ -190,14 +190,14 @@ export function MemorySettings(): ReactElement {
                     type="button"
                     disabled={isBusy || draftValue.trim().length === 0}
                     onClick={() => void handleSave(item.id)}
-                    className="rounded-lg bg-[var(--term-blue)] px-3 py-1.5 text-xs text-white transition hover:bg-[#2459bf] disabled:opacity-50"
+                    className="rounded-lg bg-[var(--term-blue)] px-3 py-1.5 text-xs text-white transition hover:bg-[var(--term-blue-strong)] disabled:opacity-50"
                   >
                     save
                   </button>
                   <button
                     type="button"
                     onClick={resetEdit}
-                    className="rounded-lg border border-[var(--term-border)] bg-[var(--term-surface)] px-3 py-1.5 text-xs text-[var(--term-text-soft)] transition hover:bg-[#ede3d5]"
+                    className="rounded-lg border border-[var(--term-border)] bg-[var(--term-surface)] px-3 py-1.5 text-xs text-[var(--term-text-soft)] transition hover:bg-[var(--term-surface-hover)]"
                   >
                     cancel
                   </button>
