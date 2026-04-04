@@ -279,6 +279,7 @@ export class AgentService {
     this.syncRuntimeApiKeys()
 
     const { session } = await createAgentSession({
+      cwd: this.cwd,
       model,
       tools,
       customTools,
