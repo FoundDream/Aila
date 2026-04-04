@@ -1,5 +1,7 @@
 import type { ReactElement } from 'react'
 
+import { DragRegion } from '@/components/DragRegion'
+
 export function HeaderBar(): ReactElement {
-  return <header className="h-8 bg-[var(--term-bg)] pl-20 [-webkit-app-region:drag] select-none" />
+  return <DragRegion as="header" className="bg-[var(--term-bg)]" />
 }

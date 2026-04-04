@@ -1,6 +1,8 @@
 import type { FormEvent, ReactElement } from 'react'
 import { useState } from 'react'
 
+import { SettingsSectionHeading } from '@/pages/settings/components/SettingsSectionHeading'
+
 interface WebSearchData {
   hasTavilyApiKey: boolean
 }
@@ -46,9 +48,7 @@ export function WebSearchSettings({
 
   return (
     <section>
-      <h3 className="mb-2 text-[11px] uppercase tracking-wider text-[var(--term-dim)]">
-        Web Search
-      </h3>
+      <SettingsSectionHeading>Web Search</SettingsSectionHeading>
       <form
         onSubmit={(e) => void handleSubmit(e)}
         className="space-y-3 rounded-xl border border-[var(--term-border)] bg-[var(--term-surface)] p-4"

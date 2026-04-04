@@ -1,6 +1,8 @@
 import type { ReactElement } from 'react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
+import { DragRegion } from '@/components/DragRegion'
+
 interface SessionSummary {
   path: string
   id: string
@@ -156,7 +158,7 @@ export function SessionList({
   if (variant === 'panel') {
     return (
       <div className="flex h-full min-h-0 flex-col bg-[var(--term-panel)]">
-        <div className="h-8  pl-20 [-webkit-app-region:drag] select-none" />
+        <DragRegion />
 
         <div className="px-4 pb-4 [-webkit-app-region:no-drag]">
           {onNewSession && (

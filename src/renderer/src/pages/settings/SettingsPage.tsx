@@ -1,8 +1,11 @@
 import type { ReactElement } from 'react'
 import { useCallback, useEffect, useState } from 'react'
 
+import { DragRegion } from '@/components/DragRegion'
 import { MemorySettings } from '@/pages/settings/components/MemorySettings'
 import { ProviderForm } from '@/pages/settings/components/ProviderForm'
+import { SettingsAccordionItem } from '@/pages/settings/components/SettingsAccordionItem'
+import { SettingsSectionHeading } from '@/pages/settings/components/SettingsSectionHeading'
 import { WebSearchSettings } from '@/pages/settings/components/WebSearchSettings'
 
 interface ProviderData {
@@ -30,11 +33,7 @@ interface WebSearchData {
 
 type SettingsSection = 'model' | 'memory' | 'websearch'
 
-export function SettingsPage({
-  onBack,
-}: {
-  onBack: () => void
-}): ReactElement {
+export function SettingsPage({ onBack }: { onBack: () => void }): ReactElement {
   const [providers, setProviders] = useState<ProviderData[]>([])
   const [webSearch, setWebSearch] = useState<WebSearchData | null>(null)
   const [expandedId, setExpandedId] = useState<string | null>(null)
@@ -65,27 +64,29 @@ export function SettingsPage({
 
   const configured = providers.filter((provider) => provider.hasApiKey)
   const unconfigured = providers.filter((provider) => !provider.hasApiKey && provider.isBuiltIn)
+  const toggleExpanded = (providerId: string): void => {
+    setExpandedId((current) => (current === providerId ? null : providerId))
+  }
 
   const renderModelSection = (): ReactElement => (
     <div className="min-w-0">
       {configured.length > 0 && (
         <section className="mb-5">
-          <h3 className="mb-2 text-[11px] uppercase tracking-wider text-[var(--term-dim)]">
-            Configured
-          </h3>
+          <SettingsSectionHeading>Configured</SettingsSectionHeading>
           <div className="space-y-1.5">
             {configured.map((provider) => (
-              <div key={provider.id}>
-                <button
-                  type="button"
-                  onClick={() => setExpandedId(expandedId === provider.id ? null : provider.id)}
-                  className="flex w-full items-center justify-between rounded-xl border border-[var(--term-border)] bg-[var(--term-surface)] px-3 py-3 text-left text-xs transition hover:bg-[var(--term-surface-soft)]"
-                >
+              <SettingsAccordionItem
+                key={provider.id}
+                expanded={expandedId === provider.id}
+                onToggle={() => toggleExpanded(provider.id)}
+                header={
                   <div className="flex items-center gap-2">
                     <span className="h-1.5 w-1.5 rounded-full bg-[var(--term-cyan)]" />
                     <span className="text-[var(--term-text)]">{provider.displayName}</span>
                     <span className="text-[var(--term-dim)]">{provider.models.length} models</span>
                   </div>
+                }
+                trailing={
                   <svg
                     width="12"
                     height="12"
@@ -97,28 +98,25 @@ export function SettingsPage({
                   >
                     <path d="M6 9l6 6 6-6" />
                   </svg>
-                </button>
-                {expandedId === provider.id && (
-                  <div className="mt-2">
-                    <ProviderForm
-                      provider={provider}
-                      onSave={async (updated) => {
-                        await window.api.saveProvider(updated)
-                        void loadProviders()
-                      }}
-                      onDelete={
-                        provider.isBuiltIn
-                          ? undefined
-                          : async () => {
-                              await window.api.deleteProvider(provider.id)
-                              setExpandedId(null)
-                              void loadProviders()
-                            }
-                      }
-                    />
-                  </div>
-                )}
-              </div>
+                }
+              >
+                <ProviderForm
+                  provider={provider}
+                  onSave={async (updated) => {
+                    await window.api.saveProvider(updated)
+                    void loadProviders()
+                  }}
+                  onDelete={
+                    provider.isBuiltIn
+                      ? undefined
+                      : async () => {
+                          await window.api.deleteProvider(provider.id)
+                          setExpandedId(null)
+                          void loadProviders()
+                        }
+                  }
+                />
+              </SettingsAccordionItem>
             ))}
           </div>
         </section>
@@ -126,32 +124,28 @@ export function SettingsPage({
 
       {unconfigured.length > 0 && (
         <section className="mb-5">
-          <h3 className="mb-2 text-[11px] uppercase tracking-wider text-[var(--term-dim)]">
+          <SettingsSectionHeading>
             {configured.length === 0 ? 'Add an API key to get started' : 'Available'}
-          </h3>
+          </SettingsSectionHeading>
           <div className="space-y-1.5">
             {unconfigured.map((provider) => (
-              <div key={provider.id}>
-                <button
-                  type="button"
-                  onClick={() => setExpandedId(expandedId === provider.id ? null : provider.id)}
-                  className="flex w-full items-center justify-between rounded-xl border border-[var(--term-border)] bg-[var(--term-surface)] px-3 py-3 text-left text-xs transition hover:bg-[var(--term-surface-soft)]"
-                >
+              <SettingsAccordionItem
+                key={provider.id}
+                expanded={expandedId === provider.id}
+                onToggle={() => toggleExpanded(provider.id)}
+                header={
                   <span className="text-[var(--term-text-soft)]">{provider.displayName}</span>
-                  <span className="text-[var(--term-dim)]">+ add key</span>
-                </button>
-                {expandedId === provider.id && (
-                  <div className="mt-2">
-                    <ProviderForm
-                      provider={provider}
-                      onSave={async (updated) => {
-                        await window.api.saveProvider(updated)
-                        void loadProviders()
-                      }}
-                    />
-                  </div>
-                )}
-              </div>
+                }
+                trailing={<span className="text-[var(--term-dim)]">+ add key</span>}
+              >
+                <ProviderForm
+                  provider={provider}
+                  onSave={async (updated) => {
+                    await window.api.saveProvider(updated)
+                    void loadProviders()
+                  }}
+                />
+              </SettingsAccordionItem>
             ))}
           </div>
         </section>
@@ -192,7 +186,7 @@ export function SettingsPage({
   return (
     <div className="flex h-full bg-[var(--term-bg)] text-[var(--term-text)]">
       <aside className="flex h-full w-[236px] shrink-0 flex-col overflow-hidden border-r border-[var(--term-border)] bg-[linear-gradient(180deg,#eef3f9_0%,#e7edf6_100%)]">
-        <div className="h-8 pl-20 [-webkit-app-region:drag] select-none" />
+        <DragRegion />
 
         <div className="border-b border-[var(--term-border)] px-4 py-4 sm:px-5 sm:py-5">
           <div className="text-[11px] uppercase tracking-[0.22em] text-[var(--term-blue-strong)]">
@@ -242,7 +236,7 @@ export function SettingsPage({
       </aside>
 
       <section className="flex min-w-0 flex-1 flex-col">
-        <div className="h-8 bg-[var(--term-bg)] pl-20 [-webkit-app-region:drag] select-none" />
+        <DragRegion className="bg-[var(--term-bg)]" />
 
         <div className="flex items-start justify-between border-b border-[var(--term-border)] bg-[var(--term-surface-soft)] px-4 py-4 sm:px-5 sm:py-5 md:px-6">
           <div>
