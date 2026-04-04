@@ -32,12 +32,16 @@ export function BlockView({ block }: { block: Block }): ReactElement | null {
             viewBox="0 0 16 16"
             fill="currentColor"
           >
-            <path d="M6 4l4 4-4 4" />
+          <path d="M6 4l4 4-4 4" />
           </svg>
           thinking...
         </summary>
-        <div className="mt-2 border-l border-[var(--term-border-strong)] pl-3 text-[12px] leading-relaxed text-[var(--term-text-soft)]">
-          {block.content}
+        <div className="mt-2 border-l border-[var(--term-border-strong)] pl-3">
+          <div className="markdown-body text-[12px] leading-relaxed text-[var(--term-text-soft)]">
+            <ReactMarkdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins}>
+              {block.content}
+            </ReactMarkdown>
+          </div>
         </div>
       </details>
     )
