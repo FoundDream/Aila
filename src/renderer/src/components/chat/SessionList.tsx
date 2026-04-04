@@ -156,10 +156,9 @@ export function SessionList({
   if (variant === 'panel') {
     return (
       <div className="flex h-full min-h-0 flex-col bg-[var(--term-panel)]">
-        <div
-          className="px-4 pb-4 pt-5
-        "
-        >
+        <div className="h-11 border-b border-[var(--term-border)] pl-20 [-webkit-app-region:drag] select-none" />
+
+        <div className="px-4 pb-4 pt-4 [-webkit-app-region:no-drag]">
           {onNewSession && (
             <button
               type="button"
