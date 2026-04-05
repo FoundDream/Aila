@@ -14,7 +14,10 @@ export function ChatTranscript({
   scrollRef: RefObject<HTMLDivElement | null>
 }): ReactElement {
   return (
-    <main ref={scrollRef} className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 py-4">
+    <main
+      ref={scrollRef}
+      className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 py-4 [scrollbar-gutter:stable]"
+    >
       {messages.length === 0 ? (
         <EmptyState />
       ) : (
