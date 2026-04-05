@@ -6,6 +6,7 @@ import remarkGfm from 'remark-gfm'
 
 import type { Block } from '@/types/chat'
 import { formatArgs } from '@/utils/formatArgs'
+import { normalizeMarkdown } from '@/utils/normalizeMarkdown'
 
 const remarkPlugins = [remarkGfm]
 const rehypePlugins = [rehypeHighlight]
@@ -35,6 +36,8 @@ export function BlockView({
   const [expanded, setExpanded] = useState(false)
 
   if (block.type === 'text') {
+    const normalizedContent = normalizeMarkdown(block.content)
+
     return (
       <div className="markdown-body text-[13px] text-[var(--term-text)]">
         <ReactMarkdown
@@ -42,13 +45,15 @@ export function BlockView({
           rehypePlugins={rehypePlugins}
           components={markdownComponents}
         >
-          {block.content}
+          {normalizedContent}
         </ReactMarkdown>
       </div>
     )
   }
 
   if (block.type === 'thinking') {
+    const normalizedContent = normalizeMarkdown(block.content)
+
     return (
       <details className="group">
         <summary className="flex cursor-pointer items-center gap-1.5 text-[11px] text-[var(--term-dim)] transition select-none hover:text-[var(--term-text-soft)]">
@@ -68,7 +73,7 @@ export function BlockView({
               rehypePlugins={rehypePlugins}
               components={markdownComponents}
             >
-              {block.content}
+              {normalizedContent}
             </ReactMarkdown>
           </div>
         </div>
