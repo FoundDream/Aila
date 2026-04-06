@@ -1,3 +1,10 @@
+export interface ImageAttachment {
+  id: string
+  data: string
+  mimeType: string
+  name?: string
+}
+
 export type Block =
   | { type: 'text'; content: string }
   | { type: 'thinking'; content: string }
@@ -17,13 +24,18 @@ export interface Message {
   id: string
   role: 'user' | 'assistant'
   content?: string
+  images?: ImageAttachment[]
   blocks?: Block[]
   status?: MessageStatus
 }
 
-export interface QueuedPromptDraft {
-  id: string
+export interface PromptDraftValue {
   text: string
+  images: ImageAttachment[]
+}
+
+export interface QueuedPromptDraft extends PromptDraftValue {
+  id: string
 }
 
 export type SessionRunStatus = 'idle' | 'running' | 'error'
@@ -51,4 +63,5 @@ export interface ChatSessionState {
 
 export interface ChatConfig {
   hasApiKey: boolean
+  activeModelSupportsImages: boolean
 }

@@ -99,20 +99,39 @@ function ensureAgentService(): AgentService {
   return agentService
 }
 
+function getActiveModelSupportsImages(): boolean {
+  const model = registry.createActiveModel()
+  if ('error' in model) {
+    return false
+  }
+
+  return model.input.includes('image')
+}
+
 function registerIpcHandlers(): void {
   // --- Agent session handlers (existing) ---
 
-  ipcMain.handle('agent:prompt', async (_event, sessionId: string, text: string) => {
-    try {
-      return await ensureAgentService().prompt(sessionId, text)
-    } catch (err) {
-      mainWindow?.webContents.send('agent:error', {
-        sessionId,
-        message: err instanceof Error ? err.message : String(err),
-      })
-      throw err
-    }
-  })
+  ipcMain.handle(
+    'agent:prompt',
+    async (
+      _event,
+      sessionId: string,
+      prompt: {
+        text: string
+        images?: Array<{ id: string; data: string; mimeType: string; name?: string }>
+      },
+    ) => {
+      try {
+        return await ensureAgentService().prompt(sessionId, prompt.text, prompt.images ?? [])
+      } catch (err) {
+        mainWindow?.webContents.send('agent:error', {
+          sessionId,
+          message: err instanceof Error ? err.message : String(err),
+        })
+        throw err
+      }
+    },
+  )
 
   ipcMain.handle('agent:abort', async (_event, sessionId: string) => {
     return await ensureAgentService().abort(sessionId)
@@ -139,14 +158,25 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle(
     'agent:edit-queued-prompt',
-    async (_event, sessionId: string, promptId: string, currentDraft: string) => {
+    async (
+      _event,
+      sessionId: string,
+      promptId: string,
+      currentDraft: {
+        text: string
+        images: Array<{ id: string; data: string; mimeType: string; name?: string }>
+      },
+    ) => {
       return ensureAgentService().editQueuedPrompt(sessionId, promptId, currentDraft)
     },
   )
 
-  ipcMain.handle('agent:remove-queued-prompt', async (_event, sessionId: string, promptId: string) => {
-    return ensureAgentService().removeQueuedPrompt(sessionId, promptId)
-  })
+  ipcMain.handle(
+    'agent:remove-queued-prompt',
+    async (_event, sessionId: string, promptId: string) => {
+      return ensureAgentService().removeQueuedPrompt(sessionId, promptId)
+    },
+  )
 
   ipcMain.handle('shell:open-external', async (_event, url: string) => {
     await openExternalUrl(url)
@@ -162,6 +192,7 @@ function registerIpcHandlers(): void {
   ipcMain.handle('agent:get-config', () => {
     return {
       hasApiKey: configService.getProviders().some((p) => p.apiKey),
+      activeModelSupportsImages: getActiveModelSupportsImages(),
     }
   })
 
@@ -298,6 +329,7 @@ function registerIpcHandlers(): void {
         name: m.name,
         toolUse: m.toolUse,
         reasoning: m.reasoning,
+        supportsImageInput: Boolean(m.supportsImageInput),
         contextWindow: m.contextWindow,
       })),
     }))

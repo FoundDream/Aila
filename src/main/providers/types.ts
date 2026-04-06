@@ -9,6 +9,7 @@ export interface ModelConfig {
   name: string
   toolUse: boolean
   reasoning: boolean
+  supportsImageInput: boolean
   contextWindow: number
   maxTokens: number
 }
@@ -17,6 +18,7 @@ export interface ModelConfig {
 export const CUSTOM_MODEL_DEFAULTS: Omit<ModelConfig, 'id' | 'name'> = {
   toolUse: false,
   reasoning: false,
+  supportsImageInput: false,
   contextWindow: 8192,
   maxTokens: 4096,
 }

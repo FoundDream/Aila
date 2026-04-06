@@ -36,6 +36,8 @@ export class ProviderRegistry {
     let contextWindow = modelConfig?.contextWindow ?? CUSTOM_MODEL_DEFAULTS.contextWindow
     let maxTokens = modelConfig?.maxTokens ?? CUSTOM_MODEL_DEFAULTS.maxTokens
     let reasoning = modelConfig?.reasoning ?? CUSTOM_MODEL_DEFAULTS.reasoning
+    let supportsImageInput =
+      modelConfig?.supportsImageInput ?? CUSTOM_MODEL_DEFAULTS.supportsImageInput
 
     if (provider.isBuiltIn) {
       try {
@@ -44,10 +46,16 @@ export class ProviderRegistry {
           contextWindow = piModel.contextWindow
           maxTokens = piModel.maxTokens
           reasoning = piModel.reasoning
+          supportsImageInput = piModel.input.includes('image')
         }
       } catch {
         // Model not in pi-ai registry — use our config values or defaults
       }
+    }
+
+    const input: ('text' | 'image')[] = ['text']
+    if (supportsImageInput) {
+      input.push('image')
     }
 
     return {
@@ -57,7 +65,7 @@ export class ProviderRegistry {
       provider: provider.provider,
       baseUrl: provider.baseUrl,
       reasoning,
-      input: ['text', 'image'] as ('text' | 'image')[],
+      input,
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       contextWindow,
       maxTokens,

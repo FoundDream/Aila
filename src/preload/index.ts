@@ -11,18 +11,31 @@ function onChannel<T = void>(channel: string, callback: Callback<T>): () => void
 
 contextBridge.exposeInMainWorld('api', {
   // --- Agent session (existing) ---
-  prompt: (sessionId: string, text: string) => ipcRenderer.invoke('agent:prompt', sessionId, text),
+  prompt: (
+    sessionId: string,
+    prompt: {
+      text: string
+      images?: Array<{ id: string; data: string; mimeType: string; name?: string }>
+    },
+  ) => ipcRenderer.invoke('agent:prompt', sessionId, prompt),
   abort: (sessionId: string) => ipcRenderer.invoke('agent:abort', sessionId),
   newSession: () => ipcRenderer.invoke('agent:new-session'),
-  getConfig: (): Promise<{ hasApiKey: boolean }> => ipcRenderer.invoke('agent:get-config'),
+  getConfig: (): Promise<{ hasApiKey: boolean; activeModelSupportsImages: boolean }> =>
+    ipcRenderer.invoke('agent:get-config'),
 
   // Session persistence
   listSessions: () => ipcRenderer.invoke('agent:list-sessions'),
   openSession: (target: { runtimeId?: string | null; path?: string | null }) =>
     ipcRenderer.invoke('agent:open-session', target),
   getSessionState: (sessionId: string) => ipcRenderer.invoke('agent:get-session-state', sessionId),
-  editQueuedPrompt: (sessionId: string, promptId: string, currentDraft: string) =>
-    ipcRenderer.invoke('agent:edit-queued-prompt', sessionId, promptId, currentDraft),
+  editQueuedPrompt: (
+    sessionId: string,
+    promptId: string,
+    currentDraft: {
+      text: string
+      images: Array<{ id: string; data: string; mimeType: string; name?: string }>
+    },
+  ) => ipcRenderer.invoke('agent:edit-queued-prompt', sessionId, promptId, currentDraft),
   removeQueuedPrompt: (sessionId: string, promptId: string) =>
     ipcRenderer.invoke('agent:remove-queued-prompt', sessionId, promptId),
   openExternal: (url: string): Promise<void> => ipcRenderer.invoke('shell:open-external', url),
@@ -41,8 +54,7 @@ contextBridge.exposeInMainWorld('api', {
       name: string
       args: Record<string, unknown>
     }) => void,
-  ) =>
-    onChannel('agent:tool-start', cb),
+  ) => onChannel('agent:tool-start', cb),
   onToolEnd: (
     cb: (data: {
       sessionId: string
@@ -51,8 +63,7 @@ contextBridge.exposeInMainWorld('api', {
       result: string
       isError: boolean
     }) => void,
-  ) =>
-    onChannel('agent:tool-end', cb),
+  ) => onChannel('agent:tool-end', cb),
   onComplete: (cb: (data: { sessionId: string }) => void) => onChannel('agent:complete', cb),
   onError: (cb: (data: { sessionId: string; message: string }) => void) =>
     onChannel('agent:error', cb),

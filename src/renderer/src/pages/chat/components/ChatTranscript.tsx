@@ -30,7 +30,9 @@ export function ChatTranscript({
       <div className="pb-4">
         <MessageRow
           message={message}
-          isStreaming={isStreaming && message.role === 'assistant' && message.status === 'streaming'}
+          isStreaming={
+            isStreaming && message.role === 'assistant' && message.status === 'streaming'
+          }
         />
       </div>
     ),
@@ -70,11 +72,7 @@ function ListContainer({
   ...props
 }: React.HTMLAttributes<HTMLDivElement>): ReactElement {
   return (
-    <div
-      {...props}
-      style={style}
-      className="mx-auto w-full max-w-3xl px-4 pt-4"
-    >
+    <div {...props} style={style} className="mx-auto w-full max-w-3xl px-4 pt-4">
       {children}
     </div>
   )

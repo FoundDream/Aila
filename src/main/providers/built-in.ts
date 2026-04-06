@@ -48,6 +48,7 @@ function toModelConfig(m: Model<Api>): ModelConfig {
     name: m.name,
     toolUse: true, // All built-in provider models support tool use
     reasoning: m.reasoning,
+    supportsImageInput: m.input.includes('image'),
     contextWindow: m.contextWindow,
     maxTokens: m.maxTokens,
   }

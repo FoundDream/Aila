@@ -2,6 +2,7 @@ import type { ReactElement } from 'react'
 import { memo } from 'react'
 
 import { BlockView } from '@/pages/chat/components/BlockView'
+import { ImageAttachmentStrip } from '@/pages/chat/components/ImageAttachmentStrip'
 import { WaitingIndicator } from '@/pages/chat/components/WaitingIndicator'
 import type { Message } from '@/types/chat'
 
@@ -17,8 +18,13 @@ export const MessageRow = memo(function MessageRow({
       <div className="message-enter">
         <div className="flex gap-2">
           <span className="shrink-0 text-[var(--term-blue)]">&gt;</span>
-          <div className="min-w-0 flex-1 whitespace-pre-wrap break-words text-[13px] text-[var(--term-text)]">
-            {message.content}
+          <div className="min-w-0 flex-1 space-y-2">
+            {message.content && (
+              <div className="whitespace-pre-wrap break-words text-[13px] text-[var(--term-text)]">
+                {message.content}
+              </div>
+            )}
+            <ImageAttachmentStrip images={message.images ?? []} />
           </div>
         </div>
       </div>

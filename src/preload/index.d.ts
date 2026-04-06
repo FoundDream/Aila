@@ -10,6 +10,13 @@ interface SessionSummary {
   queuedCount: number
 }
 
+interface SessionImageAttachment {
+  id: string
+  data: string
+  mimeType: string
+  name?: string
+}
+
 interface SessionBlockText {
   type: 'text'
   content: string
@@ -36,6 +43,7 @@ interface SessionMessage {
   id: string
   role: 'user' | 'assistant'
   content?: string
+  images?: SessionImageAttachment[]
   blocks?: SessionBlock[]
   status?: 'queued' | 'streaming' | 'done'
 }
@@ -45,7 +53,7 @@ interface SessionState {
   sessionPath: string | null
   messages: SessionMessage[]
   isStreaming: boolean
-  queuedPrompts: Array<{ id: string; text: string }>
+  queuedPrompts: Array<{ id: string; text: string; images: SessionImageAttachment[] }>
   status: 'idle' | 'running' | 'error'
 }
 
@@ -62,25 +70,35 @@ interface PreferenceMemorySummary {
 
 interface AgentAPI {
   // Agent session
-  prompt: (sessionId: string, text: string) => Promise<SessionState>
+  prompt: (
+    sessionId: string,
+    prompt: { text: string; images?: SessionImageAttachment[] },
+  ) => Promise<SessionState>
   abort: (sessionId: string) => Promise<SessionState>
   newSession: () => Promise<SessionState>
-  getConfig: () => Promise<{ hasApiKey: boolean }>
+  getConfig: () => Promise<{ hasApiKey: boolean; activeModelSupportsImages: boolean }>
 
   // Session persistence
   listSessions: () => Promise<SessionSummary[]>
-  openSession: (target: { runtimeId?: string | null; path?: string | null }) => Promise<SessionState>
+  openSession: (target: {
+    runtimeId?: string | null
+    path?: string | null
+  }) => Promise<SessionState>
   getSessionState: (sessionId: string) => Promise<SessionState>
   editQueuedPrompt: (
     sessionId: string,
     promptId: string,
-    currentDraft: string,
-  ) => Promise<{ nextInput: string | null; snapshot: SessionState }>
+    currentDraft: { text: string; images: SessionImageAttachment[] },
+  ) => Promise<{
+    nextInput: { text: string; images: SessionImageAttachment[] } | null
+    snapshot: SessionState
+  }>
   removeQueuedPrompt: (sessionId: string, promptId: string) => Promise<SessionState>
   openExternal: (url: string) => Promise<void>
-  deleteSession: (
-    target: { runtimeId?: string | null; path?: string | null },
-  ) => Promise<{ deletedRuntimeId: string | null }>
+  deleteSession: (target: {
+    runtimeId?: string | null
+    path?: string | null
+  }) => Promise<{ deletedRuntimeId: string | null }>
 
   // Agent push events
   onTextDelta: (cb: (data: { sessionId: string; delta: string }) => void) => () => void

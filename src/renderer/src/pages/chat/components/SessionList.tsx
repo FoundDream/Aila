@@ -157,12 +157,7 @@ export function SessionList({
     <div className="flex h-full min-h-0 flex-col bg-[var(--term-panel)]">
       <div className="px-4 pb-4 pt-3 [-webkit-app-region:no-drag]">
         {onNewSession && (
-          <Button
-            onClick={() => void onNewSession()}
-            variant="secondary"
-            size="md"
-            fullWidth
-          >
+          <Button onClick={() => void onNewSession()} variant="secondary" size="md" fullWidth>
             + new session
           </Button>
         )}

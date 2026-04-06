@@ -8,6 +8,7 @@ interface ModelEntry {
   name: string
   toolUse: boolean
   reasoning: boolean
+  supportsImageInput: boolean
   contextWindow: number
 }
 
@@ -183,6 +184,7 @@ export function ModelSelector({
                     </span>
                     <span className="flex-1 truncate">{model.name}</span>
                     <div className="flex gap-1 text-[10px] text-[var(--term-dim)]">
+                      {model.supportsImageInput && <span>vision</span>}
                       {model.toolUse && <span>tools</span>}
                       {model.reasoning && <span>think</span>}
                       <span>{formatContext(model.contextWindow)}</span>

@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
-import type { ChatConfig, ChatSessionState, Message, QueuedPromptDraft, SessionSummary } from '@/types/chat'
+import type {
+  ChatConfig,
+  ChatSessionState,
+  Message,
+  PromptDraftValue,
+  QueuedPromptDraft,
+  SessionSummary,
+} from '@/types/chat'
 
 interface UseAgentChatResult {
   activeSessionId: string | null
@@ -10,8 +17,11 @@ interface UseAgentChatResult {
   queuedCount: number
   queuedPrompts: QueuedPromptDraft[]
   handleAbort: () => Promise<void>
-  handleSubmitPrompt: (text: string) => Promise<boolean>
-  handleEditQueuedPrompt: (promptId: string, currentDraft: string) => Promise<string | null>
+  handleSubmitPrompt: (draft: PromptDraftValue) => Promise<boolean>
+  handleEditQueuedPrompt: (
+    promptId: string,
+    currentDraft: PromptDraftValue,
+  ) => Promise<PromptDraftValue | null>
   handleRemoveQueuedPrompt: (promptId: string) => Promise<void>
   handleNewSession: () => Promise<void>
   handleOpenSession: (session: SessionSummary) => Promise<void>
@@ -23,9 +33,13 @@ function cloneMessageState(state: ChatSessionState): ChatSessionState {
     ...state,
     messages: state.messages.map((message) => ({
       ...message,
+      images: message.images ? message.images.map((image) => ({ ...image })) : undefined,
       blocks: message.blocks ? [...message.blocks] : undefined,
     })),
-    queuedPrompts: state.queuedPrompts.map((prompt) => ({ ...prompt })),
+    queuedPrompts: state.queuedPrompts.map((prompt) => ({
+      ...prompt,
+      images: prompt.images.map((image) => ({ ...image })),
+    })),
   }
 }
 
@@ -48,14 +62,17 @@ export function useAgentChat(): UseAgentChatResult {
     setActiveSession(cloneMessageState(state))
   }, [])
 
-  const updateActiveSession = useCallback((updater: (state: ChatSessionState) => ChatSessionState) => {
-    setActiveSession((previous) => {
-      if (!previous) return previous
-      const next = updater(previous)
-      activeSessionIdRef.current = next.sessionId
-      return next
-    })
-  }, [])
+  const updateActiveSession = useCallback(
+    (updater: (state: ChatSessionState) => ChatSessionState) => {
+      setActiveSession((previous) => {
+        if (!previous) return previous
+        const next = updater(previous)
+        activeSessionIdRef.current = next.sessionId
+        return next
+      })
+    },
+    [],
+  )
 
   const updateCurrentAssistantBlocks = useCallback(
     (updater: (blocks: NonNullable<Message['blocks']>) => NonNullable<Message['blocks']>) => {
@@ -207,12 +224,19 @@ export function useAgentChat(): UseAgentChatResult {
       for (const cleanup of cleanups) cleanup()
       cancelPendingRaf()
     }
-  }, [applyActiveSession, cancelPendingRaf, flushPendingDeltas, scheduleFlush, updateCurrentAssistantBlocks])
+  }, [
+    applyActiveSession,
+    cancelPendingRaf,
+    flushPendingDeltas,
+    scheduleFlush,
+    updateCurrentAssistantBlocks,
+  ])
 
   const handleSubmitPrompt = useCallback(
-    async (rawText: string) => {
-      const text = rawText.trim()
-      if (!text) return false
+    async (draft: PromptDraftValue) => {
+      const text = draft.text.trim()
+      const images = draft.images.map((image) => ({ ...image }))
+      if (!text && images.length === 0) return false
 
       let sessionId = activeSessionIdRef.current
 
@@ -222,7 +246,7 @@ export function useAgentChat(): UseAgentChatResult {
         sessionId = created.sessionId
       }
 
-      const nextState = await window.api.prompt(sessionId, text)
+      const nextState = await window.api.prompt(sessionId, { text, images })
       await loadSessionIntoView(nextState)
       return true
     },
@@ -253,21 +277,24 @@ export function useAgentChat(): UseAgentChatResult {
     [loadSessionIntoView],
   )
 
-  const handleDeleteSession = useCallback(async (session: SessionSummary) => {
-    const result = await window.api.deleteSession({
-      runtimeId: session.runtimeId,
-      path: session.path,
-    })
+  const handleDeleteSession = useCallback(
+    async (session: SessionSummary) => {
+      const result = await window.api.deleteSession({
+        runtimeId: session.runtimeId,
+        path: session.path,
+      })
 
-    if (result.deletedRuntimeId && result.deletedRuntimeId === activeSessionIdRef.current) {
-      cancelPendingRaf()
-      activeSessionIdRef.current = null
-      setActiveSession(null)
-    }
-  }, [cancelPendingRaf])
+      if (result.deletedRuntimeId && result.deletedRuntimeId === activeSessionIdRef.current) {
+        cancelPendingRaf()
+        activeSessionIdRef.current = null
+        setActiveSession(null)
+      }
+    },
+    [cancelPendingRaf],
+  )
 
   const handleEditQueuedPrompt = useCallback(
-    async (promptId: string, currentDraft: string) => {
+    async (promptId: string, currentDraft: PromptDraftValue) => {
       const sessionId = activeSessionIdRef.current
       if (!sessionId) return null
 

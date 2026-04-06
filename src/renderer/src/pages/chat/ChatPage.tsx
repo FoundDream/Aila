@@ -140,6 +140,7 @@ export function ChatPage({ onOpenSettings }: { onOpenSettings: () => void }): Re
               <ChatTranscript isStreaming={isStreaming} messages={messages} />
               <ChatComposer
                 key={activeSessionId ?? 'new-session'}
+                activeModelSupportsImages={config.activeModelSupportsImages}
                 isStreaming={isStreaming}
                 queuedCount={queuedCount}
                 queuedPrompts={queuedPrompts}

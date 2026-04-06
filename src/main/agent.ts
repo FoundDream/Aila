@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import type {
   Api,
   AssistantMessage,
+  ImageContent,
   Model,
   ToolResultMessage,
   UserMessage,
@@ -34,8 +35,16 @@ export interface UIMessage {
   id: string
   role: 'user' | 'assistant'
   content?: string
+  images?: UIImageAttachment[]
   blocks?: UIBlock[]
   status?: 'queued' | 'streaming' | 'done'
+}
+
+export interface UIImageAttachment {
+  id: string
+  data: string
+  mimeType: string
+  name?: string
 }
 
 export type UIBlock =
@@ -54,6 +63,7 @@ export type UIBlock =
 export interface QueuedPromptDraft {
   id: string
   text: string
+  images: UIImageAttachment[]
 }
 
 export interface SessionStateSnapshot {
@@ -94,6 +104,10 @@ function createMessageId(): string {
   return `msg-${crypto.randomUUID()}`
 }
 
+function createImageAttachmentId(): string {
+  return `img-${crypto.randomUUID()}`
+}
+
 function extractUserText(message: UserMessage): string {
   if (typeof message.content === 'string') {
     return message.content
@@ -103,6 +117,20 @@ function extractUserText(message: UserMessage): string {
     .filter((part) => part.type === 'text')
     .map((part) => part.text)
     .join('')
+}
+
+function extractUserImages(message: UserMessage): UIImageAttachment[] {
+  if (typeof message.content === 'string') {
+    return []
+  }
+
+  return message.content
+    .filter((part): part is ImageContent => part.type === 'image')
+    .map((part) => ({
+      id: createImageAttachmentId(),
+      data: part.data,
+      mimeType: part.mimeType,
+    }))
 }
 
 function buildUIMessagesFromSessionManager(sessionManager: SessionManager): UIMessage[] {
@@ -121,10 +149,13 @@ function buildUIMessagesFromSessionManager(sessionManager: SessionManager): UIMe
     if (!('role' in message)) continue
 
     if (message.role === 'user') {
+      const content = extractUserText(message as UserMessage)
+      const images = extractUserImages(message as UserMessage)
       uiMessages.push({
         id: createMessageId(),
         role: 'user',
-        content: extractUserText(message as UserMessage),
+        content,
+        images,
         status: 'done',
       })
       continue
@@ -217,10 +248,14 @@ class SessionController {
       sessionPath: this.sessionPath,
       messages: this.messages.map((message) => ({
         ...message,
+        images: message.images ? message.images.map((image) => ({ ...image })) : undefined,
         blocks: message.blocks ? [...message.blocks] : undefined,
       })),
       isStreaming: this.isStreaming,
-      queuedPrompts: this.queuedPrompts.map((prompt) => ({ ...prompt })),
+      queuedPrompts: this.queuedPrompts.map((prompt) => ({
+        ...prompt,
+        images: prompt.images.map((image) => ({ ...image })),
+      })),
       status: this.status,
     }
   }
@@ -234,19 +269,29 @@ class SessionController {
     messageCount: number
     firstMessage: string
   } {
-    const firstUserMessage = this.messages.find((message) => message.role === 'user')?.content ?? ''
+    const firstUserMessage = this.messages.find((message) => message.role === 'user')
+    const imageCount = firstUserMessage?.images?.length ?? 0
+    const firstMessage =
+      firstUserMessage?.content?.trim() ||
+      (imageCount > 0 ? `${imageCount} image${imageCount === 1 ? '' : 's'}` : '')
+
     return {
       modified: new Date().toISOString(),
       status: this.status,
       queuedCount: this.queuedPrompts.length,
       messageCount: this.messages.length,
-      firstMessage: firstUserMessage || 'New session',
+      firstMessage: firstMessage || 'New session',
     }
   }
 
-  async submitPrompt(text: string): Promise<SessionStateSnapshot> {
+  async submitPrompt(
+    text: string,
+    images: UIImageAttachment[] = [],
+  ): Promise<SessionStateSnapshot> {
     const trimmed = text.trim()
-    if (!trimmed) {
+    const nextImages = images.map((image) => ({ ...image }))
+
+    if (!trimmed && nextImages.length === 0) {
       return this.buildSnapshot()
     }
 
@@ -254,12 +299,13 @@ class SessionController {
       this.queuedPrompts.push({
         id: createMessageId(),
         text: trimmed,
+        images: nextImages,
       })
       this.registry.notifySessionStateChanged(this)
       return this.buildSnapshot()
     }
 
-    this.startPrompt(trimmed)
+    this.startPrompt(trimmed, nextImages)
     return this.buildSnapshot()
   }
 
@@ -272,24 +318,36 @@ class SessionController {
     await this.session.setModel(model)
   }
 
-  editQueuedPrompt(promptId: string, currentDraft: string): { nextInput: string | null; snapshot: SessionStateSnapshot } {
+  editQueuedPrompt(
+    promptId: string,
+    currentDraft: { text: string; images: UIImageAttachment[] },
+  ): {
+    nextInput: { text: string; images: UIImageAttachment[] } | null
+    snapshot: SessionStateSnapshot
+  } {
     const index = this.queuedPrompts.findIndex((prompt) => prompt.id === promptId)
     if (index < 0) {
       return { nextInput: null, snapshot: this.buildSnapshot() }
     }
 
     const [selected] = this.queuedPrompts.splice(index, 1)
-    const trimmedDraft = currentDraft.trim()
-    if (trimmedDraft) {
+    const trimmedDraft = currentDraft.text.trim()
+    if (trimmedDraft || currentDraft.images.length > 0) {
       this.queuedPrompts.splice(index, 0, {
         id: createMessageId(),
         text: trimmedDraft,
+        images: currentDraft.images.map((image) => ({ ...image })),
       })
     }
 
     this.registry.notifySessionStateChanged(this)
     return {
-      nextInput: selected?.text ?? null,
+      nextInput: selected
+        ? {
+            text: selected.text,
+            images: selected.images.map((image) => ({ ...image })),
+          }
+        : null,
       snapshot: this.buildSnapshot(),
     }
   }
@@ -310,7 +368,7 @@ class SessionController {
     this.unsubscribe = null
   }
 
-  private startPrompt(text: string): void {
+  private startPrompt(text: string, images: UIImageAttachment[]): void {
     const assistantId = createMessageId()
 
     this.isStreaming = true
@@ -320,6 +378,7 @@ class SessionController {
       id: createMessageId(),
       role: 'user',
       content: text,
+      images,
       status: 'done',
     })
     this.messages.push({
@@ -330,17 +389,23 @@ class SessionController {
     })
     this.registry.notifySessionStateChanged(this)
 
-    void this.runPrompt(text)
+    void this.runPrompt(text, images)
   }
 
-  private async runPrompt(text: string): Promise<void> {
+  private async runPrompt(text: string, images: UIImageAttachment[]): Promise<void> {
     try {
       const memoryContext = this.registry.memoryService.getPromptContext()
       this.setPromptMemoryContext(memoryContext.text)
       this.currentInjectedMemoryIds = memoryContext.ids
       this.activeTurn = { userText: text, assistantText: '' }
 
-      await this.session.prompt(text)
+      await this.session.prompt(text, {
+        images: images.map((image) => ({
+          type: 'image',
+          data: image.data,
+          mimeType: image.mimeType,
+        })),
+      })
 
       this.registry.memoryService.markApplied(this.currentInjectedMemoryIds)
 
@@ -392,7 +457,7 @@ class SessionController {
     const nextPrompt = this.queuedPrompts.shift()
     this.registry.notifySessionStateChanged(this)
     if (nextPrompt) {
-      this.startPrompt(nextPrompt.text)
+      this.startPrompt(nextPrompt.text, nextPrompt.images)
     }
   }
 
@@ -614,9 +679,13 @@ export class AgentService {
     return this.getController(sessionId).buildSnapshot()
   }
 
-  async prompt(sessionId: string, text: string): Promise<SessionStateSnapshot> {
+  async prompt(
+    sessionId: string,
+    text: string,
+    images: UIImageAttachment[] = [],
+  ): Promise<SessionStateSnapshot> {
     const controller = this.getController(sessionId)
-    const snapshot = await controller.submitPrompt(text)
+    const snapshot = await controller.submitPrompt(text, images)
     this.notifySessionStateChanged(controller)
     return snapshot
   }
@@ -631,8 +700,11 @@ export class AgentService {
   editQueuedPrompt(
     sessionId: string,
     promptId: string,
-    currentDraft: string,
-  ): { nextInput: string | null; snapshot: SessionStateSnapshot } {
+    currentDraft: { text: string; images: UIImageAttachment[] },
+  ): {
+    nextInput: { text: string; images: UIImageAttachment[] } | null
+    snapshot: SessionStateSnapshot
+  } {
     return this.getController(sessionId).editQueuedPrompt(promptId, currentDraft)
   }
 
@@ -689,7 +761,7 @@ export class AgentService {
   async deleteSession(target: SessionTarget): Promise<{ deletedRuntimeId: string | null }> {
     const runtimeId =
       target.runtimeId ??
-      (target.path ? this.findControllerByPath(target.path)?.sessionId ?? null : null)
+      (target.path ? (this.findControllerByPath(target.path)?.sessionId ?? null) : null)
 
     if (runtimeId) {
       const controller = this.controllers.get(runtimeId)
@@ -836,7 +908,9 @@ export class AgentService {
   }
 
   private findControllerByPath(sessionPath: string): SessionController | undefined {
-    return [...this.controllers.values()].find((controller) => controller.sessionPath === sessionPath)
+    return [...this.controllers.values()].find(
+      (controller) => controller.sessionPath === sessionPath,
+    )
   }
 
   private syncRuntimeApiKeys(): void {
