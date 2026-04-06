@@ -2,7 +2,6 @@ import type { ReactElement } from 'react'
 import { useCallback, useEffect, useState } from 'react'
 
 import { Button } from '@/components/Button'
-import { DragRegion } from '@/components/DragRegion'
 import type { SessionSummary } from '@/types/chat'
 
 function formatRelativeTime(isoString: string): string {
@@ -156,16 +155,13 @@ export function SessionList({
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-[var(--term-panel)]">
-      <DragRegion />
-
-      <div className="px-4 pb-4 [-webkit-app-region:no-drag]">
+      <div className="px-4 pb-4 pt-3 [-webkit-app-region:no-drag]">
         {onNewSession && (
           <Button
             onClick={() => void onNewSession()}
             variant="secondary"
             size="md"
             fullWidth
-            className="mt-4"
           >
             + new session
           </Button>
