@@ -10,15 +10,14 @@ import { SetupRequiredState } from '@/pages/chat/components/SetupRequiredState'
 
 export function ChatPage({ onOpenSettings }: { onOpenSettings: () => void }): ReactElement | null {
   const {
+    activeSessionId,
     config,
-    composerResetToken,
-    currentSessionPath,
     handleAbort,
     handleDeleteSession,
     handleEditQueuedPrompt,
     handleNewSession,
+    handleOpenSession,
     handleRemoveQueuedPrompt,
-    handleResumeSession,
     handleSubmitPrompt,
     isStreaming,
     messages,
@@ -37,9 +36,9 @@ export function ChatPage({ onOpenSettings }: { onOpenSettings: () => void }): Re
         <SessionList
           onNewSession={handleNewSession}
           onSettingsClick={onOpenSettings}
-          onResume={handleResumeSession}
+          onOpen={handleOpenSession}
           onDelete={handleDeleteSession}
-          currentSessionPath={currentSessionPath}
+          activeSessionId={activeSessionId}
         />
       </aside>
 
@@ -52,7 +51,7 @@ export function ChatPage({ onOpenSettings }: { onOpenSettings: () => void }): Re
           <>
             <ChatTranscript isStreaming={isStreaming} messages={messages} scrollRef={scrollRef} />
             <ChatComposer
-              key={composerResetToken}
+              key={activeSessionId ?? 'new-session'}
               isStreaming={isStreaming}
               queuedCount={queuedCount}
               queuedPrompts={queuedPrompts}

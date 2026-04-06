@@ -1,59 +1,145 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
-import type { Block, ChatConfig, Message, MessageStatus, QueuedPromptDraft } from '@/types/chat'
-
-interface QueuedPrompt extends QueuedPromptDraft {
-  assistantId: string
-}
+import type { ChatConfig, ChatSessionState, Message, QueuedPromptDraft, SessionSummary } from '@/types/chat'
 
 interface UseAgentChatResult {
+  activeSessionId: string | null
   config: ChatConfig | null
   messages: Message[]
   isStreaming: boolean
   queuedCount: number
   queuedPrompts: QueuedPromptDraft[]
-  currentSessionPath: string | null
-  composerResetToken: number
   handleAbort: () => Promise<void>
   handleSubmitPrompt: (text: string) => Promise<boolean>
-  handleEditQueuedPrompt: (promptId: string, currentDraft: string) => string | null
-  handleRemoveQueuedPrompt: (promptId: string) => void
+  handleEditQueuedPrompt: (promptId: string, currentDraft: string) => Promise<string | null>
+  handleRemoveQueuedPrompt: (promptId: string) => Promise<void>
   handleNewSession: () => Promise<void>
-  handleResumeSession: (sessionPath: string) => Promise<void>
-  handleDeleteSession: (sessionPath: string) => Promise<void>
+  handleOpenSession: (session: SessionSummary) => Promise<void>
+  handleDeleteSession: (session: SessionSummary) => Promise<void>
+}
+
+function cloneMessageState(state: ChatSessionState): ChatSessionState {
+  return {
+    ...state,
+    messages: state.messages.map((message) => ({
+      ...message,
+      blocks: message.blocks ? [...message.blocks] : undefined,
+    })),
+    queuedPrompts: state.queuedPrompts.map((prompt) => ({ ...prompt })),
+  }
 }
 
 export function useAgentChat(): UseAgentChatResult {
-  const [messages, setMessages] = useState<Message[]>([])
-  const [isStreaming, setIsStreaming] = useState(false)
-  const [queuedPrompts, setQueuedPrompts] = useState<QueuedPromptDraft[]>([])
   const [config, setConfig] = useState<ChatConfig | null>(null)
-  const [currentSessionPath, setCurrentSessionPath] = useState<string | null>(null)
-  const [composerResetToken, setComposerResetToken] = useState(0)
+  const [activeSession, setActiveSession] = useState<ChatSessionState | null>(null)
+  const activeSessionIdRef = useRef<string | null>(null)
 
-  const isStreamingRef = useRef(false)
-  const activeAssistantIdRef = useRef<string | null>(null)
-  const promptQueueRef = useRef<QueuedPrompt[]>([])
-  const processNextPromptRef = useRef<() => void>(() => {})
-
-  // --- rAF delta buffering ---
   const pendingTextRef = useRef('')
   const pendingThinkingRef = useRef('')
   const rafRef = useRef<number | null>(null)
 
-  const createMessageId = useCallback(() => `msg-${crypto.randomUUID()}`, [])
-  const queuedCount = queuedPrompts.length
-  const resetComposer = useCallback(() => {
-    setComposerResetToken((value) => value + 1)
-  }, [])
   const loadConfig = useCallback(async () => {
     const nextConfig = await window.api.getConfig()
     setConfig(nextConfig)
   }, [])
 
-  useEffect(() => {
-    isStreamingRef.current = isStreaming
-  }, [isStreaming])
+  const applyActiveSession = useCallback((state: ChatSessionState) => {
+    activeSessionIdRef.current = state.sessionId
+    setActiveSession(cloneMessageState(state))
+  }, [])
+
+  const updateActiveSession = useCallback((updater: (state: ChatSessionState) => ChatSessionState) => {
+    setActiveSession((previous) => {
+      if (!previous) return previous
+      const next = updater(previous)
+      activeSessionIdRef.current = next.sessionId
+      return next
+    })
+  }, [])
+
+  const updateCurrentAssistantBlocks = useCallback(
+    (updater: (blocks: NonNullable<Message['blocks']>) => NonNullable<Message['blocks']>) => {
+      updateActiveSession((state) => {
+        const assistantIndex = [...state.messages]
+          .reverse()
+          .findIndex((message) => message.role === 'assistant' && message.status === 'streaming')
+
+        if (assistantIndex < 0) return state
+
+        const targetIndex = state.messages.length - assistantIndex - 1
+        const nextMessages = state.messages.map((message, index) => {
+          if (index !== targetIndex || message.role !== 'assistant') return message
+          return {
+            ...message,
+            blocks: updater([...(message.blocks ?? [])]),
+          }
+        })
+
+        return {
+          ...state,
+          messages: nextMessages,
+        }
+      })
+    },
+    [updateActiveSession],
+  )
+
+  const flushPendingDeltas = useCallback(() => {
+    rafRef.current = null
+    const text = pendingTextRef.current
+    const thinking = pendingThinkingRef.current
+    pendingTextRef.current = ''
+    pendingThinkingRef.current = ''
+
+    if (!text && !thinking) return
+
+    updateCurrentAssistantBlocks((blocks) => {
+      let nextBlocks = blocks
+
+      if (thinking) {
+        const last = nextBlocks[nextBlocks.length - 1]
+        if (last?.type === 'thinking') {
+          nextBlocks = [...nextBlocks.slice(0, -1), { ...last, content: last.content + thinking }]
+        } else {
+          nextBlocks = [...nextBlocks, { type: 'thinking', content: thinking }]
+        }
+      }
+
+      if (text) {
+        const last = nextBlocks[nextBlocks.length - 1]
+        if (last?.type === 'text') {
+          nextBlocks = [...nextBlocks.slice(0, -1), { ...last, content: last.content + text }]
+        } else {
+          nextBlocks = [...nextBlocks, { type: 'text', content: text }]
+        }
+      }
+
+      return nextBlocks
+    })
+  }, [updateCurrentAssistantBlocks])
+
+  const scheduleFlush = useCallback(() => {
+    if (rafRef.current === null) {
+      rafRef.current = requestAnimationFrame(flushPendingDeltas)
+    }
+  }, [flushPendingDeltas])
+
+  const cancelPendingRaf = useCallback(() => {
+    if (rafRef.current !== null) {
+      cancelAnimationFrame(rafRef.current)
+      rafRef.current = null
+    }
+    pendingTextRef.current = ''
+    pendingThinkingRef.current = ''
+  }, [])
+
+  const loadSessionIntoView = useCallback(
+    async (session: ChatSessionState) => {
+      cancelPendingRaf()
+      applyActiveSession(session)
+    },
+    [applyActiveSession, cancelPendingRaf],
+  )
 
   useEffect(() => {
     void loadConfig()
@@ -65,216 +151,43 @@ export function useAgentChat(): UseAgentChatResult {
     return unsubscribe
   }, [loadConfig])
 
-  const updateAssistantMessage = useCallback(
-    (assistantId: string, updater: (message: Message) => Message) => {
-      setMessages((prev) =>
-        prev.map((message) =>
-          message.id === assistantId && message.role === 'assistant' ? updater(message) : message,
-        ),
-      )
-    },
-    [],
-  )
-
-  /** Apply a block-level updater to the current assistant message */
-  const updateCurrentAssistantBlocks = useCallback(
-    (updater: (blocks: Block[]) => Block[]) => {
-      const assistantId = activeAssistantIdRef.current
-      if (!assistantId) return
-
-      updateAssistantMessage(assistantId, (message) => ({
-        ...message,
-        blocks: updater(message.blocks ?? []),
-      }))
-    },
-    [updateAssistantMessage],
-  )
-
-  const setAssistantStatus = useCallback((assistantId: string, status: MessageStatus) => {
-    setMessages((prev) => {
-      let changed = false
-      const next = prev.map((message) => {
-        if (
-          message.id !== assistantId ||
-          message.role !== 'assistant' ||
-          message.status === status
-        ) {
-          return message
-        }
-        changed = true
-        return { ...message, status }
-      })
-      return changed ? next : prev
-    })
-  }, [])
-
-  const enqueuePrompt = useCallback((prompt: QueuedPrompt) => {
-    const nextQueue = [...promptQueueRef.current, prompt]
-    promptQueueRef.current = nextQueue
-    setQueuedPrompts(nextQueue.map(({ id, text }) => ({ id, text })))
-  }, [])
-
-  const dequeuePrompt = useCallback((): QueuedPrompt | null => {
-    const [nextPrompt, ...rest] = promptQueueRef.current
-    promptQueueRef.current = rest
-    setQueuedPrompts(rest.map(({ id, text }) => ({ id, text })))
-    return nextPrompt ?? null
-  }, [])
-
-  const clearQueuedPrompts = useCallback(() => {
-    promptQueueRef.current = []
-    setQueuedPrompts([])
-    activeAssistantIdRef.current = null
-    isStreamingRef.current = false
-  }, [])
-
-  /** Flush any buffered text/thinking deltas into state (one setState call) */
-  const flushPendingDeltas = useCallback(() => {
-    rafRef.current = null
-    const text = pendingTextRef.current
-    const thinking = pendingThinkingRef.current
-    pendingTextRef.current = ''
-    pendingThinkingRef.current = ''
-
-    if (!text && !thinking) return
-
-    updateCurrentAssistantBlocks((blocks) => {
-      let result = blocks
-
-      if (thinking) {
-        const last = result[result.length - 1]
-        if (last?.type === 'thinking') {
-          result = [...result.slice(0, -1), { ...last, content: last.content + thinking }]
-        } else {
-          result = [...result, { type: 'thinking', content: thinking }]
-        }
-      }
-
-      if (text) {
-        const last = result[result.length - 1]
-        if (last?.type === 'text') {
-          result = [...result.slice(0, -1), { ...last, content: last.content + text }]
-        } else {
-          result = [...result, { type: 'text', content: text }]
-        }
-      }
-
-      return result
-    })
-  }, [updateCurrentAssistantBlocks])
-
-  /** Schedule a rAF flush (no-op if one is already scheduled) */
-  const scheduleFlush = useCallback(() => {
-    if (rafRef.current === null) {
-      rafRef.current = requestAnimationFrame(flushPendingDeltas)
-    }
-  }, [flushPendingDeltas])
-
-  /** Force-flush pending deltas synchronously (used before tool events to preserve order) */
-  const forceFlush = useCallback(() => {
-    if (rafRef.current !== null) {
-      cancelAnimationFrame(rafRef.current)
-      rafRef.current = null
-    }
-    // Flush inline
-    const text = pendingTextRef.current
-    const thinking = pendingThinkingRef.current
-    if (text || thinking) {
-      pendingTextRef.current = ''
-      pendingThinkingRef.current = ''
-      updateCurrentAssistantBlocks((blocks) => {
-        let result = blocks
-        if (thinking) {
-          const last = result[result.length - 1]
-          if (last?.type === 'thinking') {
-            result = [...result.slice(0, -1), { ...last, content: last.content + thinking }]
-          } else {
-            result = [...result, { type: 'thinking', content: thinking }]
-          }
-        }
-        if (text) {
-          const last = result[result.length - 1]
-          if (last?.type === 'text') {
-            result = [...result.slice(0, -1), { ...last, content: last.content + text }]
-          } else {
-            result = [...result, { type: 'text', content: text }]
-          }
-        }
-        return result
-      })
-    }
-  }, [updateCurrentAssistantBlocks])
-
-  const cancelPendingRaf = useCallback(() => {
-    if (rafRef.current !== null) {
-      cancelAnimationFrame(rafRef.current)
-      rafRef.current = null
-    }
-    pendingTextRef.current = ''
-    pendingThinkingRef.current = ''
-  }, [])
-
-  const startPrompt = useCallback(
-    (prompt: QueuedPrompt) => {
-      activeAssistantIdRef.current = prompt.assistantId
-      isStreamingRef.current = true
-      setIsStreaming(true)
-      setMessages((prev) => [
-        ...prev,
-        { id: createMessageId(), role: 'user', content: prompt.text, status: 'done' },
-        { id: prompt.assistantId, role: 'assistant', blocks: [], status: 'streaming' },
-      ])
-
-      void window.api.prompt(prompt.text).catch((error) => {
-        updateAssistantMessage(prompt.assistantId, (message) => ({
-          ...message,
-          blocks: [
-            ...(message.blocks ?? []),
-            { type: 'text', content: `\nIPC Error: ${String(error)}` },
-          ],
-          status: 'done',
-        }))
-        activeAssistantIdRef.current = null
-        isStreamingRef.current = false
-        setIsStreaming(false)
-        processNextPromptRef.current()
-      })
-    },
-    [createMessageId, updateAssistantMessage],
-  )
-
-  const processNextPrompt = useCallback(() => {
-    if (isStreamingRef.current) return
-    const nextPrompt = dequeuePrompt()
-    if (!nextPrompt) return
-    startPrompt(nextPrompt)
-  }, [dequeuePrompt, startPrompt])
-
-  useEffect(() => {
-    processNextPromptRef.current = processNextPrompt
-  }, [processNextPrompt])
-
   useEffect(() => {
     const cleanups = [
-      window.api.onTextDelta((delta) => {
-        pendingTextRef.current += delta
+      window.api.onSessionState((state) => {
+        if (state.sessionId !== activeSessionIdRef.current) return
+        cancelPendingRaf()
+        applyActiveSession(state)
+      }),
+
+      window.api.onTextDelta((data) => {
+        if (data.sessionId !== activeSessionIdRef.current) return
+        pendingTextRef.current += data.delta
         scheduleFlush()
       }),
 
-      window.api.onThinkingDelta((delta) => {
-        pendingThinkingRef.current += delta
+      window.api.onThinkingDelta((data) => {
+        if (data.sessionId !== activeSessionIdRef.current) return
+        pendingThinkingRef.current += data.delta
         scheduleFlush()
       }),
 
       window.api.onToolStart((data) => {
-        forceFlush()
+        if (data.sessionId !== activeSessionIdRef.current) return
+        flushPendingDeltas()
         updateCurrentAssistantBlocks((blocks) => [
           ...blocks,
-          { type: 'tool', ...data, status: 'running' as const },
+          {
+            type: 'tool',
+            id: data.id,
+            name: data.name,
+            args: data.args,
+            status: 'running',
+          },
         ])
       }),
 
       window.api.onToolEnd((data) => {
+        if (data.sessionId !== activeSessionIdRef.current) return
         updateCurrentAssistantBlocks((blocks) =>
           blocks.map((block) =>
             block.type === 'tool' && block.id === data.id
@@ -282,39 +195,11 @@ export function useAgentChat(): UseAgentChatResult {
                   ...block,
                   result: data.result,
                   isError: data.isError,
-                  status: 'done' as const,
+                  status: 'done',
                 }
               : block,
           ),
         )
-      }),
-
-      window.api.onComplete(() => {
-        forceFlush()
-        const assistantId = activeAssistantIdRef.current
-        if (assistantId) {
-          setAssistantStatus(assistantId, 'done')
-        }
-        activeAssistantIdRef.current = null
-        isStreamingRef.current = false
-        setIsStreaming(false)
-        processNextPrompt()
-      }),
-
-      window.api.onError((data) => {
-        forceFlush()
-        updateCurrentAssistantBlocks((blocks) => [
-          ...blocks,
-          { type: 'text', content: `\nError: ${data.message}` },
-        ])
-      }),
-
-      window.api.onSessionReset(() => {
-        cancelPendingRaf()
-        clearQueuedPrompts()
-        setMessages([])
-        setIsStreaming(false)
-        resetComposer()
       }),
     ]
 
@@ -322,145 +207,101 @@ export function useAgentChat(): UseAgentChatResult {
       for (const cleanup of cleanups) cleanup()
       cancelPendingRaf()
     }
-  }, [
-    scheduleFlush,
-    forceFlush,
-    cancelPendingRaf,
-    clearQueuedPrompts,
-    processNextPrompt,
-    resetComposer,
-    setAssistantStatus,
-    updateCurrentAssistantBlocks,
-  ])
+  }, [applyActiveSession, cancelPendingRaf, flushPendingDeltas, scheduleFlush, updateCurrentAssistantBlocks])
 
   const handleSubmitPrompt = useCallback(
     async (rawText: string) => {
       const text = rawText.trim()
-      if (!text) {
-        return false
+      if (!text) return false
+
+      let sessionId = activeSessionIdRef.current
+
+      if (!sessionId) {
+        const created = await window.api.newSession()
+        await loadSessionIntoView(created)
+        sessionId = created.sessionId
       }
 
-      const prompt: QueuedPrompt = {
-        id: createMessageId(),
-        assistantId: createMessageId(),
-        text,
-      }
-
-      if (isStreamingRef.current || promptQueueRef.current.length > 0) {
-        enqueuePrompt(prompt)
-        return true
-      }
-
-      startPrompt(prompt)
+      const nextState = await window.api.prompt(sessionId, text)
+      await loadSessionIntoView(nextState)
       return true
     },
-    [createMessageId, enqueuePrompt, startPrompt],
+    [loadSessionIntoView],
   )
-
-  const handleEditQueuedPrompt = useCallback(
-    (promptId: string, currentDraft: string) => {
-      const promptIndex = promptQueueRef.current.findIndex((prompt) => prompt.id === promptId)
-      if (promptIndex < 0) return null
-
-      const queuedPrompt = promptQueueRef.current[promptIndex]
-      const rest = promptQueueRef.current.filter((prompt) => prompt.id !== promptId)
-      const trimmedDraft = currentDraft.trim()
-      if (trimmedDraft) {
-        rest.splice(promptIndex, 0, {
-          id: createMessageId(),
-          assistantId: createMessageId(),
-          text: trimmedDraft,
-        })
-      }
-
-      promptQueueRef.current = rest
-      setQueuedPrompts(rest.map(({ id, text }) => ({ id, text })))
-      return queuedPrompt.text
-    },
-    [createMessageId],
-  )
-
-  const handleRemoveQueuedPrompt = useCallback((promptId: string) => {
-    const rest = promptQueueRef.current.filter((prompt) => prompt.id !== promptId)
-    if (rest.length === promptQueueRef.current.length) return
-    promptQueueRef.current = rest
-    setQueuedPrompts(rest.map(({ id, text }) => ({ id, text })))
-  }, [])
 
   const handleAbort = useCallback(async () => {
-    await window.api.abort()
-  }, [])
+    const sessionId = activeSessionIdRef.current
+    if (!sessionId) return
+
+    const nextState = await window.api.abort(sessionId)
+    await loadSessionIntoView(nextState)
+  }, [loadSessionIntoView])
 
   const handleNewSession = useCallback(async () => {
-    clearQueuedPrompts()
-    await window.api.newSession()
-    setCurrentSessionPath(null)
-    resetComposer()
-  }, [clearQueuedPrompts, resetComposer])
+    const created = await window.api.newSession()
+    await loadSessionIntoView(created)
+  }, [loadSessionIntoView])
 
-  const handleResumeSession = useCallback(
-    async (sessionPath: string) => {
-      if (isStreaming || promptQueueRef.current.length > 0) return
-      try {
-        const restored = await window.api.resumeSession(sessionPath)
-        cancelPendingRaf()
-        clearQueuedPrompts()
-        setMessages(
-          (restored as Array<Omit<Message, 'id'> | Message>).map((message) => ({
-            ...message,
-            id: 'id' in message && typeof message.id === 'string' ? message.id : createMessageId(),
-            status: 'done',
-          })),
-        )
-        setIsStreaming(false)
-        setCurrentSessionPath(sessionPath)
-        resetComposer()
-      } catch (error) {
-        console.error('Failed to resume session:', error)
-      }
+  const handleOpenSession = useCallback(
+    async (session: SessionSummary) => {
+      const opened = await window.api.openSession({
+        runtimeId: session.runtimeId,
+        path: session.path,
+      })
+      await loadSessionIntoView(opened)
     },
-    [isStreaming, cancelPendingRaf, clearQueuedPrompts, createMessageId, resetComposer],
+    [loadSessionIntoView],
   )
 
-  const handleDeleteSession = useCallback(
-    async (sessionPath: string) => {
-      try {
-        await window.api.deleteSession(sessionPath)
-        // If we deleted the current session, the main process sends session-reset
-        // which clears messages via the onSessionReset listener
-        if (sessionPath === currentSessionPath) {
-          setCurrentSessionPath(null)
-        }
-      } catch (error) {
-        console.error('Failed to delete session:', error)
-      }
-    },
-    [currentSessionPath],
-  )
+  const handleDeleteSession = useCallback(async (session: SessionSummary) => {
+    const result = await window.api.deleteSession({
+      runtimeId: session.runtimeId,
+      path: session.path,
+    })
 
-  // Track current session path after first prompt
-  const prevMessagesLen = useRef(0)
-  useEffect(() => {
-    if (messages.length > 0 && prevMessagesLen.current === 0 && !currentSessionPath) {
-      void window.api.getCurrentSession().then(setCurrentSessionPath)
+    if (result.deletedRuntimeId && result.deletedRuntimeId === activeSessionIdRef.current) {
+      cancelPendingRaf()
+      activeSessionIdRef.current = null
+      setActiveSession(null)
     }
-    prevMessagesLen.current = messages.length
-  }, [messages.length, currentSessionPath])
+  }, [cancelPendingRaf])
+
+  const handleEditQueuedPrompt = useCallback(
+    async (promptId: string, currentDraft: string) => {
+      const sessionId = activeSessionIdRef.current
+      if (!sessionId) return null
+
+      const result = await window.api.editQueuedPrompt(sessionId, promptId, currentDraft)
+      await loadSessionIntoView(result.snapshot)
+      return result.nextInput
+    },
+    [loadSessionIntoView],
+  )
+
+  const handleRemoveQueuedPrompt = useCallback(
+    async (promptId: string) => {
+      const sessionId = activeSessionIdRef.current
+      if (!sessionId) return
+
+      const nextState = await window.api.removeQueuedPrompt(sessionId, promptId)
+      await loadSessionIntoView(nextState)
+    },
+    [loadSessionIntoView],
+  )
 
   return {
+    activeSessionId: activeSession?.sessionId ?? null,
     config,
-    messages,
-    isStreaming,
-    queuedCount,
-    queuedPrompts,
-    currentSessionPath,
-    composerResetToken,
+    messages: activeSession?.messages ?? [],
+    isStreaming: activeSession?.isStreaming ?? false,
+    queuedCount: activeSession?.queuedPrompts.length ?? 0,
+    queuedPrompts: activeSession?.queuedPrompts ?? [],
     handleAbort,
     handleSubmitPrompt,
     handleEditQueuedPrompt,
     handleRemoveQueuedPrompt,
     handleNewSession,
-    handleResumeSession,
+    handleOpenSession,
     handleDeleteSession,
   }
 }

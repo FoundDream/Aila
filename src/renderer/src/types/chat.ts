@@ -26,6 +26,29 @@ export interface QueuedPromptDraft {
   text: string
 }
 
+export type SessionRunStatus = 'idle' | 'running' | 'error'
+
+export interface SessionSummary {
+  id: string
+  runtimeId: string | null
+  path: string | null
+  name?: string
+  modified: string
+  messageCount: number
+  firstMessage: string
+  status: SessionRunStatus
+  queuedCount: number
+}
+
+export interface ChatSessionState {
+  sessionId: string
+  sessionPath: string | null
+  messages: Message[]
+  isStreaming: boolean
+  queuedPrompts: QueuedPromptDraft[]
+  status: SessionRunStatus
+}
+
 export interface ChatConfig {
   hasApiKey: boolean
 }

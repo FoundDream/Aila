@@ -26,8 +26,8 @@ export function ChatComposer({
   queuedCount: number
   queuedPrompts: QueuedPromptDraft[]
   onAbort: () => void | Promise<void>
-  onEditQueuedPrompt: (promptId: string, currentDraft: string) => string | null
-  onRemoveQueuedPrompt: (promptId: string) => void
+  onEditQueuedPrompt: (promptId: string, currentDraft: string) => Promise<string | null>
+  onRemoveQueuedPrompt: (promptId: string) => void | Promise<void>
   onSettingsClick: () => void
   onSubmit: (value: string) => boolean | Promise<boolean>
 }): ReactElement {
@@ -90,8 +90,8 @@ export function ChatComposer({
   )
 
   const handleEditQueued = useCallback(
-    (promptId: string) => {
-      const nextInput = onEditQueuedPrompt(promptId, input)
+    async (promptId: string) => {
+      const nextInput = await onEditQueuedPrompt(promptId, input)
       if (nextInput === null) {
         return
       }
@@ -158,7 +158,7 @@ export function ChatComposer({
                           type="button"
                           variant="quiet"
                           size="xs"
-                          onClick={() => handleEditQueued(prompt.id)}
+                          onClick={() => void handleEditQueued(prompt.id)}
                           title="Edit queued prompt"
                         >
                           edit
@@ -167,7 +167,7 @@ export function ChatComposer({
                           type="button"
                           variant="quietDanger"
                           size="xs"
-                          onClick={() => onRemoveQueuedPrompt(prompt.id)}
+                          onClick={() => void onRemoveQueuedPrompt(prompt.id)}
                           title="Remove queued prompt"
                         >
                           remove

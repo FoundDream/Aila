@@ -99,71 +99,70 @@ function ensureAgentService(): AgentService {
   return agentService
 }
 
-function notifySessionsChanged(): void {
-  mainWindow?.webContents.send('agent:sessions-changed')
-}
-
 function registerIpcHandlers(): void {
   // --- Agent session handlers (existing) ---
 
-  ipcMain.handle('agent:prompt', async (_event, text: string) => {
-    ensureAgentService()
+  ipcMain.handle('agent:prompt', async (_event, sessionId: string, text: string) => {
     try {
-      await agentService?.prompt(text)
+      return await ensureAgentService().prompt(sessionId, text)
     } catch (err) {
       mainWindow?.webContents.send('agent:error', {
+        sessionId,
         message: err instanceof Error ? err.message : String(err),
       })
-      mainWindow?.webContents.send('agent:complete')
-    } finally {
-      notifySessionsChanged()
+      throw err
     }
   })
 
-  ipcMain.handle('agent:abort', async () => {
-    await agentService?.abort()
+  ipcMain.handle('agent:abort', async (_event, sessionId: string) => {
+    return await ensureAgentService().abort(sessionId)
   })
 
   ipcMain.handle('agent:new-session', async () => {
-    await agentService?.newSession()
-    mainWindow?.webContents.send('agent:session-reset')
-    notifySessionsChanged()
+    return await ensureAgentService().createSession()
   })
 
   ipcMain.handle('agent:list-sessions', async () => {
-    const sessions = await ensureAgentService().listSessions()
-    return sessions.map((s) => ({
-      path: s.path,
-      id: s.id,
-      name: s.name,
-      modified: s.modified.toISOString(),
-      messageCount: s.messageCount,
-      firstMessage: s.firstMessage,
-    }))
+    return await ensureAgentService().listSessions()
   })
 
-  ipcMain.handle('agent:resume-session', async (_event, sessionPath: string) => {
-    const restored = await ensureAgentService().resumeSession(sessionPath)
-    notifySessionsChanged()
-    return restored
+  ipcMain.handle(
+    'agent:open-session',
+    async (_event, target: { runtimeId?: string | null; path?: string | null }) => {
+      return await ensureAgentService().openSession(target)
+    },
+  )
+
+  ipcMain.handle('agent:get-session-state', async (_event, sessionId: string) => {
+    return ensureAgentService().getSessionState(sessionId)
   })
 
-  ipcMain.handle('agent:current-session', () => {
-    return agentService?.getCurrentSessionFile() ?? null
+  ipcMain.handle(
+    'agent:edit-queued-prompt',
+    async (_event, sessionId: string, promptId: string, currentDraft: string) => {
+      return ensureAgentService().editQueuedPrompt(sessionId, promptId, currentDraft)
+    },
+  )
+
+  ipcMain.handle('agent:remove-queued-prompt', async (_event, sessionId: string, promptId: string) => {
+    return ensureAgentService().removeQueuedPrompt(sessionId, promptId)
   })
 
   ipcMain.handle('shell:open-external', async (_event, url: string) => {
     await openExternalUrl(url)
   })
 
-  ipcMain.handle('agent:delete-session', async (_event, sessionPath: string) => {
-    const agent = ensureAgentService()
-    const wasCurrent = agent.getCurrentSessionFile() === sessionPath
-    agent.deleteSession(sessionPath)
-    if (wasCurrent) {
-      mainWindow?.webContents.send('agent:session-reset')
+  ipcMain.handle(
+    'agent:delete-session',
+    async (_event, target: { runtimeId?: string | null; path?: string | null }) => {
+      return await ensureAgentService().deleteSession(target)
+    },
+  )
+
+  ipcMain.handle('agent:get-config', () => {
+    return {
+      hasApiKey: configService.getProviders().some((p) => p.apiKey),
     }
-    notifySessionsChanged()
   })
 
   // --- Provider management handlers ---
@@ -316,12 +315,6 @@ function registerIpcHandlers(): void {
     await agent.switchModel(providerId, modelId)
 
     mainWindow?.webContents.send('provider:config-changed')
-  })
-
-  ipcMain.handle('agent:get-config', () => {
-    return {
-      hasApiKey: configService.getProviders().some((p) => p.apiKey),
-    }
   })
 
   ipcMain.handle('memory:list', () => {

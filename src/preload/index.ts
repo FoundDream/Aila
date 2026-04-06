@@ -11,46 +11,52 @@ function onChannel<T = void>(channel: string, callback: Callback<T>): () => void
 
 contextBridge.exposeInMainWorld('api', {
   // --- Agent session (existing) ---
-  prompt: (text: string): Promise<void> => ipcRenderer.invoke('agent:prompt', text),
-  abort: (): Promise<void> => ipcRenderer.invoke('agent:abort'),
-  newSession: (): Promise<void> => ipcRenderer.invoke('agent:new-session'),
+  prompt: (sessionId: string, text: string) => ipcRenderer.invoke('agent:prompt', sessionId, text),
+  abort: (sessionId: string) => ipcRenderer.invoke('agent:abort', sessionId),
+  newSession: () => ipcRenderer.invoke('agent:new-session'),
   getConfig: (): Promise<{ hasApiKey: boolean }> => ipcRenderer.invoke('agent:get-config'),
 
   // Session persistence
-  listSessions: (): Promise<
-    Array<{
-      path: string
-      id: string
-      name?: string
-      modified: string
-      messageCount: number
-      firstMessage: string
-    }>
-  > => ipcRenderer.invoke('agent:list-sessions'),
-  resumeSession: (
-    sessionPath: string,
-  ): Promise<
-    Array<{
-      role: 'user' | 'assistant'
-      content?: string
-      blocks?: unknown[]
-    }>
-  > => ipcRenderer.invoke('agent:resume-session', sessionPath),
-  getCurrentSession: (): Promise<string | null> => ipcRenderer.invoke('agent:current-session'),
+  listSessions: () => ipcRenderer.invoke('agent:list-sessions'),
+  openSession: (target: { runtimeId?: string | null; path?: string | null }) =>
+    ipcRenderer.invoke('agent:open-session', target),
+  getSessionState: (sessionId: string) => ipcRenderer.invoke('agent:get-session-state', sessionId),
+  editQueuedPrompt: (sessionId: string, promptId: string, currentDraft: string) =>
+    ipcRenderer.invoke('agent:edit-queued-prompt', sessionId, promptId, currentDraft),
+  removeQueuedPrompt: (sessionId: string, promptId: string) =>
+    ipcRenderer.invoke('agent:remove-queued-prompt', sessionId, promptId),
   openExternal: (url: string): Promise<void> => ipcRenderer.invoke('shell:open-external', url),
-  deleteSession: (sessionPath: string): Promise<void> =>
-    ipcRenderer.invoke('agent:delete-session', sessionPath),
+  deleteSession: (target: { runtimeId?: string | null; path?: string | null }) =>
+    ipcRenderer.invoke('agent:delete-session', target),
 
   // Agent push events
-  onTextDelta: (cb: (delta: string) => void) => onChannel('agent:text-delta', cb),
-  onThinkingDelta: (cb: (delta: string) => void) => onChannel('agent:thinking-delta', cb),
-  onToolStart: (cb: (data: { id: string; name: string; args: Record<string, unknown> }) => void) =>
+  onTextDelta: (cb: (data: { sessionId: string; delta: string }) => void) =>
+    onChannel('agent:text-delta', cb),
+  onThinkingDelta: (cb: (data: { sessionId: string; delta: string }) => void) =>
+    onChannel('agent:thinking-delta', cb),
+  onToolStart: (
+    cb: (data: {
+      sessionId: string
+      id: string
+      name: string
+      args: Record<string, unknown>
+    }) => void,
+  ) =>
     onChannel('agent:tool-start', cb),
-  onToolEnd: (cb: (data: { id: string; name: string; result: string; isError: boolean }) => void) =>
+  onToolEnd: (
+    cb: (data: {
+      sessionId: string
+      id: string
+      name: string
+      result: string
+      isError: boolean
+    }) => void,
+  ) =>
     onChannel('agent:tool-end', cb),
-  onComplete: (cb: () => void) => onChannel('agent:complete', cb),
-  onError: (cb: (data: { message: string }) => void) => onChannel('agent:error', cb),
-  onSessionReset: (cb: () => void) => onChannel('agent:session-reset', cb),
+  onComplete: (cb: (data: { sessionId: string }) => void) => onChannel('agent:complete', cb),
+  onError: (cb: (data: { sessionId: string; message: string }) => void) =>
+    onChannel('agent:error', cb),
+  onSessionState: (cb: (data: unknown) => void) => onChannel('agent:session-state', cb),
   onSessionsChanged: (cb: () => void) => onChannel('agent:sessions-changed', cb),
 
   // --- Provider management ---

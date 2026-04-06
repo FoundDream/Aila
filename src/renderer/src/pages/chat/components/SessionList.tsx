@@ -3,15 +3,7 @@ import { useCallback, useEffect, useState } from 'react'
 
 import { Button } from '@/components/Button'
 import { DragRegion } from '@/components/DragRegion'
-
-interface SessionSummary {
-  path: string
-  id: string
-  name?: string
-  modified: string
-  messageCount: number
-  firstMessage: string
-}
+import type { SessionSummary } from '@/types/chat'
 
 function formatRelativeTime(isoString: string): string {
   const date = new Date(isoString)
@@ -28,15 +20,15 @@ function formatRelativeTime(isoString: string): string {
 }
 
 export function SessionList({
-  onResume,
+  onOpen,
   onDelete,
-  currentSessionPath,
+  activeSessionId,
   onNewSession,
   onSettingsClick,
 }: {
-  onResume: (sessionPath: string) => void | Promise<void>
-  onDelete: (sessionPath: string) => void | Promise<void>
-  currentSessionPath: string | null
+  onOpen: (session: SessionSummary) => void | Promise<void>
+  onDelete: (session: SessionSummary) => void | Promise<void>
+  activeSessionId: string | null
   onNewSession?: () => void | Promise<void>
   onSettingsClick?: () => void
 }): ReactElement {
@@ -79,7 +71,17 @@ export function SessionList({
 
       {!loading &&
         sessions.map((s) => {
-          const isCurrent = s.path === currentSessionPath
+          const isCurrent = s.runtimeId !== null && s.runtimeId === activeSessionId
+          const statusText =
+            s.status === 'running'
+              ? s.queuedCount > 0
+                ? `running · ${s.queuedCount} queued`
+                : 'running'
+              : s.status === 'error'
+                ? 'error'
+                : isCurrent
+                  ? 'active'
+                  : null
           return (
             <div
               key={s.id}
@@ -91,7 +93,7 @@ export function SessionList({
                 type="button"
                 disabled={isCurrent}
                 onClick={() => {
-                  void onResume(s.path)
+                  void onOpen(s)
                 }}
                 className={`flex min-w-0 flex-1 flex-col gap-1 px-3 py-3 text-left ${
                   isCurrent ? 'text-[var(--term-blue)]' : 'text-[var(--term-text)]'
@@ -107,7 +109,19 @@ export function SessionList({
                 </div>
                 <div className="flex items-center gap-2 text-[10px] text-[var(--term-dim)]">
                   <span>{s.messageCount} msgs</span>
-                  {isCurrent && <span className="text-[var(--term-blue)]">current</span>}
+                  {statusText && (
+                    <span
+                      className={
+                        s.status === 'error'
+                          ? 'text-[var(--term-red)]'
+                          : isCurrent
+                            ? 'text-[var(--term-blue)]'
+                            : 'text-[var(--term-blue)]'
+                      }
+                    >
+                      {statusText}
+                    </span>
+                  )}
                 </div>
               </button>
 
@@ -115,8 +129,7 @@ export function SessionList({
                 type="button"
                 onClick={(e) => {
                   e.stopPropagation()
-                  void onDelete(s.path)
-                  setSessions((prev) => prev.filter((x) => x.path !== s.path))
+                  void onDelete(s)
                 }}
                 className="mr-2 shrink-0 rounded p-1 text-[var(--term-dim)] transition hover:bg-[var(--term-surface-hover)] hover:text-[var(--term-red)] opacity-100"
                 title="Delete session"
