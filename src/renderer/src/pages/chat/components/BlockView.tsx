@@ -1,5 +1,5 @@
 import type { ComponentProps, ReactElement } from 'react'
-import { useState } from 'react'
+import { memo, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import rehypeHighlight from 'rehype-highlight'
 import remarkGfm from 'remark-gfm'
@@ -26,7 +26,7 @@ const markdownComponents = {
   },
 }
 
-export function BlockView({
+export const BlockView = memo(function BlockView({
   block,
   isThinkingActive = false,
 }: {
@@ -130,4 +130,4 @@ export function BlockView({
   }
 
   return null
-}
+})

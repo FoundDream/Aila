@@ -1,10 +1,11 @@
 import type { ReactElement } from 'react'
+import { memo } from 'react'
 
 import { BlockView } from '@/pages/chat/components/BlockView'
 import { WaitingIndicator } from '@/pages/chat/components/WaitingIndicator'
 import type { Message } from '@/types/chat'
 
-export function MessageRow({
+export const MessageRow = memo(function MessageRow({
   message,
   isStreaming = false,
 }: {
@@ -61,4 +62,4 @@ export function MessageRow({
       </div>
     </div>
   )
-}
+})
