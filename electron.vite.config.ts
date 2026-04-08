@@ -7,7 +7,7 @@ export default defineConfig({
   main: {
     build: {
       externalizeDeps: {
-        exclude: ['@mariozechner/pi-coding-agent', '@mariozechner/pi-ai', '@sinclair/typebox'],
+        exclude: ['@sinclair/typebox'],
       },
       rollupOptions: {
         external: ['bufferutil', 'utf-8-validate'],

@@ -2,9 +2,14 @@ import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { type Api, complete, type Model } from '@mariozechner/pi-ai'
-import type { ModelRegistry } from '@mariozechner/pi-coding-agent'
 import { app } from 'electron'
+import type {
+  AssistantContentPart,
+  CompleteResult,
+  LLMAuth,
+  LLMClient,
+  ModelInfo,
+} from '../agent-core/types'
 
 type MemorySourceType = 'explicit' | 'inferred'
 type MemoryStatus = 'active' | 'deleted'
@@ -71,9 +76,10 @@ interface ReconcilerResult {
 
 interface CurateTurnOptions {
   assistantText: string
-  model: Model<Api>
-  modelRegistry: ModelRegistry
   userText: string
+  modelInfo: ModelInfo
+  auth: LLMAuth
+  llmClient: LLMClient
 }
 
 const EXTRACTOR_PROMPT = `You extract long-lived user preference memories from a single assistant turn.
@@ -157,9 +163,11 @@ function safeJsonParse<T>(raw: string): T | null {
   }
 }
 
-function extractTextFromResponse(response: Awaited<ReturnType<typeof complete>>): string {
+function extractTextFromResponse(response: CompleteResult): string {
   return response.content
-    .filter((block): block is { type: 'text'; text: string } => block.type === 'text')
+    .filter(
+      (block): block is Extract<AssistantContentPart, { type: 'text' }> => block.type === 'text',
+    )
     .map((block) => block.text)
     .join('\n')
 }
@@ -368,39 +376,31 @@ export class PreferenceMemoryService {
 
   async curateTurn({
     assistantText,
-    model,
-    modelRegistry,
     userText,
+    modelInfo,
+    auth,
+    llmClient,
   }: CurateTurnOptions): Promise<void> {
     const trimmedUserText = userText.trim()
     if (!trimmedUserText) return
-
-    const auth = await modelRegistry.getApiKeyAndHeaders(model)
-    if (!auth.ok) {
-      throw new Error(auth.error)
-    }
 
     const extractorInput = {
       userMessage: trimmedUserText,
       assistantMessage: assistantText.trim(),
     }
 
-    const extractionResponse = await complete(
-      model,
+    const extractionResponse = await llmClient.complete(
       {
+        model: modelInfo,
         systemPrompt: EXTRACTOR_PROMPT,
         messages: [
           {
             role: 'user',
             content: [{ type: 'text', text: JSON.stringify(extractorInput, null, 2) }],
-            timestamp: Date.now(),
           },
         ],
       },
-      {
-        apiKey: auth.apiKey,
-        headers: auth.headers,
-      },
+      auth,
     )
 
     const extractorResult = safeJsonParse<ExtractorResult>(
@@ -435,22 +435,18 @@ export class PreferenceMemoryService {
       existingMemories: existing,
     }
 
-    const reconcileResponse = await complete(
-      model,
+    const reconcileResponse = await llmClient.complete(
       {
+        model: modelInfo,
         systemPrompt: RECONCILER_PROMPT,
         messages: [
           {
             role: 'user',
             content: [{ type: 'text', text: JSON.stringify(reconcileInput, null, 2) }],
-            timestamp: Date.now(),
           },
         ],
       },
-      {
-        apiKey: auth.apiKey,
-        headers: auth.headers,
-      },
+      auth,
     )
 
     const reconcileResult = safeJsonParse<ReconcilerResult>(

@@ -100,12 +100,7 @@ function ensureAgentService(): AgentService {
 }
 
 function getActiveModelSupportsImages(): boolean {
-  const model = registry.createActiveModel()
-  if ('error' in model) {
-    return false
-  }
-
-  return model.input.includes('image')
+  return registry.resolveActiveLLM()?.modelInfo.supportsImage ?? false
 }
 
 function registerIpcHandlers(): void {

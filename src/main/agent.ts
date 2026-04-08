@@ -1,29 +1,19 @@
-import { existsSync, mkdirSync, unlinkSync } from 'node:fs'
+import { existsSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
-import type {
-  Api,
-  AssistantMessage,
-  ImageContent,
-  Model,
-  ToolResultMessage,
-  UserMessage,
-} from '@mariozechner/pi-ai'
-import type { AgentSession } from '@mariozechner/pi-coding-agent'
-import {
-  AuthStorage,
-  buildSessionContext,
-  createAgentSession,
-  createCodingTools,
-  DefaultResourceLoader,
-  ModelRegistry,
-  SessionManager,
-} from '@mariozechner/pi-coding-agent'
 import { app, type BrowserWindow } from 'electron'
+import { Agent } from './agent-core/agent'
+import type {
+  AgentEvent,
+  ResolvedLLM,
+  UIBlock,
+  UIImageAttachment,
+  UIMessage,
+} from './agent-core/types'
 import type { PreferenceMemoryService } from './memory/preference-memory-service'
 import type { ConfigService } from './providers/config-service'
 import type { ProviderRegistry } from './providers/registry'
-import { parseModelKey } from './providers/types'
-import { createCustomTools } from './tools'
+import { buildUIMessagesFromEntries, SessionStore } from './session'
+import { createCodingTools, createCustomTools } from './tools'
 
 const SYSTEM_PROMPT = `You are a helpful AI assistant running on the user's desktop computer.
 You have direct access to the local filesystem and can run shell commands.
@@ -31,34 +21,8 @@ Be concise and direct. When working with files or commands, briefly explain what
 
 export type SessionRunStatus = 'idle' | 'running' | 'error'
 
-export interface UIMessage {
-  id: string
-  role: 'user' | 'assistant'
-  content?: string
-  images?: UIImageAttachment[]
-  blocks?: UIBlock[]
-  status?: 'queued' | 'streaming' | 'done'
-}
-
-export interface UIImageAttachment {
-  id: string
-  data: string
-  mimeType: string
-  name?: string
-}
-
-export type UIBlock =
-  | { type: 'text'; content: string }
-  | { type: 'thinking'; content: string }
-  | {
-      type: 'tool'
-      id: string
-      name: string
-      args: Record<string, unknown>
-      result?: string
-      isError?: boolean
-      status: 'running' | 'done'
-    }
+// Re-export UI types for IPC payload compatibility.
+export type { UIBlock, UIImageAttachment, UIMessage }
 
 export interface QueuedPromptDraft {
   id: string
@@ -95,7 +59,7 @@ export interface SessionTarget {
 interface SessionControllerOptions {
   registry: AgentService
   sessionId: string
-  session: AgentSession
+  agent: Agent
   initialMessages?: UIMessage[]
   setPromptMemoryContext: (text: string) => void
 }
@@ -104,109 +68,10 @@ function createMessageId(): string {
   return `msg-${crypto.randomUUID()}`
 }
 
-function createImageAttachmentId(): string {
-  return `img-${crypto.randomUUID()}`
-}
-
-function extractUserText(message: UserMessage): string {
-  if (typeof message.content === 'string') {
-    return message.content
-  }
-
-  return message.content
-    .filter((part) => part.type === 'text')
-    .map((part) => part.text)
-    .join('')
-}
-
-function extractUserImages(message: UserMessage): UIImageAttachment[] {
-  if (typeof message.content === 'string') {
-    return []
-  }
-
-  return message.content
-    .filter((part): part is ImageContent => part.type === 'image')
-    .map((part) => ({
-      id: createImageAttachmentId(),
-      data: part.data,
-      mimeType: part.mimeType,
-    }))
-}
-
-function buildUIMessagesFromSessionManager(sessionManager: SessionManager): UIMessage[] {
-  const entries = sessionManager.getEntries()
-  const { messages: agentMessages } = buildSessionContext(entries)
-  const toolResultMap = new Map<string, ToolResultMessage>()
-  const uiMessages: UIMessage[] = []
-
-  for (const message of agentMessages) {
-    if ('role' in message && message.role === 'toolResult') {
-      toolResultMap.set(message.toolCallId, message)
-    }
-  }
-
-  for (const message of agentMessages) {
-    if (!('role' in message)) continue
-
-    if (message.role === 'user') {
-      const content = extractUserText(message as UserMessage)
-      const images = extractUserImages(message as UserMessage)
-      uiMessages.push({
-        id: createMessageId(),
-        role: 'user',
-        content,
-        images,
-        status: 'done',
-      })
-      continue
-    }
-
-    if (message.role !== 'assistant') continue
-
-    const assistantMessage = message as AssistantMessage
-    const blocks: UIBlock[] = []
-
-    for (const part of assistantMessage.content) {
-      if (part.type === 'text') {
-        blocks.push({ type: 'text', content: part.text })
-      } else if (part.type === 'thinking') {
-        blocks.push({ type: 'thinking', content: part.thinking })
-      } else if (part.type === 'toolCall') {
-        const toolResult = toolResultMap.get(part.id)
-        blocks.push({
-          type: 'tool',
-          id: part.id,
-          name: part.name,
-          args: part.arguments,
-          result: toolResult
-            ? toolResult.content
-                .filter((content) => content.type === 'text')
-                .map((content) => content.text)
-                .join('')
-            : undefined,
-          isError: toolResult?.isError,
-          status: 'done',
-        })
-      }
-    }
-
-    if (blocks.length > 0) {
-      uiMessages.push({
-        id: createMessageId(),
-        role: 'assistant',
-        blocks,
-        status: assistantMessage.stopReason === 'aborted' ? 'done' : 'done',
-      })
-    }
-  }
-
-  return uiMessages
-}
-
 class SessionController {
   private readonly registry: AgentService
   private readonly id: string
-  private readonly session: AgentSession
+  private readonly agent: Agent
   private readonly messages: UIMessage[]
   private readonly setPromptMemoryContext: (text: string) => void
   private readonly queuedPrompts: QueuedPromptDraft[] = []
@@ -220,10 +85,10 @@ class SessionController {
   constructor(options: SessionControllerOptions) {
     this.registry = options.registry
     this.id = options.sessionId
-    this.session = options.session
+    this.agent = options.agent
     this.messages = options.initialMessages ? [...options.initialMessages] : []
     this.setPromptMemoryContext = options.setPromptMemoryContext
-    this.unsubscribe = this.session.subscribe(this.handleEvent.bind(this))
+    this.unsubscribe = this.agent.subscribe(this.handleEvent.bind(this))
   }
 
   get sessionId(): string {
@@ -231,7 +96,7 @@ class SessionController {
   }
 
   get sessionPath(): string | null {
-    return this.session.sessionFile ?? null
+    return this.agent.sessionFile ?? null
   }
 
   get queuedCount(): number {
@@ -260,14 +125,13 @@ class SessionController {
     }
   }
 
-  buildRuntimeSummary(): Omit<
-    SessionListEntry,
-    'id' | 'runtimeId' | 'path' | 'modified' | 'name' | 'messageCount' | 'firstMessage'
-  > & {
+  buildRuntimeSummary(): {
     modified: string
     name?: string
     messageCount: number
     firstMessage: string
+    status: SessionRunStatus
+    queuedCount: number
   } {
     const firstUserMessage = this.messages.find((message) => message.role === 'user')
     const imageCount = firstUserMessage?.images?.length ?? 0
@@ -310,12 +174,12 @@ class SessionController {
   }
 
   async abort(): Promise<SessionStateSnapshot> {
-    await this.session.abort()
+    await this.agent.abort()
     return this.buildSnapshot()
   }
 
-  async switchModel(model: Model<Api>): Promise<void> {
-    await this.session.setModel(model)
+  async switchModel(providerId: string, modelId: string): Promise<void> {
+    await this.agent.setModel(providerId, modelId)
   }
 
   editQueuedPrompt(
@@ -364,7 +228,7 @@ class SessionController {
 
   destroy(): void {
     this.unsubscribe?.()
-    this.session.dispose()
+    this.agent.dispose()
     this.unsubscribe = null
   }
 
@@ -399,7 +263,7 @@ class SessionController {
       this.currentInjectedMemoryIds = memoryContext.ids
       this.activeTurn = { userText: text, assistantText: '' }
 
-      await this.session.prompt(text, {
+      await this.agent.prompt(text, {
         images: images.map((image) => ({
           type: 'image',
           data: image.data,
@@ -411,17 +275,20 @@ class SessionController {
 
       if (this.activeTurn) {
         const turn = this.activeTurn
-        const model = this.registry.resolveModel()
-        void this.registry.memoryService
-          .curateTurn({
-            assistantText: turn.assistantText,
-            model,
-            modelRegistry: this.registry.modelRegistry,
-            userText: turn.userText,
-          })
-          .catch((error) => {
-            console.error('[memory] curation failed:', error)
-          })
+        const llmCtx = this.registry.resolveActiveLLM()
+        if (llmCtx) {
+          void this.registry.memoryService
+            .curateTurn({
+              assistantText: turn.assistantText,
+              userText: turn.userText,
+              modelInfo: llmCtx.modelInfo,
+              auth: llmCtx.auth,
+              llmClient: llmCtx.client,
+            })
+            .catch((error) => {
+              console.error('[memory] curation failed:', error)
+            })
+        }
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -547,41 +414,25 @@ class SessionController {
     )
   }
 
-  private handleEvent(event: any): void {
+  private handleEvent(event: AgentEvent): void {
     switch (event.type) {
-      case 'message_update': {
-        const assistantEvent = event.assistantMessageEvent
-        switch (assistantEvent.type) {
-          case 'text_delta':
-            if (this.activeTurn) {
-              this.activeTurn.assistantText += assistantEvent.delta
-            }
-            this.appendTextToActiveAssistant(assistantEvent.delta)
-            this.registry.send('agent:text-delta', {
-              sessionId: this.id,
-              delta: assistantEvent.delta,
-            })
-            break
-          case 'thinking_delta':
-            this.appendThinkingToActiveAssistant(assistantEvent.delta)
-            this.registry.send('agent:thinking-delta', {
-              sessionId: this.id,
-              delta: assistantEvent.delta,
-            })
-            break
-          case 'error': {
-            const message = assistantEvent.error?.errorMessage || 'Unknown error'
-            this.status = 'error'
-            this.registry.send('agent:error', {
-              sessionId: this.id,
-              message,
-            })
-            this.registry.notifySessionStateChanged(this)
-            break
-          }
+      case 'text_delta':
+        if (this.activeTurn) {
+          this.activeTurn.assistantText += event.delta
         }
+        this.appendTextToActiveAssistant(event.delta)
+        this.registry.send('agent:text-delta', {
+          sessionId: this.id,
+          delta: event.delta,
+        })
         break
-      }
+      case 'thinking_delta':
+        this.appendThinkingToActiveAssistant(event.delta)
+        this.registry.send('agent:thinking-delta', {
+          sessionId: this.id,
+          delta: event.delta,
+        })
+        break
       case 'tool_execution_start': {
         const payload = {
           id: event.toolCallId,
@@ -599,8 +450,7 @@ class SessionController {
         const payload = {
           id: event.toolCallId,
           name: event.toolName,
-          result:
-            typeof event.result === 'string' ? event.result : JSON.stringify(event.result, null, 2),
+          result: event.result,
           isError: event.isError,
         }
         this.completeToolBlock(payload)
@@ -610,6 +460,17 @@ class SessionController {
         })
         break
       }
+      case 'error':
+        this.status = 'error'
+        this.registry.send('agent:error', {
+          sessionId: this.id,
+          message: event.message,
+        })
+        this.registry.notifySessionStateChanged(this)
+        break
+      case 'turn_complete':
+        // runPrompt's finally block handles UI finalization.
+        break
     }
   }
 }
@@ -619,9 +480,6 @@ export class AgentService {
   private readonly registry: ProviderRegistry
   private readonly configService: ConfigService
   readonly memoryService: PreferenceMemoryService
-  readonly modelRegistry: ModelRegistry
-  private readonly authStorage = AuthStorage.inMemory()
-  private readonly syncedProviderNames = new Set<string>()
   private readonly controllers = new Map<string, SessionController>()
 
   private get cwd() {
@@ -642,12 +500,12 @@ export class AgentService {
     this.registry = registry
     this.configService = configService
     this.memoryService = memoryService
-    this.modelRegistry = ModelRegistry.create(this.authStorage)
   }
 
   async createSession(): Promise<SessionStateSnapshot> {
-    const sessionManager = SessionManager.create(this.cwd, this.sessionDir)
-    const controller = await this.createController(sessionManager)
+    mkdirSync(this.sessionDir, { recursive: true })
+    const store = SessionStore.create(this.sessionDir, this.cwd)
+    const controller = this.createController(store)
     this.notifySessionStateChanged(controller)
     return controller.buildSnapshot()
   }
@@ -666,11 +524,9 @@ export class AgentService {
       return existing.buildSnapshot()
     }
 
-    const sessionManager = SessionManager.open(target.path, this.sessionDir)
-    const controller = await this.createController(
-      sessionManager,
-      buildUIMessagesFromSessionManager(sessionManager),
-    )
+    const store = SessionStore.open(target.path)
+    const initialMessages = buildUIMessagesFromEntries(store.getEntries())
+    const controller = this.createController(store, initialMessages)
     this.notifySessionStateChanged(controller)
     return controller.buildSnapshot()
   }
@@ -713,33 +569,19 @@ export class AgentService {
   }
 
   async listSessions(): Promise<SessionListEntry[]> {
-    const persisted = await SessionManager.list(this.cwd, this.sessionDir).catch(() => [])
-    const runtimeEntriesByPath = new Map<string, SessionController>()
-    const runtimeOnlyEntries: SessionListEntry[] = []
+    mkdirSync(this.sessionDir, { recursive: true })
+    const persisted = SessionStore.list(this.sessionDir).filter((s) => s.cwd === this.cwd)
 
+    const runtimeByPath = new Map<string, SessionController>()
     for (const controller of this.controllers.values()) {
       const path = controller.sessionPath
       if (path) {
-        runtimeEntriesByPath.set(path, controller)
-        continue
+        runtimeByPath.set(path, controller)
       }
-
-      const summary = controller.buildRuntimeSummary()
-      runtimeOnlyEntries.push({
-        id: controller.sessionId,
-        runtimeId: controller.sessionId,
-        path: null,
-        modified: summary.modified,
-        name: undefined,
-        messageCount: summary.messageCount,
-        firstMessage: summary.firstMessage,
-        status: summary.status,
-        queuedCount: summary.queuedCount,
-      })
     }
 
-    const entries = persisted.map((session) => {
-      const runtime = runtimeEntriesByPath.get(session.path)
+    const entries: SessionListEntry[] = persisted.map((session) => {
+      const runtime = runtimeByPath.get(session.path)
       return {
         id: runtime?.sessionId ?? `persisted:${session.path}`,
         runtimeId: runtime?.sessionId ?? null,
@@ -750,12 +592,10 @@ export class AgentService {
         firstMessage: session.firstMessage,
         status: runtime?.currentStatus ?? 'idle',
         queuedCount: runtime?.queuedCount ?? 0,
-      } satisfies SessionListEntry
+      }
     })
 
-    return [...runtimeOnlyEntries, ...entries].sort(
-      (a, b) => new Date(b.modified).getTime() - new Date(a.modified).getTime(),
-    )
+    return entries.sort((a, b) => new Date(b.modified).getTime() - new Date(a.modified).getTime())
   }
 
   async deleteSession(target: SessionTarget): Promise<{ deletedRuntimeId: string | null }> {
@@ -770,7 +610,7 @@ export class AgentService {
     }
 
     if (target.path && existsSync(target.path)) {
-      unlinkSync(target.path)
+      SessionStore.delete(target.path)
     }
 
     this.send('agent:sessions-changed')
@@ -778,36 +618,24 @@ export class AgentService {
   }
 
   async switchModel(providerId: string, modelId: string): Promise<void> {
-    const result = this.registry.createModelForId(providerId, modelId)
-    if ('error' in result) throw new Error(result.error)
+    const provider = this.configService.getProvider(providerId)
+    if (!provider) throw new Error(`Provider "${providerId}" not found`)
+    if (!provider.apiKey) throw new Error(`Provider "${providerId}" has no API key`)
 
     await Promise.all(
       [...this.controllers.values()].map((controller) =>
-        controller.switchModel(result).catch((error) => {
+        controller.switchModel(providerId, modelId).catch((error) => {
           console.error('[agent] failed to switch model for session:', error)
         }),
       ),
     )
   }
 
-  async refreshProviderConfig(providerId?: string): Promise<void> {
-    this.syncRuntimeApiKeys()
-
-    const activeModel = this.configService.getActiveModelId()
-    const parsed = activeModel ? parseModelKey(activeModel) : null
-    if (!parsed) return
-    if (providerId && parsed.providerId !== providerId) return
-
-    const result = this.registry.createModelForId(parsed.providerId, parsed.modelId)
-    if ('error' in result) return
-
-    await Promise.all(
-      [...this.controllers.values()].map((controller) =>
-        controller.switchModel(result).catch((error) => {
-          console.error('[agent] failed to refresh provider config for session:', error)
-        }),
-      ),
-    )
+  async refreshProviderConfig(_providerId?: string): Promise<void> {
+    // Agents re-read provider config via resolveActiveLLM() on the next turn,
+    // so there is no per-session state to mutate here. We notify the renderer
+    // so it can refresh its cached config snapshot.
+    this.send('agent:sessions-changed')
   }
 
   destroy(): void {
@@ -817,21 +645,8 @@ export class AgentService {
     this.controllers.clear()
   }
 
-  resolveModel(): Model<Api> {
-    const activeModelKey = this.configService.getActiveModelId()
-    if (activeModelKey) {
-      const parsed = parseModelKey(activeModelKey)
-      if (parsed) {
-        const result = this.registry.createModelForId(parsed.providerId, parsed.modelId)
-        if (!('error' in result)) {
-          return result
-        }
-      }
-    }
-
-    const result = this.registry.createActiveModel()
-    if ('error' in result) throw new Error(`No model available: ${result.error}`)
-    return result
+  resolveActiveLLM(): ResolvedLLM | null {
+    return this.registry.resolveActiveLLM()
   }
 
   notifySessionStateChanged(controller: SessionController): void {
@@ -845,51 +660,30 @@ export class AgentService {
     }
   }
 
-  private async createController(
-    sessionManager: SessionManager,
-    initialMessages?: UIMessage[],
-  ): Promise<SessionController> {
+  private createController(store: SessionStore, initialMessages?: UIMessage[]): SessionController {
     const sessionId = crypto.randomUUID()
-    const model = this.resolveModel()
     const promptMemoryContext = { text: '' }
 
-    mkdirSync(this.sessionDir, { recursive: true })
-
-    const tools = createCodingTools(this.cwd)
+    const codingTools = createCodingTools(this.cwd)
     const customTools = createCustomTools({
       cwd: this.cwd,
       getWebSearchConfig: () => this.configService.getWebSearchConfig(),
     })
+    const tools = [...codingTools, ...customTools]
 
-    const resourceLoader = new DefaultResourceLoader({
+    const agent = new Agent({
+      store,
       cwd: this.cwd,
-      appendSystemPromptOverride: (base) =>
-        promptMemoryContext.text ? [...base, promptMemoryContext.text] : base,
-      systemPromptOverride: () => SYSTEM_PROMPT,
-      noExtensions: true,
-      noSkills: false,
-      noPromptTemplates: true,
-      noThemes: true,
-    })
-    await resourceLoader.reload()
-
-    this.syncRuntimeApiKeys()
-
-    const { session } = await createAgentSession({
-      cwd: this.cwd,
-      model,
       tools,
-      customTools,
-      sessionManager,
-      resourceLoader,
-      authStorage: this.authStorage,
-      modelRegistry: this.modelRegistry,
+      baseSystemPrompt: SYSTEM_PROMPT,
+      getActiveLLM: () => this.registry.resolveActiveLLM(),
+      getSystemPromptAddendum: () => promptMemoryContext.text,
     })
 
     const controller = new SessionController({
       registry: this,
       sessionId,
-      session,
+      agent,
       initialMessages,
       setPromptMemoryContext: (text) => {
         promptMemoryContext.text = text
@@ -911,30 +705,5 @@ export class AgentService {
     return [...this.controllers.values()].find(
       (controller) => controller.sessionPath === sessionPath,
     )
-  }
-
-  private syncRuntimeApiKeys(): void {
-    const nextRuntimeKeys = new Map<string, string>()
-
-    for (const provider of this.configService.getProviders()) {
-      if (provider.apiKey) {
-        nextRuntimeKeys.set(String(provider.provider), provider.apiKey)
-      }
-    }
-
-    for (const providerName of this.syncedProviderNames) {
-      if (!nextRuntimeKeys.has(providerName)) {
-        this.authStorage.removeRuntimeApiKey(providerName)
-      }
-    }
-
-    for (const [providerName, apiKey] of nextRuntimeKeys) {
-      this.authStorage.setRuntimeApiKey(providerName, apiKey)
-    }
-
-    this.syncedProviderNames.clear()
-    for (const providerName of nextRuntimeKeys.keys()) {
-      this.syncedProviderNames.add(providerName)
-    }
   }
 }

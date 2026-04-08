@@ -1,6 +1,6 @@
-import type { ToolDefinition } from '@mariozechner/pi-coding-agent'
 import { type Static, Type } from '@sinclair/typebox'
 import { tavily } from '@tavily/core'
+import type { Tool } from '../../agent-core/types'
 import type { ToolContext } from '../types'
 
 const SEARCH_DESCRIPTION =
@@ -65,7 +65,7 @@ function getClient(ctx: ToolContext) {
   return tavily({ apiKey })
 }
 
-function createWebSearchTool(ctx: ToolContext): ToolDefinition<typeof searchSchema> {
+function createWebSearchTool(ctx: ToolContext): Tool<typeof searchSchema> {
   return {
     name: 'web_search',
     label: 'Web Search',
@@ -73,7 +73,7 @@ function createWebSearchTool(ctx: ToolContext): ToolDefinition<typeof searchSche
     promptSnippet: SEARCH_PROMPT_SNIPPET,
     promptGuidelines: SEARCH_PROMPT_GUIDELINES,
     parameters: searchSchema,
-    async execute(_toolCallId: string, params: SearchParams) {
+    async execute(params: SearchParams, _ctx) {
       const client = getClient(ctx)
       const response = await client.search(params.query, {
         searchDepth: params.searchDepth ?? 'basic',
@@ -104,7 +104,7 @@ function createWebSearchTool(ctx: ToolContext): ToolDefinition<typeof searchSche
   }
 }
 
-function createWebExtractTool(ctx: ToolContext): ToolDefinition<typeof extractSchema> {
+function createWebExtractTool(ctx: ToolContext): Tool<typeof extractSchema> {
   return {
     name: 'web_extract',
     label: 'Web Extract',
@@ -112,7 +112,7 @@ function createWebExtractTool(ctx: ToolContext): ToolDefinition<typeof extractSc
     promptSnippet: EXTRACT_PROMPT_SNIPPET,
     promptGuidelines: EXTRACT_PROMPT_GUIDELINES,
     parameters: extractSchema,
-    async execute(_toolCallId: string, params: ExtractParams) {
+    async execute(params: ExtractParams, _ctx) {
       const client = getClient(ctx)
       const response = await client.extract(params.urls)
 
@@ -140,7 +140,6 @@ function createWebExtractTool(ctx: ToolContext): ToolDefinition<typeof extractSc
   }
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function createTavilyTools(ctx: ToolContext): ToolDefinition<any, any, any>[] {
+export function createTavilyTools(ctx: ToolContext): Tool[] {
   return [createWebSearchTool(ctx), createWebExtractTool(ctx)]
 }

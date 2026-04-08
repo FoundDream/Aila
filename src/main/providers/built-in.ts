@@ -1,13 +1,18 @@
-import type { Api, KnownProvider, Model } from '@mariozechner/pi-ai'
-import { getModels } from '@mariozechner/pi-ai'
-import type { ModelConfig, ProviderConfig } from './types'
+/**
+ * Built-in provider definitions — Anthropic, OpenAI, Google, Google Vertex.
+ * Model lists come from the hand-written catalog in ./model-catalog.
+ */
+
+import { ANTHROPIC_MODELS, GOOGLE_MODELS, OPENAI_MODELS, VERTEX_MODELS } from './model-catalog'
+import type { ModelConfig, ProtocolName, ProviderConfig } from './types'
 
 interface BuiltInDef {
   id: string
   displayName: string
-  api: Api
-  provider: KnownProvider
+  api: ProtocolName
+  provider: string
   baseUrl: string
+  models: ModelConfig[]
 }
 
 const BUILT_IN_DEFS: BuiltInDef[] = [
@@ -17,6 +22,7 @@ const BUILT_IN_DEFS: BuiltInDef[] = [
     api: 'anthropic-messages',
     provider: 'anthropic',
     baseUrl: 'https://api.anthropic.com',
+    models: ANTHROPIC_MODELS,
   },
   {
     id: 'openai',
@@ -24,6 +30,7 @@ const BUILT_IN_DEFS: BuiltInDef[] = [
     api: 'openai-completions',
     provider: 'openai',
     baseUrl: 'https://api.openai.com/v1',
+    models: OPENAI_MODELS,
   },
   {
     id: 'google',
@@ -31,6 +38,7 @@ const BUILT_IN_DEFS: BuiltInDef[] = [
     api: 'google-generative-ai',
     provider: 'google',
     baseUrl: 'https://generativelanguage.googleapis.com',
+    models: GOOGLE_MODELS,
   },
   {
     id: 'google-vertex',
@@ -38,42 +46,20 @@ const BUILT_IN_DEFS: BuiltInDef[] = [
     api: 'google-vertex',
     provider: 'google-vertex',
     baseUrl: 'https://us-central1-aiplatform.googleapis.com',
+    models: VERTEX_MODELS,
   },
 ]
 
-/** Convert a pi-ai Model to our ModelConfig with capability metadata */
-function toModelConfig(m: Model<Api>): ModelConfig {
-  return {
-    id: m.id,
-    name: m.name,
-    toolUse: true, // All built-in provider models support tool use
-    reasoning: m.reasoning,
-    supportsImageInput: m.input.includes('image'),
-    contextWindow: m.contextWindow,
-    maxTokens: m.maxTokens,
-  }
-}
-
-/** Create built-in provider configs with models populated from pi-ai registry */
+/** Create built-in provider configs with hard-coded model lists. */
 export function createBuiltInProviders(): ProviderConfig[] {
-  return BUILT_IN_DEFS.map((def) => {
-    let models: ModelConfig[] = []
-    try {
-      const piModels = getModels(def.provider)
-      models = piModels.map(toModelConfig)
-    } catch {
-      console.warn(`[providers] failed to load models for ${def.provider} from pi-ai registry`)
-    }
-
-    return {
-      id: def.id,
-      displayName: def.displayName,
-      api: def.api,
-      provider: def.provider,
-      baseUrl: def.baseUrl,
-      apiKey: '',
-      models,
-      isBuiltIn: true,
-    }
-  })
+  return BUILT_IN_DEFS.map((def) => ({
+    id: def.id,
+    displayName: def.displayName,
+    api: def.api,
+    provider: def.provider,
+    baseUrl: def.baseUrl,
+    apiKey: '',
+    models: def.models.map((m) => ({ ...m })),
+    isBuiltIn: true,
+  }))
 }
