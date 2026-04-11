@@ -38,6 +38,7 @@ export interface SessionStateSnapshot {
   isStreaming: boolean
   queuedPrompts: QueuedPromptDraft[]
   status: SessionRunStatus
+  usage: { input: number; output: number; cacheRead: number; cacheWrite: number }
 }
 
 export interface SessionListEntry {
@@ -82,6 +83,7 @@ class SessionController {
   private activeAssistantId: string | null = null
   private activeTurn: { userText: string; assistantText: string } | null = null
   private currentInjectedMemoryIds: string[] = []
+  private cumulativeUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
 
   constructor(options: SessionControllerOptions) {
     this.registry = options.registry
@@ -123,6 +125,7 @@ class SessionController {
         images: prompt.images.map((image) => ({ ...image })),
       })),
       status: this.status,
+      usage: { ...this.cumulativeUsage },
     }
   }
 
@@ -461,6 +464,12 @@ class SessionController {
         })
         break
       }
+      case 'usage':
+        this.cumulativeUsage.input += event.usage.input
+        this.cumulativeUsage.output += event.usage.output
+        this.cumulativeUsage.cacheRead += event.usage.cacheRead ?? 0
+        this.cumulativeUsage.cacheWrite += event.usage.cacheWrite ?? 0
+        break
       case 'error':
         this.status = 'error'
         this.registry.send('agent:error', {

@@ -59,10 +59,12 @@ export interface ChatSessionState {
   isStreaming: boolean
   queuedPrompts: QueuedPromptDraft[]
   status: SessionRunStatus
+  usage: { input: number; output: number; cacheRead: number; cacheWrite: number }
 }
 
 export interface ChatConfig {
   hasUsableProvider: boolean
   hasActiveModel: boolean
   activeModelSupportsImages: boolean
+  activeModelContextWindow: number | null
 }

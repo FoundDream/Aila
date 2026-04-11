@@ -187,10 +187,12 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle('agent:get-config', () => {
     const activeModelId = configService.getActiveModelId()
+    const activeLLM = activeModelId ? registry.resolveActiveLLM() : null
     return {
       hasUsableProvider: registry.getAvailableModels().some(({ models }) => models.length > 0),
-      hasActiveModel: Boolean(activeModelId && registry.resolveActiveLLM()),
+      hasActiveModel: Boolean(activeLLM),
       activeModelSupportsImages: getActiveModelSupportsImages(),
+      activeModelContextWindow: activeLLM?.modelInfo.contextWindow ?? null,
     }
   })
 

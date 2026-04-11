@@ -9,6 +9,13 @@ import type {
   SessionSummary,
 } from '@/types/chat'
 
+interface SessionUsage {
+  input: number
+  output: number
+  cacheRead: number
+  cacheWrite: number
+}
+
 interface UseAgentChatResult {
   activeSessionId: string | null
   config: ChatConfig | null
@@ -16,6 +23,7 @@ interface UseAgentChatResult {
   isStreaming: boolean
   queuedCount: number
   queuedPrompts: QueuedPromptDraft[]
+  usage: SessionUsage
   handleAbort: () => Promise<void>
   handleSubmitPrompt: (draft: PromptDraftValue) => Promise<boolean>
   handleEditQueuedPrompt: (
@@ -316,6 +324,8 @@ export function useAgentChat(): UseAgentChatResult {
     [loadSessionIntoView],
   )
 
+  const defaultUsage: SessionUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+
   return {
     activeSessionId: activeSession?.sessionId ?? null,
     config,
@@ -323,6 +333,7 @@ export function useAgentChat(): UseAgentChatResult {
     isStreaming: activeSession?.isStreaming ?? false,
     queuedCount: activeSession?.queuedPrompts.length ?? 0,
     queuedPrompts: activeSession?.queuedPrompts ?? [],
+    usage: activeSession?.usage ?? defaultUsage,
     handleAbort,
     handleSubmitPrompt,
     handleEditQueuedPrompt,

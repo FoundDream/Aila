@@ -97,9 +97,14 @@ export function convertMessages(messages: Message[]): Content[] {
             },
           })
         }
-        // Thinking blocks from our history are dropped when replaying to
-        // Gemini — the SDK rejects unsigned thought parts and our internal
-        // format doesn't persist thoughtSignature yet.
+        if (p.type === 'thinking' && p.text) {
+          const thinkingPart: Part & { thought?: boolean; thoughtSignature?: string } = {
+            text: p.text,
+            thought: true,
+          }
+          if (p.signature) thinkingPart.thoughtSignature = p.signature
+          parts.push(thinkingPart as Part)
+        }
       }
       if (parts.length === 0) parts.push({ text: '' })
       contents.push({ role: 'model', parts })
@@ -143,7 +148,11 @@ export function convertResponseParts(parts: Part[]): AssistantContentPart[] {
   for (const part of parts) {
     if (part.text !== undefined && part.text !== null) {
       if (isThinkingPart(part)) {
-        out.push({ type: 'thinking', text: part.text })
+        out.push({
+          type: 'thinking',
+          text: part.text,
+          signature: (part as { thoughtSignature?: string }).thoughtSignature,
+        })
       } else {
         out.push({ type: 'text', text: part.text })
       }
@@ -304,7 +313,11 @@ export class BaseGoogleClient implements LLMClient {
         for (const part of candidate.content?.parts ?? []) {
           if (part.text !== undefined && part.text !== null && part.text !== '') {
             if (isThinkingPart(part)) {
-              yield { type: 'thinking-delta', delta: part.text }
+              yield {
+                type: 'thinking-delta',
+                delta: part.text,
+                signature: (part as { thoughtSignature?: string }).thoughtSignature,
+              }
             } else {
               yield { type: 'text-delta', delta: part.text }
             }

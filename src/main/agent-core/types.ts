@@ -130,7 +130,7 @@ export interface LLMUsage {
 
 export type StreamEvent =
   | { type: 'text-delta'; delta: string }
-  | { type: 'thinking-delta'; delta: string }
+  | { type: 'thinking-delta'; delta: string; signature?: string }
   | { type: 'tool-call-start'; id: string; name: string }
   | { type: 'tool-call-delta'; id: string; argsJsonDelta: string }
   | {
@@ -221,6 +221,7 @@ export type AgentEvent =
       result: string
       isError: boolean
     }
+  | { type: 'usage'; usage: LLMUsage }
   | { type: 'error'; message: string }
   | { type: 'turn_complete'; stopReason: StopReason }
 

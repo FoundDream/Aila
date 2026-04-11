@@ -16,6 +16,12 @@ import { ImageAttachmentStrip } from '@/pages/chat/components/ImageAttachmentStr
 import { ModelSelector } from '@/pages/chat/components/ModelSelector'
 import type { ImageAttachment, PromptDraftValue, QueuedPromptDraft } from '@/types/chat'
 
+function formatTokenCount(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`
+  return String(n)
+}
+
 function fileToImageAttachment(file: File): Promise<ImageAttachment> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
@@ -67,6 +73,8 @@ function formatQueuedPromptLabel(prompt: QueuedPromptDraft): string {
 export function ChatComposer({
   hasActiveModel,
   activeModelSupportsImages,
+  contextWindow,
+  usage,
   isStreaming,
   queuedCount,
   queuedPrompts,
@@ -78,6 +86,8 @@ export function ChatComposer({
 }: {
   hasActiveModel: boolean
   activeModelSupportsImages: boolean
+  contextWindow: number | null
+  usage: { input: number; output: number; cacheRead: number; cacheWrite: number }
   isStreaming: boolean
   queuedCount: number
   queuedPrompts: QueuedPromptDraft[]
@@ -392,8 +402,15 @@ export function ChatComposer({
             )}
 
             <div className="composer-footer flex items-center justify-between gap-3 px-3 py-2">
-              <div className="min-w-0 max-w-[min(46%,18rem)] shrink">
-                <ModelSelector onSettingsClick={onSettingsClick} variant="composer" />
+              <div className="flex min-w-0 shrink items-center gap-2">
+                <div className="min-w-0 max-w-[min(46%,18rem)] shrink">
+                  <ModelSelector onSettingsClick={onSettingsClick} variant="composer" />
+                </div>
+                {usage.input + usage.output > 0 && contextWindow && (
+                  <span className="shrink-0 text-[10px] text-[var(--term-dim)]">
+                    {formatTokenCount(usage.input + usage.output)} / {formatTokenCount(contextWindow)}
+                  </span>
+                )}
               </div>
               <div className="flex shrink-0 items-center gap-2">
                 <Button

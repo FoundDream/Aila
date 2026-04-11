@@ -80,6 +80,7 @@ interface AgentAPI {
     hasUsableProvider: boolean
     hasActiveModel: boolean
     activeModelSupportsImages: boolean
+    activeModelContextWindow: number | null
   }>
 
   // Session persistence

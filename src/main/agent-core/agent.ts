@@ -28,6 +28,7 @@ import type {
   ChatRequest,
   ImageContent,
   LLMToolSchema,
+  LLMUsage,
   ResolvedLLM,
   StopReason,
   StreamEvent,
@@ -221,6 +222,10 @@ export class Agent {
 
       const turn = await this.streamTurn(request, llmCtx, signal)
 
+      if (turn.usage) {
+        this.emit({ type: 'usage', usage: turn.usage })
+      }
+
       if (turn.errored) {
         console.error(`[agent] turn errored: ${turn.errorMessage ?? 'Unknown error'}`)
         this.persistAssistantIfAny(turn.assistantBlocks, 'error')
@@ -278,6 +283,7 @@ export class Agent {
     stopReason: StopReason
     errored: boolean
     errorMessage?: string
+    usage?: LLMUsage
   }> {
     const assistantBlocks: AssistantContentPart[] = []
     let currentText = ''
@@ -285,6 +291,8 @@ export class Agent {
     let stopReason: StopReason = 'stop'
     let errored = false
     let errorMessage: string | undefined
+    let turnUsage: LLMUsage | undefined
+    let currentThinkingSignature: string | undefined
 
     const flushText = () => {
       if (currentText) {
@@ -294,8 +302,13 @@ export class Agent {
     }
     const flushThinking = () => {
       if (currentThinking) {
-        assistantBlocks.push({ type: 'thinking', text: currentThinking })
+        assistantBlocks.push({
+          type: 'thinking',
+          text: currentThinking,
+          signature: currentThinkingSignature,
+        })
         currentThinking = ''
+        currentThinkingSignature = undefined
       }
     }
 
@@ -311,6 +324,7 @@ export class Agent {
           case 'thinking-delta':
             if (currentText) flushText()
             currentThinking += event.delta
+            if (event.signature) currentThinkingSignature = event.signature
             this.emit({ type: 'thinking_delta', delta: event.delta })
             break
           case 'tool-call-start':
@@ -342,7 +356,9 @@ export class Agent {
               errorMessage = event.errorMessage
             }
             break
-          // tool-call-delta and usage are not needed for session persistence
+          case 'usage':
+            turnUsage = event.usage
+            break
           default:
             break
         }
@@ -360,7 +376,7 @@ export class Agent {
     flushText()
     flushThinking()
 
-    return { assistantBlocks, stopReason, errored, errorMessage }
+    return { assistantBlocks, stopReason, errored, errorMessage, usage: turnUsage }
   }
 
   private async executeToolCall(call: ToolCallContent, signal: AbortSignal): Promise<void> {

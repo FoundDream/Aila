@@ -24,6 +24,7 @@ contextBridge.exposeInMainWorld('api', {
     hasUsableProvider: boolean
     hasActiveModel: boolean
     activeModelSupportsImages: boolean
+    activeModelContextWindow: number | null
   }> => ipcRenderer.invoke('agent:get-config'),
 
   // Session persistence

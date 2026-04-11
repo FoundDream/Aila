@@ -83,6 +83,7 @@ export function ChatPage({ onOpenSettings }: { onOpenSettings: () => void }): Re
     messages,
     queuedCount,
     queuedPrompts,
+    usage,
   } = useAgentChat()
 
   if (!config) {
@@ -142,6 +143,8 @@ export function ChatPage({ onOpenSettings }: { onOpenSettings: () => void }): Re
                 key={activeSessionId ?? 'new-session'}
                 hasActiveModel={config.hasActiveModel}
                 activeModelSupportsImages={config.activeModelSupportsImages}
+                contextWindow={config.activeModelContextWindow}
+                usage={usage}
                 isStreaming={isStreaming}
                 queuedCount={queuedCount}
                 queuedPrompts={queuedPrompts}
