@@ -62,6 +62,7 @@ export interface ChatSessionState {
 }
 
 export interface ChatConfig {
-  hasApiKey: boolean
+  hasUsableProvider: boolean
+  hasActiveModel: boolean
   activeModelSupportsImages: boolean
 }

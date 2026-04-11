@@ -133,13 +133,14 @@ export function ChatPage({ onOpenSettings }: { onOpenSettings: () => void }): Re
         </aside>
 
         <div className="flex min-w-0 flex-1 flex-col bg-[var(--term-bg)]">
-          {!config.hasApiKey ? (
+          {!config.hasUsableProvider ? (
             <SetupRequiredState onSettingsClick={onOpenSettings} />
           ) : (
             <>
               <ChatTranscript isStreaming={isStreaming} messages={messages} />
               <ChatComposer
                 key={activeSessionId ?? 'new-session'}
+                hasActiveModel={config.hasActiveModel}
                 activeModelSupportsImages={config.activeModelSupportsImages}
                 isStreaming={isStreaming}
                 queuedCount={queuedCount}

@@ -350,9 +350,9 @@ export function buildRequestBody(req: ChatRequest, stream: boolean): OpenAIReque
 
 function buildHeaders(auth: LLMAuth): Record<string, string> {
   return {
-    Authorization: `Bearer ${auth.apiKey}`,
     'content-type': 'application/json',
     accept: 'application/json',
+    ...(auth.apiKey.trim() ? { Authorization: `Bearer ${auth.apiKey}` } : {}),
     ...(auth.headers ?? {}),
   }
 }

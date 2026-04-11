@@ -101,7 +101,7 @@ export function ModelSelector({
   const activeKey = activeModelId?.split('/')
   const activeGroup = groups.find((g) => g.providerId === activeKey?.[0])
   const activeModel = activeGroup?.models.find((m) => m.id === activeKey?.[1])
-  const displayName = activeModel?.name ?? activeKey?.[1] ?? 'no model'
+  const displayName = activeModel?.name ?? activeKey?.[1] ?? 'select model'
   const hasModels = groups.some((g) => g.models.length > 0)
   const triggerClasses =
     variant === 'composer'

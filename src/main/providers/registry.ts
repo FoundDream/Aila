@@ -2,7 +2,7 @@ import type { LLMAuth, LLMClient, ModelInfo, ProviderId, ResolvedLLM } from '../
 import { AnthropicClient, GoogleClient, OpenAIClient, VertexClient } from '../llm'
 import type { ConfigService } from './config-service'
 import type { ModelConfig, ProviderConfig } from './types'
-import { CUSTOM_MODEL_DEFAULTS, parseModelKey } from './types'
+import { CUSTOM_MODEL_DEFAULTS, parseModelKey, providerHasUsableAuth } from './types'
 
 export type { ResolvedLLM }
 
@@ -46,9 +46,9 @@ function buildModelInfo(
 export class ProviderRegistry {
   constructor(private configService: ConfigService) {}
 
-  /** Get all providers that have an API key configured. */
+  /** Get all providers that can be used for inference right now. */
   getConfiguredProviders(): ProviderConfig[] {
-    return this.configService.getProviders().filter((p) => p.apiKey)
+    return this.configService.getProviders().filter(providerHasUsableAuth)
   }
 
   /** Get all models from configured providers, grouped by provider. */
@@ -61,8 +61,8 @@ export class ProviderRegistry {
 
   /**
    * Resolve the active model into a self-built LLMClient + ModelInfo + LLMAuth.
-   * Returns null when there is no active model, no API key, or the provider
-   * is not one of our four built-in protocols.
+   * Returns null when there is no active model, the provider is unusable, or
+   * the provider is not one of our four built-in protocols.
    */
   resolveActiveLLM(): ResolvedLLM | null {
     const activeKey = this.configService.getActiveModelId()
@@ -72,7 +72,7 @@ export class ProviderRegistry {
     if (!parsed) return null
 
     const provider = this.configService.getProvider(parsed.providerId)
-    if (!provider?.apiKey) return null
+    if (!provider || !providerHasUsableAuth(provider)) return null
 
     const providerId = toProviderId(String(provider.provider))
     if (!providerId) return null

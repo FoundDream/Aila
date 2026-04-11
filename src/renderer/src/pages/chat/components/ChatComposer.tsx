@@ -65,6 +65,7 @@ function formatQueuedPromptLabel(prompt: QueuedPromptDraft): string {
 }
 
 export function ChatComposer({
+  hasActiveModel,
   activeModelSupportsImages,
   isStreaming,
   queuedCount,
@@ -75,6 +76,7 @@ export function ChatComposer({
   onSettingsClick,
   onSubmit,
 }: {
+  hasActiveModel: boolean
   activeModelSupportsImages: boolean
   isStreaming: boolean
   queuedCount: number
@@ -91,7 +93,7 @@ export function ChatComposer({
   const [input, setInput] = useState('')
   const [images, setImages] = useState<ImageAttachment[]>([])
   const hasDraft = input.trim().length > 0 || images.length > 0
-  const canSubmit = hasDraft && (activeModelSupportsImages || images.length === 0)
+  const canSubmit = hasActiveModel && hasDraft && (activeModelSupportsImages || images.length === 0)
   const [isTyping, setIsTyping] = useState(false)
   const [isDraggingImages, setIsDraggingImages] = useState(false)
   const typingTimer = useRef<ReturnType<typeof setTimeout>>(null)
@@ -319,7 +321,13 @@ export function ChatComposer({
                   onKeyDown={handleKeyDown}
                   onPaste={handlePaste}
                   onScroll={handleScroll}
-                  placeholder={isStreaming ? 'queue another message' : 'type here'}
+                  placeholder={
+                    !hasActiveModel
+                      ? 'select a model to start'
+                      : isStreaming
+                        ? 'queue another message'
+                        : 'type here'
+                  }
                   rows={1}
                   className="max-h-[120px] min-h-[20px] w-full resize-none bg-transparent p-0 text-[13px] text-transparent caret-[var(--term-blue)] outline-none placeholder:text-[var(--term-dim)]"
                   style={{ fieldSizing: 'content' } as CSSProperties}
@@ -425,9 +433,11 @@ export function ChatComposer({
                   onClick={() => void handleSubmit()}
                   disabled={!canSubmit}
                   title={
-                    images.length > 0 && !activeModelSupportsImages
-                      ? 'Switch to a vision-capable model to send images'
-                      : 'Send'
+                    !hasActiveModel
+                      ? 'Choose a model first'
+                      : images.length > 0 && !activeModelSupportsImages
+                        ? 'Switch to a vision-capable model to send images'
+                        : 'Send'
                   }
                 >
                   enter

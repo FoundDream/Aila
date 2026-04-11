@@ -20,14 +20,16 @@ contextBridge.exposeInMainWorld('api', {
   ) => ipcRenderer.invoke('agent:prompt', sessionId, prompt),
   abort: (sessionId: string) => ipcRenderer.invoke('agent:abort', sessionId),
   newSession: () => ipcRenderer.invoke('agent:new-session'),
-  getConfig: (): Promise<{ hasApiKey: boolean; activeModelSupportsImages: boolean }> =>
-    ipcRenderer.invoke('agent:get-config'),
+  getConfig: (): Promise<{
+    hasUsableProvider: boolean
+    hasActiveModel: boolean
+    activeModelSupportsImages: boolean
+  }> => ipcRenderer.invoke('agent:get-config'),
 
   // Session persistence
   listSessions: () => ipcRenderer.invoke('agent:list-sessions'),
   openSession: (target: { runtimeId?: string | null; path?: string | null }) =>
     ipcRenderer.invoke('agent:open-session', target),
-  getSessionState: (sessionId: string) => ipcRenderer.invoke('agent:get-session-state', sessionId),
   editQueuedPrompt: (
     sessionId: string,
     promptId: string,
@@ -64,9 +66,6 @@ contextBridge.exposeInMainWorld('api', {
       isError: boolean
     }) => void,
   ) => onChannel('agent:tool-end', cb),
-  onComplete: (cb: (data: { sessionId: string }) => void) => onChannel('agent:complete', cb),
-  onError: (cb: (data: { sessionId: string; message: string }) => void) =>
-    onChannel('agent:error', cb),
   onSessionState: (cb: (data: unknown) => void) => onChannel('agent:session-state', cb),
   onSessionsChanged: (cb: () => void) => onChannel('agent:sessions-changed', cb),
 

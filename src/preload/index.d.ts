@@ -76,7 +76,11 @@ interface AgentAPI {
   ) => Promise<SessionState>
   abort: (sessionId: string) => Promise<SessionState>
   newSession: () => Promise<SessionState>
-  getConfig: () => Promise<{ hasApiKey: boolean; activeModelSupportsImages: boolean }>
+  getConfig: () => Promise<{
+    hasUsableProvider: boolean
+    hasActiveModel: boolean
+    activeModelSupportsImages: boolean
+  }>
 
   // Session persistence
   listSessions: () => Promise<SessionSummary[]>
@@ -84,7 +88,6 @@ interface AgentAPI {
     runtimeId?: string | null
     path?: string | null
   }) => Promise<SessionState>
-  getSessionState: (sessionId: string) => Promise<SessionState>
   editQueuedPrompt: (
     sessionId: string,
     promptId: string,
@@ -120,8 +123,6 @@ interface AgentAPI {
       isError: boolean
     }) => void,
   ) => () => void
-  onComplete: (cb: (data: { sessionId: string }) => void) => () => void
-  onError: (cb: (data: { sessionId: string; message: string }) => void) => () => void
   onSessionState: (cb: (data: SessionState) => void) => () => void
   onSessionsChanged: (cb: () => void) => () => void
 

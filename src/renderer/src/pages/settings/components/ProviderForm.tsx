@@ -31,12 +31,15 @@ interface ProviderData {
   provider: string
   baseUrl: string
   hasApiKey: boolean
+  requiresApiKey: boolean
+  isUsable: boolean
   protocol?: string
   models: {
     id: string
     name: string
     toolUse: boolean
     reasoning: boolean
+    supportsImageInput: boolean
     contextWindow: number
     maxTokens: number
   }[]
@@ -124,11 +127,19 @@ export function ProviderForm({
         name: id,
         toolUse: false,
         reasoning: false,
+        supportsImageInput: false,
         contextWindow: 8192,
         maxTokens: 4096,
       },
     ])
     setModelInput('')
+  }
+
+  const handleUpdateModel = (
+    modelId: string,
+    updater: (model: (typeof models)[number]) => (typeof models)[number],
+  ): void => {
+    setModels((current) => current.map((model) => (model.id === modelId ? updater(model) : model)))
   }
 
   const handleRemoveModel = (modelId: string): void => {
@@ -143,8 +154,13 @@ export function ProviderForm({
     try {
       if (isBuiltIn && provider) {
         await onSave({
-          ...provider,
+          id: provider.id,
+          displayName: provider.displayName,
+          api: provider.api,
+          provider: provider.provider,
+          baseUrl: provider.baseUrl,
           models,
+          isBuiltIn: true,
           apiKey: apiKey.trim() || undefined,
         })
       } else {
@@ -196,7 +212,13 @@ export function ProviderForm({
           type="password"
           value={apiKey}
           onChange={(e) => setApiKey(e.target.value)}
-          placeholder={provider?.hasApiKey ? 'leave blank to keep current key' : 'enter key'}
+          placeholder={
+            provider?.hasApiKey
+              ? 'leave blank to keep current key'
+              : provider && !provider.requiresApiKey
+                ? 'optional for this provider'
+                : 'enter key'
+          }
           className={inputClass}
         />
       </div>
@@ -257,17 +279,105 @@ export function ProviderForm({
             .map((m) => (
               <div
                 key={m.id}
-                className="flex items-center justify-between rounded border border-[var(--term-border)] bg-[var(--term-surface-soft)] px-2.5 py-1.5 text-[12px]"
+                className="space-y-2 rounded border border-[var(--term-border)] bg-[var(--term-surface-soft)] px-2.5 py-2 text-[12px]"
               >
-                <span className="text-[var(--term-text-soft)]">{m.name}</span>
-                <Button
-                  type="button"
-                  variant="quietDanger"
-                  size="xs"
-                  onClick={() => handleRemoveModel(m.id)}
-                >
-                  x
-                </Button>
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0 flex-1">
+                    <input
+                      type="text"
+                      value={m.name}
+                      onChange={(e) =>
+                        handleUpdateModel(m.id, (model) => ({ ...model, name: e.target.value }))
+                      }
+                      placeholder="display name"
+                      className={inputClass}
+                    />
+                    <p className="mt-1 truncate text-[10px] text-[var(--term-dim)]">{m.id}</p>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="quietDanger"
+                    size="xs"
+                    onClick={() => handleRemoveModel(m.id)}
+                  >
+                    remove
+                  </Button>
+                </div>
+
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <label className="text-[11px] text-[var(--term-dim)]">
+                    <span className="mb-1 block">Context window</span>
+                    <input
+                      type="number"
+                      min={1}
+                      value={m.contextWindow}
+                      onChange={(e) =>
+                        handleUpdateModel(m.id, (model) => ({
+                          ...model,
+                          contextWindow: Math.max(1, Number(e.target.value) || 1),
+                        }))
+                      }
+                      className={inputClass}
+                    />
+                  </label>
+                  <label className="text-[11px] text-[var(--term-dim)]">
+                    <span className="mb-1 block">Max output tokens</span>
+                    <input
+                      type="number"
+                      min={1}
+                      value={m.maxTokens}
+                      onChange={(e) =>
+                        handleUpdateModel(m.id, (model) => ({
+                          ...model,
+                          maxTokens: Math.max(1, Number(e.target.value) || 1),
+                        }))
+                      }
+                      className={inputClass}
+                    />
+                  </label>
+                </div>
+
+                <div className="flex flex-wrap gap-x-3 gap-y-2 text-[11px] text-[var(--term-text-soft)]">
+                  <label className="inline-flex items-center gap-1.5">
+                    <input
+                      type="checkbox"
+                      checked={m.supportsImageInput}
+                      onChange={(e) =>
+                        handleUpdateModel(m.id, (model) => ({
+                          ...model,
+                          supportsImageInput: e.target.checked,
+                        }))
+                      }
+                    />
+                    <span>vision</span>
+                  </label>
+                  <label className="inline-flex items-center gap-1.5">
+                    <input
+                      type="checkbox"
+                      checked={m.toolUse}
+                      onChange={(e) =>
+                        handleUpdateModel(m.id, (model) => ({
+                          ...model,
+                          toolUse: e.target.checked,
+                        }))
+                      }
+                    />
+                    <span>tools</span>
+                  </label>
+                  <label className="inline-flex items-center gap-1.5">
+                    <input
+                      type="checkbox"
+                      checked={m.reasoning}
+                      onChange={(e) =>
+                        handleUpdateModel(m.id, (model) => ({
+                          ...model,
+                          reasoning: e.target.checked,
+                        }))
+                      }
+                    />
+                    <span>thinking</span>
+                  </label>
+                </div>
               </div>
             ))}
         </div>
@@ -301,7 +411,7 @@ export function ProviderForm({
         {provider && (
           <Button
             onClick={() => void handleTest()}
-            disabled={testing || !provider.hasApiKey}
+            disabled={testing || (provider.requiresApiKey && !provider.hasApiKey)}
             variant="secondary"
           >
             {testing ? 'testing...' : 'test'}

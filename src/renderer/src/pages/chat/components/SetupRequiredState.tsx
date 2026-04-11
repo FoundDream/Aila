@@ -15,11 +15,12 @@ export function SetupRequiredState({
           <span className="text-sm text-[var(--term-text)]">setup required</span>
         </div>
         <p className="text-[13px] text-[var(--term-text-soft)]">
-          Add an AI provider in settings before starting a chat session.
+          Add a provider with a reachable endpoint and at least one model before starting a chat
+          session.
         </p>
         <div className="mt-4 rounded border border-[var(--term-border)] bg-[var(--term-surface)] p-4 text-[12px] leading-relaxed text-[var(--term-text-soft)]">
-          Open settings, add an API key for a built-in provider or create a custom provider, then
-          pick a model.
+          Open settings, add credentials for a built-in provider or configure a compatible custom
+          endpoint, then return here and choose a model.
         </div>
         <div className="mt-4">
           <Button variant="primary" onClick={onSettingsClick}>

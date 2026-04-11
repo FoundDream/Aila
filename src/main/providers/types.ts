@@ -68,6 +68,18 @@ export interface AppConfig {
   webSearch: WebSearchConfig
 }
 
+export function providerCanUseWithoutApiKey(
+  provider: Pick<ProviderConfig, 'api' | 'isBuiltIn'>,
+): boolean {
+  return !provider.isBuiltIn && provider.api === 'openai-completions'
+}
+
+export function providerHasUsableAuth(
+  provider: Pick<ProviderConfig, 'api' | 'apiKey' | 'isBuiltIn'>,
+): boolean {
+  return Boolean(provider.apiKey.trim()) || providerCanUseWithoutApiKey(provider)
+}
+
 export function parseModelKey(key: string): { providerId: string; modelId: string } | null {
   const slash = key.indexOf('/')
   if (slash === -1) return null

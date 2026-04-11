@@ -16,12 +16,15 @@ interface ProviderData {
   provider: string
   baseUrl: string
   hasApiKey: boolean
+  requiresApiKey: boolean
+  isUsable: boolean
   protocol?: string
   models: {
     id: string
     name: string
     toolUse: boolean
     reasoning: boolean
+    supportsImageInput: boolean
     contextWindow: number
     maxTokens: number
   }[]
@@ -63,28 +66,37 @@ export function SettingsPage({ onBack }: { onBack: () => void }): ReactElement {
     return unsub
   }, [loadProviders])
 
-  const configured = providers.filter((provider) => provider.hasApiKey)
-  const unconfigured = providers.filter((provider) => !provider.hasApiKey && provider.isBuiltIn)
+  const savedProviders = providers.filter((provider) => !provider.isBuiltIn || provider.isUsable)
+  const unconfiguredBuiltIns = providers.filter(
+    (provider) => provider.isBuiltIn && !provider.isUsable,
+  )
   const toggleExpanded = (providerId: string): void => {
     setExpandedId((current) => (current === providerId ? null : providerId))
   }
 
   const renderModelSection = (): ReactElement => (
     <div className="min-w-0">
-      {configured.length > 0 && (
+      {savedProviders.length > 0 && (
         <section className="mb-5">
-          <SettingsSectionHeading>Configured</SettingsSectionHeading>
+          <SettingsSectionHeading>Providers</SettingsSectionHeading>
           <div className="space-y-1.5">
-            {configured.map((provider) => (
+            {savedProviders.map((provider) => (
               <SettingsAccordionItem
                 key={provider.id}
                 expanded={expandedId === provider.id}
                 onToggle={() => toggleExpanded(provider.id)}
                 header={
                   <div className="flex items-center gap-2">
-                    <span className="h-1.5 w-1.5 rounded-full bg-[var(--term-cyan)]" />
+                    <span
+                      className={`h-1.5 w-1.5 rounded-full ${
+                        provider.isUsable ? 'bg-[var(--term-cyan)]' : 'bg-[var(--term-yellow)]'
+                      }`}
+                    />
                     <span className="text-[var(--term-text)]">{provider.displayName}</span>
                     <span className="text-[var(--term-dim)]">{provider.models.length} models</span>
+                    {!provider.isUsable && (
+                      <span className="text-[10px] text-[var(--term-yellow)]">needs setup</span>
+                    )}
                   </div>
                 }
                 trailing={
@@ -123,13 +135,13 @@ export function SettingsPage({ onBack }: { onBack: () => void }): ReactElement {
         </section>
       )}
 
-      {unconfigured.length > 0 && (
+      {unconfiguredBuiltIns.length > 0 && (
         <section className="mb-5">
           <SettingsSectionHeading>
-            {configured.length === 0 ? 'Add an API key to get started' : 'Available'}
+            {savedProviders.length === 0 ? 'Add a provider to get started' : 'Available'}
           </SettingsSectionHeading>
           <div className="space-y-1.5">
-            {unconfigured.map((provider) => (
+            {unconfiguredBuiltIns.map((provider) => (
               <SettingsAccordionItem
                 key={provider.id}
                 expanded={expandedId === provider.id}

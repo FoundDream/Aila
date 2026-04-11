@@ -12,6 +12,7 @@ import type {
 import type { PreferenceMemoryService } from './memory/preference-memory-service'
 import type { ConfigService } from './providers/config-service'
 import type { ProviderRegistry } from './providers/registry'
+import { providerHasUsableAuth } from './providers/types'
 import { buildUIMessagesFromEntries, SessionStore } from './session'
 import { createCodingTools, createCustomTools } from './tools'
 
@@ -620,7 +621,9 @@ export class AgentService {
   async switchModel(providerId: string, modelId: string): Promise<void> {
     const provider = this.configService.getProvider(providerId)
     if (!provider) throw new Error(`Provider "${providerId}" not found`)
-    if (!provider.apiKey) throw new Error(`Provider "${providerId}" has no API key`)
+    if (!providerHasUsableAuth(provider)) {
+      throw new Error(`Provider "${providerId}" is not ready to use`)
+    }
 
     await Promise.all(
       [...this.controllers.values()].map((controller) =>

@@ -8,6 +8,7 @@ import {
 } from './memory/preference-memory-service'
 import { ConfigService } from './providers/config-service'
 import { ProviderRegistry } from './providers/registry'
+import { providerCanUseWithoutApiKey, providerHasUsableAuth } from './providers/types'
 
 const DEV_RENDERER_URL = 'http://localhost:5173'
 
@@ -185,8 +186,10 @@ function registerIpcHandlers(): void {
   )
 
   ipcMain.handle('agent:get-config', () => {
+    const activeModelId = configService.getActiveModelId()
     return {
-      hasApiKey: configService.getProviders().some((p) => p.apiKey),
+      hasUsableProvider: registry.getAvailableModels().some(({ models }) => models.length > 0),
+      hasActiveModel: Boolean(activeModelId && registry.resolveActiveLLM()),
       activeModelSupportsImages: getActiveModelSupportsImages(),
     }
   })
@@ -196,7 +199,9 @@ function registerIpcHandlers(): void {
   ipcMain.handle('provider:get-all', () => {
     return configService.getProviders().map(({ apiKey, ...provider }) => ({
       ...provider,
-      hasApiKey: Boolean(apiKey),
+      hasApiKey: Boolean(apiKey.trim()),
+      requiresApiKey: !providerCanUseWithoutApiKey(provider),
+      isUsable: providerHasUsableAuth({ ...provider, apiKey }) && provider.models.length > 0,
     }))
   })
 
@@ -251,7 +256,9 @@ function registerIpcHandlers(): void {
   ipcMain.handle('provider:test-connection', async (_event, providerId: string) => {
     const provider = configService.getProvider(providerId)
     if (!provider) throw new Error('Provider not found')
-    if (!provider.apiKey) throw new Error('No API key configured')
+    if (!providerHasUsableAuth(provider)) {
+      throw new Error('This provider is missing required authentication')
+    }
 
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), 10_000)
@@ -262,7 +269,9 @@ function registerIpcHandlers(): void {
 
       if (provider.api === 'openai-completions') {
         url = `${provider.baseUrl}/models`
-        headers.Authorization = `Bearer ${provider.apiKey}`
+        if (provider.apiKey) {
+          headers.Authorization = `Bearer ${provider.apiKey}`
+        }
       } else if (provider.api === 'anthropic-messages') {
         url = `${provider.baseUrl}/v1/messages`
         headers['x-api-key'] = provider.apiKey
