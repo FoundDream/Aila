@@ -212,6 +212,7 @@ export class Agent {
         messages: this.options.store.getMessages(),
         tools: toolSchemas.length > 0 ? toolSchemas : undefined,
         maxOutputTokens: llmCtx.modelInfo.maxOutputTokens,
+        thinkingBudget: llmCtx.modelInfo.supportsThinking ? 10_000 : undefined,
       }
 
       console.log(
