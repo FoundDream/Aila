@@ -1,4 +1,7 @@
-declare module '*.md?raw' {
-  const content: string
-  export default content
+declare namespace NodeJS {
+  interface ProcessEnv {
+    OPENROUTER_API_KEY?: string
+    OPENROUTER_MODEL?: string
+    OPENROUTER_APP_NAME?: string
+  }
 }
