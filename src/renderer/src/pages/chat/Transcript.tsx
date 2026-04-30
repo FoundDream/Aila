@@ -1,5 +1,7 @@
 import { type ReactElement, useEffect, useRef } from 'react'
-import type { Message } from './types'
+import type { Block, Message } from './types'
+
+const SERIF_STYLE: React.CSSProperties = { fontFamily: 'var(--font-serif)' }
 
 export function Transcript({ messages }: { messages: Message[] }): ReactElement {
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -12,15 +14,17 @@ export function Transcript({ messages }: { messages: Message[] }): ReactElement 
 
   if (messages.length === 0) {
     return (
-      <div className="flex flex-1 items-center justify-center text-sm text-[var(--term-dim)]">
-        Type something to start.
+      <div className="flex flex-1 items-center justify-center">
+        <p className="text-lg italic text-[var(--text-dim)]" style={SERIF_STYLE}>
+          A blank page.
+        </p>
       </div>
     )
   }
 
   return (
-    <div ref={scrollRef} className="flex-1 overflow-y-auto px-6 py-4">
-      <div className="mx-auto flex max-w-2xl flex-col gap-5">
+    <div ref={scrollRef} className="flex-1 overflow-y-auto px-8 py-10">
+      <div className="mx-auto flex max-w-[680px] flex-col gap-10">
         {messages.map((message) => (
           <MessageRow key={message.id} message={message} />
         ))}
@@ -32,47 +36,62 @@ export function Transcript({ messages }: { messages: Message[] }): ReactElement 
 function MessageRow({ message }: { message: Message }): ReactElement {
   const isUser = message.role === 'user'
   return (
-    <div className={`flex flex-col gap-2 ${isUser ? 'items-end' : 'items-start'}`}>
-      <div
-        className={`text-[10px] uppercase tracking-wider ${
-          isUser ? 'text-[var(--term-blue-strong)]' : 'text-[var(--term-dim)]'
-        }`}
+    <article className="flex flex-col gap-2">
+      <header
+        className={`text-xs italic ${isUser ? 'text-[var(--text-soft)]' : 'text-[var(--text-dim)]'}`}
+        style={SERIF_STYLE}
       >
-        {isUser ? 'you' : 'assistant'}
-      </div>
-      <div
-        className={`max-w-full whitespace-pre-wrap rounded-md px-3 py-2 text-sm leading-relaxed ${
-          isUser
-            ? 'bg-[var(--term-accent-soft)] text-[var(--term-text)]'
-            : 'bg-[var(--term-surface)] border border-[var(--term-border)] text-[var(--term-text)]'
-        }`}
-      >
+        {isUser ? 'You' : 'Assistant'}
+      </header>
+      <div className="flex flex-col gap-3">
         {message.blocks.length === 0 && message.status === 'streaming' ? (
-          <span className="text-[var(--term-dim)]">…</span>
+          <StreamingDots />
         ) : (
           message.blocks.map((block, index) => (
-            <div
+            <BlockView
               // biome-ignore lint/suspicious/noArrayIndexKey: blocks are append-only per message
               key={index}
-              className={
-                block.type === 'reasoning'
-                  ? 'mb-1 rounded border-l-2 border-[var(--term-border-strong)] bg-[var(--term-surface-soft)] px-2 py-1 text-xs italic text-[var(--term-text-soft)]'
-                  : ''
-              }
-            >
-              {block.type === 'reasoning' && (
-                <div className="mb-0.5 text-[10px] uppercase tracking-wider not-italic text-[var(--term-dim)]">
-                  thinking
-                </div>
-              )}
-              {block.content}
-            </div>
+              block={block}
+            />
           ))
         )}
         {message.status === 'error' && message.error && (
-          <div className="mt-2 text-xs text-[var(--term-red)]">Error: {message.error}</div>
+          <p className="text-sm text-[var(--error)]">Error: {message.error}</p>
         )}
       </div>
+    </article>
+  )
+}
+
+function BlockView({ block }: { block: Block }): ReactElement {
+  if (block.type === 'reasoning') {
+    return (
+      <aside className="border-l-2 border-[var(--border-strong)] pl-4 text-[14px] italic text-[var(--text-soft)]">
+        <div className="mb-1 text-[11px] not-italic text-[var(--text-dim)]" style={SERIF_STYLE}>
+          thinking
+        </div>
+        <div className="whitespace-pre-wrap">{block.content}</div>
+      </aside>
+    )
+  }
+  return <p className="whitespace-pre-wrap text-[15px] leading-[1.7]">{block.content}</p>
+}
+
+function StreamingDots(): ReactElement {
+  return (
+    <div className="flex items-center gap-1.5 py-1">
+      <Dot delay="0s" />
+      <Dot delay="0.15s" />
+      <Dot delay="0.3s" />
     </div>
+  )
+}
+
+function Dot({ delay }: { delay: string }): ReactElement {
+  return (
+    <span
+      className="inline-block h-1.5 w-1.5 rounded-full bg-[var(--text-dim)]"
+      style={{ animation: 'pulse-dot 1.2s ease-in-out infinite', animationDelay: delay }}
+    />
   )
 }

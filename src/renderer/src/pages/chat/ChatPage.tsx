@@ -157,8 +157,15 @@ export function ChatPage(): ReactElement {
   }, [])
 
   return (
-    <div className="flex h-full flex-col bg-[var(--term-bg)] text-[var(--term-text)]">
-      <header className="h-8 shrink-0 [-webkit-app-region:drag] border-b border-[var(--term-border)]" />
+    <div className="flex h-full flex-col bg-[var(--bg)] text-[var(--text)]">
+      <header className="flex h-10 shrink-0 items-center justify-center [-webkit-app-region:drag]">
+        <span
+          className="text-[13px] italic tracking-wide text-[var(--text-dim)]"
+          style={{ fontFamily: 'var(--font-serif)' }}
+        >
+          Aila
+        </span>
+      </header>
       <main className="flex min-h-0 flex-1 flex-col">
         <Transcript messages={messages} />
         <Composer isStreaming={isStreaming} onSubmit={handleSubmit} onAbort={handleAbort} />
