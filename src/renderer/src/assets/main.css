@@ -1,5 +1,9 @@
 @import "tailwindcss";
 
+@plugin "tailwind-scrollbar-hide";
+
+@custom-variant dark (&:is(.dark *));
+
 @source "../../../../node_modules/streamdown/dist/*.js";
 
 @theme {
@@ -18,22 +22,65 @@
   --text-dim: #9a9a93;
   --border: #ececea;
   --border-strong: #dadad6;
-  --accent: #1f1f1c;
-  --accent-fg: #ffffff;
+  --brand-ink: #1f1f1c;
+  --brand-ink-fg: #ffffff;
   --error: #b14e3e;
 
-  /* shadcn-style tokens consumed by streamdown.
-     `--border` is intentionally reused from above. */
+  /* shadcn tokens (consumed by Plate UI + streamdown). */
   --background: var(--bg);
   --foreground: var(--text);
   --card: var(--surface);
   --card-foreground: var(--text);
+  --popover: var(--surface);
+  --popover-foreground: var(--text);
+  --primary: var(--brand-ink);
+  --primary-foreground: var(--brand-ink-fg);
+  --secondary: var(--surface-hover);
+  --secondary-foreground: var(--text);
   --muted: var(--bg-soft);
   --muted-foreground: var(--text-soft);
+  --accent: var(--surface-hover);
+  --accent-foreground: var(--text);
+  --destructive: var(--error);
+  --destructive-foreground: #ffffff;
   --input: var(--border-strong);
-  --primary: var(--accent);
-  --primary-foreground: var(--accent-fg);
+  --ring: var(--border-strong);
   --radius: 0.5rem;
+
+  --highlight: oklch(0.852 0.199 91.936);
+  --brand: var(--text);
+}
+
+.dark {
+  --highlight: oklch(0.852 0.199 91.936);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-highlight: var(--highlight);
+  --color-brand: var(--brand);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
 }
 
 html,
@@ -54,20 +101,22 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
-button,
-input,
-textarea,
-select {
-  font: inherit;
-  color: inherit;
-}
+@layer base {
+  button,
+  input,
+  textarea,
+  select {
+    font: inherit;
+    color: inherit;
+  }
 
-button {
-  cursor: pointer;
-}
+  button {
+    cursor: pointer;
+  }
 
-textarea {
-  font-family: var(--font-sans);
+  textarea {
+    font-family: var(--font-sans);
+  }
 }
 
 ::selection {
@@ -108,17 +157,6 @@ textarea {
     opacity: 1;
     transform: translateY(-1px);
   }
-}
-
-.aila-prose > div + div,
-.aila-prose > p + p {
-  margin-top: 0.55em;
-}
-
-.aila-prose [data-slate-placeholder="true"] {
-  color: var(--text-dim);
-  font-style: italic;
-  opacity: 1 !important;
 }
 
 .aila-md > * + * {

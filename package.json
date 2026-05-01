@@ -18,12 +18,31 @@
     "format": "biome format --write ."
   },
   "dependencies": {
+    "@ariakit/react": "^0.4.26",
     "@electron-toolkit/utils": "^4.0.0",
-    "@platejs/autoformat": "^53.0.0",
     "@platejs/basic-nodes": "^53.0.0",
+    "@platejs/code-block": "^53.0.0",
+    "@platejs/combobox": "^53.0.0",
+    "@platejs/floating": "^53.0.0",
+    "@platejs/footnote": "^53.0.0",
+    "@platejs/indent": "^53.0.0",
+    "@platejs/link": "^53.0.3",
+    "@platejs/list": "^53.0.2",
+    "@platejs/markdown": "^53.0.0",
+    "@platejs/slash-command": "^53.0.0",
+    "@radix-ui/react-toolbar": "^1.1.11",
+    "@udecode/cn": "^52.3.4",
+    "cmdk": "^1.1.1",
     "dotenv": "^16.4.5",
+    "lowlight": "^3.3.0",
+    "lucide-react": "^1.14.0",
     "platejs": "^53.0.3",
-    "streamdown": "^2.5.0"
+    "radix-ui": "^1.4.3",
+    "remark-emoji": "^5.0.2",
+    "remark-gfm": "^4.0.1",
+    "remark-math": "^6.0.0",
+    "streamdown": "^2.5.0",
+    "tailwind-scrollbar-hide": "^4.0.0"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.10",

@@ -7,7 +7,16 @@
   },
   "files": {
     "ignoreUnknown": true,
-    "includes": ["**/*.ts", "**/*.tsx", "**/*.js", "**/*.json"]
+    "includes": [
+      "**/*.ts",
+      "**/*.tsx",
+      "**/*.js",
+      "**/*.json",
+      "!src/renderer/src/components/ui",
+      "!src/renderer/src/components/editor",
+      "!src/renderer/src/hooks",
+      "!src/renderer/src/lib/utils.ts"
+    ]
   },
   "formatter": {
     "enabled": true,

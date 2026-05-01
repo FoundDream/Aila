@@ -1,4 +1,5 @@
 import { type ReactElement, useState } from 'react'
+import { TooltipProvider } from '@/components/ui/tooltip'
 import { ChatPage } from '@/pages/chat/ChatPage'
 import { DocList } from '@/pages/docs/DocList'
 import { DocsPage } from '@/pages/docs/DocsPage'
@@ -61,8 +62,9 @@ export default function App(): ReactElement {
   const docsState = useDocs()
 
   return (
-    <div className="flex h-full bg-[var(--bg-soft)] text-[var(--text)]">
-      <aside className="flex w-[260px] shrink-0 flex-col">
+    <TooltipProvider delayDuration={300}>
+      <div className="flex h-full bg-[var(--bg-soft)] text-[var(--text)]">
+        <aside className="flex w-[260px] shrink-0 flex-col">
         <div className="h-11 shrink-0 [-webkit-app-region:drag]" />
         <nav className="flex shrink-0 flex-col gap-px px-2">
           {navItems.map((item) => {
@@ -98,9 +100,10 @@ export default function App(): ReactElement {
           </div>
         )}
       </aside>
-      <main className="min-w-0 flex-1 rounded-tl-lg border-t border-l border-[var(--border)] bg-[var(--bg)] shadow-[0_0_0_0.5px_rgba(0,0,0,0.02)]">
-        {tab === 'chat' ? <ChatPage /> : <DocsPage state={docsState} />}
-      </main>
-    </div>
+        <main className="min-w-0 flex-1 rounded-tl-lg border-t border-l border-[var(--border)] bg-[var(--bg)] shadow-[0_0_0_0.5px_rgba(0,0,0,0.02)]">
+          {tab === 'chat' ? <ChatPage /> : <DocsPage state={docsState} />}
+        </main>
+      </div>
+    </TooltipProvider>
   )
 }
