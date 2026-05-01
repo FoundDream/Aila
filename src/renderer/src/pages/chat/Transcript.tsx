@@ -1,17 +1,15 @@
-import { type ReactElement, useEffect, useRef } from 'react'
+import type { ReactElement } from 'react'
 import { Streamdown } from 'streamdown'
+import { useStickToBottom } from 'use-stick-to-bottom'
 import type { Block, Message } from './types'
 
 const SERIF_STYLE: React.CSSProperties = { fontFamily: 'var(--font-serif)' }
 
 export function Transcript({ messages }: { messages: Message[] }): ReactElement {
-  const scrollRef = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    const node = scrollRef.current
-    if (!node || messages.length === 0) return
-    node.scrollTop = node.scrollHeight
-  }, [messages])
+  const { scrollRef, contentRef, isAtBottom, scrollToBottom } = useStickToBottom({
+    initial: 'instant',
+    resize: 'instant',
+  })
 
   if (messages.length === 0) {
     return (
@@ -24,12 +22,25 @@ export function Transcript({ messages }: { messages: Message[] }): ReactElement 
   }
 
   return (
-    <div ref={scrollRef} className="flex-1 overflow-y-auto px-8 py-10">
-      <div className="mx-auto flex max-w-[680px] flex-col gap-10">
-        {messages.map((message) => (
-          <MessageRow key={message.id} message={message} />
-        ))}
+    <div className="relative flex min-h-0 flex-1 flex-col">
+      <div ref={scrollRef} className="flex-1 overflow-y-auto px-8 py-10">
+        <div ref={contentRef} className="mx-auto flex max-w-[680px] flex-col gap-10">
+          {messages.map((message) => (
+            <MessageRow key={message.id} message={message} />
+          ))}
+        </div>
       </div>
+      {!isAtBottom && (
+        <button
+          type="button"
+          onClick={() => scrollToBottom()}
+          aria-label="Jump to latest"
+          className="absolute bottom-4 left-1/2 -translate-x-1/2 rounded-full border border-[var(--border-strong)] bg-[var(--bg)] px-3 py-1 text-[12px] italic text-[var(--text-dim)] shadow-sm transition-colors hover:text-[var(--text)]"
+          style={SERIF_STYLE}
+        >
+          ↓ jump to latest
+        </button>
+      )}
     </div>
   )
 }

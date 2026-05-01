@@ -42,7 +42,8 @@
     "remark-gfm": "^4.0.1",
     "remark-math": "^6.0.0",
     "streamdown": "^2.5.0",
-    "tailwind-scrollbar-hide": "^4.0.0"
+    "tailwind-scrollbar-hide": "^4.0.0",
+    "use-stick-to-bottom": "^1.1.4"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.10",
