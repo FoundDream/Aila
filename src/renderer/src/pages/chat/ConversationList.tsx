@@ -1,15 +1,15 @@
 import type { ReactElement } from 'react'
-import type { DocSummary } from './types'
+import type { ConversationSummary } from '../../../../preload/index'
 
-interface DocListProps {
-  docs: DocSummary[]
+interface ConversationListProps {
+  conversations: ConversationSummary[]
   activeId: string | null
   onSelect: (id: string) => void
   onCreate: () => void
   onDelete: (id: string) => void
 }
 
-function PageIcon(): ReactElement {
+function BubbleIcon(): ReactElement {
   return (
     <svg
       width="14"
@@ -22,8 +22,7 @@ function PageIcon(): ReactElement {
       strokeLinejoin="round"
       aria-hidden="true"
     >
-      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-      <path d="M14 2v6h6" />
+      <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
     </svg>
   )
 }
@@ -64,24 +63,24 @@ function TrashIcon(): ReactElement {
   )
 }
 
-export function DocList({
-  docs,
+export function ConversationList({
+  conversations,
   activeId,
   onSelect,
   onCreate,
   onDelete,
-}: DocListProps): ReactElement {
+}: ConversationListProps): ReactElement {
   return (
     <div className="flex h-full flex-col">
       <div className="group/header flex h-7 shrink-0 items-center px-2">
         <span className="flex-1 px-2 text-[11px] font-medium tracking-wide text-[var(--text-dim)]">
-          Documents
+          Conversations
         </span>
         <button
           type="button"
           onClick={onCreate}
-          aria-label="New document"
-          title="New document"
+          aria-label="New conversation"
+          title="New conversation"
           className="flex h-5 w-5 cursor-pointer items-center justify-center rounded text-[var(--text-dim)] opacity-0 transition group-hover/header:opacity-100 hover:bg-[var(--surface-hover)] hover:text-[var(--text-soft)]"
         >
           <PlusIcon />
@@ -89,7 +88,7 @@ export function DocList({
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-2">
-        {docs.length === 0 ? (
+        {conversations.length === 0 ? (
           <button
             type="button"
             onClick={onCreate}
@@ -98,23 +97,23 @@ export function DocList({
             <span className="flex h-4 w-4 items-center justify-center">
               <PlusIcon />
             </span>
-            <span>Add a page</span>
+            <span>New chat</span>
           </button>
         ) : (
           <ul className="flex flex-col gap-px">
-            {docs.map((doc) => {
-              const isActive = doc.id === activeId
-              const title = doc.title || '无标题文档'
+            {conversations.map((conversation) => {
+              const isActive = conversation.id === activeId
+              const title = conversation.title || '新对话'
               return (
                 <li
-                  key={doc.id}
+                  key={conversation.id}
                   className={`group flex h-7 items-center rounded-md transition ${
                     isActive ? 'bg-[var(--surface-hover)]' : 'hover:bg-[var(--surface-hover)]'
                   }`}
                 >
                   <button
                     type="button"
-                    onClick={() => onSelect(doc.id)}
+                    onClick={() => onSelect(conversation.id)}
                     className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 px-2 text-left"
                   >
                     <span
@@ -122,7 +121,7 @@ export function DocList({
                         isActive ? 'text-[var(--text-soft)]' : 'text-[var(--text-dim)]'
                       }`}
                     >
-                      <PageIcon />
+                      <BubbleIcon />
                     </span>
                     <span
                       className={`min-w-0 flex-1 truncate text-[13.5px] ${
@@ -136,10 +135,10 @@ export function DocList({
                     type="button"
                     onClick={() => {
                       if (window.confirm(`Delete "${title}"?`)) {
-                        onDelete(doc.id)
+                        onDelete(conversation.id)
                       }
                     }}
-                    aria-label="Delete document"
+                    aria-label="Delete conversation"
                     title="Delete"
                     className="mr-1 flex h-5 w-5 shrink-0 cursor-pointer items-center justify-center rounded text-[var(--text-dim)] opacity-0 transition group-hover:opacity-100 hover:bg-[var(--surface)] hover:text-[var(--error)]"
                   >
@@ -157,7 +156,7 @@ export function DocList({
                 <span className="flex h-4 w-4 items-center justify-center">
                   <PlusIcon />
                 </span>
-                <span>New page</span>
+                <span>New chat</span>
               </button>
             </li>
           </ul>

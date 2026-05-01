@@ -1,7 +1,18 @@
 import { type ReactElement, useCallback, useEffect, useRef, useState } from 'react'
+import type {
+  ChatMessage,
+  ConversationRecord,
+  ConversationSummary,
+} from '../../../../preload/index'
 import { Composer } from './Composer'
 import { Transcript } from './Transcript'
 import type { Block, Message, TextBlock, ToolCallBlock } from './types'
+
+interface ChatPageProps {
+  conversation: ConversationRecord | null
+  onCreateConversation: () => Promise<ConversationSummary>
+  onAppendMessage: (id: string, message: Message) => Promise<void>
+}
 
 function createId(): string {
   return crypto.randomUUID()
@@ -19,14 +30,59 @@ function appendDeltaToBlocks(blocks: Block[], type: 'text' | 'reasoning', delta:
   return [...blocks, { type, content: delta }]
 }
 
-function blocksToApiContent(blocks: Block[]): string {
-  return blocks
-    .filter((block): block is TextBlock => block.type === 'text')
-    .map((block) => block.content)
-    .join('')
+// Reconstructs OpenRouter wire-format messages from rendered blocks. Reasoning is
+// dropped (provider doesn't accept it as input). Each tool_call block produces both
+// a `tool_calls` entry on the parent assistant message and a following role:'tool'
+// message carrying its result.
+function blocksToApiMessages(messages: Message[]): ChatMessage[] {
+  const out: ChatMessage[] = []
+  for (const message of messages) {
+    if (message.role === 'user') {
+      const content = message.blocks
+        .filter((b): b is TextBlock => b.type === 'text')
+        .map((b) => b.content)
+        .join('')
+      if (content) out.push({ role: 'user', content })
+      continue
+    }
+
+    const text = message.blocks
+      .filter((b): b is TextBlock => b.type === 'text')
+      .map((b) => b.content)
+      .join('')
+    const toolCalls = message.blocks.filter((b): b is ToolCallBlock => b.type === 'tool_call')
+
+    if (text || toolCalls.length > 0) {
+      const assistant: ChatMessage = {
+        role: 'assistant',
+        content: text,
+        ...(toolCalls.length > 0 && {
+          tool_calls: toolCalls.map((tc) => ({
+            id: tc.id,
+            type: 'function' as const,
+            function: { name: tc.name, arguments: tc.arguments || '{}' },
+          })),
+        }),
+      }
+      out.push(assistant)
+    }
+
+    for (const tc of toolCalls) {
+      out.push({
+        role: 'tool',
+        tool_call_id: tc.id,
+        content: tc.result ?? '',
+      })
+    }
+  }
+  return out
 }
 
-export function ChatPage(): ReactElement {
+export function ChatPage({
+  conversation,
+  onCreateConversation,
+  onAppendMessage,
+}: ChatPageProps): ReactElement {
   const [messages, setMessages] = useState<Message[]>([])
   const [isStreaming, setIsStreaming] = useState(false)
 
@@ -34,9 +90,43 @@ export function ChatPage(): ReactElement {
   messagesRef.current = messages
 
   const streamingIdRef = useRef<string | null>(null)
+  const streamConversationIdRef = useRef<string | null>(null)
   const pendingTextRef = useRef('')
   const pendingReasoningRef = useRef('')
   const rafRef = useRef<number | null>(null)
+  const persistedIdsRef = useRef<Set<string>>(new Set())
+  const hydratedIdRef = useRef<string | null>(null)
+
+  // Hydrate messages when the active conversation changes (or clears).
+  // Track lastHydratedIdRef so:
+  //   - we don't re-hydrate (and clobber in-flight state) on every parent re-render
+  //   - handleSubmit can pre-set this to a freshly-created id to dodge a hydrate race
+  useEffect(() => {
+    if (!conversation) {
+      if (hydratedIdRef.current === null) return
+      hydratedIdRef.current = null
+      void window.api.abort()
+      streamingIdRef.current = null
+      streamConversationIdRef.current = null
+      pendingTextRef.current = ''
+      pendingReasoningRef.current = ''
+      persistedIdsRef.current = new Set()
+      setMessages([])
+      setIsStreaming(false)
+      return
+    }
+    if (hydratedIdRef.current === conversation.meta.id) return
+    hydratedIdRef.current = conversation.meta.id
+    void window.api.abort()
+    streamingIdRef.current = null
+    streamConversationIdRef.current = null
+    pendingTextRef.current = ''
+    pendingReasoningRef.current = ''
+    const loaded = conversation.messages as Message[]
+    persistedIdsRef.current = new Set(loaded.map((m) => m.id))
+    setMessages(loaded)
+    setIsStreaming(false)
+  }, [conversation])
 
   const flushPending = useCallback(() => {
     rafRef.current = null
@@ -68,16 +158,29 @@ export function ChatPage(): ReactElement {
     (status: 'done' | 'error', errorMessage?: string) => {
       flushPending()
       const targetId = streamingIdRef.current
+      const conversationId = streamConversationIdRef.current
       streamingIdRef.current = null
+      streamConversationIdRef.current = null
       setIsStreaming(false)
       if (!targetId) return
-      setMessages((prev) =>
-        prev.map((message) =>
+
+      setMessages((prev) => {
+        const next = prev.map((message) =>
           message.id === targetId ? { ...message, status, error: errorMessage } : message,
-        ),
-      )
+        )
+        if (conversationId && !persistedIdsRef.current.has(targetId)) {
+          const finalMessage = next.find((m) => m.id === targetId)
+          if (finalMessage) {
+            persistedIdsRef.current.add(targetId)
+            queueMicrotask(() => {
+              void onAppendMessage(conversationId, finalMessage)
+            })
+          }
+        }
+        return next
+      })
     },
-    [flushPending],
+    [flushPending, onAppendMessage],
   )
 
   const upsertToolCall = useCallback(
@@ -153,6 +256,16 @@ export function ChatPage(): ReactElement {
       const trimmed = text.trim()
       if (!trimmed) return
 
+      let conversationId = conversation?.meta.id ?? null
+      if (!conversationId) {
+        const summary = await onCreateConversation()
+        conversationId = summary.id
+        // Pre-claim the hydrate slot so the activeRecord-fetch effect doesn't
+        // wipe the user/assistant messages we're about to add locally.
+        hydratedIdRef.current = summary.id
+        persistedIdsRef.current = new Set()
+      }
+
       const userMessage: Message = {
         id: createId(),
         role: 'user',
@@ -167,33 +280,28 @@ export function ChatPage(): ReactElement {
       }
 
       streamingIdRef.current = assistantMessage.id
+      streamConversationIdRef.current = conversationId
       pendingTextRef.current = ''
       pendingReasoningRef.current = ''
+      persistedIdsRef.current.add(userMessage.id)
 
       const nextMessages = [...messagesRef.current, userMessage, assistantMessage]
       setMessages(nextMessages)
       setIsStreaming(true)
 
-      const apiPayload = nextMessages
-        .filter((message) => message.role !== 'assistant' || message.blocks.length > 0)
-        .map((message) => ({
-          role: message.role,
-          content: blocksToApiContent(message.blocks),
-        }))
-        .filter((message) => message.content.length > 0 || message.role === 'user')
+      // Crash-safety: persist the user message before the network call.
+      void onAppendMessage(conversationId, userMessage)
 
       // Drop the empty assistant placeholder — server doesn't need it.
-      const payloadForServer = apiPayload.filter(
-        (_, index) => index < apiPayload.length - 1 || apiPayload[index].role !== 'assistant',
-      )
+      const apiPayload = blocksToApiMessages(nextMessages.slice(0, -1))
 
       try {
-        await window.api.send(payloadForServer)
+        await window.api.send(apiPayload)
       } catch (error) {
         finishStreaming('error', error instanceof Error ? error.message : String(error))
       }
     },
-    [finishStreaming],
+    [conversation, onCreateConversation, onAppendMessage, finishStreaming],
   )
 
   const handleAbort = useCallback(() => {

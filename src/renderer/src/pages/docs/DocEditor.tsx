@@ -43,10 +43,7 @@ export function DocEditor({
   )
 
   return (
-    <Plate
-      editor={editor}
-      onChange={({ value }) => scheduleSave({ content: value })}
-    >
+    <Plate editor={editor} onChange={({ value }) => scheduleSave({ content: value })}>
       <div className="flex h-full flex-col bg-[var(--bg)]">
         <EditorContainer variant="default" className="flex-1">
           <div className="mx-auto w-full max-w-[760px] px-12 pt-12 pb-24">
