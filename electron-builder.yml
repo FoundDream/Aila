@@ -1,14 +1,14 @@
-appId: com.agent-desktop.app
-productName: Agent Desktop
+appId: com.aila.app
+productName: Aila
 directories:
   buildResources: build
 files:
-  - '!**/.env'
-  - '!**/node_modules/*/{CHANGELOG.md,README.md,readme.md,LICENSE,license,License}'
+  - "!**/.env"
+  - "!**/node_modules/*/{CHANGELOG.md,README.md,readme.md,LICENSE,license,License}"
 asarUnpack:
   - resources/**
 mac:
-  category: public.app-category.developer-tools
+  category: public.app-category.productivity
   target:
     - target: dmg
       arch: [universal]

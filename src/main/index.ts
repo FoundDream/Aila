@@ -3,6 +3,8 @@ import { is } from '@electron-toolkit/utils'
 import * as dotenv from 'dotenv'
 import { app, BrowserWindow, ipcMain } from 'electron'
 import { type ChatMessage, streamChat } from './agent'
+import type { DocRecord } from './docs'
+import { createDoc, deleteDoc, getDoc, listDocs, updateDoc } from './docs'
 
 dotenv.config()
 
@@ -51,6 +53,8 @@ function registerIpcHandlers(): void {
     await streamChat(messages, controller.signal, {
       onTextDelta: (delta) => send('chat:text-delta', delta),
       onReasoningDelta: (delta) => send('chat:reasoning-delta', delta),
+      onToolCallStart: (event) => send('chat:tool-call-start', event),
+      onToolCallResult: (event) => send('chat:tool-call-result', event),
       onDone: (full) => {
         if (activeStream === controller) activeStream = null
         send('chat:done', full)
@@ -66,6 +70,16 @@ function registerIpcHandlers(): void {
     activeStream?.abort()
     activeStream = null
   })
+
+  ipcMain.handle('docs:list', () => listDocs())
+  ipcMain.handle('docs:get', (_event, id: string) => getDoc(id))
+  ipcMain.handle('docs:create', () => createDoc())
+  ipcMain.handle(
+    'docs:update',
+    (_event, id: string, patch: Partial<Pick<DocRecord, 'title' | 'content'>>) =>
+      updateDoc(id, patch),
+  )
+  ipcMain.handle('docs:delete', (_event, id: string) => deleteDoc(id))
 }
 
 app.whenReady().then(() => {

@@ -54,7 +54,7 @@ export function Composer({ isStreaming, onSubmit, onAbort }: ComposerProps): Rea
               type="button"
               onClick={() => void submit()}
               disabled={!canSend}
-              className="h-7 shrink-0 rounded-md bg-[var(--accent)] px-3 text-xs font-medium text-[var(--accent-fg)] transition-opacity disabled:cursor-not-allowed disabled:opacity-30"
+              className="h-7 shrink-0 rounded-md bg-[var(--accent)] px-3 text-xs font-medium text-[var(--accent-fg)] transition-colors disabled:cursor-not-allowed disabled:bg-[var(--surface-hover)] disabled:text-[var(--text-dim)]"
             >
               Send
             </button>

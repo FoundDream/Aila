@@ -1,4 +1,5 @@
 import { type ReactElement, useEffect, useRef } from 'react'
+import { Streamdown } from 'streamdown'
 import type { Block, Message } from './types'
 
 const SERIF_STYLE: React.CSSProperties = { fontFamily: 'var(--font-serif)' }
@@ -35,6 +36,7 @@ export function Transcript({ messages }: { messages: Message[] }): ReactElement 
 
 function MessageRow({ message }: { message: Message }): ReactElement {
   const isUser = message.role === 'user'
+  const isStreaming = message.status === 'streaming'
   return (
     <article className="flex flex-col gap-2">
       <header
@@ -44,7 +46,7 @@ function MessageRow({ message }: { message: Message }): ReactElement {
         {isUser ? 'You' : 'Assistant'}
       </header>
       <div className="flex flex-col gap-3">
-        {message.blocks.length === 0 && message.status === 'streaming' ? (
+        {message.blocks.length === 0 && isStreaming ? (
           <StreamingDots />
         ) : (
           message.blocks.map((block, index) => (
@@ -52,6 +54,7 @@ function MessageRow({ message }: { message: Message }): ReactElement {
               // biome-ignore lint/suspicious/noArrayIndexKey: blocks are append-only per message
               key={index}
               block={block}
+              isStreaming={isStreaming}
             />
           ))
         )}
@@ -63,7 +66,7 @@ function MessageRow({ message }: { message: Message }): ReactElement {
   )
 }
 
-function BlockView({ block }: { block: Block }): ReactElement {
+function BlockView({ block, isStreaming }: { block: Block; isStreaming: boolean }): ReactElement {
   if (block.type === 'reasoning') {
     return (
       <aside className="border-l-2 border-[var(--border-strong)] pl-4 text-[14px] italic text-[var(--text-soft)]">
@@ -74,7 +77,41 @@ function BlockView({ block }: { block: Block }): ReactElement {
       </aside>
     )
   }
-  return <p className="whitespace-pre-wrap text-[15px] leading-[1.7]">{block.content}</p>
+  if (block.type === 'tool_call') {
+    const statusLabel =
+      block.status === 'running' ? 'running' : block.status === 'error' ? 'error' : 'done'
+    return (
+      <aside className="rounded-md border border-[var(--border-strong)] bg-[var(--bg-soft,transparent)] p-3 font-mono text-[12px] text-[var(--text-soft)]">
+        <div className="mb-1 flex items-center justify-between text-[11px] text-[var(--text-dim)]">
+          <span>
+            tool · <span className="text-[var(--text)]">{block.name}</span>
+          </span>
+          <span>{statusLabel}</span>
+        </div>
+        <pre className="overflow-x-auto whitespace-pre-wrap break-all text-[var(--text-soft)]">
+          {block.arguments || '{}'}
+        </pre>
+        {block.result !== undefined && (
+          <pre
+            className={`mt-2 overflow-x-auto whitespace-pre-wrap break-all border-t border-[var(--border-strong)] pt-2 ${
+              block.status === 'error' ? 'text-[var(--error)]' : 'text-[var(--text-soft)]'
+            }`}
+          >
+            {block.result}
+          </pre>
+        )}
+      </aside>
+    )
+  }
+  return (
+    <Streamdown
+      mode={isStreaming ? 'streaming' : 'static'}
+      parseIncompleteMarkdown
+      className="aila-md text-[15px] leading-[1.7]"
+    >
+      {block.content}
+    </Streamdown>
+  )
 }
 
 function StreamingDots(): ReactElement {

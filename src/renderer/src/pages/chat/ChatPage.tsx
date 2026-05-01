@@ -1,24 +1,27 @@
 import { type ReactElement, useCallback, useEffect, useRef, useState } from 'react'
 import { Composer } from './Composer'
 import { Transcript } from './Transcript'
-import type { Block, Message } from './types'
+import type { Block, Message, TextBlock, ToolCallBlock } from './types'
 
 function createId(): string {
   return crypto.randomUUID()
 }
 
-function appendDeltaToBlocks(blocks: Block[], type: Block['type'], delta: string): Block[] {
+function appendDeltaToBlocks(blocks: Block[], type: 'text' | 'reasoning', delta: string): Block[] {
   if (!delta) return blocks
   const last = blocks[blocks.length - 1]
   if (last && last.type === type) {
-    return [...blocks.slice(0, -1), { type, content: last.content + delta }]
+    return [
+      ...blocks.slice(0, -1),
+      { type, content: (last as { content: string }).content + delta },
+    ]
   }
   return [...blocks, { type, content: delta }]
 }
 
 function blocksToApiContent(blocks: Block[]): string {
   return blocks
-    .filter((block) => block.type === 'text')
+    .filter((block): block is TextBlock => block.type === 'text')
     .map((block) => block.content)
     .join('')
 }
@@ -77,6 +80,30 @@ export function ChatPage(): ReactElement {
     [flushPending],
   )
 
+  const upsertToolCall = useCallback(
+    (id: string, updater: (block: ToolCallBlock) => ToolCallBlock, fallback?: ToolCallBlock) => {
+      const targetId = streamingIdRef.current
+      if (!targetId) return
+      flushPending()
+      setMessages((prev) =>
+        prev.map((message) => {
+          if (message.id !== targetId) return message
+          const idx = message.blocks.findIndex(
+            (block) => block.type === 'tool_call' && block.id === id,
+          )
+          if (idx === -1) {
+            if (!fallback) return message
+            return { ...message, blocks: [...message.blocks, fallback] }
+          }
+          const next = [...message.blocks]
+          next[idx] = updater(next[idx] as ToolCallBlock)
+          return { ...message, blocks: next }
+        }),
+      )
+    },
+    [flushPending],
+  )
+
   useEffect(() => {
     const cleanups = [
       window.api.onTextDelta((delta) => {
@@ -89,6 +116,26 @@ export function ChatPage(): ReactElement {
         pendingReasoningRef.current += delta
         scheduleFlush()
       }),
+      window.api.onToolCallStart((event) => {
+        upsertToolCall(
+          event.id,
+          (block) => ({ ...block, name: event.name, arguments: event.arguments }),
+          {
+            type: 'tool_call',
+            id: event.id,
+            name: event.name,
+            arguments: event.arguments,
+            status: 'running',
+          },
+        )
+      }),
+      window.api.onToolCallResult((event) => {
+        upsertToolCall(event.id, (block) => ({
+          ...block,
+          status: event.isError ? 'error' : 'done',
+          result: event.result,
+        }))
+      }),
       window.api.onDone(() => finishStreaming('done')),
       window.api.onError((message) => finishStreaming('error', message)),
     ]
@@ -99,7 +146,7 @@ export function ChatPage(): ReactElement {
         rafRef.current = null
       }
     }
-  }, [scheduleFlush, finishStreaming])
+  }, [scheduleFlush, finishStreaming, upsertToolCall])
 
   const handleSubmit = useCallback(
     async (text: string) => {
@@ -131,10 +178,7 @@ export function ChatPage(): ReactElement {
         .filter((message) => message.role !== 'assistant' || message.blocks.length > 0)
         .map((message) => ({
           role: message.role,
-          content:
-            message.role === 'assistant'
-              ? blocksToApiContent(message.blocks)
-              : message.blocks[0].content,
+          content: blocksToApiContent(message.blocks),
         }))
         .filter((message) => message.content.length > 0 || message.role === 'user')
 

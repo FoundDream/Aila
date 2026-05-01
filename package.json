@@ -19,7 +19,11 @@
   },
   "dependencies": {
     "@electron-toolkit/utils": "^4.0.0",
-    "dotenv": "^16.4.5"
+    "@platejs/autoformat": "^53.0.0",
+    "@platejs/basic-nodes": "^53.0.0",
+    "dotenv": "^16.4.5",
+    "platejs": "^53.0.3",
+    "streamdown": "^2.5.0"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.10",
