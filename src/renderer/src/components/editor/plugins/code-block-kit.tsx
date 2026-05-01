@@ -16,7 +16,7 @@ import {
 
 const lowlight = createLowlight(all);
 
-export const CodeBlockKit = [
+export const CodeBlockKit = () => [
   CodeBlockPlugin.configure({
     inputRules: [CodeBlockRules.markdown({ on: 'match' })],
     node: { component: CodeBlockElement },

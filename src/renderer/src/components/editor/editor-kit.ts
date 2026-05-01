@@ -9,15 +9,20 @@ import { ListKit } from '@/components/editor/plugins/list-kit'
 import { MarkdownKit } from '@/components/editor/plugins/markdown-kit'
 import { SlashKit } from '@/components/editor/plugins/slash-kit'
 
-export const NoteEditorKit = [
-  ...BasicBlocksKit,
-  ...BasicMarksKit,
-  ...ListKit,
-  ...LinkKit,
-  ...CodeBlockKit,
-  ...MarkdownKit,
-  ...AutoformatKit,
-  ...SlashKit,
-  ...FixedToolbarKit,
-  ...FloatingToolbarKit,
-]
+// Plate v53 mutates plugin objects during editor resolution. Re-using the same
+// configured plugin in a second editor silently drops its inputRules, which
+// disables every Markdown shortcut on remount. Build a fresh kit per editor.
+export function createNoteEditorKit() {
+  return [
+    ...BasicBlocksKit(),
+    ...BasicMarksKit(),
+    ...ListKit(),
+    ...LinkKit(),
+    ...CodeBlockKit(),
+    ...MarkdownKit(),
+    ...AutoformatKit(),
+    ...SlashKit(),
+    ...FixedToolbarKit(),
+    ...FloatingToolbarKit(),
+  ]
+}

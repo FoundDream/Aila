@@ -1,6 +1,6 @@
 import { Plate, usePlateEditor } from 'platejs/react'
 import { type ReactElement, useCallback, useEffect, useRef, useState } from 'react'
-import { NoteEditorKit } from '@/components/editor/editor-kit'
+import { createNoteEditorKit } from '@/components/editor/editor-kit'
 import { Editor, EditorContainer } from '@/components/ui/editor'
 import { type DocContent, EMPTY_DOC_CONTENT } from './types'
 
@@ -22,7 +22,7 @@ export function DocEditor({
   onChangeRef.current = onChange
 
   const editor = usePlateEditor({
-    plugins: NoteEditorKit,
+    plugins: createNoteEditorKit(),
     value: initialContent.length > 0 ? initialContent : EMPTY_DOC_CONTENT,
   })
 

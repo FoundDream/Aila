@@ -5,7 +5,7 @@ import { type SlateEditor, KEYS } from 'platejs';
 
 import { SlashInputElement } from '@/components/ui/slash-node';
 
-export const SlashKit = [
+export const SlashKit = () => [
   SlashPlugin.configure({
     options: {
       triggerQuery: (editor: SlateEditor) =>

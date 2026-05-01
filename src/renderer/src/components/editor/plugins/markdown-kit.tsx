@@ -8,7 +8,7 @@ import remarkEmoji from 'remark-emoji';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 
-export const MarkdownKit = [
+export const MarkdownKit = () => [
   BaseFootnoteReferencePlugin,
   BaseFootnoteDefinitionPlugin,
   MarkdownPlugin.configure({

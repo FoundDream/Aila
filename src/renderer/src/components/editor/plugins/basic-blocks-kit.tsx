@@ -29,7 +29,7 @@ import {
 import { HrElement } from '@/components/ui/hr-node';
 import { ParagraphElement } from '@/components/ui/paragraph-node';
 
-export const BasicBlocksKit = [
+export const BasicBlocksKit = () => [
   ParagraphPlugin.withComponent(ParagraphElement),
   H1Plugin.configure({
     inputRules: [HeadingRules.markdown()],

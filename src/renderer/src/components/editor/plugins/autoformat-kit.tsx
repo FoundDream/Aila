@@ -181,4 +181,4 @@ const AutoformatShortcutsPlugin = createSlatePlugin({
   ],
 });
 
-export const AutoformatKit = [AutoformatShortcutsPlugin];
+export const AutoformatKit = () => [AutoformatShortcutsPlugin];
