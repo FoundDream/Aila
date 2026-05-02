@@ -66,6 +66,7 @@ function createWindow(): void {
 
   if (is.dev) {
     mainWindow.loadURL(DEV_RENDERER_URL)
+    mainWindow.webContents.openDevTools({ mode: 'detach' })
   } else {
     mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
   }

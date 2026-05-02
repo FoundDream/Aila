@@ -2,7 +2,7 @@ import {
   BaseFootnoteDefinitionPlugin,
   BaseFootnoteReferencePlugin,
 } from '@platejs/footnote';
-import { MarkdownPlugin, remarkMdx, remarkMention } from '@platejs/markdown';
+import { MarkdownPlugin, remarkMention } from '@platejs/markdown';
 import { KEYS } from 'platejs';
 import remarkEmoji from 'remark-emoji';
 import remarkGfm from 'remark-gfm';
@@ -18,7 +18,6 @@ export const MarkdownKit = () => [
         remarkMath,
         remarkGfm,
         remarkEmoji as any,
-        remarkMdx,
         remarkMention,
       ],
     },
