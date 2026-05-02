@@ -5,7 +5,7 @@
  */
 
 import { findModel, type ProviderId } from '@shared/models'
-import { jsonSchema, type ModelMessage, stepCountIs, streamText, tool } from 'ai'
+import { jsonSchema, type ModelMessage, smoothStream, stepCountIs, streamText, tool } from 'ai'
 import { MissingApiKeyError, resolveModel } from './providers'
 import { loadSettings } from './settings'
 import { executeTool, TOOL_DEFINITIONS } from './tools'
@@ -178,6 +178,13 @@ export async function streamChat(
       tools: aiTools,
       stopWhen: stepCountIs(MAX_STEPS),
       abortSignal: signal,
+      // Providers often deliver text in ~1s bursts; pace it out so the UI
+      // streams smoothly. Regex emits one CJK char or one whitespace-delimited
+      // word at a time so Chinese/Japanese text streams character-by-character.
+      experimental_transform: smoothStream({
+        delayInMs: 15,
+        chunking: /[぀-ゟ゠-ヿ一-鿿가-힯]|\S+\s+/,
+      }),
     })
 
     for await (const part of result.fullStream) {

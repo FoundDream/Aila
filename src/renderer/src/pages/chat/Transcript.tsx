@@ -1,4 +1,5 @@
-import type { ReactElement } from 'react'
+import { CheckIcon, CopyIcon } from 'lucide-react'
+import { type ReactElement, useCallback, useState } from 'react'
 import { Streamdown } from 'streamdown'
 import { useStickToBottom } from 'use-stick-to-bottom'
 import type { Block, Message } from './types'
@@ -48,13 +49,17 @@ export function Transcript({ messages }: { messages: Message[] }): ReactElement 
 function MessageRow({ message }: { message: Message }): ReactElement {
   const isUser = message.role === 'user'
   const isStreaming = message.status === 'streaming'
+  const canCopy = !isStreaming && messageToPlainText(message).length > 0
   return (
-    <article className="flex flex-col gap-2">
+    <article className="group flex flex-col gap-2">
       <header
-        className={`text-xs italic ${isUser ? 'text-[var(--text-soft)]' : 'text-[var(--text-dim)]'}`}
+        className={`flex items-center justify-between text-xs italic ${
+          isUser ? 'text-[var(--text-soft)]' : 'text-[var(--text-dim)]'
+        }`}
         style={SERIF_STYLE}
       >
-        {isUser ? 'You' : 'Assistant'}
+        <span>{isUser ? 'You' : 'Assistant'}</span>
+        {canCopy && <CopyButton message={message} />}
       </header>
       <div className="flex flex-col gap-3">
         {message.blocks.length === 0 && isStreaming ? (
@@ -75,6 +80,44 @@ function MessageRow({ message }: { message: Message }): ReactElement {
       </div>
     </article>
   )
+}
+
+function CopyButton({ message }: { message: Message }): ReactElement {
+  const [copied, setCopied] = useState(false)
+  const onCopy = useCallback(async () => {
+    const text = messageToPlainText(message)
+    if (!text) return
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 1500)
+    } catch {
+      // ignore — clipboard may be unavailable
+    }
+  }, [message])
+  return (
+    <button
+      type="button"
+      onClick={onCopy}
+      aria-label={copied ? 'Copied' : 'Copy message'}
+      className={`flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] not-italic text-[var(--text-dim)] transition-opacity hover:text-[var(--text)] ${
+        copied ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 focus:opacity-100'
+      }`}
+    >
+      {copied ? <CheckIcon className="h-3 w-3" /> : <CopyIcon className="h-3 w-3" />}
+      <span style={SERIF_STYLE} className="italic">
+        {copied ? 'copied' : 'copy'}
+      </span>
+    </button>
+  )
+}
+
+function messageToPlainText(message: Message): string {
+  return message.blocks
+    .filter((b): b is Extract<Block, { type: 'text' | 'reasoning' }> => b.type === 'text')
+    .map((b) => b.content)
+    .join('\n\n')
+    .trim()
 }
 
 function BlockView({ block, isStreaming }: { block: Block; isStreaming: boolean }): ReactElement {
