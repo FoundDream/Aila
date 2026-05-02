@@ -14,3 +14,7 @@ export function getConversationsDir(): string {
 export function getDocumentsDir(): string {
   return join(getDataDir(), 'documents')
 }
+
+export function getSettingsPath(): string {
+  return join(getDataDir(), 'settings.json')
+}

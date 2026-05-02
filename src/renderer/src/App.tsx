@@ -1,4 +1,6 @@
-import { type ReactElement, useState } from 'react'
+import { SettingsIcon } from 'lucide-react'
+import { type ReactElement, useCallback, useEffect, useState } from 'react'
+import { SettingsModal } from '@/components/SettingsModal'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { ChatPage } from '@/pages/chat/ChatPage'
 import { ConversationList } from '@/pages/chat/ConversationList'
@@ -6,6 +8,7 @@ import { useConversations } from '@/pages/chat/useConversations'
 import { DocList } from '@/pages/docs/DocList'
 import { DocsPage } from '@/pages/docs/DocsPage'
 import { useDocs } from '@/pages/docs/useDocs'
+import type { ProviderId, Settings, SettingsState } from './types'
 
 type Tab = 'chat' | 'docs'
 
@@ -63,6 +66,22 @@ export default function App(): ReactElement {
   const [tab, setTab] = useState<Tab>('chat')
   const docsState = useDocs()
   const conversationsState = useConversations()
+  const [settingsState, setSettingsState] = useState<SettingsState | null>(null)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+
+  useEffect(() => {
+    void window.api.settings.get().then((state) => {
+      setSettingsState(state)
+      if (state.configuredProviders.length === 0) setSettingsOpen(true)
+    })
+  }, [])
+
+  const updateSettings = useCallback(async (next: Settings) => {
+    const saved = await window.api.settings.set(next)
+    setSettingsState(saved)
+  }, [])
+
+  const openSettings = useCallback(() => setSettingsOpen(true), [])
 
   return (
     <TooltipProvider delayDuration={300}>
@@ -90,6 +109,16 @@ export default function App(): ReactElement {
                 </button>
               )
             })}
+            <button
+              type="button"
+              onClick={openSettings}
+              className="flex h-7 cursor-pointer items-center gap-2 rounded-md px-2 text-[13.5px] text-[var(--text-soft)] transition hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
+            >
+              <span className="flex h-4 w-4 items-center justify-center text-[var(--text-dim)]">
+                <SettingsIcon className="size-4" />
+              </span>
+              <span className="flex-1 text-left">Settings</span>
+            </button>
           </nav>
           {tab === 'chat' && (
             <div className="mt-5 flex min-h-0 flex-1 flex-col">
@@ -124,11 +153,23 @@ export default function App(): ReactElement {
               conversation={conversationsState.activeRecord}
               onCreateConversation={conversationsState.create}
               onAppendMessage={conversationsState.appendMessage}
+              settings={settingsState?.settings ?? null}
+              configuredProviders={settingsState?.configuredProviders ?? ([] as ProviderId[])}
+              onUpdateSettings={updateSettings}
+              onOpenSettings={openSettings}
             />
           ) : (
             <DocsPage state={docsState} />
           )}
         </main>
+        {settingsState && (
+          <SettingsModal
+            open={settingsOpen}
+            onOpenChange={setSettingsOpen}
+            settings={settingsState.settings}
+            onSave={updateSettings}
+          />
+        )}
       </div>
     </TooltipProvider>
   )

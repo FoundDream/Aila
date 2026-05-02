@@ -22,4 +22,5 @@ export interface Message {
   blocks: Block[]
   status: 'streaming' | 'done' | 'error'
   error?: string
+  model?: { providerId: 'anthropic' | 'openai' | 'google' | 'openrouter'; modelId: string }
 }

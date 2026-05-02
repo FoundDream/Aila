@@ -1,4 +1,9 @@
+import type { ProviderId } from '@shared/models'
+import type { OrCatalog } from '@shared/openrouter'
 import { contextBridge, ipcRenderer } from 'electron'
+
+export type { OrCatalog, OrFamily, OrModel } from '@shared/openrouter'
+export type { ProviderId }
 
 export interface ToolCallPayload {
   id: string
@@ -51,12 +56,34 @@ export interface PersistedToolCallBlock {
 
 export type PersistedBlock = PersistedTextBlock | PersistedToolCallBlock
 
+export interface ModelSelection {
+  providerId: ProviderId
+  modelId: string
+}
+
 export interface PersistedMessage {
   id: string
   role: 'user' | 'assistant'
   blocks: PersistedBlock[]
   status: 'streaming' | 'done' | 'error'
   error?: string
+  model?: ModelSelection
+}
+
+export interface Settings {
+  apiKeys: {
+    anthropic?: string
+    openai?: string
+    google?: string
+    openrouter?: string
+  }
+  defaultModel: ModelSelection | null
+  recentOpenRouterModels?: string[]
+}
+
+export interface SettingsState {
+  settings: Settings
+  configuredProviders: ProviderId[]
 }
 
 export interface ConversationUsage {
@@ -97,7 +124,8 @@ function on<T>(channel: string, callback: (data: T) => void): () => void {
 }
 
 const api = {
-  send: (messages: ChatMessage[]): Promise<void> => ipcRenderer.invoke('chat:send', messages),
+  send: (messages: ChatMessage[], selection: ModelSelection): Promise<void> =>
+    ipcRenderer.invoke('chat:send', messages, selection),
   abort: (): Promise<void> => ipcRenderer.invoke('chat:abort'),
   onTextDelta: (cb: (delta: string) => void) => on<string>('chat:text-delta', cb),
   onReasoningDelta: (cb: (delta: string) => void) => on<string>('chat:reasoning-delta', cb),
@@ -108,7 +136,16 @@ const api = {
   onDone: (cb: (full: { text: string; reasoning: string; usage?: UsageInfo }) => void) =>
     on<{ text: string; reasoning: string; usage?: UsageInfo }>('chat:done', cb),
   onError: (cb: (message: string) => void) => on<string>('chat:error', cb),
-  getModelInfo: (): Promise<ModelInfo> => ipcRenderer.invoke('chat:get-model-info'),
+  getModelInfo: (providerId: ProviderId, modelId: string): Promise<ModelInfo> =>
+    ipcRenderer.invoke('chat:get-model-info', providerId, modelId),
+  settings: {
+    get: (): Promise<SettingsState> => ipcRenderer.invoke('settings:get'),
+    set: (settings: Settings): Promise<SettingsState> =>
+      ipcRenderer.invoke('settings:set', settings),
+  },
+  openrouter: {
+    listModels: (): Promise<OrCatalog> => ipcRenderer.invoke('openrouter:list-models'),
+  },
   docs: {
     list: (): Promise<DocSummary[]> => ipcRenderer.invoke('docs:list'),
     get: (id: string): Promise<DocRecord> => ipcRenderer.invoke('docs:get', id),

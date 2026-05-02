@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { appendFile, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import type { ProviderId } from '@shared/models'
 import { getConversationsDir } from './paths'
 
 export interface PersistedTextBlock {
@@ -25,6 +26,7 @@ export interface PersistedMessage {
   blocks: PersistedBlock[]
   status: 'streaming' | 'done' | 'error'
   error?: string
+  model?: { providerId: ProviderId; modelId: string }
 }
 
 export interface ConversationUsage {

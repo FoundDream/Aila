@@ -1,11 +1,14 @@
-import { type ReactElement, useCallback, useEffect, useRef, useState } from 'react'
+import { findModel, MODEL_CATALOG } from '@shared/models'
+import { type ReactElement, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type {
   ChatMessage,
   ConversationRecord,
   ConversationSummary,
-  ModelInfo,
+  ModelSelection,
+  ProviderId,
+  Settings,
   UsageInfo,
-} from '../../../../preload/index'
+} from '../../types'
 import { Composer } from './Composer'
 import { Transcript } from './Transcript'
 import type { Block, Message, TextBlock, ToolCallBlock } from './types'
@@ -14,6 +17,23 @@ interface ChatPageProps {
   conversation: ConversationRecord | null
   onCreateConversation: () => Promise<ConversationSummary>
   onAppendMessage: (id: string, message: Message) => Promise<void>
+  settings: Settings | null
+  configuredProviders: ProviderId[]
+  onUpdateSettings: (settings: Settings) => Promise<void>
+  onOpenSettings: () => void
+}
+
+function pickInitialSelection(
+  settings: Settings | null,
+  configured: ProviderId[],
+): ModelSelection | null {
+  if (!settings) return null
+  const def = settings.defaultModel
+  if (def && configured.includes(def.providerId)) return def
+  const first = configured[0]
+  if (!first) return null
+  const fallback = MODEL_CATALOG.find((m) => m.providerId === first)
+  return fallback ? { providerId: first, modelId: fallback.modelId } : null
 }
 
 function createId(): string {
@@ -84,24 +104,46 @@ export function ChatPage({
   conversation,
   onCreateConversation,
   onAppendMessage,
+  settings,
+  configuredProviders,
+  onUpdateSettings,
+  onOpenSettings,
 }: ChatPageProps): ReactElement {
   const [messages, setMessages] = useState<Message[]>([])
   const [isStreaming, setIsStreaming] = useState(false)
   const [currentUsage, setCurrentUsage] = useState<UsageInfo | null>(null)
-  const [modelInfo, setModelInfo] = useState<ModelInfo | null>(null)
+
+  const selection = useMemo(
+    () => pickInitialSelection(settings, configuredProviders),
+    [settings, configuredProviders],
+  )
+  const selectionRef = useRef<ModelSelection | null>(selection)
+  selectionRef.current = selection
+
+  const contextLength = useMemo(() => {
+    if (!selection) return null
+    const meta = findModel(selection.providerId, selection.modelId)
+    return meta?.contextLength ? meta.contextLength : null
+  }, [selection])
+
+  const handleSelectionChange = useCallback(
+    (next: ModelSelection) => {
+      if (!settings) return
+      const update: Settings = { ...settings, defaultModel: next }
+      if (next.providerId === 'openrouter') {
+        const prev = settings.recentOpenRouterModels ?? []
+        update.recentOpenRouterModels = [
+          next.modelId,
+          ...prev.filter((id) => id !== next.modelId),
+        ].slice(0, 5)
+      }
+      void onUpdateSettings(update)
+    },
+    [settings, onUpdateSettings],
+  )
 
   const messagesRef = useRef<Message[]>([])
   messagesRef.current = messages
-
-  useEffect(() => {
-    let cancelled = false
-    void window.api.getModelInfo().then((info) => {
-      if (!cancelled) setModelInfo(info)
-    })
-    return () => {
-      cancelled = true
-    }
-  }, [])
 
   const streamingIdRef = useRef<string | null>(null)
   const streamConversationIdRef = useRef<string | null>(null)
@@ -288,6 +330,12 @@ export function ChatPage({
       const trimmed = text.trim()
       if (!trimmed) return
 
+      const currentSelection = selectionRef.current
+      if (!currentSelection) {
+        onOpenSettings()
+        return
+      }
+
       let conversationId = conversation?.meta.id ?? null
       if (!conversationId) {
         const summary = await onCreateConversation()
@@ -309,6 +357,7 @@ export function ChatPage({
         role: 'assistant',
         blocks: [],
         status: 'streaming',
+        model: currentSelection,
       }
 
       streamingIdRef.current = assistantMessage.id
@@ -328,12 +377,12 @@ export function ChatPage({
       const apiPayload = blocksToApiMessages(nextMessages.slice(0, -1))
 
       try {
-        await window.api.send(apiPayload)
+        await window.api.send(apiPayload, currentSelection)
       } catch (error) {
         finishStreaming('error', error instanceof Error ? error.message : String(error))
       }
     },
-    [conversation, onCreateConversation, onAppendMessage, finishStreaming],
+    [conversation, onCreateConversation, onAppendMessage, finishStreaming, onOpenSettings],
   )
 
   const handleAbort = useCallback(() => {
@@ -357,7 +406,12 @@ export function ChatPage({
           onSubmit={handleSubmit}
           onAbort={handleAbort}
           usage={currentUsage}
-          contextLength={modelInfo?.contextLength ?? null}
+          contextLength={contextLength}
+          configuredProviders={configuredProviders}
+          selection={selection}
+          onSelectionChange={handleSelectionChange}
+          onOpenSettings={onOpenSettings}
+          recentOpenRouterModels={settings?.recentOpenRouterModels ?? []}
         />
       </main>
     </div>

@@ -1,13 +1,13 @@
 /**
- * Agent loop backed by Vercel AI SDK + OpenRouter provider.
- *
- * streamText handles SSE parsing, tool_call delta accumulation, and the
- * multi-step tool loop (via stopWhen). We translate fullStream events to
- * the IPC handler contract that the renderer already speaks.
+ * Agent loop backed by Vercel AI SDK. Provider/model is chosen per call from
+ * settings.json + the renderer's picker selection. SDK handles SSE parsing,
+ * tool_call delta accumulation, and the multi-step tool loop.
  */
 
-import { createOpenRouter } from '@openrouter/ai-sdk-provider'
+import { findModel, type ProviderId } from '@shared/models'
 import { jsonSchema, type ModelMessage, stepCountIs, streamText, tool } from 'ai'
+import { MissingApiKeyError, resolveModel } from './providers'
+import { loadSettings } from './settings'
 import { executeTool, TOOL_DEFINITIONS } from './tools'
 
 export interface ToolCall {
@@ -48,7 +48,6 @@ export interface StreamHandlers {
   onError: (message: string) => void
 }
 
-const OPENROUTER_MODELS_URL = 'https://openrouter.ai/api/v1/models'
 const MAX_STEPS = 10
 
 export interface ModelInfo {
@@ -56,36 +55,12 @@ export interface ModelInfo {
   contextLength: number | null
 }
 
-const contextLengthCache = new Map<string, number | null>()
-
-interface OpenRouterModelEntry {
-  id: string
-  context_length?: number | null
-}
-
-async function fetchContextLength(model: string): Promise<number | null> {
-  if (contextLengthCache.has(model)) return contextLengthCache.get(model) ?? null
-  try {
-    const response = await fetch(OPENROUTER_MODELS_URL)
-    if (!response.ok) {
-      contextLengthCache.set(model, null)
-      return null
-    }
-    const json = (await response.json()) as { data?: OpenRouterModelEntry[] }
-    const entry = json.data?.find((m) => m.id === model)
-    const length = typeof entry?.context_length === 'number' ? entry.context_length : null
-    contextLengthCache.set(model, length)
-    return length
-  } catch {
-    contextLengthCache.set(model, null)
-    return null
+export function getModelInfo(providerId: ProviderId, modelId: string): ModelInfo {
+  const meta = findModel(providerId, modelId)
+  return {
+    model: meta?.displayName ?? modelId,
+    contextLength: meta?.contextLength ? meta.contextLength : null,
   }
-}
-
-export async function getModelInfo(): Promise<ModelInfo> {
-  const model = process.env.OPENROUTER_MODEL || 'deepseek/deepseek-chat-v3.1'
-  const contextLength = await fetchContextLength(model)
-  return { model, contextLength }
 }
 
 // Build AI SDK tool set from TOOL_DEFINITIONS. Keep JSON Schema (no zod
@@ -167,20 +142,30 @@ function toModelMessages(messages: ChatMessage[]): ModelMessage[] {
   return out
 }
 
+export interface ModelSelection {
+  providerId: ProviderId
+  modelId: string
+}
+
 export async function streamChat(
   initialMessages: ChatMessage[],
+  selection: ModelSelection,
   signal: AbortSignal,
   handlers: StreamHandlers,
 ): Promise<void> {
-  const apiKey = process.env.OPENROUTER_API_KEY
-  if (!apiKey) {
-    handlers.onError('OPENROUTER_API_KEY is not set. Add it to .env and restart the app.')
+  let model: ReturnType<typeof resolveModel>
+  try {
+    model = resolveModel(selection.providerId, selection.modelId, loadSettings())
+  } catch (err) {
+    if (err instanceof MissingApiKeyError) {
+      handlers.onError(
+        `No API key for ${err.providerId}. Open Settings (sidebar gear) and add one.`,
+      )
+      return
+    }
+    handlers.onError(err instanceof Error ? err.message : String(err))
     return
   }
-  const model = process.env.OPENROUTER_MODEL || 'deepseek/deepseek-chat-v3.1'
-  const appName = process.env.OPENROUTER_APP_NAME || 'Aila'
-
-  const openrouter = createOpenRouter({ apiKey, appName })
 
   let aggregateText = ''
   let aggregateReasoning = ''
@@ -188,7 +173,7 @@ export async function streamChat(
 
   try {
     const result = streamText({
-      model: openrouter(model, { usage: { include: true } }),
+      model,
       messages: toModelMessages(initialMessages),
       tools: aiTools,
       stopWhen: stepCountIs(MAX_STEPS),

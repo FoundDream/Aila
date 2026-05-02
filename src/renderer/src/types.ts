@@ -1,0 +1,27 @@
+// Re-exports renderer-facing types from preload so renderer code doesn't have
+// to dig into ../../preload paths.
+export type {
+  ChatMessage,
+  ConversationRecord,
+  ConversationSummary,
+  ConversationUsage,
+  DocPatch,
+  DocRecord,
+  DocSummary,
+  ModelInfo,
+  ModelSelection,
+  OrCatalog,
+  OrFamily,
+  OrModel,
+  PersistedBlock,
+  PersistedMessage,
+  PersistedTextBlock,
+  PersistedToolCallBlock,
+  ProviderId,
+  Settings,
+  SettingsState,
+  ToolCallPayload,
+  ToolCallResultEvent,
+  ToolCallStartEvent,
+  UsageInfo,
+} from '../../preload/index'

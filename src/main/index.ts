@@ -1,8 +1,9 @@
 import { join } from 'node:path'
 import { is } from '@electron-toolkit/utils'
+import type { ProviderId } from '@shared/models'
 import * as dotenv from 'dotenv'
 import { app, BrowserWindow, ipcMain } from 'electron'
-import { type ChatMessage, getModelInfo, streamChat } from './agent'
+import { type ChatMessage, getModelInfo, type ModelSelection, streamChat } from './agent'
 import type { PersistedMessage } from './conversations'
 import {
   appendMessage,
@@ -15,7 +16,9 @@ import {
 } from './conversations'
 import type { DocRecord } from './docs'
 import { createDoc, deleteDoc, getDoc, listDocs, updateDoc } from './docs'
+import { getOpenRouterCatalog } from './openrouter-catalog'
 import { getDataDir } from './paths'
+import { configuredProviders, loadSettings, type Settings, saveSettings } from './settings'
 
 dotenv.config()
 
@@ -56,26 +59,29 @@ function send(channel: string, data?: unknown): void {
 }
 
 function registerIpcHandlers(): void {
-  ipcMain.handle('chat:send', async (_event, messages: ChatMessage[]) => {
-    activeStream?.abort()
-    const controller = new AbortController()
-    activeStream = controller
+  ipcMain.handle(
+    'chat:send',
+    async (_event, messages: ChatMessage[], selection: ModelSelection) => {
+      activeStream?.abort()
+      const controller = new AbortController()
+      activeStream = controller
 
-    await streamChat(messages, controller.signal, {
-      onTextDelta: (delta) => send('chat:text-delta', delta),
-      onReasoningDelta: (delta) => send('chat:reasoning-delta', delta),
-      onToolCallStart: (event) => send('chat:tool-call-start', event),
-      onToolCallResult: (event) => send('chat:tool-call-result', event),
-      onDone: (full) => {
-        if (activeStream === controller) activeStream = null
-        send('chat:done', full)
-      },
-      onError: (message) => {
-        if (activeStream === controller) activeStream = null
-        send('chat:error', message)
-      },
-    })
-  })
+      await streamChat(messages, selection, controller.signal, {
+        onTextDelta: (delta) => send('chat:text-delta', delta),
+        onReasoningDelta: (delta) => send('chat:reasoning-delta', delta),
+        onToolCallStart: (event) => send('chat:tool-call-start', event),
+        onToolCallResult: (event) => send('chat:tool-call-result', event),
+        onDone: (full) => {
+          if (activeStream === controller) activeStream = null
+          send('chat:done', full)
+        },
+        onError: (message) => {
+          if (activeStream === controller) activeStream = null
+          send('chat:error', message)
+        },
+      })
+    },
+  )
 
   ipcMain.handle('chat:abort', () => {
     activeStream?.abort()
@@ -92,7 +98,19 @@ function registerIpcHandlers(): void {
   )
   ipcMain.handle('docs:delete', (_event, id: string) => deleteDoc(id))
 
-  ipcMain.handle('chat:get-model-info', () => getModelInfo())
+  ipcMain.handle('chat:get-model-info', (_event, providerId: ProviderId, modelId: string) =>
+    getModelInfo(providerId, modelId),
+  )
+
+  function packSettings(settings: Settings): {
+    settings: Settings
+    configuredProviders: ProviderId[]
+  } {
+    return { settings, configuredProviders: configuredProviders(settings) }
+  }
+  ipcMain.handle('settings:get', () => packSettings(loadSettings()))
+  ipcMain.handle('settings:set', (_event, next: Settings) => packSettings(saveSettings(next)))
+  ipcMain.handle('openrouter:list-models', () => getOpenRouterCatalog())
 
   ipcMain.handle('conversations:list', () => listConversations())
   ipcMain.handle('conversations:get', (_event, id: string) => getConversation(id))

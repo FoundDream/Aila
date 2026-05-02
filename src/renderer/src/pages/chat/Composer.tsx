@@ -1,7 +1,6 @@
 import {
   AtSignIcon,
   BotIcon,
-  BrainCircuitIcon,
   PaperclipIcon,
   PlusIcon,
   SendIcon,
@@ -16,8 +15,9 @@ import {
   useRef,
   useState,
 } from 'react'
+import { ModelPicker } from '@/components/ModelPicker'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import type { UsageInfo } from '../../../../preload/index'
+import type { ModelSelection, ProviderId, UsageInfo } from '../../types'
 
 interface ComposerProps {
   isStreaming: boolean
@@ -25,6 +25,11 @@ interface ComposerProps {
   onAbort: () => void
   usage?: UsageInfo | null
   contextLength?: number | null
+  configuredProviders: ProviderId[]
+  selection: ModelSelection | null
+  onSelectionChange: (selection: ModelSelection) => void
+  onOpenSettings: () => void
+  recentOpenRouterModels: string[]
 }
 
 function formatTokens(n: number): string {
@@ -69,6 +74,11 @@ export function Composer({
   onAbort,
   usage,
   contextLength,
+  configuredProviders,
+  selection,
+  onSelectionChange,
+  onOpenSettings,
+  recentOpenRouterModels,
 }: ComposerProps): ReactElement {
   const [value, setValue] = useState('')
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
@@ -111,10 +121,13 @@ export function Composer({
       <div className="mx-auto max-w-[680px]">
         <div className="overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface)] shadow-[0_18px_50px_rgba(31,31,28,0.06)] transition-colors focus-within:border-[var(--border-strong)]">
           <div className="flex min-h-8 items-center justify-between gap-3 border-b border-[var(--border)] bg-[var(--bg-soft)]/55 px-3 py-1.5">
-            <div className="flex min-w-0 items-center gap-1.5 text-[11px] text-[var(--text-dim)]">
-              <BrainCircuitIcon className="size-3.5 shrink-0" />
-              <span className="truncate">Default</span>
-            </div>
+            <ModelPicker
+              configuredProviders={configuredProviders}
+              selection={selection}
+              onChange={onSelectionChange}
+              onOpenSettings={onOpenSettings}
+              recentOpenRouterModels={recentOpenRouterModels}
+            />
             {showMeter && (
               <div className="flex min-w-[150px] max-w-[260px] flex-1 items-center justify-end gap-2">
                 <div className="h-[3px] min-w-16 flex-1 overflow-hidden rounded-full bg-[var(--border)]">
