@@ -1,7 +1,10 @@
 // Re-exports renderer-facing types from preload so renderer code doesn't have
 // to dig into ../../preload paths.
 export type {
+  ChatDoneEvent,
+  ChatErrorEvent,
   ChatMessage,
+  ChatStreamEventBase,
   ConversationRecord,
   ConversationSummary,
   ConversationUsage,
@@ -18,8 +21,11 @@ export type {
   PersistedTextBlock,
   PersistedToolCallBlock,
   ProviderId,
+  ReasoningDeltaEvent,
+  SendResult,
   Settings,
   SettingsState,
+  TextDeltaEvent,
   ToolCallPayload,
   ToolCallResultEvent,
   ToolCallStartEvent,

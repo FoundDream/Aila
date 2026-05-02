@@ -4,6 +4,7 @@ import type { ConversationSummary } from '../../../../preload/index'
 interface ConversationListProps {
   conversations: ConversationSummary[]
   activeId: string | null
+  busyIds: Set<string>
   onSelect: (id: string) => void
   onCreate: () => void
   onDelete: (id: string) => void
@@ -66,6 +67,7 @@ function TrashIcon(): ReactElement {
 export function ConversationList({
   conversations,
   activeId,
+  busyIds,
   onSelect,
   onCreate,
   onDelete,
@@ -103,6 +105,7 @@ export function ConversationList({
           <ul className="flex flex-col gap-px">
             {conversations.map((conversation) => {
               const isActive = conversation.id === activeId
+              const isBusy = busyIds.has(conversation.id)
               const title = conversation.title || '新对话'
               return (
                 <li
@@ -130,6 +133,14 @@ export function ConversationList({
                     >
                       {title}
                     </span>
+                    {isBusy && (
+                      <span
+                        role="status"
+                        aria-label="Streaming"
+                        title="Streaming"
+                        className="mr-1 inline-block h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-[var(--accent,#3b82f6)]"
+                      />
+                    )}
                   </button>
                   <button
                     type="button"

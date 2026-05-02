@@ -1,9 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import type {
-  ConversationRecord,
-  ConversationSummary,
-  PersistedMessage,
-} from '../../../../preload/index'
+import type { ConversationRecord, ConversationSummary } from '../../../../preload/index'
 
 export interface ConversationsState {
   conversations: ConversationSummary[]
@@ -14,7 +10,7 @@ export interface ConversationsState {
   create: () => Promise<ConversationSummary>
   remove: (id: string) => Promise<void>
   rename: (id: string, title: string) => Promise<void>
-  appendMessage: (id: string, message: PersistedMessage) => Promise<void>
+  applyUpdate: (summary: ConversationSummary) => void
 }
 
 export function useConversations(): ConversationsState {
@@ -80,11 +76,12 @@ export function useConversations(): ConversationsState {
     })
   }, [])
 
-  const appendMessage = useCallback(async (id: string, message: PersistedMessage) => {
-    const updated = await window.api.conversations.append(id, message)
+  // Reconciles a single ConversationSummary update from main (fired after every
+  // appendMessage / setUsage). Keeps the sidebar in sync without a full refetch.
+  const applyUpdate = useCallback((summary: ConversationSummary) => {
     setConversations((prev) => {
-      const found = prev.some((c) => c.id === updated.id)
-      const next = found ? prev.map((c) => (c.id === updated.id ? updated : c)) : [...prev, updated]
+      const found = prev.some((c) => c.id === summary.id)
+      const next = found ? prev.map((c) => (c.id === summary.id ? summary : c)) : [...prev, summary]
       next.sort((a, b) => b.updatedAt - a.updatedAt)
       return next
     })
@@ -99,6 +96,6 @@ export function useConversations(): ConversationsState {
     create,
     remove,
     rename,
-    appendMessage,
+    applyUpdate,
   }
 }

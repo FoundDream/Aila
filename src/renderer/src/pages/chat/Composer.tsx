@@ -83,13 +83,14 @@ export function Composer({
   const [value, setValue] = useState('')
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
 
+  // Sends always succeed even while streaming — they're queued and fire after
+  // the current run finishes. The Stop button is the way to interrupt.
   const submit = useCallback(async () => {
-    if (isStreaming) return
     const text = value
     if (!text.trim()) return
     setValue('')
     await onSubmit(text)
-  }, [value, isStreaming, onSubmit])
+  }, [value, onSubmit])
 
   useLayoutEffect(() => {
     const textarea = textareaRef.current
@@ -108,7 +109,7 @@ export function Composer({
     [submit],
   )
 
-  const canSend = !isStreaming && value.trim().length > 0
+  const canSend = value.trim().length > 0
 
   const used = usage?.totalTokens ?? 0
   const ratio = contextLength && contextLength > 0 ? Math.min(used / contextLength, 1) : 0
@@ -180,36 +181,35 @@ export function Composer({
                 <BotIcon className="size-3.5" />
                 <span className="max-w-24 truncate">Chat</span>
               </div>
-              {isStreaming ? (
+              {isStreaming && (
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <button
                       type="button"
                       aria-label="Stop"
                       onClick={onAbort}
-                      className="grid size-8 shrink-0 place-items-center rounded-md bg-[var(--brand-ink)] text-[var(--brand-ink-fg)] transition-colors hover:opacity-90"
+                      className="grid size-8 shrink-0 place-items-center rounded-md border border-[var(--border)] text-[var(--text-soft)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
                     >
                       <SquareIcon className="size-3.5 fill-current" />
                     </button>
                   </TooltipTrigger>
                   <TooltipContent>Stop</TooltipContent>
                 </Tooltip>
-              ) : (
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button
-                      type="button"
-                      aria-label="Send"
-                      onClick={() => void submit()}
-                      disabled={!canSend}
-                      className="grid size-8 shrink-0 place-items-center rounded-md bg-[var(--brand-ink)] text-[var(--brand-ink-fg)] transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:bg-[var(--surface-hover)] disabled:text-[var(--text-dim)] disabled:opacity-100"
-                    >
-                      <SendIcon className="size-4" />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent>Send</TooltipContent>
-                </Tooltip>
               )}
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    aria-label={isStreaming ? 'Queue send' : 'Send'}
+                    onClick={() => void submit()}
+                    disabled={!canSend}
+                    className="grid size-8 shrink-0 place-items-center rounded-md bg-[var(--brand-ink)] text-[var(--brand-ink-fg)] transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:bg-[var(--surface-hover)] disabled:text-[var(--text-dim)] disabled:opacity-100"
+                  >
+                    <SendIcon className="size-4" />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent>{isStreaming ? 'Send (queued)' : 'Send'}</TooltipContent>
+              </Tooltip>
             </div>
           </div>
         </div>

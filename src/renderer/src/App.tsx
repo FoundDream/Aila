@@ -1,9 +1,10 @@
 import { SettingsIcon } from 'lucide-react'
-import { type ReactElement, useCallback, useEffect, useState } from 'react'
+import { type ReactElement, useCallback, useEffect, useMemo, useState } from 'react'
 import { SettingsModal } from '@/components/SettingsModal'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { ChatPage } from '@/pages/chat/ChatPage'
 import { ConversationList } from '@/pages/chat/ConversationList'
+import { useChatStreams } from '@/pages/chat/useChatStreams'
 import { useConversations } from '@/pages/chat/useConversations'
 import { DocList } from '@/pages/docs/DocList'
 import { DocsPage } from '@/pages/docs/DocsPage'
@@ -66,6 +67,12 @@ export default function App(): ReactElement {
   const [tab, setTab] = useState<Tab>('chat')
   const docsState = useDocs()
   const conversationsState = useConversations()
+  const chatStreams = useChatStreams(
+    useMemo(
+      () => ({ onConversationUpdated: conversationsState.applyUpdate }),
+      [conversationsState.applyUpdate],
+    ),
+  )
   const [settingsState, setSettingsState] = useState<SettingsState | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
 
@@ -125,11 +132,13 @@ export default function App(): ReactElement {
               <ConversationList
                 conversations={conversationsState.conversations}
                 activeId={conversationsState.activeId}
+                busyIds={chatStreams.busyIds}
                 onSelect={conversationsState.select}
                 onCreate={() => {
                   void conversationsState.create()
                 }}
                 onDelete={(id) => {
+                  chatStreams.drop(id)
                   void conversationsState.remove(id)
                 }}
               />
@@ -153,7 +162,7 @@ export default function App(): ReactElement {
             <ChatPage
               conversation={conversationsState.activeRecord}
               onCreateConversation={conversationsState.create}
-              onAppendMessage={conversationsState.appendMessage}
+              streams={chatStreams}
               settings={settingsState?.settings ?? null}
               configuredProviders={settingsState?.configuredProviders ?? ([] as ProviderId[])}
               onUpdateSettings={updateSettings}

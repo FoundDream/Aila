@@ -2,10 +2,15 @@
  * Agent loop backed by Vercel AI SDK. Provider/model is chosen per call from
  * settings.json + the renderer's picker selection. SDK handles SSE parsing,
  * tool_call delta accumulation, and the multi-step tool loop.
+ *
+ * Each stream is keyed by (conversationId, assistantMessageId). The agent owns
+ * accumulation of the canonical PersistedMessage so the main process can
+ * persist it on completion regardless of renderer state.
  */
 
 import { findModel, type ProviderId } from '@shared/models'
 import { jsonSchema, type ModelMessage, smoothStream, stepCountIs, streamText, tool } from 'ai'
+import type { PersistedBlock, PersistedMessage, PersistedToolCallBlock } from './conversations'
 import { MissingApiKeyError, resolveModel } from './providers'
 import { loadSettings } from './settings'
 import { executeTool, TOOL_DEFINITIONS } from './tools'
@@ -22,15 +27,25 @@ export type ChatMessage =
   | { role: 'tool'; tool_call_id: string; content: string }
 
 export interface ToolCallEvent {
-  id: string
+  conversationId: string
+  messageId: string
+  toolCallId: string
   name: string
   arguments: string
 }
 
 export interface ToolResultEvent {
-  id: string
+  conversationId: string
+  messageId: string
+  toolCallId: string
   result: string
   isError: boolean
+}
+
+export interface DeltaEvent {
+  conversationId: string
+  messageId: string
+  delta: string
 }
 
 export interface UsageInfo {
@@ -39,13 +54,27 @@ export interface UsageInfo {
   totalTokens: number
 }
 
+export interface DoneEvent {
+  conversationId: string
+  messageId: string
+  message: PersistedMessage
+  usage?: UsageInfo
+}
+
+export interface ErrorEvent {
+  conversationId: string
+  messageId: string
+  error: string
+  message: PersistedMessage
+}
+
 export interface StreamHandlers {
-  onTextDelta: (delta: string) => void
-  onReasoningDelta: (delta: string) => void
+  onTextDelta: (event: DeltaEvent) => void
+  onReasoningDelta: (event: DeltaEvent) => void
   onToolCallStart: (event: ToolCallEvent) => void
   onToolCallResult: (event: ToolResultEvent) => void
-  onDone: (full: { text: string; reasoning: string; usage?: UsageInfo }) => void
-  onError: (message: string) => void
+  onDone: (event: DoneEvent) => void
+  onError: (event: ErrorEvent) => void
 }
 
 const MAX_STEPS = 10
@@ -63,8 +92,6 @@ export function getModelInfo(providerId: ProviderId, modelId: string): ModelInfo
   }
 }
 
-// Build AI SDK tool set from TOOL_DEFINITIONS. Keep JSON Schema (no zod
-// migration), wrap executeTool as the per-tool execute callback.
 const aiTools = Object.fromEntries(
   TOOL_DEFINITIONS.map((td) => [
     td.function.name,
@@ -76,9 +103,9 @@ const aiTools = Object.fromEntries(
   ]),
 )
 
-// Convert renderer's OpenAI-format ChatMessage[] to AI SDK ModelMessage[].
-// Tool messages need toolName; we look it up from the previous assistant's
-// tool_calls list since the renderer only persists tool_call_id + content.
+// Convert OpenAI-format ChatMessage[] to AI SDK ModelMessage[]. Tool messages
+// need toolName; we look it up from the previous assistant's tool_calls list
+// since persisted state only carries tool_call_id + content.
 function toModelMessages(messages: ChatMessage[]): ModelMessage[] {
   const toolNameById = new Map<string, string>()
   const out: ModelMessage[] = []
@@ -142,45 +169,112 @@ function toModelMessages(messages: ChatMessage[]): ModelMessage[] {
   return out
 }
 
+// Builds up the canonical PersistedMessage as the stream progresses. Mirrors
+// the renderer's appendDeltaToBlocks/upsertToolCall logic so main is the source
+// of truth for what gets persisted.
+class AssistantBuilder {
+  blocks: PersistedBlock[] = []
+  private toolBlockIndex = new Map<string, number>()
+
+  appendText(kind: 'text' | 'reasoning', delta: string): void {
+    if (!delta) return
+    const last = this.blocks[this.blocks.length - 1]
+    if (last && last.type === kind) {
+      last.content += delta
+      return
+    }
+    this.blocks.push({ type: kind, content: delta })
+  }
+
+  startToolCall(id: string, name: string, args: string): void {
+    const existing = this.toolBlockIndex.get(id)
+    if (existing !== undefined) {
+      const block = this.blocks[existing] as PersistedToolCallBlock
+      block.name = name
+      block.arguments = args
+      return
+    }
+    const block: PersistedToolCallBlock = {
+      type: 'tool_call',
+      id,
+      name,
+      arguments: args,
+      status: 'running',
+    }
+    this.toolBlockIndex.set(id, this.blocks.length)
+    this.blocks.push(block)
+  }
+
+  finishToolCall(id: string, result: string, isError: boolean): void {
+    const idx = this.toolBlockIndex.get(id)
+    if (idx === undefined) return
+    const block = this.blocks[idx] as PersistedToolCallBlock
+    block.status = isError ? 'error' : 'done'
+    block.result = result
+  }
+
+  build(
+    messageId: string,
+    status: 'streaming' | 'done' | 'error',
+    selection: ModelSelection,
+    error?: string,
+  ): PersistedMessage {
+    return {
+      id: messageId,
+      role: 'assistant',
+      blocks: this.blocks,
+      status,
+      ...(error !== undefined && { error }),
+      model: selection,
+    }
+  }
+}
+
 export interface ModelSelection {
   providerId: ProviderId
   modelId: string
 }
 
-export async function streamChat(
-  initialMessages: ChatMessage[],
-  selection: ModelSelection,
-  signal: AbortSignal,
-  handlers: StreamHandlers,
-): Promise<void> {
+export interface StreamRequest {
+  conversationId: string
+  assistantMessageId: string
+  messages: ChatMessage[]
+  selection: ModelSelection
+  signal: AbortSignal
+}
+
+export async function streamChat(req: StreamRequest, handlers: StreamHandlers): Promise<void> {
+  const { conversationId, assistantMessageId, messages, selection, signal } = req
+
+  const builder = new AssistantBuilder()
+  let lastUsage: UsageInfo | null = null
+
   let model: ReturnType<typeof resolveModel>
   try {
     model = resolveModel(selection.providerId, selection.modelId, loadSettings())
   } catch (err) {
-    if (err instanceof MissingApiKeyError) {
-      handlers.onError(
-        `No API key for ${err.providerId}. Open Settings (sidebar gear) and add one.`,
-      )
-      return
-    }
-    handlers.onError(err instanceof Error ? err.message : String(err))
+    const message =
+      err instanceof MissingApiKeyError
+        ? `No API key for ${err.providerId}. Open Settings (sidebar gear) and add one.`
+        : err instanceof Error
+          ? err.message
+          : String(err)
+    handlers.onError({
+      conversationId,
+      messageId: assistantMessageId,
+      error: message,
+      message: builder.build(assistantMessageId, 'error', selection, message),
+    })
     return
   }
-
-  let aggregateText = ''
-  let aggregateReasoning = ''
-  let lastUsage: UsageInfo | null = null
 
   try {
     const result = streamText({
       model,
-      messages: toModelMessages(initialMessages),
+      messages: toModelMessages(messages),
       tools: aiTools,
       stopWhen: stepCountIs(MAX_STEPS),
       abortSignal: signal,
-      // Providers often deliver text in ~1s bursts; pace it out so the UI
-      // streams smoothly. Regex emits one CJK char or one whitespace-delimited
-      // word at a time so Chinese/Japanese text streams character-by-character.
       experimental_transform: smoothStream({
         delayInMs: 15,
         chunking: /[぀-ゟ゠-ヿ一-鿿가-힯]|\S+\s+/,
@@ -190,25 +284,41 @@ export async function streamChat(
     for await (const part of result.fullStream) {
       switch (part.type) {
         case 'text-delta':
-          aggregateText += part.text
-          handlers.onTextDelta(part.text)
-          break
-        case 'reasoning-delta':
-          aggregateReasoning += part.text
-          handlers.onReasoningDelta(part.text)
-          break
-        case 'tool-call':
-          handlers.onToolCallStart({
-            id: part.toolCallId,
-            name: part.toolName,
-            arguments: JSON.stringify(part.input ?? {}),
+          builder.appendText('text', part.text)
+          handlers.onTextDelta({
+            conversationId,
+            messageId: assistantMessageId,
+            delta: part.text,
           })
           break
+        case 'reasoning-delta':
+          builder.appendText('reasoning', part.text)
+          handlers.onReasoningDelta({
+            conversationId,
+            messageId: assistantMessageId,
+            delta: part.text,
+          })
+          break
+        case 'tool-call': {
+          const args = JSON.stringify(part.input ?? {})
+          builder.startToolCall(part.toolCallId, part.toolName, args)
+          handlers.onToolCallStart({
+            conversationId,
+            messageId: assistantMessageId,
+            toolCallId: part.toolCallId,
+            name: part.toolName,
+            arguments: args,
+          })
+          break
+        }
         case 'tool-result': {
           const out = part.output
           const result = typeof out === 'string' ? out : out == null ? '' : JSON.stringify(out)
+          builder.finishToolCall(part.toolCallId, result, false)
           handlers.onToolCallResult({
-            id: part.toolCallId,
+            conversationId,
+            messageId: assistantMessageId,
+            toolCallId: part.toolCallId,
             result,
             isError: false,
           })
@@ -216,26 +326,19 @@ export async function streamChat(
         }
         case 'tool-error': {
           const message = part.error instanceof Error ? part.error.message : String(part.error)
+          builder.finishToolCall(part.toolCallId, message, true)
           handlers.onToolCallResult({
-            id: part.toolCallId,
+            conversationId,
+            messageId: assistantMessageId,
+            toolCallId: part.toolCallId,
             result: message,
             isError: true,
           })
           break
         }
-        case 'finish-step': {
-          const u = part.usage
-          if (u) {
-            lastUsage = {
-              promptTokens: u.inputTokens ?? 0,
-              completionTokens: u.outputTokens ?? 0,
-              totalTokens: u.totalTokens ?? (u.inputTokens ?? 0) + (u.outputTokens ?? 0),
-            }
-          }
-          break
-        }
+        case 'finish-step':
         case 'finish': {
-          const u = part.totalUsage
+          const u = part.type === 'finish' ? part.totalUsage : part.usage
           if (u) {
             lastUsage = {
               promptTokens: u.inputTokens ?? 0,
@@ -245,35 +348,42 @@ export async function streamChat(
           }
           break
         }
-        case 'abort':
-          handlers.onDone({
-            text: aggregateText,
-            reasoning: aggregateReasoning,
-            usage: lastUsage ?? undefined,
+        case 'abort': {
+          handlers.onError({
+            conversationId,
+            messageId: assistantMessageId,
+            error: 'Aborted',
+            message: builder.build(assistantMessageId, 'error', selection, 'Aborted'),
           })
           return
+        }
         case 'error': {
           const message = part.error instanceof Error ? part.error.message : String(part.error)
-          handlers.onError(message)
+          handlers.onError({
+            conversationId,
+            messageId: assistantMessageId,
+            error: message,
+            message: builder.build(assistantMessageId, 'error', selection, message),
+          })
           return
         }
       }
     }
 
     handlers.onDone({
-      text: aggregateText,
-      reasoning: aggregateReasoning,
+      conversationId,
+      messageId: assistantMessageId,
+      message: builder.build(assistantMessageId, 'done', selection),
       usage: lastUsage ?? undefined,
     })
   } catch (error) {
-    if (signal.aborted) {
-      handlers.onDone({
-        text: aggregateText,
-        reasoning: aggregateReasoning,
-        usage: lastUsage ?? undefined,
-      })
-      return
-    }
-    handlers.onError(error instanceof Error ? error.message : String(error))
+    const isAbort = signal.aborted
+    const message = isAbort ? 'Aborted' : error instanceof Error ? error.message : String(error)
+    handlers.onError({
+      conversationId,
+      messageId: assistantMessageId,
+      error: message,
+      message: builder.build(assistantMessageId, 'error', selection, message),
+    })
   }
 }

@@ -16,14 +16,27 @@ export type ChatMessage =
   | { role: 'assistant'; content: string; tool_calls?: ToolCallPayload[] }
   | { role: 'tool'; tool_call_id: string; content: string }
 
-export interface ToolCallStartEvent {
-  id: string
+export interface ChatStreamEventBase {
+  conversationId: string
+  messageId: string
+}
+
+export interface TextDeltaEvent extends ChatStreamEventBase {
+  delta: string
+}
+
+export interface ReasoningDeltaEvent extends ChatStreamEventBase {
+  delta: string
+}
+
+export interface ToolCallStartEvent extends ChatStreamEventBase {
+  toolCallId: string
   name: string
   arguments: string
 }
 
-export interface ToolCallResultEvent {
-  id: string
+export interface ToolCallResultEvent extends ChatStreamEventBase {
+  toolCallId: string
   result: string
   isError: boolean
 }
@@ -108,6 +121,21 @@ export interface UsageInfo {
   totalTokens: number
 }
 
+export interface ChatDoneEvent extends ChatStreamEventBase {
+  message: PersistedMessage
+  usage?: UsageInfo
+}
+
+export interface ChatErrorEvent extends ChatStreamEventBase {
+  error: string
+  message: PersistedMessage
+}
+
+export interface SendResult {
+  userMessage: PersistedMessage
+  assistantMessageId: string
+}
+
 export interface ModelInfo {
   model: string
   contextLength: number | null
@@ -125,18 +153,22 @@ function on<T>(channel: string, callback: (data: T) => void): () => void {
 }
 
 const api = {
-  send: (messages: ChatMessage[], selection: ModelSelection): Promise<void> =>
-    ipcRenderer.invoke('chat:send', messages, selection),
-  abort: (): Promise<void> => ipcRenderer.invoke('chat:abort'),
-  onTextDelta: (cb: (delta: string) => void) => on<string>('chat:text-delta', cb),
-  onReasoningDelta: (cb: (delta: string) => void) => on<string>('chat:reasoning-delta', cb),
+  send: (
+    conversationId: string,
+    userText: string,
+    selection: ModelSelection,
+  ): Promise<SendResult> => ipcRenderer.invoke('chat:send', conversationId, userText, selection),
+  abort: (conversationId: string): Promise<void> =>
+    ipcRenderer.invoke('chat:abort', conversationId),
+  onTextDelta: (cb: (event: TextDeltaEvent) => void) => on<TextDeltaEvent>('chat:text-delta', cb),
+  onReasoningDelta: (cb: (event: ReasoningDeltaEvent) => void) =>
+    on<ReasoningDeltaEvent>('chat:reasoning-delta', cb),
   onToolCallStart: (cb: (event: ToolCallStartEvent) => void) =>
     on<ToolCallStartEvent>('chat:tool-call-start', cb),
   onToolCallResult: (cb: (event: ToolCallResultEvent) => void) =>
     on<ToolCallResultEvent>('chat:tool-call-result', cb),
-  onDone: (cb: (full: { text: string; reasoning: string; usage?: UsageInfo }) => void) =>
-    on<{ text: string; reasoning: string; usage?: UsageInfo }>('chat:done', cb),
-  onError: (cb: (message: string) => void) => on<string>('chat:error', cb),
+  onDone: (cb: (event: ChatDoneEvent) => void) => on<ChatDoneEvent>('chat:done', cb),
+  onError: (cb: (event: ChatErrorEvent) => void) => on<ChatErrorEvent>('chat:error', cb),
   getModelInfo: (providerId: ProviderId, modelId: string): Promise<ModelInfo> =>
     ipcRenderer.invoke('chat:get-model-info', providerId, modelId),
   settings: {
@@ -160,13 +192,11 @@ const api = {
     list: (): Promise<ConversationSummary[]> => ipcRenderer.invoke('conversations:list'),
     get: (id: string): Promise<ConversationRecord> => ipcRenderer.invoke('conversations:get', id),
     create: (): Promise<ConversationSummary> => ipcRenderer.invoke('conversations:create'),
-    append: (id: string, message: PersistedMessage): Promise<ConversationSummary> =>
-      ipcRenderer.invoke('conversations:append', id, message),
     rename: (id: string, title: string): Promise<ConversationSummary> =>
       ipcRenderer.invoke('conversations:rename', id, title),
-    setUsage: (id: string, usage: UsageInfo): Promise<ConversationSummary> =>
-      ipcRenderer.invoke('conversations:set-usage', id, usage),
     delete: (id: string): Promise<void> => ipcRenderer.invoke('conversations:delete', id),
+    onUpdated: (cb: (summary: ConversationSummary) => void) =>
+      on<ConversationSummary>('conversations:updated', cb),
   },
 }
 
