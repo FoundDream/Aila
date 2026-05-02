@@ -8,3 +8,4 @@ dist/
 /docs/
 .pi
 .claude
+.dev-data/

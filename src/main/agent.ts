@@ -32,17 +32,61 @@ export interface ToolResultEvent {
   isError: boolean
 }
 
+export interface UsageInfo {
+  promptTokens: number
+  completionTokens: number
+  totalTokens: number
+}
+
 export interface StreamHandlers {
   onTextDelta: (delta: string) => void
   onReasoningDelta: (delta: string) => void
   onToolCallStart: (event: ToolCallEvent) => void
   onToolCallResult: (event: ToolResultEvent) => void
-  onDone: (full: { text: string; reasoning: string }) => void
+  onDone: (full: { text: string; reasoning: string; usage?: UsageInfo }) => void
   onError: (message: string) => void
 }
 
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions'
+const OPENROUTER_MODELS_URL = 'https://openrouter.ai/api/v1/models'
 const MAX_ITERATIONS = 10
+
+export interface ModelInfo {
+  model: string
+  contextLength: number | null
+}
+
+const contextLengthCache = new Map<string, number | null>()
+
+interface OpenRouterModelEntry {
+  id: string
+  context_length?: number | null
+}
+
+async function fetchContextLength(model: string): Promise<number | null> {
+  if (contextLengthCache.has(model)) return contextLengthCache.get(model) ?? null
+  try {
+    const response = await fetch(OPENROUTER_MODELS_URL)
+    if (!response.ok) {
+      contextLengthCache.set(model, null)
+      return null
+    }
+    const json = (await response.json()) as { data?: OpenRouterModelEntry[] }
+    const entry = json.data?.find((m) => m.id === model)
+    const length = typeof entry?.context_length === 'number' ? entry.context_length : null
+    contextLengthCache.set(model, length)
+    return length
+  } catch {
+    contextLengthCache.set(model, null)
+    return null
+  }
+}
+
+export async function getModelInfo(): Promise<ModelInfo> {
+  const model = process.env.OPENROUTER_MODEL || 'deepseek/deepseek-chat-v3.1'
+  const contextLength = await fetchContextLength(model)
+  return { model, contextLength }
+}
 
 interface OpenRouterToolCallDelta {
   index?: number
@@ -58,11 +102,18 @@ interface OpenRouterDelta {
   tool_calls?: OpenRouterToolCallDelta[]
 }
 
+interface OpenRouterUsage {
+  prompt_tokens?: number
+  completion_tokens?: number
+  total_tokens?: number
+}
+
 interface OpenRouterStreamChunk {
   choices?: Array<{
     delta?: OpenRouterDelta
     finish_reason?: string | null
   }>
+  usage?: OpenRouterUsage
 }
 
 interface TurnResult {
@@ -70,6 +121,7 @@ interface TurnResult {
   reasoning: string
   toolCalls: ToolCall[]
   finishReason: string | null
+  usage: UsageInfo | null
 }
 
 async function runTurn(
@@ -93,6 +145,8 @@ async function runTurn(
     body: JSON.stringify({
       model,
       stream: true,
+      // OpenRouter-specific: emits a final chunk carrying token usage.
+      usage: { include: true },
       messages,
       tools,
     }),
@@ -110,6 +164,7 @@ async function runTurn(
   let text = ''
   let reasoning = ''
   let finishReason: string | null = null
+  let usage: UsageInfo | null = null
   // Tool calls stream as deltas keyed by `index`. We accumulate id/name/arguments per index.
   const toolCallsByIndex = new Map<number, ToolCall>()
 
@@ -134,6 +189,16 @@ async function runTurn(
         chunk = JSON.parse(data)
       } catch {
         continue
+      }
+
+      if (chunk.usage) {
+        usage = {
+          promptTokens: chunk.usage.prompt_tokens ?? 0,
+          completionTokens: chunk.usage.completion_tokens ?? 0,
+          totalTokens:
+            chunk.usage.total_tokens ??
+            (chunk.usage.prompt_tokens ?? 0) + (chunk.usage.completion_tokens ?? 0),
+        }
       }
 
       const choice = chunk.choices?.[0]
@@ -172,7 +237,7 @@ async function runTurn(
     .map(([, tc]) => tc)
     .filter((tc) => tc.function.name)
 
-  return { text, reasoning, toolCalls, finishReason }
+  return { text, reasoning, toolCalls, finishReason, usage }
 }
 
 export async function streamChat(
@@ -192,6 +257,7 @@ export async function streamChat(
   const messages: ChatMessage[] = [...initialMessages]
   let aggregateText = ''
   let aggregateReasoning = ''
+  let lastUsage: UsageInfo | null = null
 
   try {
     for (let iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
@@ -208,9 +274,14 @@ export async function streamChat(
 
       aggregateText += turn.text
       aggregateReasoning += turn.reasoning
+      if (turn.usage) lastUsage = turn.usage
 
       if (turn.toolCalls.length === 0) {
-        handlers.onDone({ text: aggregateText, reasoning: aggregateReasoning })
+        handlers.onDone({
+          text: aggregateText,
+          reasoning: aggregateReasoning,
+          usage: lastUsage ?? undefined,
+        })
         return
       }
 
@@ -252,7 +323,11 @@ export async function streamChat(
     handlers.onError(`Reached MAX_ITERATIONS (${MAX_ITERATIONS}) without a final answer.`)
   } catch (error) {
     if (signal.aborted) {
-      handlers.onDone({ text: aggregateText, reasoning: aggregateReasoning })
+      handlers.onDone({
+        text: aggregateText,
+        reasoning: aggregateReasoning,
+        usage: lastUsage ?? undefined,
+      })
       return
     }
     handlers.onError(error instanceof Error ? error.message : String(error))

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { app } from 'electron'
+import { getDocumentsDir } from './paths'
 
 export interface DocRecord {
   id: string
@@ -17,18 +17,14 @@ const DEFAULT_TITLE = '无标题文档'
 
 const EMPTY_CONTENT: unknown = [{ type: 'p', children: [{ text: '' }] }]
 
-function docsDir(): string {
-  return join(app.getPath('userData'), 'documents')
-}
-
 async function ensureDir(): Promise<string> {
-  const dir = docsDir()
+  const dir = getDocumentsDir()
   await mkdir(dir, { recursive: true })
   return dir
 }
 
 function pathFor(id: string): string {
-  return join(docsDir(), `${id}.json`)
+  return join(getDocumentsDir(), `${id}.json`)
 }
 
 async function readDoc(id: string): Promise<DocRecord> {
@@ -43,13 +39,13 @@ async function writeDoc(record: DocRecord): Promise<void> {
 
 export async function listDocs(): Promise<DocSummary[]> {
   await ensureDir()
-  const entries = await readdir(docsDir())
+  const entries = await readdir(getDocumentsDir())
   const records = await Promise.all(
     entries
       .filter((name) => name.endsWith('.json'))
       .map(async (name) => {
         try {
-          const raw = await readFile(join(docsDir(), name), 'utf-8')
+          const raw = await readFile(join(getDocumentsDir(), name), 'utf-8')
           const record = JSON.parse(raw) as DocRecord
           return {
             id: record.id,

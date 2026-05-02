@@ -59,11 +59,30 @@ export interface PersistedMessage {
   error?: string
 }
 
+export interface ConversationUsage {
+  promptTokens: number
+  completionTokens: number
+  totalTokens: number
+  updatedAt: number
+}
+
 export interface ConversationSummary {
   id: string
   title: string
   createdAt: number
   updatedAt: number
+  usage?: ConversationUsage
+}
+
+export interface UsageInfo {
+  promptTokens: number
+  completionTokens: number
+  totalTokens: number
+}
+
+export interface ModelInfo {
+  model: string
+  contextLength: number | null
 }
 
 export interface ConversationRecord {
@@ -86,9 +105,10 @@ const api = {
     on<ToolCallStartEvent>('chat:tool-call-start', cb),
   onToolCallResult: (cb: (event: ToolCallResultEvent) => void) =>
     on<ToolCallResultEvent>('chat:tool-call-result', cb),
-  onDone: (cb: (full: { text: string; reasoning: string }) => void) =>
-    on<{ text: string; reasoning: string }>('chat:done', cb),
+  onDone: (cb: (full: { text: string; reasoning: string; usage?: UsageInfo }) => void) =>
+    on<{ text: string; reasoning: string; usage?: UsageInfo }>('chat:done', cb),
   onError: (cb: (message: string) => void) => on<string>('chat:error', cb),
+  getModelInfo: (): Promise<ModelInfo> => ipcRenderer.invoke('chat:get-model-info'),
   docs: {
     list: (): Promise<DocSummary[]> => ipcRenderer.invoke('docs:list'),
     get: (id: string): Promise<DocRecord> => ipcRenderer.invoke('docs:get', id),
@@ -105,6 +125,8 @@ const api = {
       ipcRenderer.invoke('conversations:append', id, message),
     rename: (id: string, title: string): Promise<ConversationSummary> =>
       ipcRenderer.invoke('conversations:rename', id, title),
+    setUsage: (id: string, usage: UsageInfo): Promise<ConversationSummary> =>
+      ipcRenderer.invoke('conversations:set-usage', id, usage),
     delete: (id: string): Promise<void> => ipcRenderer.invoke('conversations:delete', id),
   },
 }

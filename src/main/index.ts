@@ -2,7 +2,7 @@ import { join } from 'node:path'
 import { is } from '@electron-toolkit/utils'
 import * as dotenv from 'dotenv'
 import { app, BrowserWindow, ipcMain } from 'electron'
-import { type ChatMessage, streamChat } from './agent'
+import { type ChatMessage, getModelInfo, streamChat } from './agent'
 import type { PersistedMessage } from './conversations'
 import {
   appendMessage,
@@ -11,9 +11,11 @@ import {
   getConversation,
   listConversations,
   renameConversation,
+  setConversationUsage,
 } from './conversations'
 import type { DocRecord } from './docs'
 import { createDoc, deleteDoc, getDoc, listDocs, updateDoc } from './docs'
+import { getDataDir } from './paths'
 
 dotenv.config()
 
@@ -90,6 +92,8 @@ function registerIpcHandlers(): void {
   )
   ipcMain.handle('docs:delete', (_event, id: string) => deleteDoc(id))
 
+  ipcMain.handle('chat:get-model-info', () => getModelInfo())
+
   ipcMain.handle('conversations:list', () => listConversations())
   ipcMain.handle('conversations:get', (_event, id: string) => getConversation(id))
   ipcMain.handle('conversations:create', () => createConversation())
@@ -99,10 +103,19 @@ function registerIpcHandlers(): void {
   ipcMain.handle('conversations:rename', (_event, id: string, title: string) =>
     renameConversation(id, title),
   )
+  ipcMain.handle(
+    'conversations:set-usage',
+    (
+      _event,
+      id: string,
+      usage: { promptTokens: number; completionTokens: number; totalTokens: number },
+    ) => setConversationUsage(id, usage),
+  )
   ipcMain.handle('conversations:delete', (_event, id: string) => deleteConversation(id))
 }
 
 app.whenReady().then(() => {
+  console.log('[storage] data dir =', getDataDir())
   createWindow()
   registerIpcHandlers()
 

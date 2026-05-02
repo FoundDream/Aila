@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { appendFile, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { app } from 'electron'
+import { getConversationsDir } from './paths'
 
 export interface PersistedTextBlock {
   type: 'text' | 'reasoning'
@@ -27,11 +27,19 @@ export interface PersistedMessage {
   error?: string
 }
 
+export interface ConversationUsage {
+  promptTokens: number
+  completionTokens: number
+  totalTokens: number
+  updatedAt: number
+}
+
 export interface ConversationMeta {
   id: string
   title: string
   createdAt: number
   updatedAt: number
+  usage?: ConversationUsage
 }
 
 export type ConversationSummary = ConversationMeta
@@ -44,22 +52,18 @@ export interface ConversationRecord {
 const DEFAULT_TITLE = '新对话'
 const TITLE_MAX = 40
 
-function conversationsDir(): string {
-  return join(app.getPath('userData'), 'conversations')
-}
-
 async function ensureDir(): Promise<string> {
-  const dir = conversationsDir()
+  const dir = getConversationsDir()
   await mkdir(dir, { recursive: true })
   return dir
 }
 
 function logPath(id: string): string {
-  return join(conversationsDir(), `${id}.jsonl`)
+  return join(getConversationsDir(), `${id}.jsonl`)
 }
 
 function metaPath(id: string): string {
-  return join(conversationsDir(), `${id}.meta.json`)
+  return join(getConversationsDir(), `${id}.meta.json`)
 }
 
 async function readMeta(id: string): Promise<ConversationMeta> {
@@ -85,13 +89,13 @@ function deriveTitle(message: PersistedMessage): string | null {
 
 export async function listConversations(): Promise<ConversationSummary[]> {
   await ensureDir()
-  const entries = await readdir(conversationsDir())
+  const entries = await readdir(getConversationsDir())
   const records = await Promise.all(
     entries
       .filter((name) => name.endsWith('.meta.json'))
       .map(async (name) => {
         try {
-          const raw = await readFile(join(conversationsDir(), name), 'utf-8')
+          const raw = await readFile(join(getConversationsDir(), name), 'utf-8')
           return JSON.parse(raw) as ConversationMeta
         } catch {
           return null
@@ -163,6 +167,19 @@ export async function renameConversation(id: string, title: string): Promise<Con
     ...current,
     title: title.trim() || DEFAULT_TITLE,
     updatedAt: Date.now(),
+  }
+  await writeMeta(next)
+  return next
+}
+
+export async function setConversationUsage(
+  id: string,
+  usage: { promptTokens: number; completionTokens: number; totalTokens: number },
+): Promise<ConversationSummary> {
+  const current = await readMeta(id)
+  const next: ConversationMeta = {
+    ...current,
+    usage: { ...usage, updatedAt: Date.now() },
   }
   await writeMeta(next)
   return next

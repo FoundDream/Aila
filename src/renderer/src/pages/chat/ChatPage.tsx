@@ -3,6 +3,8 @@ import type {
   ChatMessage,
   ConversationRecord,
   ConversationSummary,
+  ModelInfo,
+  UsageInfo,
 } from '../../../../preload/index'
 import { Composer } from './Composer'
 import { Transcript } from './Transcript'
@@ -85,9 +87,21 @@ export function ChatPage({
 }: ChatPageProps): ReactElement {
   const [messages, setMessages] = useState<Message[]>([])
   const [isStreaming, setIsStreaming] = useState(false)
+  const [currentUsage, setCurrentUsage] = useState<UsageInfo | null>(null)
+  const [modelInfo, setModelInfo] = useState<ModelInfo | null>(null)
 
   const messagesRef = useRef<Message[]>([])
   messagesRef.current = messages
+
+  useEffect(() => {
+    let cancelled = false
+    void window.api.getModelInfo().then((info) => {
+      if (!cancelled) setModelInfo(info)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   const streamingIdRef = useRef<string | null>(null)
   const streamConversationIdRef = useRef<string | null>(null)
@@ -112,6 +126,7 @@ export function ChatPage({
       pendingReasoningRef.current = ''
       persistedIdsRef.current = new Set()
       setMessages([])
+      setCurrentUsage(null)
       setIsStreaming(false)
       return
     }
@@ -125,6 +140,15 @@ export function ChatPage({
     const loaded = conversation.messages as Message[]
     persistedIdsRef.current = new Set(loaded.map((m) => m.id))
     setMessages(loaded)
+    setCurrentUsage(
+      conversation.meta.usage
+        ? {
+            promptTokens: conversation.meta.usage.promptTokens,
+            completionTokens: conversation.meta.usage.completionTokens,
+            totalTokens: conversation.meta.usage.totalTokens,
+          }
+        : null,
+    )
     setIsStreaming(false)
   }, [conversation])
 
@@ -155,13 +179,21 @@ export function ChatPage({
   }, [flushPending])
 
   const finishStreaming = useCallback(
-    (status: 'done' | 'error', errorMessage?: string) => {
+    (status: 'done' | 'error', errorMessage?: string, usage?: UsageInfo) => {
       flushPending()
       const targetId = streamingIdRef.current
       const conversationId = streamConversationIdRef.current
       streamingIdRef.current = null
       streamConversationIdRef.current = null
       setIsStreaming(false)
+
+      if (usage && conversationId) {
+        setCurrentUsage(usage)
+        queueMicrotask(() => {
+          void window.api.conversations.setUsage(conversationId, usage)
+        })
+      }
+
       if (!targetId) return
 
       setMessages((prev) => {
@@ -239,7 +271,7 @@ export function ChatPage({
           result: event.result,
         }))
       }),
-      window.api.onDone(() => finishStreaming('done')),
+      window.api.onDone((full) => finishStreaming('done', undefined, full.usage)),
       window.api.onError((message) => finishStreaming('error', message)),
     ]
     return () => {
@@ -320,7 +352,13 @@ export function ChatPage({
       </header>
       <main className="flex min-h-0 flex-1 flex-col">
         <Transcript messages={messages} />
-        <Composer isStreaming={isStreaming} onSubmit={handleSubmit} onAbort={handleAbort} />
+        <Composer
+          isStreaming={isStreaming}
+          onSubmit={handleSubmit}
+          onAbort={handleAbort}
+          usage={currentUsage}
+          contextLength={modelInfo?.contextLength ?? null}
+        />
       </main>
     </div>
   )
