@@ -143,6 +143,7 @@ export default function App(): ReactElement {
                 onSelect={docsState.select}
                 onCreate={docsState.create}
                 onDelete={docsState.remove}
+                onMove={docsState.move}
               />
             </div>
           )}

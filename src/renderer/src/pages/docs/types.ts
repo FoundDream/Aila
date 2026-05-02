@@ -4,6 +4,7 @@ export type DocContent = Value
 
 export interface DocSummary {
   id: string
+  parentId: string | null
   title: string
   createdAt: number
   updatedAt: number

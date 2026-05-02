@@ -6,9 +6,10 @@ export interface DocsState {
   activeId: string | null
   activeDoc: DocRecord | null
   select: (id: string) => void
-  create: () => Promise<void>
+  create: (parentId?: string | null) => Promise<void>
   remove: (id: string) => Promise<void>
-  save: (patch: { title?: string; content?: DocContent }) => Promise<void>
+  move: (id: string, parentId: string | null) => Promise<void>
+  save: (patch: { parentId?: string | null; title?: string; content?: DocContent }) => Promise<void>
 }
 
 export function useDocs(): DocsState {
@@ -44,25 +45,47 @@ export function useDocs(): DocsState {
     }
   }, [activeId])
 
-  const create = useCallback(async () => {
-    const doc = (await window.api.docs.create()) as DocRecord
-    await refreshList()
-    setActiveId(doc.id)
-  }, [refreshList])
+  const create = useCallback(
+    async (parentId: string | null = null) => {
+      const doc = (await window.api.docs.create(parentId)) as DocRecord
+      await refreshList()
+      setActiveId(doc.id)
+    },
+    [refreshList],
+  )
 
   const remove = useCallback(
     async (id: string) => {
       await window.api.docs.delete(id)
       const list = await refreshList()
-      if (activeId === id) {
+      if (activeId && !list.some((doc) => doc.id === activeId)) {
         setActiveId(list.length > 0 ? list[0].id : null)
       }
     },
     [activeId, refreshList],
   )
 
+  const move = useCallback(async (id: string, parentId: string | null) => {
+    const updated = (await window.api.docs.update(id, { parentId })) as DocRecord
+    setDocs((prev) => {
+      const next = prev.map((doc) =>
+        doc.id === updated.id
+          ? {
+              id: updated.id,
+              parentId: updated.parentId,
+              title: updated.title,
+              createdAt: updated.createdAt,
+              updatedAt: updated.updatedAt,
+            }
+          : doc,
+      )
+      next.sort((a, b) => b.updatedAt - a.updatedAt)
+      return next
+    })
+  }, [])
+
   const save = useCallback(
-    async (patch: { title?: string; content?: DocContent }) => {
+    async (patch: { parentId?: string | null; title?: string; content?: DocContent }) => {
       if (!activeId) return
       const updated = (await window.api.docs.update(activeId, patch)) as DocRecord
       setDocs((prev) => {
@@ -70,6 +93,7 @@ export function useDocs(): DocsState {
           doc.id === updated.id
             ? {
                 id: updated.id,
+                parentId: updated.parentId,
                 title: updated.title,
                 createdAt: updated.createdAt,
                 updatedAt: updated.updatedAt,
@@ -90,6 +114,7 @@ export function useDocs(): DocsState {
     select: setActiveId,
     create,
     remove,
+    move,
     save,
   }
 }

@@ -30,15 +30,16 @@ export interface ToolCallResultEvent {
 
 export interface DocRecord {
   id: string
+  parentId: string | null
   title: string
   content: unknown
   createdAt: number
   updatedAt: number
 }
 
-export type DocSummary = Pick<DocRecord, 'id' | 'title' | 'createdAt' | 'updatedAt'>
+export type DocSummary = Pick<DocRecord, 'id' | 'parentId' | 'title' | 'createdAt' | 'updatedAt'>
 
-export type DocPatch = Partial<Pick<DocRecord, 'title' | 'content'>>
+export type DocPatch = Partial<Pick<DocRecord, 'parentId' | 'title' | 'content'>>
 
 export interface PersistedTextBlock {
   type: 'text' | 'reasoning'
@@ -149,7 +150,8 @@ const api = {
   docs: {
     list: (): Promise<DocSummary[]> => ipcRenderer.invoke('docs:list'),
     get: (id: string): Promise<DocRecord> => ipcRenderer.invoke('docs:get', id),
-    create: (): Promise<DocRecord> => ipcRenderer.invoke('docs:create'),
+    create: (parentId?: string | null): Promise<DocRecord> =>
+      ipcRenderer.invoke('docs:create', parentId ?? null),
     update: (id: string, patch: DocPatch): Promise<DocRecord> =>
       ipcRenderer.invoke('docs:update', id, patch),
     delete: (id: string): Promise<void> => ipcRenderer.invoke('docs:delete', id),

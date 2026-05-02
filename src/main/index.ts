@@ -90,10 +90,10 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle('docs:list', () => listDocs())
   ipcMain.handle('docs:get', (_event, id: string) => getDoc(id))
-  ipcMain.handle('docs:create', () => createDoc())
+  ipcMain.handle('docs:create', (_event, parentId?: string | null) => createDoc(parentId ?? null))
   ipcMain.handle(
     'docs:update',
-    (_event, id: string, patch: Partial<Pick<DocRecord, 'title' | 'content'>>) =>
+    (_event, id: string, patch: Partial<Pick<DocRecord, 'parentId' | 'title' | 'content'>>) =>
       updateDoc(id, patch),
   )
   ipcMain.handle('docs:delete', (_event, id: string) => deleteDoc(id))
