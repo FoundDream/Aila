@@ -213,11 +213,6 @@ export function Composer({
             </div>
           </div>
         </div>
-        {showMeter && (
-          <div className="mt-2 text-center text-[11px] text-[var(--text-dim)]">
-            Enter sends · Shift Enter adds a line
-          </div>
-        )}
       </div>
     </div>
   )
