@@ -20,6 +20,7 @@
   "dependencies": {
     "@ariakit/react": "^0.4.26",
     "@electron-toolkit/utils": "^4.0.0",
+    "@openrouter/ai-sdk-provider": "^2.9.0",
     "@platejs/basic-nodes": "^53.0.0",
     "@platejs/code-block": "^53.0.0",
     "@platejs/combobox": "^53.0.0",
@@ -32,6 +33,7 @@
     "@platejs/slash-command": "^53.0.0",
     "@radix-ui/react-toolbar": "^1.1.11",
     "@udecode/cn": "^52.3.4",
+    "ai": "^6.0.174",
     "cmdk": "^1.1.1",
     "dotenv": "^16.4.5",
     "lowlight": "^3.3.0",
