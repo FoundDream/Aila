@@ -1,12 +1,4 @@
-import {
-  AtSignIcon,
-  BotIcon,
-  PaperclipIcon,
-  PlusIcon,
-  SendIcon,
-  SlashIcon,
-  SquareIcon,
-} from 'lucide-react'
+import { PaperclipIcon, SendIcon, SquareIcon } from 'lucide-react'
 import {
   type KeyboardEvent,
   type ReactElement,
@@ -162,25 +154,12 @@ export function Composer({
 
           <div className="flex min-h-11 items-center justify-between gap-3 border-t border-[var(--border)] px-3 py-2">
             <div className="flex items-center gap-1">
-              <ComposerToolButton label="Add context">
-                <PlusIcon className="size-4" />
-              </ComposerToolButton>
               <ComposerToolButton label="Attach file">
                 <PaperclipIcon className="size-4" />
-              </ComposerToolButton>
-              <ComposerToolButton label="Mention">
-                <AtSignIcon className="size-4" />
-              </ComposerToolButton>
-              <ComposerToolButton label="Commands">
-                <SlashIcon className="size-4" />
               </ComposerToolButton>
             </div>
 
             <div className="flex items-center gap-2">
-              <div className="hidden items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-soft)] px-2 py-1 text-[11px] text-[var(--text-soft)] sm:flex">
-                <BotIcon className="size-3.5" />
-                <span className="max-w-24 truncate">Chat</span>
-              </div>
               {isStreaming && (
                 <Tooltip>
                   <TooltipTrigger asChild>
