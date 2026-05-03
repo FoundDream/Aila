@@ -1,10 +1,6 @@
-import { Plate, usePlateEditor } from 'platejs/react'
 import { type ReactElement, useCallback, useEffect, useRef, useState } from 'react'
-import { DndProvider } from 'react-dnd'
-import { HTML5Backend } from 'react-dnd-html5-backend'
-import { createNoteEditorKit } from '@/components/editor/editor-kit'
-import { Editor, EditorContainer } from '@/components/ui/editor'
-import { type DocContent, EMPTY_DOC_CONTENT } from './types'
+import { MarkdownEditor } from '@/components/markdown-editor/MarkdownEditor'
+import type { DocContent } from './types'
 
 interface DocEditorProps {
   initialTitle: string
@@ -24,16 +20,12 @@ export function DocEditor({
   onChange,
 }: DocEditorProps): ReactElement {
   const [title, setTitle] = useState(initialTitle)
+  const [content, setContent] = useState(initialContent)
   const [status, setStatus] = useState<SaveStatus>('idle')
   const [lastSavedAt, setLastSavedAt] = useState<number | null>(null)
 
   const onChangeRef = useRef(onChange)
   onChangeRef.current = onChange
-
-  const editor = usePlateEditor({
-    plugins: createNoteEditorKit(),
-    value: initialContent.length > 0 ? initialContent : EMPTY_DOC_CONTENT,
-  })
 
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pendingPatchRef = useRef<DocPatch | null>(null)
@@ -96,45 +88,46 @@ export function DocEditor({
     }
   }, [])
 
-  const handleEditorBlur = (event: React.FocusEvent<HTMLDivElement>): void => {
-    if (event.currentTarget.contains(event.relatedTarget as Node | null)) return
-    void flush()
-  }
+  const handleContentChange = useCallback(
+    (next: string) => {
+      setContent(next)
+      scheduleSave({ content: next })
+    },
+    [scheduleSave],
+  )
 
   return (
-    <DndProvider backend={HTML5Backend}>
-      <Plate editor={editor} onChange={({ value }) => scheduleSave({ content: value })}>
-        <div className="flex h-full flex-col bg-[var(--bg)]">
-          <EditorContainer variant="default" className="flex-1">
-            <div className="relative mx-auto w-full max-w-[760px] px-12 pt-12 pb-24">
-              <div className="pointer-events-none absolute top-3 right-12 text-[12px] text-[var(--text-dim)]">
-                <SaveStatusLabel status={status} lastSavedAt={lastSavedAt} />
-              </div>
-              <input
-                value={title}
-                onChange={(event) => {
-                  const next = event.target.value
-                  setTitle(next)
-                  scheduleSave({ title: next })
-                }}
-                onBlur={() => void flush()}
-                placeholder="无标题文档"
-                className="w-full bg-transparent text-[34px] leading-[1.2] font-normal tracking-tight text-[var(--text)] outline-none placeholder:text-[var(--text-dim)]"
-                style={{ fontFamily: 'var(--font-serif)' }}
-              />
-              <div className="mt-6" onBlur={handleEditorBlur}>
-                <Editor
-                  variant="none"
-                  autoFocus
-                  placeholder="Type / to insert blocks, or just start writing…"
-                  className="overflow-x-visible text-[15.5px] leading-[1.75] text-[var(--text)]"
-                />
-              </div>
-            </div>
-          </EditorContainer>
+    <div className="flex h-full flex-col bg-[var(--bg)]">
+      <div className="flex-1 overflow-y-auto">
+        <div className="relative mx-auto w-full max-w-[760px] px-12 pt-12 pb-24">
+          <div className="pointer-events-none absolute top-3 right-12 text-[12px] text-[var(--text-dim)]">
+            <SaveStatusLabel status={status} lastSavedAt={lastSavedAt} />
+          </div>
+          <input
+            value={title}
+            onChange={(event) => {
+              const next = event.target.value
+              setTitle(next)
+              scheduleSave({ title: next })
+            }}
+            onBlur={() => void flush()}
+            placeholder="无标题文档"
+            className="w-full bg-transparent text-[34px] leading-[1.2] font-normal tracking-tight text-[var(--text)] outline-none placeholder:text-[var(--text-dim)]"
+            style={{ fontFamily: 'var(--font-serif)' }}
+          />
+          <div className="mt-6">
+            <MarkdownEditor
+              value={content}
+              onChange={handleContentChange}
+              onBlur={() => void flush()}
+              onSave={() => void flush()}
+              autoFocus
+              placeholder="Type markdown — # for headings, * for lists, ``` for code…"
+            />
+          </div>
         </div>
-      </Plate>
-    </DndProvider>
+      </div>
+    </div>
   )
 }
 

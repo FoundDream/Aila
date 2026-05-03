@@ -1,6 +1,4 @@
-import type { Value } from 'platejs'
-
-export type DocContent = Value
+export type DocContent = string
 
 export interface DocSummary {
   id: string
@@ -14,4 +12,4 @@ export interface DocRecord extends DocSummary {
   content: DocContent
 }
 
-export const EMPTY_DOC_CONTENT: DocContent = [{ type: 'p', children: [{ text: '' }] }]
+export const EMPTY_DOC_CONTENT: DocContent = ''

@@ -1,6 +1,6 @@
 import type { ReactElement } from 'react'
 import { DocEditor } from './DocEditor'
-import { type DocRecord, EMPTY_DOC_CONTENT } from './types'
+import type { DocRecord } from './types'
 import type { DocsState } from './useDocs'
 
 interface DocsPageProps {
@@ -58,9 +58,7 @@ function ActiveEditor({
     <DocEditor
       key={doc.id}
       initialTitle={doc.title}
-      initialContent={
-        Array.isArray(doc.content) && doc.content.length > 0 ? doc.content : EMPTY_DOC_CONTENT
-      }
+      initialContent={doc.content}
       onChange={onSave}
     />
   )

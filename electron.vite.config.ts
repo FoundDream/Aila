@@ -29,6 +29,14 @@ export default defineConfig({
         '@': resolve(__dirname, 'src/renderer/src'),
         ...sharedAlias,
       },
+      // CodeMirror 6 packages share a singleton @codemirror/state. Two copies
+      // would silently break view.dispatch with cryptic state-mismatch errors.
+      dedupe: [
+        '@codemirror/state',
+        '@codemirror/view',
+        '@codemirror/language',
+        '@codemirror/commands',
+      ],
     },
     plugins: [tailwindcss(), react()],
   },

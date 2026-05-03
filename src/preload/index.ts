@@ -45,7 +45,7 @@ export interface DocRecord {
   id: string
   parentId: string | null
   title: string
-  content: unknown
+  content: string
   createdAt: number
   updatedAt: number
 }
