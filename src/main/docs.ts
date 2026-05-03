@@ -448,12 +448,8 @@ export async function deleteFolder(path: string): Promise<void> {
   // we can clean up orphaned images afterwards.
   const imageUrls = new Set<string>()
   async function harvest(dir: string): Promise<void> {
-    let entries: Awaited<ReturnType<typeof readdir>> = []
-    try {
-      entries = await readdir(dir, { withFileTypes: true })
-    } catch {
-      return
-    }
+    const entries = await readdir(dir, { withFileTypes: true }).catch(() => null)
+    if (!entries) return
     for (const entry of entries) {
       const child = join(dir, entry.name)
       if (entry.isDirectory()) {

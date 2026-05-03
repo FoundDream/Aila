@@ -57,18 +57,15 @@ function FolderIcon({ open }: { open: boolean }): ReactElement {
       width="14"
       height="14"
       viewBox="0 0 24 24"
-      fill="none"
+      fill={open ? 'currentColor' : 'none'}
+      fillOpacity={open ? 0.18 : undefined}
       stroke="currentColor"
       strokeWidth="1.6"
       strokeLinecap="round"
       strokeLinejoin="round"
       aria-hidden="true"
     >
-      {open ? (
-        <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v1H5l-2 9z" />
-      ) : (
-        <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
-      )}
+      <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
     </svg>
   )
 }
@@ -106,25 +103,6 @@ function FolderPlusIcon(): ReactElement {
     >
       <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
       <path d="M12 11v6M9 14h6" />
-    </svg>
-  )
-}
-
-function ChevronIcon({ open }: { open: boolean }): ReactElement {
-  return (
-    <svg
-      width="13"
-      height="13"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-      className={`transition-transform ${open ? 'rotate-90' : ''}`}
-    >
-      <path d="m9 18 6-6-6-6" />
     </svg>
   )
 }
@@ -346,16 +324,7 @@ export function DocList({
           } ${drag?.kind === 'folder' && drag.path === node.path ? 'opacity-45' : ''}`}
           style={{ paddingLeft: `${Math.min(depth, 5) * 14}px` }}
         >
-          <button
-            type="button"
-            onClick={() => toggleExpanded(node.path)}
-            aria-label={isExpanded ? 'Collapse folder' : 'Expand folder'}
-            className="ml-1 flex h-5 w-5 shrink-0 cursor-pointer items-center justify-center rounded text-[var(--text-dim)] hover:bg-[var(--surface)] hover:text-[var(--text-soft)]"
-            draggable={false}
-          >
-            <ChevronIcon open={isExpanded && hasChildren} />
-          </button>
-          <span className="flex h-4 w-4 shrink-0 items-center justify-center text-[var(--text-dim)]">
+          <span className="ml-2 flex h-4 w-4 shrink-0 items-center justify-center text-[var(--text-dim)]">
             <FolderIcon open={isExpanded && hasChildren} />
           </span>
           {isRenaming ? (
@@ -477,20 +446,19 @@ export function DocList({
           } ${isDragging ? 'opacity-45' : ''}`}
           style={{ paddingLeft: `${Math.min(depth, 5) * 14}px` }}
         >
-          <span className="ml-1 h-5 w-5 shrink-0" />
+          <span
+            className={`ml-2 flex h-4 w-4 shrink-0 items-center justify-center ${
+              isActive ? 'text-[var(--text-soft)]' : 'text-[var(--text-dim)]'
+            }`}
+          >
+            <PageIcon />
+          </span>
           <button
             type="button"
             onClick={() => onSelect(doc.id)}
-            className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 px-1 text-left"
+            className="flex min-w-0 flex-1 cursor-pointer items-center px-2 text-left"
             draggable={false}
           >
-            <span
-              className={`flex h-4 w-4 shrink-0 items-center justify-center ${
-                isActive ? 'text-[var(--text-soft)]' : 'text-[var(--text-dim)]'
-              }`}
-            >
-              <PageIcon />
-            </span>
             <span
               className={`min-w-0 flex-1 truncate text-[13.5px] ${
                 isActive ? 'text-[var(--text)]' : 'text-[var(--text-soft)]'
