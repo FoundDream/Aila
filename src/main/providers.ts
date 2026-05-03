@@ -13,7 +13,7 @@ import { createOpenAI } from '@ai-sdk/openai'
 import { createOpenRouter } from '@openrouter/ai-sdk-provider'
 import type { ProviderId } from '@shared/models'
 import type { LanguageModel } from 'ai'
-import { resolveApiKey, type Settings } from './settings'
+import { resolveApiKey, resolveVertexConfig, type Settings } from './settings'
 
 export class MissingApiKeyError extends Error {
   constructor(public readonly providerId: ProviderId) {
@@ -38,11 +38,12 @@ export function resolveModel(
       return createOpenAI({ apiKey })(modelId)
     case 'google':
       return createGoogleGenerativeAI({ apiKey })(modelId)
-    case 'vertex':
-      // SDK's apiKey path forces the Express Mode endpoint (projectless).
-      // SA-bound keys are accepted there for `generateContent`; project +
-      // location only matter for Imagen :predict, handled in the image adapter.
-      return createVertex({ apiKey })(modelId)
+    case 'vertex': {
+      // Pass project + location through when set; without them the SDK falls
+      // back to ADC / gcloud defaults and can hit the wrong region.
+      const cfg = resolveVertexConfig(settings)
+      return createVertex({ apiKey, ...(cfg ?? {}) })(modelId)
+    }
     case 'openrouter':
       return createOpenRouter({ apiKey, appName: APP_NAME })(modelId, {
         usage: { include: true },
