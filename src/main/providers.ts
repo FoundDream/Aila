@@ -6,14 +6,11 @@
 
 import { createAnthropic } from '@ai-sdk/anthropic'
 import { createGoogleGenerativeAI } from '@ai-sdk/google'
-// `@ai-sdk/google-vertex` Node entry tries google-auth-library when `apiKey`
-// is absent; we want pure-key auth, so import the projectless factory directly.
-import { createVertex } from '@ai-sdk/google-vertex'
 import { createOpenAI } from '@ai-sdk/openai'
 import { createOpenRouter } from '@openrouter/ai-sdk-provider'
 import type { ProviderId } from '@shared/models'
 import type { LanguageModel } from 'ai'
-import { resolveApiKey, resolveVertexConfig, type Settings } from './settings'
+import { resolveApiKey, type Settings } from './settings'
 
 export class MissingApiKeyError extends Error {
   constructor(public readonly providerId: ProviderId) {
@@ -38,12 +35,6 @@ export function resolveModel(
       return createOpenAI({ apiKey })(modelId)
     case 'google':
       return createGoogleGenerativeAI({ apiKey })(modelId)
-    case 'vertex': {
-      // Pass project + location through when set; without them the SDK falls
-      // back to ADC / gcloud defaults and can hit the wrong region.
-      const cfg = resolveVertexConfig(settings)
-      return createVertex({ apiKey, ...(cfg ?? {}) })(modelId)
-    }
     case 'openrouter':
       return createOpenRouter({ apiKey, appName: APP_NAME })(modelId, {
         usage: { include: true },

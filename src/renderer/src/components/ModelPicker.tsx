@@ -40,7 +40,6 @@ const NATIVE_PROVIDERS: ProviderId[] = [
   "anthropic",
   "openai",
   "google",
-  "vertex",
 ];
 
 export function ModelPicker({

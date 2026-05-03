@@ -10,24 +10,13 @@ import { dirname } from 'node:path'
 import type { ProviderId } from '@shared/models'
 import { getDataDir, getSettingsPath } from './paths'
 
-export interface VertexConfig {
-  /** GCP project id; required for any :predict call (Imagen) and for non-Express text. */
-  project?: string
-  /** GCP region, e.g. 'us-central1'. */
-  location?: string
-}
-
 export interface Settings {
   apiKeys: {
     anthropic?: string
     openai?: string
     google?: string
-    /** SA-bound Vertex API key (sent as x-goog-api-key for Imagen, apiKey for SDK). */
-    vertex?: string
     openrouter?: string
   }
-  /** Vertex needs project + location alongside the API key for Imagen :predict. */
-  vertex?: VertexConfig
   defaultModel: { providerId: ProviderId; modelId: string } | null
   defaultImageModel?: { providerId: ProviderId; modelId: string } | null
   /** MRU list of recently chosen OpenRouter model ids (max 5). */
@@ -38,7 +27,6 @@ const ENV_KEY_BY_PROVIDER: Record<ProviderId, string> = {
   anthropic: 'ANTHROPIC_API_KEY',
   openai: 'OPENAI_API_KEY',
   google: 'GOOGLE_GENERATIVE_AI_API_KEY',
-  vertex: 'GOOGLE_VERTEX_API_KEY',
   openrouter: 'OPENROUTER_API_KEY',
 }
 
@@ -52,7 +40,6 @@ export function loadSettings(): Settings {
     const parsed = JSON.parse(raw) as Partial<Settings>
     return {
       apiKeys: parsed.apiKeys ?? {},
-      vertex: parsed.vertex ?? {},
       defaultModel: parsed.defaultModel ?? null,
       defaultImageModel: parsed.defaultImageModel ?? null,
       recentOpenRouterModels: parsed.recentOpenRouterModels ?? [],
@@ -84,21 +71,7 @@ export function resolveApiKey(providerId: ProviderId, settings: Settings): strin
 }
 
 /**
- * Vertex needs project + location for any :predict call (Imagen) and for
- * service-account-bound (non-Express) auth. Falls back to env vars so dev
- * .env workflows keep working.
- */
-export function resolveVertexConfig(settings: Settings): Required<VertexConfig> | null {
-  const project = settings.vertex?.project?.trim() || process.env.GOOGLE_VERTEX_PROJECT?.trim()
-  const location = settings.vertex?.location?.trim() || process.env.GOOGLE_VERTEX_LOCATION?.trim()
-  if (!project || !location) return null
-  return { project, location }
-}
-
-/**
- * The set of providers that have a usable API key (settings or env). For
- * Vertex this only checks the key; project + location are required at image
- * call time (Imagen :predict) but not for Gemini text via Express Mode.
+ * The set of providers that have a usable API key (settings or env).
  */
 export function configuredProviders(settings: Settings): ProviderId[] {
   return (Object.keys(ENV_KEY_BY_PROVIDER) as ProviderId[]).filter((p) =>
