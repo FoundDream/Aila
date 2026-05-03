@@ -12,6 +12,14 @@ interface Props {
   onSave: (settings: Settings) => Promise<void> | void
 }
 
+const API_KEY_PLACEHOLDERS: Record<ProviderId, string> = {
+  anthropic: 'sk-ant-...',
+  openai: 'sk-...',
+  google: 'AIza...',
+  vertex: 'AIza... (SA-bound key)',
+  openrouter: 'sk-or-...',
+}
+
 export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): ReactElement {
   const [draft, setDraft] = useState<Settings>(settings)
   const [saving, setSaving] = useState(false)
@@ -23,6 +31,10 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
 
   const updateKey = (id: ProviderId, value: string): void => {
     setDraft((prev) => ({ ...prev, apiKeys: { ...prev.apiKeys, [id]: value } }))
+  }
+
+  const updateVertex = (patch: Partial<NonNullable<Settings['vertex']>>): void => {
+    setDraft((prev) => ({ ...prev, vertex: { ...(prev.vertex ?? {}), ...patch } }))
   }
 
   const setDefaultModel = (selection: ModelSelection | null): void => {
@@ -92,28 +104,44 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
 
           <div className="space-y-3">
             {PROVIDER_ORDER.map((id) => (
-              <div key={id} className="flex items-center gap-3">
-                <div className="flex w-28 shrink-0 items-center gap-1.5 text-[12px] text-[var(--text)]">
-                  <ProviderLogo id={id} size={14} />
-                  {PROVIDER_LABELS[id]}
+              <div key={id} className="space-y-2">
+                <div className="flex items-center gap-3">
+                  <div className="flex w-28 shrink-0 items-center gap-1.5 text-[12px] text-[var(--text)]">
+                    <ProviderLogo id={id} size={14} />
+                    {PROVIDER_LABELS[id]}
+                  </div>
+                  <input
+                    type="password"
+                    value={draft.apiKeys[id] ?? ''}
+                    onChange={(e) => updateKey(id, e.target.value)}
+                    placeholder={API_KEY_PLACEHOLDERS[id]}
+                    className="min-w-0 flex-1 rounded-md border border-[var(--border)] bg-[var(--bg-soft)] px-2 py-1.5 text-[12px] outline-none focus:border-[var(--border-strong)]"
+                  />
                 </div>
-                <input
-                  type="password"
-                  value={draft.apiKeys[id] ?? ''}
-                  onChange={(e) => updateKey(id, e.target.value)}
-                  placeholder={
-                    id === 'anthropic'
-                      ? 'sk-ant-...'
-                      : id === 'openai'
-                        ? 'sk-...'
-                        : id === 'google'
-                          ? 'AIza...'
-                          : 'sk-or-...'
-                  }
-                  className="min-w-0 flex-1 rounded-md border border-[var(--border)] bg-[var(--bg-soft)] px-2 py-1.5 text-[12px] outline-none focus:border-[var(--border-strong)]"
-                />
+                {id === 'vertex' && (
+                  <div className="ml-[7.25rem] flex gap-2">
+                    <input
+                      type="text"
+                      value={draft.vertex?.project ?? ''}
+                      onChange={(e) => updateVertex({ project: e.target.value })}
+                      placeholder="GCP project id"
+                      className="min-w-0 flex-1 rounded-md border border-[var(--border)] bg-[var(--bg-soft)] px-2 py-1.5 text-[12px] outline-none focus:border-[var(--border-strong)]"
+                    />
+                    <input
+                      type="text"
+                      value={draft.vertex?.location ?? ''}
+                      onChange={(e) => updateVertex({ location: e.target.value })}
+                      placeholder="location (e.g. us-central1)"
+                      className="min-w-0 flex-1 rounded-md border border-[var(--border)] bg-[var(--bg-soft)] px-2 py-1.5 text-[12px] outline-none focus:border-[var(--border-strong)]"
+                    />
+                  </div>
+                )}
               </div>
             ))}
+            <p className="text-[11px] text-[var(--text-dim)]">
+              Vertex text models work with the API key alone (Express endpoint). Imagen image
+              generation additionally needs project + location.
+            </p>
           </div>
 
           <div className="mt-5 border-t border-[var(--border)] pt-4">

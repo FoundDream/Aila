@@ -8,6 +8,7 @@ import { MissingApiKeyError } from '../providers'
 import { resolveApiKey, type Settings } from '../settings'
 import { openrouterImageAdapter } from './openrouter'
 import type { ImageGenerateRequest, ImageResult } from './types'
+import { generateVertexImage } from './vertex'
 
 export type { ImageGenerateRequest, ImageRequest, ImageResult } from './types'
 
@@ -21,6 +22,8 @@ export async function generateImage(
   switch (req.providerId) {
     case 'openrouter':
       return openrouterImageAdapter.generate(req, apiKey)
+    case 'vertex':
+      return generateVertexImage(req, apiKey, settings)
     default:
       throw new Error(`Image generation is not yet supported for provider "${req.providerId}".`)
   }

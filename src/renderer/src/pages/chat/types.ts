@@ -1,3 +1,5 @@
+import type { ProviderId } from '../../types'
+
 export type BlockType = 'text' | 'reasoning' | 'tool_call' | 'image'
 
 export interface TextBlock {
@@ -29,5 +31,5 @@ export interface Message {
   blocks: Block[]
   status: 'streaming' | 'done' | 'error'
   error?: string
-  model?: { providerId: 'anthropic' | 'openai' | 'google' | 'openrouter'; modelId: string }
+  model?: { providerId: ProviderId; modelId: string }
 }

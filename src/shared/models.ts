@@ -6,7 +6,7 @@
  * Catalog snapshot date: 2026-05-02 (sourced from OpenRouter live /models).
  */
 
-export type ProviderId = 'anthropic' | 'openai' | 'google' | 'openrouter'
+export type ProviderId = 'anthropic' | 'openai' | 'google' | 'vertex' | 'openrouter'
 
 export type ModelTag = 'flagship' | 'fast' | 'cheap' | 'coding' | 'reasoning'
 
@@ -106,6 +106,35 @@ export const MODEL_CATALOG: ModelEntry[] = [
     tags: ['cheap'],
   },
 
+  // Google Vertex AI (SA-bound API key; project + location required in Settings)
+  {
+    providerId: 'vertex',
+    modelId: 'gemini-3-pro',
+    displayName: 'Gemini 3 Pro (Vertex)',
+    contextLength: 1_048_576,
+    tags: ['flagship'],
+  },
+  {
+    providerId: 'vertex',
+    modelId: 'gemini-3-flash',
+    displayName: 'Gemini 3 Flash (Vertex)',
+    contextLength: 1_048_576,
+    tags: ['fast'],
+  },
+  {
+    providerId: 'vertex',
+    modelId: 'gemini-2.5-pro',
+    displayName: 'Gemini 2.5 Pro (Vertex)',
+    contextLength: 1_048_576,
+  },
+  {
+    providerId: 'vertex',
+    modelId: 'gemini-2.5-flash',
+    displayName: 'Gemini 2.5 Flash (Vertex)',
+    contextLength: 1_048_576,
+    tags: ['cheap', 'fast'],
+  },
+
   // OpenRouter (aggregator; modelId carries the provider/model prefix)
   {
     providerId: 'openrouter',
@@ -135,6 +164,21 @@ export interface ImageModelEntry {
 // rejects many benign prompts (diagrams, people, etc.) with a 403.
 export const IMAGE_MODEL_CATALOG: ImageModelEntry[] = [
   {
+    providerId: 'vertex',
+    modelId: 'imagen-4.0-generate-001',
+    displayName: 'Imagen 4 (Vertex)',
+  },
+  {
+    providerId: 'vertex',
+    modelId: 'imagen-4.0-fast-generate-001',
+    displayName: 'Imagen 4 Fast (Vertex)',
+  },
+  {
+    providerId: 'vertex',
+    modelId: 'imagen-4.0-ultra-generate-001',
+    displayName: 'Imagen 4 Ultra (Vertex)',
+  },
+  {
     providerId: 'openrouter',
     modelId: 'google/gemini-3-pro-image-preview',
     displayName: 'Nano Banana Pro (Gemini 3 Pro Image)',
@@ -161,12 +205,19 @@ export const IMAGE_MODEL_CATALOG: ImageModelEntry[] = [
   },
 ]
 
-export const PROVIDER_ORDER: ProviderId[] = ['anthropic', 'openai', 'google', 'openrouter']
+export const PROVIDER_ORDER: ProviderId[] = [
+  'anthropic',
+  'openai',
+  'google',
+  'vertex',
+  'openrouter',
+]
 
 export const PROVIDER_LABELS: Record<ProviderId, string> = {
   anthropic: 'Anthropic',
   openai: 'OpenAI',
   google: 'Google',
+  vertex: 'Google Vertex',
   openrouter: 'OpenRouter',
 }
 

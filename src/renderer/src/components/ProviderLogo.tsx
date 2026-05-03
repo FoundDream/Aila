@@ -53,6 +53,19 @@ export function ProviderLogo({ id, size = 16, className }: Props): ReactElement 
           />
         </svg>
       )
+    case 'vertex':
+      // Google "G" mark on a tinted square — distinguishes Vertex from the
+      // consumer Google entry while keeping the colour family.
+      return (
+        <svg {...props} viewBox="0 0 24 24">
+          <title>Google Vertex</title>
+          <rect x="2" y="2" width="20" height="20" rx="4" fill="#4285F4" />
+          <path
+            fill="#ffffff"
+            d="M12.5 7.5c1.18 0 2.21.41 3.03 1.21l1.5-1.45A6.4 6.4 0 0 0 12.5 5.5a6.5 6.5 0 1 0 6.4 7.7c.07-.43.1-.86.1-1.3 0-.45-.04-.88-.12-1.3H12.5v2.5h3.66a3.5 3.5 0 0 1-3.66 2.6 3.7 3.7 0 1 1 0-7.4z"
+          />
+        </svg>
+      )
     case 'openrouter':
       return (
         <svg

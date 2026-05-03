@@ -32,4 +32,5 @@ export type {
   ToolCallResultEvent,
   ToolCallStartEvent,
   UsageInfo,
+  VertexConfig,
 } from '../../preload/index'

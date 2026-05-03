@@ -95,13 +95,20 @@ export interface PersistedMessage {
   model?: ModelSelection
 }
 
+export interface VertexConfig {
+  project?: string
+  location?: string
+}
+
 export interface Settings {
   apiKeys: {
     anthropic?: string
     openai?: string
     google?: string
+    vertex?: string
     openrouter?: string
   }
+  vertex?: VertexConfig
   defaultModel: ModelSelection | null
   defaultImageModel?: ModelSelection | null
   recentOpenRouterModels?: string[]
