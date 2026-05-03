@@ -127,38 +127,42 @@ export default function App(): ReactElement {
               <span className="flex-1 text-left">Settings</span>
             </button>
           </nav>
-          {tab === 'chat' && (
-            <div className="mt-5 flex min-h-0 flex-1 flex-col">
-              <ConversationList
-                conversations={conversationsState.conversations}
-                activeId={conversationsState.activeId}
-                busyIds={chatStreams.busyIds}
-                onSelect={conversationsState.select}
-                onCreate={() => {
-                  void conversationsState.create()
-                }}
-                onDelete={(id) => {
-                  chatStreams.drop(id)
-                  void conversationsState.remove(id)
-                }}
-              />
-            </div>
-          )}
-          {tab === 'docs' && (
-            <div className="mt-5 flex min-h-0 flex-1 flex-col">
-              <DocList
-                docs={docsState.docs}
-                activeId={docsState.activeId}
-                onSelect={docsState.select}
-                onCreate={docsState.create}
-                onDelete={docsState.remove}
-                onMove={docsState.move}
-              />
-            </div>
-          )}
+          <div
+            className={
+              tab === 'chat' ? 'mt-5 flex min-h-0 flex-1 flex-col' : 'hidden'
+            }
+          >
+            <ConversationList
+              conversations={conversationsState.conversations}
+              activeId={conversationsState.activeId}
+              busyIds={chatStreams.busyIds}
+              onSelect={conversationsState.select}
+              onCreate={() => {
+                void conversationsState.create()
+              }}
+              onDelete={(id) => {
+                chatStreams.drop(id)
+                void conversationsState.remove(id)
+              }}
+            />
+          </div>
+          <div
+            className={
+              tab === 'docs' ? 'mt-5 flex min-h-0 flex-1 flex-col' : 'hidden'
+            }
+          >
+            <DocList
+              docs={docsState.docs}
+              activeId={docsState.activeId}
+              onSelect={docsState.select}
+              onCreate={docsState.create}
+              onDelete={docsState.remove}
+              onMove={docsState.move}
+            />
+          </div>
         </aside>
         <main className="min-w-0 flex-1 rounded-tl-lg border-t border-l border-[var(--border)] bg-[var(--bg)] shadow-[0_0_0_0.5px_rgba(0,0,0,0.02)]">
-          {tab === 'chat' ? (
+          <div className={tab === 'chat' ? 'h-full' : 'hidden'}>
             <ChatPage
               conversation={conversationsState.activeRecord}
               onCreateConversation={conversationsState.create}
@@ -168,9 +172,10 @@ export default function App(): ReactElement {
               onUpdateSettings={updateSettings}
               onOpenSettings={openSettings}
             />
-          ) : (
+          </div>
+          <div className={tab === 'docs' ? 'h-full' : 'hidden'}>
             <DocsPage state={docsState} />
-          )}
+          </div>
         </main>
         {settingsState && (
           <SettingsModal

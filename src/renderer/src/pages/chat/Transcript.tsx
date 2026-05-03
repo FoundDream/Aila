@@ -1,8 +1,8 @@
-import { CheckIcon, CopyIcon } from 'lucide-react'
+import { CheckIcon, ChevronRightIcon, CopyIcon, WrenchIcon } from 'lucide-react'
 import { type ReactElement, useCallback, useState } from 'react'
 import { Streamdown } from 'streamdown'
 import { useStickToBottom } from 'use-stick-to-bottom'
-import type { Block, Message } from './types'
+import type { Block, Message, ToolCallBlock } from './types'
 
 const SERIF_STYLE: React.CSSProperties = { fontFamily: 'var(--font-serif)' }
 
@@ -148,30 +148,7 @@ function BlockView({ block, isStreaming }: { block: Block; isStreaming: boolean 
     )
   }
   if (block.type === 'tool_call') {
-    const statusLabel =
-      block.status === 'running' ? 'running' : block.status === 'error' ? 'error' : 'done'
-    return (
-      <aside className="rounded-md border border-[var(--border-strong)] bg-[var(--bg-soft,transparent)] p-3 font-mono text-[12px] text-[var(--text-soft)]">
-        <div className="mb-1 flex items-center justify-between text-[11px] text-[var(--text-dim)]">
-          <span>
-            tool · <span className="text-[var(--text)]">{block.name}</span>
-          </span>
-          <span>{statusLabel}</span>
-        </div>
-        <pre className="overflow-x-auto whitespace-pre-wrap break-all text-[var(--text-soft)]">
-          {block.arguments || '{}'}
-        </pre>
-        {block.result !== undefined && (
-          <pre
-            className={`mt-2 overflow-x-auto whitespace-pre-wrap break-all border-t border-[var(--border-strong)] pt-2 ${
-              block.status === 'error' ? 'text-[var(--error)]' : 'text-[var(--text-soft)]'
-            }`}
-          >
-            {block.result}
-          </pre>
-        )}
-      </aside>
-    )
+    return <ToolCallView block={block} />
   }
   return (
     <Streamdown
@@ -181,6 +158,51 @@ function BlockView({ block, isStreaming }: { block: Block; isStreaming: boolean 
     >
       {block.content}
     </Streamdown>
+  )
+}
+
+function ToolCallView({ block }: { block: ToolCallBlock }): ReactElement {
+  const [expanded, setExpanded] = useState(false)
+  const statusLabel =
+    block.status === 'running' ? 'running' : block.status === 'error' ? 'error' : 'done'
+  const statusColor =
+    block.status === 'error'
+      ? 'text-[var(--error)]'
+      : block.status === 'running'
+        ? 'text-[var(--text-soft)]'
+        : 'text-[var(--text-dim)]'
+  return (
+    <aside className="rounded-md border border-[var(--border-strong)] bg-[var(--bg-soft,transparent)] font-mono text-[12px] text-[var(--text-soft)]">
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] text-[var(--text-dim)] hover:text-[var(--text)]"
+        aria-expanded={expanded}
+      >
+        <ChevronRightIcon
+          className={`h-3 w-3 shrink-0 transition-transform ${expanded ? 'rotate-90' : ''}`}
+        />
+        <WrenchIcon className="h-3 w-3 shrink-0" />
+        <span className="truncate text-[var(--text)]">{block.name}</span>
+        <span className={`ml-auto shrink-0 ${statusColor}`}>{statusLabel}</span>
+      </button>
+      {expanded && (
+        <div className="border-t border-[var(--border-strong)] px-3 py-2">
+          <pre className="overflow-x-auto whitespace-pre-wrap break-all text-[var(--text-soft)]">
+            {block.arguments || '{}'}
+          </pre>
+          {block.result !== undefined && (
+            <pre
+              className={`mt-2 overflow-x-auto whitespace-pre-wrap break-all border-t border-[var(--border-strong)] pt-2 ${
+                block.status === 'error' ? 'text-[var(--error)]' : 'text-[var(--text-soft)]'
+              }`}
+            >
+              {block.result}
+            </pre>
+          )}
+        </div>
+      )}
+    </aside>
   )
 }
 

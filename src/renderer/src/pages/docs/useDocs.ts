@@ -65,8 +65,7 @@ export function useDocs(): DocsState {
     [activeId, refreshList],
   )
 
-  const move = useCallback(async (id: string, parentId: string | null) => {
-    const updated = (await window.api.docs.update(id, { parentId })) as DocRecord
+  const applyUpdated = useCallback((updated: DocRecord) => {
     setDocs((prev) => {
       const next = prev.map((doc) =>
         doc.id === updated.id
@@ -82,29 +81,24 @@ export function useDocs(): DocsState {
       next.sort((a, b) => b.updatedAt - a.updatedAt)
       return next
     })
+    setActiveDoc((prev) => (prev && prev.id === updated.id ? updated : prev))
   }, [])
+
+  const move = useCallback(
+    async (id: string, parentId: string | null) => {
+      const updated = (await window.api.docs.update(id, { parentId })) as DocRecord
+      applyUpdated(updated)
+    },
+    [applyUpdated],
+  )
 
   const save = useCallback(
     async (patch: { parentId?: string | null; title?: string; content?: DocContent }) => {
       if (!activeId) return
       const updated = (await window.api.docs.update(activeId, patch)) as DocRecord
-      setDocs((prev) => {
-        const next = prev.map((doc) =>
-          doc.id === updated.id
-            ? {
-                id: updated.id,
-                parentId: updated.parentId,
-                title: updated.title,
-                createdAt: updated.createdAt,
-                updatedAt: updated.updatedAt,
-              }
-            : doc,
-        )
-        next.sort((a, b) => b.updatedAt - a.updatedAt)
-        return next
-      })
+      applyUpdated(updated)
     },
-    [activeId],
+    [activeId, applyUpdated],
   )
 
   return {
