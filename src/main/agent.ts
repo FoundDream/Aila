@@ -18,7 +18,12 @@ import type {
 } from './conversations'
 import { MissingApiKeyError, resolveModel } from './providers'
 import { loadSettings } from './settings'
-import { executeTool, type ImageSideChannelBlock, TOOL_DEFINITIONS } from './tools'
+import {
+  executeTool,
+  type ImageSideChannelBlock,
+  TOOL_DEFINITIONS,
+  type ToolContext,
+} from './tools'
 
 export interface ToolCall {
   id: string
@@ -262,10 +267,14 @@ export interface StreamRequest {
   messages: ChatMessage[]
   selection: ModelSelection
   signal: AbortSignal
+  // Optional doc-edit side-channel; only set for doc-bound conversations so
+  // edit_doc resolves through the active editor's CodeMirror view (or the
+  // disk path for inactive docs). See main/index.ts.
+  onDocEdit?: ToolContext['onDocEdit']
 }
 
 export async function streamChat(req: StreamRequest, handlers: StreamHandlers): Promise<void> {
-  const { conversationId, assistantMessageId, messages, selection, signal } = req
+  const { conversationId, assistantMessageId, messages, selection, signal, onDocEdit } = req
 
   const builder = new AssistantBuilder()
   let lastUsage: UsageInfo | null = null
@@ -306,7 +315,7 @@ export async function streamChat(req: StreamRequest, handlers: StreamHandlers): 
     const result = streamText({
       model,
       messages: toModelMessages(messages),
-      tools: buildTools({ settings, signal, onImage: onImageFromTool }),
+      tools: buildTools({ settings, signal, onImage: onImageFromTool, onDocEdit }),
       stopWhen: stepCountIs(MAX_STEPS),
       abortSignal: signal,
       experimental_transform: smoothStream({

@@ -54,6 +54,24 @@ export type DocSummary = Pick<DocRecord, 'id' | 'parentId' | 'title' | 'createdA
 
 export type DocPatch = Partial<Pick<DocRecord, 'parentId' | 'title' | 'content'>>
 
+export interface DocEditFindReplace {
+  old_string: string
+  new_string: string
+}
+
+export interface DocEditRequestEvent {
+  requestId: string
+  docId: string
+  edits: DocEditFindReplace[]
+  reason?: string
+}
+
+export type DocEditResult =
+  | { ok: true; title: string; appliedCount: number }
+  | { ok: false; error: string }
+
+export type DocEditResponse = DocEditResult & { requestId: string }
+
 export interface PersistedTextBlock {
   type: 'text' | 'reasoning'
   content: string
@@ -204,6 +222,21 @@ const api = {
     update: (id: string, patch: DocPatch): Promise<DocRecord> =>
       ipcRenderer.invoke('docs:update', id, patch),
     delete: (id: string): Promise<void> => ipcRenderer.invoke('docs:delete', id),
+    // Subscribed by the active DocEditor: each event represents an edit_doc
+    // tool call that needs to be applied via the live CodeMirror view.
+    onEditRequest: (cb: (event: DocEditRequestEvent) => void) =>
+      on<DocEditRequestEvent>('docs:edit-request', cb),
+    sendEditResponse: (response: DocEditResponse): void => {
+      ipcRenderer.send('docs:edit-response', response)
+    },
+    // Disk-only find/replace for docs that aren't currently mounted in the
+    // editor. The renderer falls back to this when an edit_doc tool call
+    // targets an inactive doc.
+    applyEditDirect: (
+      docId: string,
+      edits: DocEditFindReplace[],
+    ): Promise<DocEditResult> =>
+      ipcRenderer.invoke('docs:apply-edit-direct', { docId, edits }),
   },
   images: {
     save: (bytes: ArrayBuffer, filename: string): Promise<{ url: string }> =>

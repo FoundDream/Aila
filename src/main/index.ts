@@ -13,6 +13,12 @@ import {
   type ToolCall,
 } from './agent'
 import {
+  applyFindReplace,
+  type FindReplaceEdit,
+  formatFindReplaceErrors,
+} from './find-replace'
+import type { DocEditRequest, DocEditResult } from './tools'
+import {
   appendMessage,
   createConversation,
   deleteConversation,
@@ -58,6 +64,19 @@ interface StreamSlot {
 // (possibly aborted) assistant message.
 const activeStreams = new Map<string, StreamSlot>()
 
+// edit_doc tool round-trip: tool fires, main webContents.send's a request to
+// the renderer (which dispatches a CodeMirror transaction for the active
+// doc), renderer ipcRenderer.send's the response, main resolves the matching
+// promise. 5s timeout to avoid wedging the model on a missing/crashed view.
+const DOC_EDIT_TIMEOUT_MS = 5000
+
+interface PendingDocEdit {
+  resolve: (result: DocEditResult) => void
+  timer: ReturnType<typeof setTimeout>
+}
+
+const pendingDocEdits = new Map<string, PendingDocEdit>()
+
 function createWindow(): void {
   mainWindow = new BrowserWindow({
     width: 900,
@@ -67,7 +86,9 @@ function createWindow(): void {
     show: false,
     titleBarStyle: 'hiddenInset',
     backgroundColor: '#f4f7fb',
-    trafficLightPosition: { x: 16, y: 10 },
+    // x=10 centers the ~52px-wide traffic light cluster inside the 72px-wide
+    // collapsed sidebar rail (cluster spans 10–62, rail spans 0–72).
+    trafficLightPosition: { x: 10, y: 10 },
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false,
@@ -184,22 +205,50 @@ function registerIpcHandlers(): void {
       // system message every time. Re-reading on each send keeps the context
       // fresh — the user might be editing while chatting in the sidebar — at
       // the cost of resending the body. Fine for personal-scale notes.
-      if (record.meta.docId) {
+      const boundDocId = record.meta.docId ?? null
+      if (boundDocId) {
         try {
-          const doc = await getDoc(record.meta.docId)
+          const doc = await getDoc(boundDocId)
           const titleLine = doc.title ? `# ${doc.title}\n\n` : ''
           messages.unshift({
             role: 'system',
             content:
-              '你正在协助用户编辑一篇 Markdown 文档。下方是文档当前的完整内容；' +
-              '回答时请直接基于它，可引用其中片段或建议改写。\n\n---\n\n' +
+              '你正在协助用户编辑一篇 Markdown 文档。可以用 `edit_doc` 工具直接修改' +
+              '它（find/replace 形式，old_string 必须唯一匹配；多个 edits 会作为' +
+              '单次 undo 应用）。文档元信息：\n' +
+              `  - id: ${doc.id}\n` +
+              `  - title: ${doc.title}\n\n` +
+              '当前完整内容如下：\n\n---\n\n' +
               titleLine +
               doc.content,
           })
         } catch (err) {
-          console.warn('[chat:send] doc context fetch failed for', record.meta.docId, err)
+          console.warn('[chat:send] doc context fetch failed for', boundDocId, err)
         }
       }
+
+      // Wire the doc-edit side-channel only for doc-bound conversations. Plain
+      // chat-tab conversations don't get edit_doc capability — there's no
+      // "current document" to operate on, and we don't want the model going
+      // off and editing arbitrary docs from the chat tab.
+      const onDocEdit = boundDocId
+        ? (req: DocEditRequest): Promise<DocEditResult> =>
+            new Promise<DocEditResult>((resolve) => {
+              const requestId = randomUUID()
+              const timer = setTimeout(() => {
+                if (pendingDocEdits.delete(requestId)) {
+                  resolve({ ok: false, error: 'editor did not respond within 5s' })
+                }
+              }, DOC_EDIT_TIMEOUT_MS)
+              pendingDocEdits.set(requestId, { resolve, timer })
+              send('docs:edit-request', {
+                requestId,
+                docId: req.docId,
+                edits: req.edits,
+                reason: req.reason,
+              })
+            })
+        : undefined
 
       void (async () => {
         try {
@@ -210,6 +259,7 @@ function registerIpcHandlers(): void {
               messages,
               selection,
               signal: controller.signal,
+              onDocEdit,
             },
             {
               onTextDelta: (event) => send('chat:text-delta', event),
@@ -276,6 +326,41 @@ function registerIpcHandlers(): void {
     (_event, id: string, patch: Partial<Pick<DocRecord, 'parentId' | 'title' | 'content'>>) =>
       updateDoc(id, patch),
   )
+  // Renderer's reply to docs:edit-request fired during edit_doc tool execution.
+  // Resolves the pending promise so the tool can return a result string to the
+  // model. ipcMain.on (not handle) because the renderer uses ipcRenderer.send.
+  ipcMain.on('docs:edit-response', (_event, payload: { requestId: string } & DocEditResult) => {
+    const pending = pendingDocEdits.get(payload.requestId)
+    if (!pending) return
+    pendingDocEdits.delete(payload.requestId)
+    clearTimeout(pending.timer)
+    const { requestId: _id, ...result } = payload
+    pending.resolve(result)
+  })
+
+  // Direct disk-based find/replace for docs that aren't currently mounted in
+  // the editor. Used by the renderer when edit_doc targets an inactive doc.
+  ipcMain.handle(
+    'docs:apply-edit-direct',
+    async (
+      _event,
+      input: { docId: string; edits: FindReplaceEdit[] },
+    ): Promise<DocEditResult> => {
+      let doc: Awaited<ReturnType<typeof getDoc>>
+      try {
+        doc = await getDoc(input.docId)
+      } catch {
+        return { ok: false, error: `doc not found: ${input.docId}` }
+      }
+      const result = applyFindReplace(doc.content, input.edits)
+      if (!result.ok) {
+        return { ok: false, error: formatFindReplaceErrors(result.errors) }
+      }
+      await updateDoc(input.docId, { content: result.body })
+      return { ok: true, title: doc.title, appliedCount: result.appliedCount }
+    },
+  )
+
   ipcMain.handle('docs:delete', async (_event, id: string) => {
     await deleteDoc(id)
     // Cascade: any doc-bound conversation whose docId no longer exists is

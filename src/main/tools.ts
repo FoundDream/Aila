@@ -10,6 +10,7 @@ import { exec } from 'node:child_process'
 import { readFile, writeFile } from 'node:fs/promises'
 import { isAbsolute } from 'node:path'
 import { promisify } from 'node:util'
+import type { FindReplaceEdit } from './find-replace'
 import { generateImage } from './image'
 import { saveImage } from './images'
 import type { Settings } from './settings'
@@ -179,6 +180,59 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'edit_doc',
+      description:
+        "Edit a markdown document by find-and-replace. Each edit's `old_string` " +
+        'must appear EXACTLY ONCE in the doc body — include enough surrounding ' +
+        'context to be unique. All edits in one call apply atomically (a single ' +
+        'undo step in the editor). If any edit fails, NONE are applied and you ' +
+        'will receive an error with details to retry. Use this to refine, ' +
+        "restructure, or extend a doc the user is working on. The target doc's " +
+        'id is given in the system message of doc-bound conversations.',
+      parameters: {
+        type: 'object',
+        properties: {
+          docId: {
+            type: 'string',
+            description:
+              'Target document id. In doc-bound conversations, default to the ' +
+              'doc id mentioned in the system message.',
+          },
+          edits: {
+            type: 'array',
+            minItems: 1,
+            description: 'Ordered list of find-and-replace edits to apply atomically.',
+            items: {
+              type: 'object',
+              properties: {
+                old_string: {
+                  type: 'string',
+                  description:
+                    'Exact text to find. Must match byte-for-byte (including whitespace) ' +
+                    'and occur exactly once in the doc body.',
+                },
+                new_string: {
+                  type: 'string',
+                  description: 'Replacement text.',
+                },
+              },
+              required: ['old_string', 'new_string'],
+              additionalProperties: false,
+            },
+          },
+          reason: {
+            type: 'string',
+            description: 'One short line explaining why these edits.',
+          },
+        },
+        required: ['docId', 'edits'],
+        additionalProperties: false,
+      },
+    },
+  },
 ]
 
 const MAX_OUTPUT_BYTES = 64 * 1024
@@ -322,10 +376,24 @@ export interface ImageSideChannelBlock {
   prompt: string
 }
 
+export interface DocEditRequest {
+  docId: string
+  edits: FindReplaceEdit[]
+  reason?: string
+}
+
+export type DocEditResult =
+  | { ok: true; title: string; appliedCount: number }
+  | { ok: false; error: string }
+
 export interface ToolContext {
   settings: Settings
   signal?: AbortSignal
   onImage?: (block: ImageSideChannelBlock) => void
+  // Round-trips through the renderer (active doc → CodeMirror transaction)
+  // or main's disk path (inactive doc). Resolves with success or a structured
+  // error the model can use to retry. Wired in src/main/index.ts.
+  onDocEdit?: (req: DocEditRequest) => Promise<DocEditResult>
 }
 
 async function runGenerateImage(args: { prompt?: unknown }, ctx: ToolContext): Promise<string> {
@@ -359,6 +427,47 @@ async function runGenerateImage(args: { prompt?: unknown }, ctx: ToolContext): P
     note: 'Image generated and shown to user. Do NOT embed it in your reply.',
     model: `${selection.providerId}:${selection.modelId}`,
   })
+}
+
+async function runEditDoc(
+  args: { docId?: unknown; edits?: unknown; reason?: unknown },
+  ctx: ToolContext,
+): Promise<string> {
+  const { docId, edits, reason } = args
+  if (typeof docId !== 'string' || docId.length === 0) {
+    throw new Error('`docId` must be a non-empty string')
+  }
+  if (!Array.isArray(edits) || edits.length === 0) {
+    throw new Error('`edits` must be a non-empty array')
+  }
+  const validatedEdits: FindReplaceEdit[] = edits.map((edit, i) => {
+    if (!edit || typeof edit !== 'object') {
+      throw new Error(`edit #${i} must be an object`)
+    }
+    const e = edit as { old_string?: unknown; new_string?: unknown }
+    if (typeof e.old_string !== 'string' || e.old_string.length === 0) {
+      throw new Error(`edit #${i}: \`old_string\` must be a non-empty string`)
+    }
+    if (typeof e.new_string !== 'string') {
+      throw new Error(`edit #${i}: \`new_string\` must be a string`)
+    }
+    return { old_string: e.old_string, new_string: e.new_string }
+  })
+
+  if (!ctx.onDocEdit) {
+    throw new Error('document editing is not available in this context')
+  }
+
+  const result = await ctx.onDocEdit({
+    docId,
+    edits: validatedEdits,
+    reason: typeof reason === 'string' ? reason : undefined,
+  })
+
+  if (!result.ok) throw new Error(result.error)
+
+  const word = result.appliedCount === 1 ? 'edit' : 'edits'
+  return `Applied ${result.appliedCount} ${word} to "${result.title}"`
 }
 
 async function runBash(args: { command?: unknown }): Promise<string> {
@@ -404,6 +513,8 @@ export async function executeTool(
       return runGenerateImage(args, ctx)
     case 'bash':
       return runBash(args)
+    case 'edit_doc':
+      return runEditDoc(args, ctx)
     default:
       throw new Error(`unknown tool: ${name}`)
   }

@@ -1,3 +1,4 @@
+import type { EditorView } from '@codemirror/view'
 import { type ReactElement, useCallback, useEffect, useRef, useState } from 'react'
 import { MarkdownEditor } from '@/components/markdown-editor/MarkdownEditor'
 import type { DocContent } from './types'
@@ -6,6 +7,7 @@ interface DocEditorProps {
   initialTitle: string
   initialContent: DocContent
   onChange: (patch: { title?: string; content?: DocContent }) => Promise<void> | void
+  onCreateView?: (view: EditorView) => void
 }
 
 const SAVE_DEBOUNCE_MS = 500
@@ -18,6 +20,7 @@ export function DocEditor({
   initialTitle,
   initialContent,
   onChange,
+  onCreateView,
 }: DocEditorProps): ReactElement {
   const [title, setTitle] = useState(initialTitle)
   const [content, setContent] = useState(initialContent)
@@ -121,6 +124,7 @@ export function DocEditor({
               onChange={handleContentChange}
               onBlur={() => void flush()}
               onSave={() => void flush()}
+              onCreateView={onCreateView}
               autoFocus
               placeholder="Type markdown — # for headings, * for lists, ``` for code…"
             />

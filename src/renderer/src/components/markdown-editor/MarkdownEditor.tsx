@@ -17,6 +17,10 @@ interface MarkdownEditorProps {
   onSave?: () => void
   autoFocus?: boolean
   placeholder?: string
+  // Captures the underlying EditorView so the parent can imperatively dispatch
+  // transactions (e.g. apply an AI tool's find/replace edits as a single undo
+  // step). Called once on mount; `view` is destroyed on unmount.
+  onCreateView?: (view: EditorView) => void
 }
 
 // Token-level highlighting. `processingInstruction` covers the visible
@@ -144,6 +148,7 @@ export function MarkdownEditor({
   onSave,
   autoFocus,
   placeholder,
+  onCreateView,
 }: MarkdownEditorProps): ReactElement {
   const onSaveRef = useRef(onSave)
   onSaveRef.current = onSave
@@ -178,6 +183,7 @@ export function MarkdownEditor({
       placeholder={placeholder}
       extensions={extensions}
       theme="none"
+      onCreateEditor={onCreateView}
     />
   )
 }
