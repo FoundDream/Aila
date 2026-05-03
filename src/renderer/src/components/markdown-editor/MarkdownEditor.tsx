@@ -1,7 +1,7 @@
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands'
 import { markdown } from '@codemirror/lang-markdown'
-import { languages } from '@codemirror/language-data'
 import { HighlightStyle, syntaxHighlighting } from '@codemirror/language'
+import { languages } from '@codemirror/language-data'
 import { searchKeymap } from '@codemirror/search'
 import type { Extension } from '@codemirror/state'
 import { drawSelection, EditorView, keymap } from '@codemirror/view'

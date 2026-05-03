@@ -1,10 +1,5 @@
 import { type ReactElement, useCallback, useEffect } from 'react'
-import type {
-  ConversationRecord,
-  ConversationSummary,
-  ProviderId,
-  Settings,
-} from '../../types'
+import type { ConversationRecord, ConversationSummary, ProviderId, Settings } from '../../types'
 import { Composer } from './Composer'
 import { Transcript } from './Transcript'
 import type { ChatStreamsApi } from './useChatStreams'

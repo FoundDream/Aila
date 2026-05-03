@@ -53,7 +53,9 @@ function EmptyState({ onCreate }: { onCreate: () => void }): ReactElement {
 function planChanges(
   body: string,
   edits: DocEditFindReplace[],
-): { ok: true; changes: { from: number; to: number; insert: string }[] } | { ok: false; error: string } {
+):
+  | { ok: true; changes: { from: number; to: number; insert: string }[] }
+  | { ok: false; error: string } {
   const changes: { from: number; to: number; insert: string }[] = []
   for (let i = 0; i < edits.length; i++) {
     const { old_string, new_string } = edits[i]
@@ -133,11 +135,8 @@ export function DocsPage({
       const result = await applyEditRequest(req)
       window.api.docs.sendEditResponse({ requestId: req.requestId, ...result })
       if (result.ok) {
-        const isLive =
-          req.docId === activeDocIdRef.current && viewDocIdRef.current === req.docId
-        setToastMessage(
-          isLive ? 'Edited by AI' : `Edited "${result.title}"`,
-        )
+        const isLive = req.docId === activeDocIdRef.current && viewDocIdRef.current === req.docId
+        setToastMessage(isLive ? 'Edited by AI' : `Edited "${result.title}"`)
       }
     })
     return off
@@ -213,10 +212,7 @@ export function DocsPage({
           )}
         </div>
         {activeDoc && panelOpen && (
-          <div
-            className="shrink-0"
-            style={{ width: `${PANEL_WIDTH}px` }}
-          >
+          <div className="shrink-0" style={{ width: `${PANEL_WIDTH}px` }}>
             <DocChatPanel
               key={activeDoc.id}
               docId={activeDoc.id}
