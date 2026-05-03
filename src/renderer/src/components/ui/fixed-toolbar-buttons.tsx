@@ -11,6 +11,7 @@ import { KEYS } from 'platejs'
 import { useEditorReadOnly } from 'platejs/react'
 
 import { RedoToolbarButton, UndoToolbarButton } from './history-toolbar-button'
+import { ImageToolbarButton } from './image-toolbar-button'
 import { LinkToolbarButton } from './link-toolbar-button'
 import {
   BulletedListToolbarButton,
@@ -63,6 +64,7 @@ export function FixedToolbarButtons() {
 
       <ToolbarGroup>
         <LinkToolbarButton />
+        <ImageToolbarButton />
       </ToolbarGroup>
     </div>
   )

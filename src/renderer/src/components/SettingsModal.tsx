@@ -1,4 +1,4 @@
-import { MODEL_CATALOG, PROVIDER_LABELS, PROVIDER_ORDER } from '@shared/models'
+import { IMAGE_MODEL_CATALOG, MODEL_CATALOG, PROVIDER_LABELS, PROVIDER_ORDER } from '@shared/models'
 import { XIcon } from 'lucide-react'
 import { Dialog as DialogPrimitive } from 'radix-ui'
 import { type ReactElement, useEffect, useState } from 'react'
@@ -29,6 +29,10 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
     setDraft((prev) => ({ ...prev, defaultModel: selection }))
   }
 
+  const setDefaultImageModel = (selection: ModelSelection | null): void => {
+    setDraft((prev) => ({ ...prev, defaultImageModel: selection }))
+  }
+
   const configuredInDraft = PROVIDER_ORDER.filter((p) => Boolean(draft.apiKeys[p]?.trim()))
 
   const handleSave = async (): Promise<void> => {
@@ -47,6 +51,12 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
         } else {
           next = { ...next, defaultModel: null }
         }
+      }
+      if (
+        next.defaultImageModel &&
+        !configuredInDraft.includes(next.defaultImageModel.providerId)
+      ) {
+        next = { ...next, defaultImageModel: null }
       }
       await onSave(next)
       onOpenChange(false)
@@ -145,6 +155,48 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
                 Add at least one API key above to pick a default model.
               </p>
             )}
+          </div>
+
+          <div className="mt-4">
+            <label
+              htmlFor="default-image-model-select"
+              className="mb-1.5 block text-[11px] font-medium uppercase tracking-wide text-[var(--text-dim)]"
+            >
+              Default Image Model
+            </label>
+            <select
+              id="default-image-model-select"
+              value={
+                draft.defaultImageModel
+                  ? `${draft.defaultImageModel.providerId}:${draft.defaultImageModel.modelId}`
+                  : ''
+              }
+              onChange={(e) => {
+                const v = e.target.value
+                if (!v) return setDefaultImageModel(null)
+                const [providerId, ...rest] = v.split(':')
+                setDefaultImageModel({
+                  providerId: providerId as ProviderId,
+                  modelId: rest.join(':'),
+                })
+              }}
+              className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-soft)] px-2 py-1.5 text-[12px] outline-none focus:border-[var(--border-strong)]"
+            >
+              <option value="">(none — disable image generation)</option>
+              {IMAGE_MODEL_CATALOG.filter((m) => configuredInDraft.includes(m.providerId)).map(
+                (m) => (
+                  <option
+                    key={`${m.providerId}:${m.modelId}`}
+                    value={`${m.providerId}:${m.modelId}`}
+                  >
+                    {PROVIDER_LABELS[m.providerId]} · {m.displayName}
+                  </option>
+                ),
+              )}
+            </select>
+            <p className="mt-1.5 text-[11px] text-[var(--text-dim)]">
+              Used by the <code>generate_image</code> tool when the model decides to draw something.
+            </p>
           </div>
 
           <div className="mt-5 flex items-center justify-end gap-2">

@@ -16,6 +16,7 @@ import type {
   ChatDoneEvent,
   ChatErrorEvent,
   ConversationSummary,
+  ImageBlockEvent,
   ModelSelection,
   PersistedMessage,
   ReasoningDeltaEvent,
@@ -24,7 +25,7 @@ import type {
   ToolCallStartEvent,
   UsageInfo,
 } from '../../types'
-import type { Block, Message, TextBlock, ToolCallBlock } from './types'
+import type { Block, ImageBlock, Message, TextBlock, ToolCallBlock } from './types'
 
 interface QueuedPrompt {
   text: string
@@ -88,6 +89,12 @@ type Action =
       toolCallId: string
       result: string
       isError: boolean
+    }
+  | {
+      type: 'IMAGE_BLOCK'
+      conversationId: string
+      messageId: string
+      block: ImageBlock
     }
   | {
       type: 'FINISH'
@@ -211,6 +218,15 @@ function reducer(state: State, action: Action): State {
               ? { ...b, status: action.isError ? 'error' : 'done', result: action.result }
               : b,
           ),
+        })),
+      }))
+
+    case 'IMAGE_BLOCK':
+      return withStream(state, action.conversationId, (current) => ({
+        ...current,
+        messages: patchMessage(current.messages, action.messageId, (m) => ({
+          ...m,
+          blocks: [...m.blocks, action.block],
         })),
       }))
 
@@ -418,6 +434,19 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
           toolCallId: event.toolCallId,
           result: event.result,
           isError: event.isError,
+        }),
+      ),
+      window.api.onImageBlock((event: ImageBlockEvent) =>
+        dispatch({
+          type: 'IMAGE_BLOCK',
+          conversationId: event.conversationId,
+          messageId: event.messageId,
+          block: {
+            type: 'image',
+            url: event.block.url,
+            mime: event.block.mime,
+            prompt: event.block.prompt,
+          },
         }),
       ),
       window.api.onDone((event: ChatDoneEvent) => {

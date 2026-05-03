@@ -10,10 +10,15 @@
 
 import { findModel, type ProviderId } from '@shared/models'
 import { jsonSchema, type ModelMessage, smoothStream, stepCountIs, streamText, tool } from 'ai'
-import type { PersistedBlock, PersistedMessage, PersistedToolCallBlock } from './conversations'
+import type {
+  PersistedBlock,
+  PersistedImageBlock,
+  PersistedMessage,
+  PersistedToolCallBlock,
+} from './conversations'
 import { MissingApiKeyError, resolveModel } from './providers'
 import { loadSettings } from './settings'
-import { executeTool, TOOL_DEFINITIONS } from './tools'
+import { executeTool, type ImageSideChannelBlock, TOOL_DEFINITIONS } from './tools'
 
 export interface ToolCall {
   id: string
@@ -48,6 +53,12 @@ export interface DeltaEvent {
   delta: string
 }
 
+export interface ImageBlockEvent {
+  conversationId: string
+  messageId: string
+  block: PersistedImageBlock
+}
+
 export interface UsageInfo {
   promptTokens: number
   completionTokens: number
@@ -73,6 +84,7 @@ export interface StreamHandlers {
   onReasoningDelta: (event: DeltaEvent) => void
   onToolCallStart: (event: ToolCallEvent) => void
   onToolCallResult: (event: ToolResultEvent) => void
+  onImageBlock: (event: ImageBlockEvent) => void
   onDone: (event: DoneEvent) => void
   onError: (event: ErrorEvent) => void
 }
@@ -92,16 +104,21 @@ export function getModelInfo(providerId: ProviderId, modelId: string): ModelInfo
   }
 }
 
-const aiTools = Object.fromEntries(
-  TOOL_DEFINITIONS.map((td) => [
-    td.function.name,
-    tool({
-      description: td.function.description,
-      inputSchema: jsonSchema(td.function.parameters as Parameters<typeof jsonSchema>[0]),
-      execute: async (args) => executeTool(td.function.name, args as Record<string, unknown>),
-    }),
-  ]),
-)
+// Tool registry is rebuilt per-stream so each `execute` closes over the
+// per-call ToolContext (settings, abort signal, image side-channel).
+function buildTools(ctx: Parameters<typeof executeTool>[2]) {
+  return Object.fromEntries(
+    TOOL_DEFINITIONS.map((td) => [
+      td.function.name,
+      tool({
+        description: td.function.description,
+        inputSchema: jsonSchema(td.function.parameters as Parameters<typeof jsonSchema>[0]),
+        execute: async (args) =>
+          executeTool(td.function.name, args as Record<string, unknown>, ctx),
+      }),
+    ]),
+  )
+}
 
 // Convert OpenAI-format ChatMessage[] to AI SDK ModelMessage[]. Tool messages
 // need toolName; we look it up from the previous assistant's tool_calls list
@@ -205,6 +222,10 @@ class AssistantBuilder {
     this.blocks.push(block)
   }
 
+  appendImage(block: PersistedImageBlock): void {
+    this.blocks.push(block)
+  }
+
   finishToolCall(id: string, result: string, isError: boolean): void {
     const idx = this.toolBlockIndex.get(id)
     if (idx === undefined) return
@@ -249,9 +270,22 @@ export async function streamChat(req: StreamRequest, handlers: StreamHandlers): 
   const builder = new AssistantBuilder()
   let lastUsage: UsageInfo | null = null
 
+  // Snapshot settings once per stream so the image tool sees the same key/model
+  // selection that resolveModel did.
+  const settings = loadSettings()
+
+  const onImageFromTool = (block: ImageSideChannelBlock): void => {
+    builder.appendImage(block)
+    handlers.onImageBlock({
+      conversationId,
+      messageId: assistantMessageId,
+      block,
+    })
+  }
+
   let model: ReturnType<typeof resolveModel>
   try {
-    model = resolveModel(selection.providerId, selection.modelId, loadSettings())
+    model = resolveModel(selection.providerId, selection.modelId, settings)
   } catch (err) {
     const message =
       err instanceof MissingApiKeyError
@@ -272,7 +306,7 @@ export async function streamChat(req: StreamRequest, handlers: StreamHandlers): 
     const result = streamText({
       model,
       messages: toModelMessages(messages),
-      tools: aiTools,
+      tools: buildTools({ settings, signal, onImage: onImageFromTool }),
       stopWhen: stepCountIs(MAX_STEPS),
       abortSignal: signal,
       experimental_transform: smoothStream({

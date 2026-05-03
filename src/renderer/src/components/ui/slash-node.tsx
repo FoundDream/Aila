@@ -5,16 +5,18 @@ import {
   Heading1Icon,
   Heading2Icon,
   Heading3Icon,
+  ImageIcon,
   ListIcon,
   ListOrdered,
   PilcrowIcon,
   Quote,
   Square,
 } from 'lucide-react'
-import { KEYS, type TComboboxInputElement } from 'platejs'
+import { KEYS, type Path, PathApi, type TComboboxInputElement } from 'platejs'
 import { PlateElement, type PlateEditor, type PlateElementProps } from 'platejs/react'
 import * as React from 'react'
 
+import { pickImageFiles } from '@/components/editor/plugins/media-kit'
 import { insertBlock } from '@/components/editor/transforms'
 
 import {
@@ -40,6 +42,20 @@ type Group = {
   }[]
 }
 
+async function insertImageFromPicker(editor: PlateEditor): Promise<void> {
+  const block = editor.api.block()
+  const insertAt: Path | undefined = block ? PathApi.next(block[1]) : undefined
+
+  const files = await pickImageFiles()
+  if (!files) return
+  const insert = (
+    editor.tf as unknown as {
+      insert?: { imageFromFiles?: (files: FileList, options?: { at?: Path }) => void }
+    }
+  ).insert?.imageFromFiles
+  insert?.(files, insertAt ? { at: insertAt } : undefined)
+}
+
 const groups: Group[] = [
   {
     group: 'Basic blocks',
@@ -58,7 +74,21 @@ const groups: Group[] = [
       onSelect: (editor, value) => {
         insertBlock(editor, value, { upsert: true })
       },
-    })),
+    })) as Group['items'],
+  },
+  {
+    group: 'Media',
+    items: [
+      {
+        icon: <ImageIcon />,
+        keywords: ['image', 'picture', 'photo', 'img'],
+        label: 'Image',
+        value: KEYS.img,
+        onSelect: (editor) => {
+          void insertImageFromPicker(editor)
+        },
+      },
+    ],
   },
 ]
 

@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { getDocumentsDir } from './paths'
+import { imageNameFromUrl } from './images'
+import { getDocumentsDir, getImagesDir } from './paths'
 
 export interface DocRecord {
   id: string
@@ -141,6 +142,17 @@ export async function updateDoc(
   return next
 }
 
+function collectImageUrls(node: unknown, out: Set<string>): void {
+  if (Array.isArray(node)) {
+    for (const item of node) collectImageUrls(item, out)
+    return
+  }
+  if (!node || typeof node !== 'object') return
+  const n = node as { type?: unknown; url?: unknown; children?: unknown }
+  if (n.type === 'img' && typeof n.url === 'string') out.add(n.url)
+  if (n.children !== undefined) collectImageUrls(n.children, out)
+}
+
 export async function deleteDoc(id: string): Promise<void> {
   const docs = await listDocs()
   const idsToDelete = new Set<string>([id])
@@ -156,5 +168,27 @@ export async function deleteDoc(id: string): Promise<void> {
     }
   }
 
+  const imageUrls = new Set<string>()
+  await Promise.all(
+    [...idsToDelete].map(async (docId) => {
+      try {
+        const doc = await readDoc(docId)
+        collectImageUrls(doc.content, imageUrls)
+      } catch {
+        // Doc unreadable — skip image collection for it.
+      }
+    }),
+  )
+
   await Promise.all([...idsToDelete].map((docId) => rm(pathFor(docId), { force: true })))
+
+  if (imageUrls.size === 0) return
+  const imagesDir = getImagesDir()
+  await Promise.all(
+    [...imageUrls].map(async (url) => {
+      const name = imageNameFromUrl(url)
+      if (!name) return
+      await rm(join(imagesDir, name), { force: true }).catch(() => {})
+    }),
+  )
 }

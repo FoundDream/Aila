@@ -18,6 +18,7 @@ export interface Settings {
     openrouter?: string
   }
   defaultModel: { providerId: ProviderId; modelId: string } | null
+  defaultImageModel?: { providerId: ProviderId; modelId: string } | null
   /** MRU list of recently chosen OpenRouter model ids (max 5). */
   recentOpenRouterModels?: string[]
 }
@@ -40,6 +41,7 @@ export function loadSettings(): Settings {
     return {
       apiKeys: parsed.apiKeys ?? {},
       defaultModel: parsed.defaultModel ?? null,
+      defaultImageModel: parsed.defaultImageModel ?? null,
       recentOpenRouterModels: parsed.recentOpenRouterModels ?? [],
     }
   } catch {

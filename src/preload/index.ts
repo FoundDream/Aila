@@ -68,7 +68,18 @@ export interface PersistedToolCallBlock {
   result?: string
 }
 
-export type PersistedBlock = PersistedTextBlock | PersistedToolCallBlock
+export interface PersistedImageBlock {
+  type: 'image'
+  url: string
+  mime: string
+  prompt?: string
+}
+
+export type PersistedBlock = PersistedTextBlock | PersistedToolCallBlock | PersistedImageBlock
+
+export interface ImageBlockEvent extends ChatStreamEventBase {
+  block: PersistedImageBlock
+}
 
 export interface ModelSelection {
   providerId: ProviderId
@@ -92,6 +103,7 @@ export interface Settings {
     openrouter?: string
   }
   defaultModel: ModelSelection | null
+  defaultImageModel?: ModelSelection | null
   recentOpenRouterModels?: string[]
 }
 
@@ -167,6 +179,8 @@ const api = {
     on<ToolCallStartEvent>('chat:tool-call-start', cb),
   onToolCallResult: (cb: (event: ToolCallResultEvent) => void) =>
     on<ToolCallResultEvent>('chat:tool-call-result', cb),
+  onImageBlock: (cb: (event: ImageBlockEvent) => void) =>
+    on<ImageBlockEvent>('chat:image-block', cb),
   onDone: (cb: (event: ChatDoneEvent) => void) => on<ChatDoneEvent>('chat:done', cb),
   onError: (cb: (event: ChatErrorEvent) => void) => on<ChatErrorEvent>('chat:error', cb),
   getModelInfo: (providerId: ProviderId, modelId: string): Promise<ModelInfo> =>
@@ -187,6 +201,10 @@ const api = {
     update: (id: string, patch: DocPatch): Promise<DocRecord> =>
       ipcRenderer.invoke('docs:update', id, patch),
     delete: (id: string): Promise<void> => ipcRenderer.invoke('docs:delete', id),
+  },
+  images: {
+    save: (bytes: ArrayBuffer, filename: string): Promise<{ url: string }> =>
+      ipcRenderer.invoke('images:save', bytes, filename),
   },
   conversations: {
     list: (): Promise<ConversationSummary[]> => ipcRenderer.invoke('conversations:list'),

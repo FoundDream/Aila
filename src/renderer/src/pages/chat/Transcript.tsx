@@ -131,6 +131,22 @@ function BlockView({ block, isStreaming }: { block: Block; isStreaming: boolean 
       </aside>
     )
   }
+  if (block.type === 'image') {
+    return (
+      <figure className="flex flex-col gap-1">
+        <img
+          src={block.url}
+          alt={block.prompt ?? 'generated image'}
+          className="max-w-full rounded-md border border-[var(--border-strong)]"
+        />
+        {block.prompt && (
+          <figcaption className="text-[11px] italic text-[var(--text-dim)]" style={SERIF_STYLE}>
+            {block.prompt}
+          </figcaption>
+        )}
+      </figure>
+    )
+  }
   if (block.type === 'tool_call') {
     const statusLabel =
       block.status === 'running' ? 'running' : block.status === 'error' ? 'error' : 'done'

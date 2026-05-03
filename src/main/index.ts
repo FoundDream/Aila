@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { unlink } from 'node:fs/promises'
 import { join } from 'node:path'
 import { is } from '@electron-toolkit/utils'
 import type { ProviderId } from '@shared/models'
@@ -17,6 +18,7 @@ import {
   deleteConversation,
   getConversation,
   listConversations,
+  type PersistedImageBlock,
   type PersistedMessage,
   type PersistedTextBlock,
   type PersistedToolCallBlock,
@@ -25,11 +27,20 @@ import {
 } from './conversations'
 import type { DocRecord } from './docs'
 import { createDoc, deleteDoc, getDoc, listDocs, updateDoc } from './docs'
+import {
+  handleImageProtocol,
+  imageNameFromUrl,
+  registerImageProtocolScheme,
+  saveImage,
+} from './images'
 import { getOpenRouterCatalog } from './openrouter-catalog'
-import { getDataDir } from './paths'
+import { getDataDir, getImagesDir } from './paths'
 import { configuredProviders, loadSettings, type Settings, saveSettings } from './settings'
 
 dotenv.config()
+
+// Custom schemes must be registered before the app `ready` event fires.
+registerImageProtocolScheme()
 
 const DEV_RENDERER_URL = 'http://localhost:5173'
 
@@ -183,6 +194,7 @@ function registerIpcHandlers(): void {
               onReasoningDelta: (event) => send('chat:reasoning-delta', event),
               onToolCallStart: (event) => send('chat:tool-call-start', event),
               onToolCallResult: (event) => send('chat:tool-call-result', event),
+              onImageBlock: (event) => send('chat:image-block', event),
               onDone: async (event) => {
                 await persistAndAnnounce(conversationId, event.message)
                 if (event.usage) {
@@ -244,6 +256,10 @@ function registerIpcHandlers(): void {
   )
   ipcMain.handle('docs:delete', (_event, id: string) => deleteDoc(id))
 
+  ipcMain.handle('images:save', (_event, bytes: ArrayBuffer, filename: string) =>
+    saveImage(bytes, filename),
+  )
+
   ipcMain.handle('chat:get-model-info', (_event, providerId: ProviderId, modelId: string) =>
     getModelInfo(providerId, modelId),
   )
@@ -270,12 +286,27 @@ function registerIpcHandlers(): void {
       slot.controller.abort()
       await slot.cleanup.catch(() => {})
     }
+    // Sweep image files referenced by this conversation before dropping the log.
+    try {
+      const record = await getConversation(id)
+      const imagesDir = getImagesDir()
+      const filenames = record.messages.flatMap((m) =>
+        m.blocks
+          .filter((b): b is PersistedImageBlock => b.type === 'image')
+          .map((b) => imageNameFromUrl(b.url))
+          .filter((n): n is string => n !== null),
+      )
+      await Promise.all(filenames.map((name) => unlink(join(imagesDir, name)).catch(() => {})))
+    } catch (err) {
+      console.warn('[conversations:delete] image cleanup failed:', err)
+    }
     return deleteConversation(id)
   })
 }
 
 app.whenReady().then(() => {
   console.log('[storage] data dir =', getDataDir())
+  handleImageProtocol()
   createWindow()
   registerIpcHandlers()
 

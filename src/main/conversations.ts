@@ -18,7 +18,14 @@ export interface PersistedToolCallBlock {
   result?: string
 }
 
-export type PersistedBlock = PersistedTextBlock | PersistedToolCallBlock
+export interface PersistedImageBlock {
+  type: 'image'
+  url: string // aila-image://i/<filename>
+  mime: string
+  prompt?: string
+}
+
+export type PersistedBlock = PersistedTextBlock | PersistedToolCallBlock | PersistedImageBlock
 
 export interface PersistedMessage {
   id: string

@@ -1,5 +1,7 @@
 import { Plate, usePlateEditor } from 'platejs/react'
 import { type ReactElement, useCallback, useEffect, useRef, useState } from 'react'
+import { DndProvider } from 'react-dnd'
+import { HTML5Backend } from 'react-dnd-html5-backend'
 import { createNoteEditorKit } from '@/components/editor/editor-kit'
 import { Editor, EditorContainer } from '@/components/ui/editor'
 import { type DocContent, EMPTY_DOC_CONTENT } from './types'
@@ -100,37 +102,39 @@ export function DocEditor({
   }
 
   return (
-    <Plate editor={editor} onChange={({ value }) => scheduleSave({ content: value })}>
-      <div className="flex h-full flex-col bg-[var(--bg)]">
-        <EditorContainer variant="default" className="flex-1">
-          <div className="relative mx-auto w-full max-w-[760px] px-12 pt-12 pb-24">
-            <div className="pointer-events-none absolute top-3 right-12 text-[12px] text-[var(--text-dim)]">
-              <SaveStatusLabel status={status} lastSavedAt={lastSavedAt} />
-            </div>
-            <input
-              value={title}
-              onChange={(event) => {
-                const next = event.target.value
-                setTitle(next)
-                scheduleSave({ title: next })
-              }}
-              onBlur={() => void flush()}
-              placeholder="无标题文档"
-              className="w-full bg-transparent text-[34px] leading-[1.2] font-normal tracking-tight text-[var(--text)] outline-none placeholder:text-[var(--text-dim)]"
-              style={{ fontFamily: 'var(--font-serif)' }}
-            />
-            <div className="mt-6" onBlur={handleEditorBlur}>
-              <Editor
-                variant="none"
-                autoFocus
-                placeholder="Type / to insert blocks, or just start writing…"
-                className="text-[15.5px] leading-[1.75] text-[var(--text)]"
+    <DndProvider backend={HTML5Backend}>
+      <Plate editor={editor} onChange={({ value }) => scheduleSave({ content: value })}>
+        <div className="flex h-full flex-col bg-[var(--bg)]">
+          <EditorContainer variant="default" className="flex-1">
+            <div className="relative mx-auto w-full max-w-[760px] px-12 pt-12 pb-24">
+              <div className="pointer-events-none absolute top-3 right-12 text-[12px] text-[var(--text-dim)]">
+                <SaveStatusLabel status={status} lastSavedAt={lastSavedAt} />
+              </div>
+              <input
+                value={title}
+                onChange={(event) => {
+                  const next = event.target.value
+                  setTitle(next)
+                  scheduleSave({ title: next })
+                }}
+                onBlur={() => void flush()}
+                placeholder="无标题文档"
+                className="w-full bg-transparent text-[34px] leading-[1.2] font-normal tracking-tight text-[var(--text)] outline-none placeholder:text-[var(--text-dim)]"
+                style={{ fontFamily: 'var(--font-serif)' }}
               />
+              <div className="mt-6" onBlur={handleEditorBlur}>
+                <Editor
+                  variant="none"
+                  autoFocus
+                  placeholder="Type / to insert blocks, or just start writing…"
+                  className="overflow-x-visible text-[15.5px] leading-[1.75] text-[var(--text)]"
+                />
+              </div>
             </div>
-          </div>
-        </EditorContainer>
-      </div>
-    </Plate>
+          </EditorContainer>
+        </div>
+      </Plate>
+    </DndProvider>
   )
 }
 

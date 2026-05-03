@@ -10,6 +10,9 @@ import { exec } from 'node:child_process'
 import { readFile, writeFile } from 'node:fs/promises'
 import { isAbsolute } from 'node:path'
 import { promisify } from 'node:util'
+import { generateImage } from './image'
+import { saveImage } from './images'
+import type { Settings } from './settings'
 
 const execAsync = promisify(exec)
 
@@ -133,6 +136,26 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
           },
         },
         required: ['query'],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'generate_image',
+      description:
+        'Generate an image from a text prompt. The image is saved and shown to the user automatically — DO NOT embed it in your reply (no markdown image syntax). After calling this tool, just briefly describe what you generated. Use this when the user asks to draw, paint, render, or visualize something.',
+      parameters: {
+        type: 'object',
+        properties: {
+          prompt: {
+            type: 'string',
+            description:
+              'Detailed description of the desired image (subject, style, composition, colors, mood).',
+          },
+        },
+        required: ['prompt'],
         additionalProperties: false,
       },
     },
@@ -290,6 +313,54 @@ async function runWebSearch(args: {
   return truncate(JSON.stringify(compact))
 }
 
+// `image` block emitted to the renderer as a side-channel; see agent.ts for
+// how this is plumbed onto the assistant message.
+export interface ImageSideChannelBlock {
+  type: 'image'
+  url: string
+  mime: string
+  prompt: string
+}
+
+export interface ToolContext {
+  settings: Settings
+  signal?: AbortSignal
+  onImage?: (block: ImageSideChannelBlock) => void
+}
+
+async function runGenerateImage(args: { prompt?: unknown }, ctx: ToolContext): Promise<string> {
+  const prompt = args.prompt
+  if (typeof prompt !== 'string' || prompt.trim().length === 0) {
+    throw new Error('`prompt` must be a non-empty string')
+  }
+  const selection = ctx.settings.defaultImageModel
+  if (!selection) {
+    throw new Error(
+      'No default image model configured. Open Settings and pick one under "Default Image Model".',
+    )
+  }
+
+  const { bytes, mime } = await generateImage(
+    {
+      providerId: selection.providerId,
+      modelId: selection.modelId,
+      prompt,
+      signal: ctx.signal,
+    },
+    ctx.settings,
+  )
+
+  const ext = mime === 'image/jpeg' ? '.jpg' : mime === 'image/webp' ? '.webp' : '.png'
+  const { url } = await saveImage(bytes, `image${ext}`)
+  ctx.onImage?.({ type: 'image', url, mime, prompt })
+
+  return JSON.stringify({
+    ok: true,
+    note: 'Image generated and shown to user. Do NOT embed it in your reply.',
+    model: `${selection.providerId}:${selection.modelId}`,
+  })
+}
+
 async function runBash(args: { command?: unknown }): Promise<string> {
   const command = args.command
   if (typeof command !== 'string') throw new Error('`command` must be a string')
@@ -315,7 +386,11 @@ async function runBash(args: { command?: unknown }): Promise<string> {
   }
 }
 
-export async function executeTool(name: string, args: Record<string, unknown>): Promise<string> {
+export async function executeTool(
+  name: string,
+  args: Record<string, unknown>,
+  ctx: ToolContext,
+): Promise<string> {
   switch (name) {
     case 'read':
       return runRead(args)
@@ -325,6 +400,8 @@ export async function executeTool(name: string, args: Record<string, unknown>): 
       return runEdit(args)
     case 'web_search':
       return runWebSearch(args)
+    case 'generate_image':
+      return runGenerateImage(args, ctx)
     case 'bash':
       return runBash(args)
     default:

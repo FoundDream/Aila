@@ -1,4 +1,4 @@
-export type BlockType = 'text' | 'reasoning' | 'tool_call'
+export type BlockType = 'text' | 'reasoning' | 'tool_call' | 'image'
 
 export interface TextBlock {
   type: 'text' | 'reasoning'
@@ -14,7 +14,14 @@ export interface ToolCallBlock {
   result?: string
 }
 
-export type Block = TextBlock | ToolCallBlock
+export interface ImageBlock {
+  type: 'image'
+  url: string
+  mime: string
+  prompt?: string
+}
+
+export type Block = TextBlock | ToolCallBlock | ImageBlock
 
 export interface Message {
   id: string
