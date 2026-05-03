@@ -1,7 +1,7 @@
-import { SettingsIcon } from 'lucide-react'
-import { type ReactElement, useCallback, useEffect, useMemo, useState } from 'react'
+import { PanelLeftCloseIcon, PanelLeftOpenIcon, SettingsIcon } from 'lucide-react'
+import { type ReactElement, type ReactNode, useCallback, useEffect, useMemo, useState } from 'react'
 import { SettingsModal } from '@/components/SettingsModal'
-import { TooltipProvider } from '@/components/ui/tooltip'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { ChatPage } from '@/pages/chat/ChatPage'
 import { ConversationList } from '@/pages/chat/ConversationList'
 import { useChatStreams } from '@/pages/chat/useChatStreams'
@@ -65,6 +65,7 @@ const navItems: NavItem[] = [
 
 export default function App(): ReactElement {
   const [tab, setTab] = useState<Tab>('chat')
+  const [collapsed, setCollapsed] = useState(false)
   const docsState = useDocs()
   const conversationsState = useConversations()
   const chatStreams = useChatStreams(
@@ -90,47 +91,68 @@ export default function App(): ReactElement {
 
   const openSettings = useCallback(() => setSettingsOpen(true), [])
 
+  // ⌘\ toggles the sidebar. preventDefault so a stray backslash doesn't reach
+  // a focused input/editor.
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent): void => {
+      if ((e.metaKey || e.ctrlKey) && e.key === '\\') {
+        e.preventDefault()
+        setCollapsed((c) => !c)
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [])
+
   return (
     <TooltipProvider delayDuration={300}>
       <div className="flex h-full bg-[var(--bg-soft)] text-[var(--text)]">
-        <aside className="flex w-[260px] shrink-0 flex-col">
+        <aside
+          className={`flex shrink-0 flex-col overflow-hidden transition-[width] duration-200 ease-out ${
+            collapsed ? 'w-[80px]' : 'w-[260px]'
+          }`}
+        >
           <div className="h-11 shrink-0 [-webkit-app-region:drag]" />
           <nav className="flex shrink-0 flex-col gap-px px-2">
-            {navItems.map((item) => {
-              const isActive = tab === item.id
-              return (
-                <button
-                  key={item.id}
-                  type="button"
-                  onClick={() => setTab(item.id)}
-                  className={`flex h-7 cursor-pointer items-center gap-2 rounded-md px-2 text-[13.5px] transition ${
-                    isActive
-                      ? 'bg-[var(--surface-hover)] text-[var(--text)]'
-                      : 'text-[var(--text-soft)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]'
-                  }`}
-                >
-                  <span className="flex h-4 w-4 items-center justify-center text-[var(--text-dim)]">
-                    {item.icon}
-                  </span>
-                  <span className="flex-1 text-left">{item.label}</span>
-                </button>
-              )
-            })}
-            <button
-              type="button"
+            <SidebarButton
+              collapsed={collapsed}
+              onClick={() => setCollapsed((c) => !c)}
+              label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+              shortcut="⌘\\"
+              icon={
+                collapsed ? (
+                  <PanelLeftOpenIcon className="size-4" />
+                ) : (
+                  <PanelLeftCloseIcon className="size-4" />
+                )
+              }
+            />
+            {navItems.map((item) => (
+              <SidebarButton
+                key={item.id}
+                collapsed={collapsed}
+                active={tab === item.id}
+                onClick={() => setTab(item.id)}
+                label={item.label}
+                icon={item.icon}
+              />
+            ))}
+            <SidebarButton
+              collapsed={collapsed}
               onClick={openSettings}
-              className="flex h-7 cursor-pointer items-center gap-2 rounded-md px-2 text-[13.5px] text-[var(--text-soft)] transition hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
-            >
-              <span className="flex h-4 w-4 items-center justify-center text-[var(--text-dim)]">
-                <SettingsIcon className="size-4" />
-              </span>
-              <span className="flex-1 text-left">Settings</span>
-            </button>
+              label="Settings"
+              icon={<SettingsIcon className="size-4" />}
+            />
           </nav>
           <div
             className={
-              tab === 'chat' ? 'mt-5 flex min-h-0 flex-1 flex-col' : 'hidden'
+              tab === 'chat'
+                ? `mt-5 flex min-h-0 flex-1 flex-col transition-opacity duration-150 ${
+                    collapsed ? 'pointer-events-none opacity-0' : 'opacity-100'
+                  }`
+                : 'hidden'
             }
+            aria-hidden={collapsed || tab !== 'chat'}
           >
             <ConversationList
               conversations={conversationsState.conversations}
@@ -148,16 +170,26 @@ export default function App(): ReactElement {
           </div>
           <div
             className={
-              tab === 'docs' ? 'mt-5 flex min-h-0 flex-1 flex-col' : 'hidden'
+              tab === 'docs'
+                ? `mt-5 flex min-h-0 flex-1 flex-col transition-opacity duration-150 ${
+                    collapsed ? 'pointer-events-none opacity-0' : 'opacity-100'
+                  }`
+                : 'hidden'
             }
+            aria-hidden={collapsed || tab !== 'docs'}
           >
             <DocList
               docs={docsState.docs}
+              folders={docsState.folders}
               activeId={docsState.activeId}
               onSelect={docsState.select}
-              onCreate={docsState.create}
-              onDelete={docsState.remove}
-              onMove={docsState.move}
+              onCreateDoc={docsState.create}
+              onDeleteDoc={docsState.remove}
+              onMoveDoc={docsState.move}
+              onCreateFolder={docsState.createFolder}
+              onRenameFolder={docsState.renameFolder}
+              onMoveFolder={docsState.moveFolder}
+              onDeleteFolder={docsState.deleteFolder}
             />
           </div>
         </aside>
@@ -194,5 +226,58 @@ export default function App(): ReactElement {
         )}
       </div>
     </TooltipProvider>
+  )
+}
+
+interface SidebarButtonProps {
+  collapsed: boolean
+  active?: boolean
+  onClick: () => void
+  label: string
+  shortcut?: string
+  icon: ReactNode
+}
+
+function SidebarButton({
+  collapsed,
+  active = false,
+  onClick,
+  label,
+  shortcut,
+  icon,
+}: SidebarButtonProps): ReactElement {
+  const [open, setOpen] = useState(false)
+  return (
+    <Tooltip open={collapsed && open} onOpenChange={setOpen}>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          onClick={onClick}
+          aria-label={label}
+          className={`flex h-7 cursor-pointer items-center rounded-md text-[13.5px] transition-[padding,gap,background-color,color] duration-200 ease-out ${
+            collapsed ? 'gap-0 pr-6 pl-6' : 'gap-2 pr-2 pl-2'
+          } ${
+            active
+              ? 'bg-[var(--surface-hover)] text-[var(--text)]'
+              : 'text-[var(--text-soft)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]'
+          }`}
+        >
+          <span className="flex h-4 w-4 shrink-0 items-center justify-center text-[var(--text-dim)]">
+            {icon}
+          </span>
+          <span
+            className={`min-w-0 flex-1 truncate text-left transition-opacity duration-100 ${
+              collapsed ? 'opacity-0' : 'opacity-100'
+            }`}
+          >
+            {label}
+          </span>
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="right" sideOffset={6}>
+        <span>{label}</span>
+        {shortcut && <span className="ml-2 opacity-60">{shortcut}</span>}
+      </TooltipContent>
+    </Tooltip>
   )
 }

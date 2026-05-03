@@ -43,16 +43,27 @@ export interface ToolCallResultEvent extends ChatStreamEventBase {
 
 export interface DocRecord {
   id: string
-  parentId: string | null
+  folderPath: string | null
   title: string
   content: string
   createdAt: number
   updatedAt: number
 }
 
-export type DocSummary = Pick<DocRecord, 'id' | 'parentId' | 'title' | 'createdAt' | 'updatedAt'>
+export type DocSummary = Pick<DocRecord, 'id' | 'folderPath' | 'title' | 'createdAt' | 'updatedAt'>
 
-export type DocPatch = Partial<Pick<DocRecord, 'parentId' | 'title' | 'content'>>
+export interface FolderSummary {
+  path: string
+  name: string
+  parentPath: string | null
+}
+
+export interface DocsListResult {
+  folders: FolderSummary[]
+  docs: DocSummary[]
+}
+
+export type DocPatch = Partial<Pick<DocRecord, 'folderPath' | 'title' | 'content'>>
 
 export interface DocEditFindReplace {
   old_string: string
@@ -215,10 +226,10 @@ const api = {
     listModels: (): Promise<OrCatalog> => ipcRenderer.invoke('openrouter:list-models'),
   },
   docs: {
-    list: (): Promise<DocSummary[]> => ipcRenderer.invoke('docs:list'),
+    list: (): Promise<DocsListResult> => ipcRenderer.invoke('docs:list'),
     get: (id: string): Promise<DocRecord> => ipcRenderer.invoke('docs:get', id),
-    create: (parentId?: string | null): Promise<DocRecord> =>
-      ipcRenderer.invoke('docs:create', parentId ?? null),
+    create: (folderPath?: string | null): Promise<DocRecord> =>
+      ipcRenderer.invoke('docs:create', folderPath ?? null),
     update: (id: string, patch: DocPatch): Promise<DocRecord> =>
       ipcRenderer.invoke('docs:update', id, patch),
     delete: (id: string): Promise<void> => ipcRenderer.invoke('docs:delete', id),
@@ -232,11 +243,17 @@ const api = {
     // Disk-only find/replace for docs that aren't currently mounted in the
     // editor. The renderer falls back to this when an edit_doc tool call
     // targets an inactive doc.
-    applyEditDirect: (
-      docId: string,
-      edits: DocEditFindReplace[],
-    ): Promise<DocEditResult> =>
+    applyEditDirect: (docId: string, edits: DocEditFindReplace[]): Promise<DocEditResult> =>
       ipcRenderer.invoke('docs:apply-edit-direct', { docId, edits }),
+  },
+  folders: {
+    create: (parentPath: string | null, name: string): Promise<FolderSummary> =>
+      ipcRenderer.invoke('folders:create', parentPath, name),
+    rename: (path: string, newName: string): Promise<FolderSummary> =>
+      ipcRenderer.invoke('folders:rename', path, newName),
+    move: (path: string, newParentPath: string | null): Promise<FolderSummary> =>
+      ipcRenderer.invoke('folders:move', path, newParentPath),
+    delete: (path: string): Promise<void> => ipcRenderer.invoke('folders:delete', path),
   },
   images: {
     save: (bytes: ArrayBuffer, filename: string): Promise<{ url: string }> =>

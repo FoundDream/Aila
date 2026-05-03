@@ -1,19 +1,36 @@
-import { type ReactElement, useEffect, useMemo, useState } from 'react'
-import type { DocSummary } from './types'
+import { type ReactElement, useEffect, useMemo, useRef, useState } from 'react'
+import type { DocSummary, FolderSummary } from './types'
 
 interface DocListProps {
   docs: DocSummary[]
+  folders: FolderSummary[]
   activeId: string | null
   onSelect: (id: string) => void
-  onCreate: (parentId?: string | null) => void
-  onDelete: (id: string) => void
-  onMove: (id: string, parentId: string | null) => void
+  onCreateDoc: (folderPath: string | null) => void
+  onDeleteDoc: (id: string) => void
+  onMoveDoc: (id: string, folderPath: string | null) => void
+  onCreateFolder: (parentPath: string | null, name: string) => Promise<unknown>
+  onRenameFolder: (path: string, newName: string) => Promise<unknown>
+  onMoveFolder: (path: string, newParentPath: string | null) => Promise<unknown>
+  onDeleteFolder: (path: string) => void
 }
 
-interface DocTreeNode {
-  doc: DocSummary
-  children: DocTreeNode[]
+type DragPayload = { kind: 'doc'; id: string } | { kind: 'folder'; path: string }
+
+interface FolderNode {
+  kind: 'folder'
+  path: string
+  name: string
+  folders: FolderNode[]
+  docs: DocSummary[]
 }
+
+interface RootTree {
+  folders: FolderNode[]
+  docs: DocSummary[]
+}
+
+const DRAG_MIME = 'application/x-aila-doc-drag'
 
 function PageIcon(): ReactElement {
   return (
@@ -34,6 +51,28 @@ function PageIcon(): ReactElement {
   )
 }
 
+function FolderIcon({ open }: { open: boolean }): ReactElement {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      {open ? (
+        <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v1H5l-2 9z" />
+      ) : (
+        <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+      )}
+    </svg>
+  )
+}
+
 function PlusIcon(): ReactElement {
   return (
     <svg
@@ -48,6 +87,25 @@ function PlusIcon(): ReactElement {
       aria-hidden="true"
     >
       <path d="M12 5v14M5 12h14" />
+    </svg>
+  )
+}
+
+function FolderPlusIcon(): ReactElement {
+  return (
+    <svg
+      width="13"
+      height="13"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+      <path d="M12 11v6M9 14h6" />
     </svg>
   )
 }
@@ -71,25 +129,6 @@ function ChevronIcon({ open }: { open: boolean }): ReactElement {
   )
 }
 
-function ChildPageIcon(): ReactElement {
-  return (
-    <svg
-      width="13"
-      height="13"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.8"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-      <path d="M14 2v6h6M12 12v6M9 15h6" />
-    </svg>
-  )
-}
-
 function TrashIcon(): ReactElement {
   return (
     <svg
@@ -108,171 +147,337 @@ function TrashIcon(): ReactElement {
   )
 }
 
-function buildTree(docs: DocSummary[]): DocTreeNode[] {
-  const nodes = new Map<string, DocTreeNode>()
-  const roots: DocTreeNode[] = []
+function PencilIcon(): ReactElement {
+  return (
+    <svg
+      width="13"
+      height="13"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M12 20h9" />
+      <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4z" />
+    </svg>
+  )
+}
 
-  for (const doc of docs) {
-    nodes.set(doc.id, { doc, children: [] })
+function buildTree(folders: FolderSummary[], docs: DocSummary[]): RootTree {
+  // Index folders by path so we can attach children in O(N).
+  const nodeByPath = new Map<string, FolderNode>()
+  for (const folder of folders) {
+    nodeByPath.set(folder.path, {
+      kind: 'folder',
+      path: folder.path,
+      name: folder.name,
+      folders: [],
+      docs: [],
+    })
   }
 
-  for (const node of nodes.values()) {
-    const parent = node.doc.parentId ? nodes.get(node.doc.parentId) : null
-    if (parent) {
-      parent.children.push(node)
+  const root: RootTree = { folders: [], docs: [] }
+
+  for (const folder of folders) {
+    const node = nodeByPath.get(folder.path)
+    if (!node) continue
+    if (folder.parentPath) {
+      nodeByPath.get(folder.parentPath)?.folders.push(node)
     } else {
-      roots.push(node)
+      root.folders.push(node)
     }
   }
 
-  const sortNodes = (items: DocTreeNode[]): void => {
-    items.sort((a, b) => b.doc.updatedAt - a.doc.updatedAt)
-    for (const item of items) sortNodes(item.children)
-  }
-
-  sortNodes(roots)
-  return roots
-}
-
-function findAncestorIds(docs: DocSummary[], id: string | null): string[] {
-  if (!id) return []
-
-  const byId = new Map(docs.map((doc) => [doc.id, doc]))
-  const ancestors: string[] = []
-  let current = byId.get(id)
-
-  while (current?.parentId) {
-    ancestors.push(current.parentId)
-    current = byId.get(current.parentId)
-  }
-
-  return ancestors
-}
-
-function hasDescendant(docs: DocSummary[], id: string, descendantId: string): boolean {
-  const childrenByParent = new Map<string, string[]>()
-
   for (const doc of docs) {
-    if (!doc.parentId) continue
-    const children = childrenByParent.get(doc.parentId) ?? []
-    children.push(doc.id)
-    childrenByParent.set(doc.parentId, children)
+    if (doc.folderPath) {
+      nodeByPath.get(doc.folderPath)?.docs.push(doc)
+    } else {
+      root.docs.push(doc)
+    }
   }
 
-  const pending = [...(childrenByParent.get(id) ?? [])]
-  while (pending.length > 0) {
-    const current = pending.pop()
-    if (!current) continue
-    if (current === descendantId) return true
-    pending.push(...(childrenByParent.get(current) ?? []))
+  const sortNode = (node: { folders: FolderNode[]; docs: DocSummary[] }): void => {
+    node.folders.sort((a, b) => a.name.localeCompare(b.name))
+    node.docs.sort((a, b) => b.updatedAt - a.updatedAt)
+    for (const child of node.folders) sortNode(child)
   }
+  sortNode(root)
+  return root
+}
 
-  return false
+// Auto-expand the chain of folders containing the active doc so the user can
+// see where they are. Walks the folder path segment by segment ('A/B/C' →
+// ['A', 'A/B', 'A/B/C']).
+function ancestorsOf(folderPath: string | null): string[] {
+  if (!folderPath) return []
+  const parts = folderPath.split('/')
+  const out: string[] = []
+  for (let i = 1; i <= parts.length; i++) out.push(parts.slice(0, i).join('/'))
+  return out
 }
 
 export function DocList({
   docs,
+  folders,
   activeId,
   onSelect,
-  onCreate,
-  onDelete,
-  onMove,
+  onCreateDoc,
+  onDeleteDoc,
+  onMoveDoc,
+  onCreateFolder,
+  onRenameFolder,
+  onMoveFolder,
+  onDeleteFolder,
 }: DocListProps): ReactElement {
-  const tree = useMemo(() => buildTree(docs), [docs])
-  const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set())
-  const [draggedId, setDraggedId] = useState<string | null>(null)
-  const [dropTargetId, setDropTargetId] = useState<string | null>(null)
-  const [isRootDropTarget, setIsRootDropTarget] = useState(false)
+  const tree = useMemo(() => buildTree(folders, docs), [folders, docs])
+  const [expandedPaths, setExpandedPaths] = useState<Set<string>>(() => new Set())
+  const [drag, setDrag] = useState<DragPayload | null>(null)
+  const [dropTargetPath, setDropTargetPath] = useState<string | null>(null) // path or '' for root
+  const [renamingPath, setRenamingPath] = useState<string | null>(null)
+  // Folders that should jump straight into rename-mode after creation. Tracked
+  // separately so the ancestor-expansion effect doesn't fight with the rename
+  // flow.
+  const justCreatedRef = useRef<string | null>(null)
 
   useEffect(() => {
-    const ancestors = findAncestorIds(docs, activeId)
-    if (ancestors.length === 0) return
-
-    setExpandedIds((prev) => {
+    const activeDoc = docs.find((d) => d.id === activeId)
+    if (!activeDoc) return
+    const chain = ancestorsOf(activeDoc.folderPath)
+    if (chain.length === 0) return
+    setExpandedPaths((prev) => {
       const next = new Set(prev)
-      for (const id of ancestors) next.add(id)
+      for (const p of chain) next.add(p)
       return next
     })
   }, [activeId, docs])
 
-  const toggleExpanded = (id: string): void => {
-    setExpandedIds((prev) => {
+  useEffect(() => {
+    const newly = justCreatedRef.current
+    if (!newly) return
+    if (folders.some((f) => f.path === newly)) {
+      justCreatedRef.current = null
+      setRenamingPath(newly)
+    }
+  }, [folders])
+
+  const toggleExpanded = (path: string): void => {
+    setExpandedPaths((prev) => {
       const next = new Set(prev)
-      if (next.has(id)) {
-        next.delete(id)
-      } else {
-        next.add(id)
-      }
+      if (next.has(path)) next.delete(path)
+      else next.add(path)
       return next
     })
   }
 
-  const canDropOn = (targetId: string): boolean => {
-    if (!draggedId || draggedId === targetId) return false
-    return !hasDescendant(docs, draggedId, targetId)
-  }
-
   const finishDrag = (): void => {
-    setDraggedId(null)
-    setDropTargetId(null)
-    setIsRootDropTarget(false)
+    setDrag(null)
+    setDropTargetPath(null)
   }
 
-  const renderNode = (node: DocTreeNode, depth: number): ReactElement => {
-    const { doc, children } = node
-    const isActive = doc.id === activeId
-    const isExpanded = expandedIds.has(doc.id)
-    const title = doc.title || '无标题文档'
+  const canDropOn = (targetPath: string | null): boolean => {
+    if (!drag) return false
+    if (drag.kind === 'doc') return true
+    // Folder being dragged: cannot drop onto self or any descendant. Equality
+    // and prefix check work because we use posix paths everywhere.
+    if (targetPath === null) return drag.path !== '' // moving to root only meaningful if not already there
+    if (targetPath === drag.path) return false
+    if (targetPath.startsWith(`${drag.path}/`)) return false
+    return true
+  }
+
+  const performDrop = async (targetPath: string | null): Promise<void> => {
+    if (!drag) return
+    if (drag.kind === 'doc') {
+      onMoveDoc(drag.id, targetPath)
+    } else {
+      await onMoveFolder(drag.path, targetPath)
+    }
+  }
+
+  const dropTargetForRender = (path: string | null): boolean => {
+    if (!drag) return false
+    const key = path === null ? '' : path
+    return dropTargetPath === key
+  }
+
+  const renderFolder = (node: FolderNode, depth: number): ReactElement => {
+    const isExpanded = expandedPaths.has(node.path)
+    const isRenaming = renamingPath === node.path
+    const isDropTarget = dropTargetForRender(node.path)
+    const hasChildren = node.folders.length > 0 || node.docs.length > 0
 
     return (
-      <li key={doc.id}>
+      <li key={`folder:${node.path}`}>
         <div
-          draggable
+          draggable={!isRenaming}
           onDragStart={(event) => {
+            if (isRenaming) return
+            event.stopPropagation()
             event.dataTransfer.effectAllowed = 'move'
-            event.dataTransfer.setData('text/plain', doc.id)
-            setDraggedId(doc.id)
+            event.dataTransfer.setData(
+              DRAG_MIME,
+              JSON.stringify({ kind: 'folder', path: node.path }),
+            )
+            setDrag({ kind: 'folder', path: node.path })
           }}
           onDragEnd={finishDrag}
           onDragOver={(event) => {
             event.stopPropagation()
-            if (!canDropOn(doc.id)) return
+            if (!canDropOn(node.path)) return
             event.preventDefault()
             event.dataTransfer.dropEffect = 'move'
-            setDropTargetId(doc.id)
-            setIsRootDropTarget(false)
+            setDropTargetPath(node.path)
           }}
-          onDrop={(event) => {
+          onDrop={async (event) => {
             event.preventDefault()
             event.stopPropagation()
-            if (!canDropOn(doc.id) || !draggedId) return
-            onMove(draggedId, doc.id)
-            setExpandedIds((prev) => new Set(prev).add(doc.id))
+            if (!canDropOn(node.path)) return
+            await performDrop(node.path)
+            setExpandedPaths((prev) => new Set(prev).add(node.path))
             finishDrag()
           }}
           className={`group flex h-7 cursor-grab items-center rounded-md transition active:cursor-grabbing ${
-            dropTargetId === doc.id
+            isDropTarget
               ? 'bg-[color-mix(in_srgb,var(--surface-hover)_82%,var(--accent)_18%)] ring-1 ring-[var(--border-strong)]'
-              : isActive
-                ? 'bg-[var(--surface-hover)]'
-                : 'hover:bg-[var(--surface-hover)]'
-          } ${draggedId === doc.id ? 'opacity-45' : ''}`}
+              : 'hover:bg-[var(--surface-hover)]'
+          } ${drag?.kind === 'folder' && drag.path === node.path ? 'opacity-45' : ''}`}
           style={{ paddingLeft: `${Math.min(depth, 5) * 14}px` }}
         >
-          {children.length > 0 ? (
+          <button
+            type="button"
+            onClick={() => toggleExpanded(node.path)}
+            aria-label={isExpanded ? 'Collapse folder' : 'Expand folder'}
+            className="ml-1 flex h-5 w-5 shrink-0 cursor-pointer items-center justify-center rounded text-[var(--text-dim)] hover:bg-[var(--surface)] hover:text-[var(--text-soft)]"
+            draggable={false}
+          >
+            <ChevronIcon open={isExpanded && hasChildren} />
+          </button>
+          <span className="flex h-4 w-4 shrink-0 items-center justify-center text-[var(--text-dim)]">
+            <FolderIcon open={isExpanded && hasChildren} />
+          </span>
+          {isRenaming ? (
+            <FolderRenameInput
+              initialName={node.name}
+              onSubmit={async (name) => {
+                setRenamingPath(null)
+                if (!name || name === node.name) return
+                try {
+                  await onRenameFolder(node.path, name)
+                } catch (err) {
+                  console.error('Failed to rename folder', err)
+                }
+              }}
+              onCancel={() => setRenamingPath(null)}
+            />
+          ) : (
             <button
               type="button"
-              onClick={() => toggleExpanded(doc.id)}
-              aria-label={isExpanded ? 'Collapse document' : 'Expand document'}
-              title={isExpanded ? 'Collapse' : 'Expand'}
-              className="ml-1 flex h-5 w-5 shrink-0 cursor-pointer items-center justify-center rounded text-[var(--text-dim)] hover:bg-[var(--surface)] hover:text-[var(--text-soft)]"
+              onClick={() => toggleExpanded(node.path)}
+              onDoubleClick={() => setRenamingPath(node.path)}
+              className="flex min-w-0 flex-1 cursor-pointer items-center px-2 text-left"
               draggable={false}
             >
-              <ChevronIcon open={isExpanded} />
+              <span className="min-w-0 flex-1 truncate text-[13.5px] text-[var(--text-soft)]">
+                {node.name}
+              </span>
             </button>
-          ) : (
-            <span className="ml-1 h-5 w-5 shrink-0" />
           )}
+          {!isRenaming && (
+            <>
+              <button
+                type="button"
+                onClick={() => {
+                  setExpandedPaths((prev) => new Set(prev).add(node.path))
+                  onCreateDoc(node.path)
+                }}
+                aria-label="New document in folder"
+                title="New document"
+                className="flex h-5 w-5 shrink-0 cursor-pointer items-center justify-center rounded text-[var(--text-dim)] opacity-0 transition group-hover:opacity-100 hover:bg-[var(--surface)] hover:text-[var(--text-soft)]"
+                draggable={false}
+              >
+                <PlusIcon />
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  setExpandedPaths((prev) => new Set(prev).add(node.path))
+                  try {
+                    const folder = await onCreateFolder(node.path, '新文件夹')
+                    if (folder && typeof folder === 'object' && 'path' in folder) {
+                      justCreatedRef.current = (folder as FolderSummary).path
+                    }
+                  } catch (err) {
+                    console.error('Failed to create folder', err)
+                  }
+                }}
+                aria-label="New nested folder"
+                title="New folder"
+                className="flex h-5 w-5 shrink-0 cursor-pointer items-center justify-center rounded text-[var(--text-dim)] opacity-0 transition group-hover:opacity-100 hover:bg-[var(--surface)] hover:text-[var(--text-soft)]"
+                draggable={false}
+              >
+                <FolderPlusIcon />
+              </button>
+              <button
+                type="button"
+                onClick={() => setRenamingPath(node.path)}
+                aria-label="Rename folder"
+                title="Rename"
+                className="flex h-5 w-5 shrink-0 cursor-pointer items-center justify-center rounded text-[var(--text-dim)] opacity-0 transition group-hover:opacity-100 hover:bg-[var(--surface)] hover:text-[var(--text-soft)]"
+                draggable={false}
+              >
+                <PencilIcon />
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (window.confirm(`Delete folder "${node.name}" and everything inside it?`)) {
+                    onDeleteFolder(node.path)
+                  }
+                }}
+                aria-label="Delete folder"
+                title="Delete"
+                className="mr-1 flex h-5 w-5 shrink-0 cursor-pointer items-center justify-center rounded text-[var(--text-dim)] opacity-0 transition group-hover:opacity-100 hover:bg-[var(--surface)] hover:text-[var(--error)]"
+                draggable={false}
+              >
+                <TrashIcon />
+              </button>
+            </>
+          )}
+        </div>
+        {hasChildren && isExpanded && (
+          <ul className="flex flex-col gap-px">
+            {node.folders.map((child) => renderFolder(child, depth + 1))}
+            {node.docs.map((doc) => renderDoc(doc, depth + 1))}
+          </ul>
+        )}
+      </li>
+    )
+  }
+
+  const renderDoc = (doc: DocSummary, depth: number): ReactElement => {
+    const isActive = doc.id === activeId
+    const isDragging = drag?.kind === 'doc' && drag.id === doc.id
+    const title = doc.title || '无标题文档'
+    return (
+      <li key={`doc:${doc.id}`}>
+        <div
+          draggable
+          onDragStart={(event) => {
+            event.stopPropagation()
+            event.dataTransfer.effectAllowed = 'move'
+            event.dataTransfer.setData(DRAG_MIME, JSON.stringify({ kind: 'doc', id: doc.id }))
+            setDrag({ kind: 'doc', id: doc.id })
+          }}
+          onDragEnd={finishDrag}
+          className={`group flex h-7 cursor-grab items-center rounded-md transition active:cursor-grabbing ${
+            isActive ? 'bg-[var(--surface-hover)]' : 'hover:bg-[var(--surface-hover)]'
+          } ${isDragging ? 'opacity-45' : ''}`}
+          style={{ paddingLeft: `${Math.min(depth, 5) * 14}px` }}
+        >
+          <span className="ml-1 h-5 w-5 shrink-0" />
           <button
             type="button"
             onClick={() => onSelect(doc.id)}
@@ -297,21 +502,8 @@ export function DocList({
           <button
             type="button"
             onClick={() => {
-              setExpandedIds((prev) => new Set(prev).add(doc.id))
-              onCreate(doc.id)
-            }}
-            aria-label="New nested document"
-            title="New nested document"
-            className="flex h-5 w-5 shrink-0 cursor-pointer items-center justify-center rounded text-[var(--text-dim)] opacity-0 transition group-hover:opacity-100 hover:bg-[var(--surface)] hover:text-[var(--text-soft)]"
-            draggable={false}
-          >
-            <ChildPageIcon />
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              if (window.confirm(`Delete "${title}" and its nested documents?`)) {
-                onDelete(doc.id)
+              if (window.confirm(`Delete "${title}"?`)) {
+                onDeleteDoc(doc.id)
               }
             }}
             aria-label="Delete document"
@@ -322,14 +514,11 @@ export function DocList({
             <TrashIcon />
           </button>
         </div>
-        {children.length > 0 && isExpanded && (
-          <ul className="flex flex-col gap-px">
-            {children.map((child) => renderNode(child, depth + 1))}
-          </ul>
-        )}
       </li>
     )
   }
+
+  const isRootDropTarget = drag !== null && dropTargetPath === ''
 
   return (
     <div className="flex h-full flex-col">
@@ -339,7 +528,25 @@ export function DocList({
         </span>
         <button
           type="button"
-          onClick={() => onCreate()}
+          onClick={async () => {
+            try {
+              const folder = await onCreateFolder(null, '新文件夹')
+              if (folder && typeof folder === 'object' && 'path' in folder) {
+                justCreatedRef.current = (folder as FolderSummary).path
+              }
+            } catch (err) {
+              console.error('Failed to create folder', err)
+            }
+          }}
+          aria-label="New folder"
+          title="New folder"
+          className="flex h-5 w-5 cursor-pointer items-center justify-center rounded text-[var(--text-dim)] opacity-0 transition group-hover/header:opacity-100 hover:bg-[var(--surface-hover)] hover:text-[var(--text-soft)]"
+        >
+          <FolderPlusIcon />
+        </button>
+        <button
+          type="button"
+          onClick={() => onCreateDoc(null)}
           aria-label="New document"
           title="New document"
           className="flex h-5 w-5 cursor-pointer items-center justify-center rounded text-[var(--text-dim)] opacity-0 transition group-hover/header:opacity-100 hover:bg-[var(--surface-hover)] hover:text-[var(--text-soft)]"
@@ -353,41 +560,43 @@ export function DocList({
           isRootDropTarget ? 'bg-[color-mix(in_srgb,var(--surface-hover)_72%,transparent)]' : ''
         }`}
         onDragOver={(event) => {
-          if (!draggedId) return
+          if (!canDropOn(null)) return
           event.preventDefault()
           event.dataTransfer.dropEffect = 'move'
-          setDropTargetId(null)
-          setIsRootDropTarget(true)
+          setDropTargetPath('')
         }}
         onDragLeave={(event) => {
           if (event.currentTarget.contains(event.relatedTarget as Node | null)) return
-          setIsRootDropTarget(false)
+          setDropTargetPath(null)
         }}
-        onDrop={(event) => {
+        onDrop={async (event) => {
           event.preventDefault()
-          if (!draggedId) return
-          onMove(draggedId, null)
+          if (!canDropOn(null)) return
+          await performDrop(null)
           finishDrag()
         }}
       >
-        {docs.length === 0 ? (
-          <button
-            type="button"
-            onClick={() => onCreate()}
-            className="flex h-7 w-full cursor-pointer items-center gap-2 rounded-md px-2 text-[13px] text-[var(--text-dim)] hover:bg-[var(--surface-hover)] hover:text-[var(--text-soft)]"
-          >
-            <span className="flex h-4 w-4 items-center justify-center">
-              <PlusIcon />
-            </span>
-            <span>Add a page</span>
-          </button>
+        {tree.folders.length === 0 && tree.docs.length === 0 ? (
+          <div className="flex flex-col gap-px">
+            <button
+              type="button"
+              onClick={() => onCreateDoc(null)}
+              className="flex h-7 w-full cursor-pointer items-center gap-2 rounded-md px-2 text-[13px] text-[var(--text-dim)] hover:bg-[var(--surface-hover)] hover:text-[var(--text-soft)]"
+            >
+              <span className="flex h-4 w-4 items-center justify-center">
+                <PlusIcon />
+              </span>
+              <span>Add a page</span>
+            </button>
+          </div>
         ) : (
           <ul className="flex flex-col gap-px">
-            {tree.map((node) => renderNode(node, 0))}
+            {tree.folders.map((node) => renderFolder(node, 0))}
+            {tree.docs.map((doc) => renderDoc(doc, 0))}
             <li>
               <button
                 type="button"
-                onClick={() => onCreate()}
+                onClick={() => onCreateDoc(null)}
                 className="mt-0.5 flex h-7 w-full cursor-pointer items-center gap-2 rounded-md px-2 text-[13px] text-[var(--text-dim)] transition hover:bg-[var(--surface-hover)] hover:text-[var(--text-soft)]"
               >
                 <span className="flex h-4 w-4 items-center justify-center">
@@ -400,5 +609,45 @@ export function DocList({
         )}
       </div>
     </div>
+  )
+}
+
+function FolderRenameInput({
+  initialName,
+  onSubmit,
+  onCancel,
+}: {
+  initialName: string
+  onSubmit: (name: string) => void
+  onCancel: () => void
+}): ReactElement {
+  const [value, setValue] = useState(initialName)
+  const inputRef = useRef<HTMLInputElement | null>(null)
+
+  useEffect(() => {
+    inputRef.current?.focus()
+    inputRef.current?.select()
+  }, [])
+
+  return (
+    <input
+      ref={inputRef}
+      value={value}
+      onChange={(event) => setValue(event.target.value)}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter') {
+          event.preventDefault()
+          onSubmit(value.trim())
+        } else if (event.key === 'Escape') {
+          event.preventDefault()
+          onCancel()
+        }
+      }}
+      onBlur={() => onSubmit(value.trim())}
+      onClick={(event) => event.stopPropagation()}
+      onDoubleClick={(event) => event.stopPropagation()}
+      className="min-w-0 flex-1 bg-transparent px-2 text-[13.5px] text-[var(--text)] outline-none"
+      draggable={false}
+    />
   )
 }

@@ -13,12 +13,6 @@ import {
   type ToolCall,
 } from './agent'
 import {
-  applyFindReplace,
-  type FindReplaceEdit,
-  formatFindReplaceErrors,
-} from './find-replace'
-import type { DocEditRequest, DocEditResult } from './tools'
-import {
   appendMessage,
   createConversation,
   deleteConversation,
@@ -32,8 +26,19 @@ import {
   renameConversation,
   setConversationUsage,
 } from './conversations'
-import type { DocRecord } from './docs'
-import { createDoc, deleteDoc, getDoc, listDocs, updateDoc } from './docs'
+import type { DocPatch } from './docs'
+import {
+  createDoc,
+  createFolder,
+  deleteDoc,
+  deleteFolder,
+  getDoc,
+  listAll,
+  moveFolder,
+  renameFolder,
+  updateDoc,
+} from './docs'
+import { applyFindReplace, type FindReplaceEdit, formatFindReplaceErrors } from './find-replace'
 import {
   handleImageProtocol,
   imageNameFromUrl,
@@ -43,6 +48,7 @@ import {
 import { getOpenRouterCatalog } from './openrouter-catalog'
 import { getDataDir, getImagesDir } from './paths'
 import { configuredProviders, loadSettings, type Settings, saveSettings } from './settings'
+import type { DocEditRequest, DocEditResult } from './tools'
 
 dotenv.config()
 
@@ -86,9 +92,7 @@ function createWindow(): void {
     show: false,
     titleBarStyle: 'hiddenInset',
     backgroundColor: '#f4f7fb',
-    // x=10 centers the ~52px-wide traffic light cluster inside the 72px-wide
-    // collapsed sidebar rail (cluster spans 10–62, rail spans 0–72).
-    trafficLightPosition: { x: 10, y: 10 },
+    trafficLightPosition: { x: 6, y: 10 },
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false,
@@ -318,13 +322,21 @@ function registerIpcHandlers(): void {
     activeStreams.get(conversationId)?.controller.abort()
   })
 
-  ipcMain.handle('docs:list', () => listDocs())
+  ipcMain.handle('docs:list', () => listAll())
   ipcMain.handle('docs:get', (_event, id: string) => getDoc(id))
-  ipcMain.handle('docs:create', (_event, parentId?: string | null) => createDoc(parentId ?? null))
-  ipcMain.handle(
-    'docs:update',
-    (_event, id: string, patch: Partial<Pick<DocRecord, 'parentId' | 'title' | 'content'>>) =>
-      updateDoc(id, patch),
+  ipcMain.handle('docs:create', (_event, folderPath?: string | null) =>
+    createDoc(folderPath ?? null),
+  )
+  ipcMain.handle('docs:update', (_event, id: string, patch: DocPatch) => updateDoc(id, patch))
+
+  ipcMain.handle('folders:create', (_event, parentPath: string | null, name: string) =>
+    createFolder(parentPath, name),
+  )
+  ipcMain.handle('folders:rename', (_event, path: string, newName: string) =>
+    renameFolder(path, newName),
+  )
+  ipcMain.handle('folders:move', (_event, path: string, newParentPath: string | null) =>
+    moveFolder(path, newParentPath),
   )
   // Renderer's reply to docs:edit-request fired during edit_doc tool execution.
   // Resolves the pending promise so the tool can return a result string to the
@@ -342,10 +354,7 @@ function registerIpcHandlers(): void {
   // the editor. Used by the renderer when edit_doc targets an inactive doc.
   ipcMain.handle(
     'docs:apply-edit-direct',
-    async (
-      _event,
-      input: { docId: string; edits: FindReplaceEdit[] },
-    ): Promise<DocEditResult> => {
+    async (_event, input: { docId: string; edits: FindReplaceEdit[] }): Promise<DocEditResult> => {
       let doc: Awaited<ReturnType<typeof getDoc>>
       try {
         doc = await getDoc(input.docId)
@@ -361,11 +370,8 @@ function registerIpcHandlers(): void {
     },
   )
 
-  ipcMain.handle('docs:delete', async (_event, id: string) => {
-    await deleteDoc(id)
-    // Cascade: any doc-bound conversation whose docId no longer exists is
-    // orphaned (the doc was deleted, possibly along with descendants). Sweep.
-    const [docs, convos] = await Promise.all([listDocs(), listConversations()])
+  async function sweepOrphanedDocConversations(): Promise<void> {
+    const [{ docs }, convos] = await Promise.all([listAll(), listConversations()])
     const liveDocIds = new Set(docs.map((d) => d.id))
     const orphans = convos.filter((c) => c.docId && !liveDocIds.has(c.docId))
     await Promise.all(
@@ -378,6 +384,16 @@ function registerIpcHandlers(): void {
         await deleteConversation(orphan.id)
       }),
     )
+  }
+
+  ipcMain.handle('docs:delete', async (_event, id: string) => {
+    await deleteDoc(id)
+    await sweepOrphanedDocConversations()
+  })
+
+  ipcMain.handle('folders:delete', async (_event, path: string) => {
+    await deleteFolder(path)
+    await sweepOrphanedDocConversations()
   })
 
   ipcMain.handle('images:save', (_event, bytes: ArrayBuffer, filename: string) =>
