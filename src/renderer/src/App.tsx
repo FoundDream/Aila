@@ -174,7 +174,14 @@ export default function App(): ReactElement {
             />
           </div>
           <div className={tab === 'docs' ? 'h-full' : 'hidden'}>
-            <DocsPage state={docsState} />
+            <DocsPage
+              state={docsState}
+              streams={chatStreams}
+              settings={settingsState?.settings ?? null}
+              configuredProviders={settingsState?.configuredProviders ?? ([] as ProviderId[])}
+              onUpdateSettings={updateSettings}
+              onOpenSettings={openSettings}
+            />
           </div>
         </main>
         {settingsState && (

@@ -49,6 +49,10 @@ export interface ConversationMeta {
   createdAt: number
   updatedAt: number
   usage?: ConversationUsage
+  // When set, this conversation is the AI sidebar attached to a specific doc.
+  // The chat tab filters these out; doc context is prepended to each request
+  // by the chat:send handler at send time (read fresh from disk, not cached).
+  docId?: string | null
 }
 
 export type ConversationSummary = ConversationMeta
@@ -145,6 +149,28 @@ export async function createConversation(): Promise<ConversationSummary> {
     title: DEFAULT_TITLE,
     createdAt: now,
     updatedAt: now,
+  }
+  await writeMeta(meta)
+  await writeFile(logPath(meta.id), '', 'utf-8')
+  return meta
+}
+
+// Doc-bound conversation: one per doc, lazily created on first sidebar use.
+// Title is fixed (the doc owns its own title); listConversations returns it
+// alongside chat-tab conversations and the renderer filters by docId.
+export async function getOrCreateDocConversation(docId: string): Promise<ConversationSummary> {
+  const list = await listConversations()
+  const existing = list.find((meta) => meta.docId === docId)
+  if (existing) return existing
+
+  await ensureDir()
+  const now = Date.now()
+  const meta: ConversationMeta = {
+    id: randomUUID(),
+    title: 'Doc chat',
+    createdAt: now,
+    updatedAt: now,
+    docId,
   }
   await writeMeta(meta)
   await writeFile(logPath(meta.id), '', 'utf-8')

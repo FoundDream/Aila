@@ -21,8 +21,10 @@ export function useConversations(): ConversationsState {
 
   const refreshList = useCallback(async (): Promise<ConversationSummary[]> => {
     const list = await window.api.conversations.list()
-    setConversations(list)
-    return list
+    // Doc-bound conversations live in the docs sidebar, not the chat tab.
+    const chatList = list.filter((c) => !c.docId)
+    setConversations(chatList)
+    return chatList
   }, [])
 
   useEffect(() => {
@@ -78,7 +80,9 @@ export function useConversations(): ConversationsState {
 
   // Reconciles a single ConversationSummary update from main (fired after every
   // appendMessage / setUsage). Keeps the sidebar in sync without a full refetch.
+  // Doc-bound conversations are filtered out — they belong to the docs sidebar.
   const applyUpdate = useCallback((summary: ConversationSummary) => {
+    if (summary.docId) return
     setConversations((prev) => {
       const found = prev.some((c) => c.id === summary.id)
       const next = found ? prev.map((c) => (c.id === summary.id ? summary : c)) : [...prev, summary]

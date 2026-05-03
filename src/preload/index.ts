@@ -125,6 +125,9 @@ export interface ConversationSummary {
   createdAt: number
   updatedAt: number
   usage?: ConversationUsage
+  // Set when this conversation is the AI sidebar of a specific doc. The chat
+  // tab filters these out; doc context is injected by main on each send.
+  docId?: string | null
 }
 
 export interface UsageInfo {
@@ -210,6 +213,8 @@ const api = {
     list: (): Promise<ConversationSummary[]> => ipcRenderer.invoke('conversations:list'),
     get: (id: string): Promise<ConversationRecord> => ipcRenderer.invoke('conversations:get', id),
     create: (): Promise<ConversationSummary> => ipcRenderer.invoke('conversations:create'),
+    getOrCreateForDoc: (docId: string): Promise<ConversationSummary> =>
+      ipcRenderer.invoke('conversations:get-or-create-for-doc', docId),
     rename: (id: string, title: string): Promise<ConversationSummary> =>
       ipcRenderer.invoke('conversations:rename', id, title),
     delete: (id: string): Promise<void> => ipcRenderer.invoke('conversations:delete', id),

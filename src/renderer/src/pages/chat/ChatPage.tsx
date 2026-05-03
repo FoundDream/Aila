@@ -1,15 +1,14 @@
-import { findModel, MODEL_CATALOG } from '@shared/models'
-import { type ReactElement, useCallback, useEffect, useMemo, useRef } from 'react'
+import { type ReactElement, useCallback, useEffect } from 'react'
 import type {
   ConversationRecord,
   ConversationSummary,
-  ModelSelection,
   ProviderId,
   Settings,
 } from '../../types'
 import { Composer } from './Composer'
 import { Transcript } from './Transcript'
 import type { ChatStreamsApi } from './useChatStreams'
+import { useModelSelection } from './useModelSelection'
 
 interface ChatPageProps {
   conversation: ConversationRecord | null
@@ -21,19 +20,6 @@ interface ChatPageProps {
   onOpenSettings: () => void
 }
 
-function pickInitialSelection(
-  settings: Settings | null,
-  configured: ProviderId[],
-): ModelSelection | null {
-  if (!settings) return null
-  const def = settings.defaultModel
-  if (def && configured.includes(def.providerId)) return def
-  const first = configured[0]
-  if (!first) return null
-  const fallback = MODEL_CATALOG.find((m) => m.providerId === first)
-  return fallback ? { providerId: first, modelId: fallback.modelId } : null
-}
-
 export function ChatPage({
   conversation,
   onCreateConversation,
@@ -43,33 +29,10 @@ export function ChatPage({
   onUpdateSettings,
   onOpenSettings,
 }: ChatPageProps): ReactElement {
-  const selection = useMemo(
-    () => pickInitialSelection(settings, configuredProviders),
-    [settings, configuredProviders],
-  )
-  const selectionRef = useRef<ModelSelection | null>(selection)
-  selectionRef.current = selection
-
-  const contextLength = useMemo(() => {
-    if (!selection) return null
-    const meta = findModel(selection.providerId, selection.modelId)
-    return meta?.contextLength ? meta.contextLength : null
-  }, [selection])
-
-  const handleSelectionChange = useCallback(
-    (next: ModelSelection) => {
-      if (!settings) return
-      const update: Settings = { ...settings, defaultModel: next }
-      if (next.providerId === 'openrouter') {
-        const prev = settings.recentOpenRouterModels ?? []
-        update.recentOpenRouterModels = [
-          next.modelId,
-          ...prev.filter((id) => id !== next.modelId),
-        ].slice(0, 5)
-      }
-      void onUpdateSettings(update)
-    },
-    [settings, onUpdateSettings],
+  const { selection, selectionRef, contextLength, handleSelectionChange } = useModelSelection(
+    settings,
+    configuredProviders,
+    onUpdateSettings,
   )
 
   const conversationId = conversation?.meta.id ?? null

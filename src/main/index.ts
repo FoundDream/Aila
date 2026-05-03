@@ -17,6 +17,7 @@ import {
   createConversation,
   deleteConversation,
   getConversation,
+  getOrCreateDocConversation,
   listConversations,
   type PersistedImageBlock,
   type PersistedMessage,
@@ -179,6 +180,27 @@ function registerIpcHandlers(): void {
       const record = await getConversation(conversationId)
       const messages = persistedToChatMessages(record.messages)
 
+      // Doc-bound conversation: read the current doc body and prepend it as a
+      // system message every time. Re-reading on each send keeps the context
+      // fresh — the user might be editing while chatting in the sidebar — at
+      // the cost of resending the body. Fine for personal-scale notes.
+      if (record.meta.docId) {
+        try {
+          const doc = await getDoc(record.meta.docId)
+          const titleLine = doc.title ? `# ${doc.title}\n\n` : ''
+          messages.unshift({
+            role: 'system',
+            content:
+              '你正在协助用户编辑一篇 Markdown 文档。下方是文档当前的完整内容；' +
+              '回答时请直接基于它，可引用其中片段或建议改写。\n\n---\n\n' +
+              titleLine +
+              doc.content,
+          })
+        } catch (err) {
+          console.warn('[chat:send] doc context fetch failed for', record.meta.docId, err)
+        }
+      }
+
       void (async () => {
         try {
           await streamChat(
@@ -254,7 +276,24 @@ function registerIpcHandlers(): void {
     (_event, id: string, patch: Partial<Pick<DocRecord, 'parentId' | 'title' | 'content'>>) =>
       updateDoc(id, patch),
   )
-  ipcMain.handle('docs:delete', (_event, id: string) => deleteDoc(id))
+  ipcMain.handle('docs:delete', async (_event, id: string) => {
+    await deleteDoc(id)
+    // Cascade: any doc-bound conversation whose docId no longer exists is
+    // orphaned (the doc was deleted, possibly along with descendants). Sweep.
+    const [docs, convos] = await Promise.all([listDocs(), listConversations()])
+    const liveDocIds = new Set(docs.map((d) => d.id))
+    const orphans = convos.filter((c) => c.docId && !liveDocIds.has(c.docId))
+    await Promise.all(
+      orphans.map(async (orphan) => {
+        const slot = activeStreams.get(orphan.id)
+        if (slot) {
+          slot.controller.abort()
+          await slot.cleanup.catch(() => {})
+        }
+        await deleteConversation(orphan.id)
+      }),
+    )
+  })
 
   ipcMain.handle('images:save', (_event, bytes: ArrayBuffer, filename: string) =>
     saveImage(bytes, filename),
@@ -277,6 +316,9 @@ function registerIpcHandlers(): void {
   ipcMain.handle('conversations:list', () => listConversations())
   ipcMain.handle('conversations:get', (_event, id: string) => getConversation(id))
   ipcMain.handle('conversations:create', () => createConversation())
+  ipcMain.handle('conversations:get-or-create-for-doc', (_event, docId: string) =>
+    getOrCreateDocConversation(docId),
+  )
   ipcMain.handle('conversations:rename', (_event, id: string, title: string) =>
     renameConversation(id, title),
   )
