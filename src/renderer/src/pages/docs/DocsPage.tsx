@@ -11,11 +11,13 @@ import { AiEditToast } from './AiEditToast'
 import { DocChatPanel } from './DocChatPanel'
 import { DocEditor } from './DocEditor'
 import { DocPreviewPanel } from './DocPreviewPanel'
+import { DocReadView } from './DocReadView'
 import { SidePanel } from './SidePanel'
 import type { DocRecord } from './types'
 import type { DocsState } from './useDocs'
 
 type PanelMode = 'chat' | 'preview' | null
+type ViewMode = 'edit' | 'read'
 
 interface DocsPageProps {
   state: DocsState
@@ -117,6 +119,7 @@ export function DocsPage({
   // Panel mode is session-only — intentionally not persisted, so the user
   // starts each session in a "writing first" mode and opts in to chat/preview.
   const [panelMode, setPanelMode] = useState<PanelMode>(null)
+  const [viewMode, setViewMode] = useState<ViewMode>('edit')
   const [toastMessage, setToastMessage] = useState<string | null>(null)
   // Live mirror of the editor's title + content, updated synchronously on
   // every keystroke so the preview panel stays in sync without waiting for
@@ -133,6 +136,19 @@ export function DocsPage({
     (mode: Exclude<PanelMode, null>) => setPanelMode((prev) => (prev === mode ? null : mode)),
     [],
   )
+
+  const toggleReadMode = useCallback(() => {
+    setViewMode((prev) => {
+      if (prev === 'edit') {
+        // Entering read mode: close the right-side preview if open, since
+        // showing the same content twice (full-width read + narrow preview)
+        // is redundant and just eats horizontal space.
+        setPanelMode((m) => (m === 'preview' ? null : m))
+        return 'read'
+      }
+      return 'edit'
+    })
+  }, [])
 
   // Ref to the active doc's CodeMirror EditorView, captured from MarkdownEditor
   // via onCreateView. Used to apply AI-driven edits as a single transaction
@@ -240,6 +256,12 @@ export function DocsPage({
         {activeDoc && (
           <>
             <PanelToggleButton
+              active={viewMode === 'read'}
+              onClick={toggleReadMode}
+              icon={<BookIcon />}
+              label="Read"
+            />
+            <PanelToggleButton
               active={panelMode === 'preview'}
               onClick={() => togglePanel('preview')}
               icon={<EyeIcon />}
@@ -257,13 +279,28 @@ export function DocsPage({
       <div className="flex min-h-0 flex-1">
         <div className="min-w-0 flex-1">
           {activeDoc ? (
-            <ActiveEditor
-              doc={activeDoc}
-              onSave={save}
-              onLiveChange={handleLiveChange}
-              onCreateView={(view) => handleCreateView(view, activeDoc.id)}
-              onScrollContainer={setEditorScrollEl}
-            />
+            viewMode === 'read' ? (
+              <DocReadView
+                key={activeDoc.id}
+                title={
+                  (liveState.docId === activeDoc.id ? liveState.title : undefined) ??
+                  activeDoc.title
+                }
+                content={
+                  (liveState.docId === activeDoc.id ? liveState.content : undefined) ??
+                  activeDoc.content
+                }
+                onScrollContainer={setEditorScrollEl}
+              />
+            ) : (
+              <ActiveEditor
+                doc={activeDoc}
+                onSave={save}
+                onLiveChange={handleLiveChange}
+                onCreateView={(view) => handleCreateView(view, activeDoc.id)}
+                onScrollContainer={setEditorScrollEl}
+              />
+            )
           ) : (
             <EmptyState onCreate={create} />
           )}
@@ -355,6 +392,25 @@ function PanelToggleButton({ active, onClick, icon, label }: PanelToggleButtonPr
       {icon}
       <span>{label}</span>
     </button>
+  )
+}
+
+function BookIcon(): ReactElement {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+      <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
+    </svg>
   )
 }
 
