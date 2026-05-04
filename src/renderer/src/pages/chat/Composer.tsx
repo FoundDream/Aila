@@ -13,6 +13,9 @@ import type { ModelSelection, ProviderId, UsageInfo } from '../../types'
 
 interface ComposerProps {
   isStreaming: boolean
+  // Sends typed mid-stream pile up here. Surfaced as a small badge so the
+  // user can see their input was accepted and not silently dropped.
+  queuedCount?: number
   onSubmit: (text: string) => Promise<void> | void
   onAbort: () => void
   usage?: UsageInfo | null
@@ -62,6 +65,7 @@ function ComposerToolButton({
 
 export function Composer({
   isStreaming,
+  queuedCount = 0,
   onSubmit,
   onAbort,
   usage,
@@ -114,13 +118,25 @@ export function Composer({
       <div className="mx-auto max-w-[680px]">
         <div className="overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface)] shadow-[0_18px_50px_rgba(31,31,28,0.06)] transition-colors focus-within:border-[var(--border-strong)]">
           <div className="flex min-h-8 items-center justify-between gap-3 border-b border-[var(--border)] bg-[var(--bg-soft)]/55 px-3 py-1.5">
-            <ModelPicker
-              configuredProviders={configuredProviders}
-              selection={selection}
-              onChange={onSelectionChange}
-              onOpenSettings={onOpenSettings}
-              recentOpenRouterModels={recentOpenRouterModels}
-            />
+            <div className="flex min-w-0 items-center gap-2">
+              <ModelPicker
+                configuredProviders={configuredProviders}
+                selection={selection}
+                onChange={onSelectionChange}
+                onOpenSettings={onOpenSettings}
+                recentOpenRouterModels={recentOpenRouterModels}
+              />
+              {queuedCount > 0 && (
+                <span
+                  aria-live="polite"
+                  title={`${queuedCount} message${queuedCount > 1 ? 's' : ''} queued`}
+                  className="shrink-0 rounded-full bg-[var(--surface-hover)] px-2 py-0.5 text-[10.5px] italic tracking-wide text-[var(--text-dim)]"
+                  style={{ fontFamily: 'var(--font-serif)' }}
+                >
+                  {queuedCount} queued
+                </span>
+              )}
+            </div>
             {showMeter && (
               <div className="flex min-w-[150px] max-w-[260px] flex-1 items-center justify-end gap-2">
                 <div className="h-[3px] min-w-16 flex-1 overflow-hidden rounded-full bg-[var(--border)]">

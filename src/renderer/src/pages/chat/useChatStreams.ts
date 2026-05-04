@@ -280,9 +280,11 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
   const onConversationUpdatedRef = useRef(options.onConversationUpdated)
   onConversationUpdatedRef.current = options.onConversationUpdated
 
-  // Forward declarations so the IPC subscriptions and queue runner can call
-  // each other without ordering pain.
-  const startNextRef = useRef<(id: string) => void>(() => {})
+  // Conversations with an in-flight startRun. The drain effect uses this to
+  // skip a second concurrent kick during the async window between
+  // POP_QUEUE_HEAD and RUN_STARTED, where runningMessageId is still null but
+  // a run is already on its way.
+  const startingRef = useRef<Set<string>>(new Set())
 
   const startRun = useCallback(async (id: string, queued: QueuedPrompt): Promise<void> => {
     dispatch({ type: 'POP_QUEUE_HEAD', conversationId: id })
@@ -317,7 +319,6 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
         messageId: stub.id,
         message: stub,
       })
-      startNextRef.current(id)
       return
     }
     const userMessage = persistedToMessage(result.userMessage)
@@ -336,30 +337,40 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
     })
   }, [])
 
-  const startNext = useCallback(
-    (id: string): void => {
-      const stream = stateRef.current.streams.get(id)
-      if (!stream || stream.runningMessageId !== null) return
-      const head = stream.queue[0]
-      if (!head) return
-      void startRun(id, head)
-    },
-    [startRun],
-  )
-  startNextRef.current = startNext
+  // Single source of truth for "run the next queued send". An earlier version
+  // called a startNext() helper from chat:done via queueMicrotask, but the
+  // microtask flushed before React committed the FINISH state — so the queue
+  // runner saw a stale runningMessageId, bailed out, and stranded any send
+  // the user typed mid-stream until the app restarted. A post-commit effect
+  // sees the latest state by construction.
+  useEffect(() => {
+    for (const [id, stream] of state.streams) {
+      if (
+        stream.runningMessageId === null &&
+        stream.queue.length > 0 &&
+        !startingRef.current.has(id)
+      ) {
+        const head = stream.queue[0]
+        startingRef.current.add(id)
+        void startRun(id, head).finally(() => {
+          startingRef.current.delete(id)
+        })
+      }
+    }
+  }, [state, startRun])
 
-  const enqueueSend = useCallback(
-    (id: string, text: string, selection: ModelSelection): void => {
-      const trimmed = text.trim()
-      if (!trimmed) return
-      const queued: QueuedPrompt = { text: trimmed, selection }
-      const stream = stateRef.current.streams.get(id)
-      const isIdle = !stream || (stream.runningMessageId === null && stream.queue.length === 0)
-      dispatch({ type: 'ENQUEUE', conversationId: id, queued })
-      if (isIdle) void startRun(id, queued)
-    },
-    [startRun],
-  )
+  const enqueueSend = useCallback((id: string, text: string, selection: ModelSelection): void => {
+    const trimmed = text.trim()
+    if (!trimmed) return
+    // Just enqueue — the drain effect above picks up the head once React
+    // commits, regardless of whether the conversation is idle, mid-stream,
+    // or has other prompts already queued ahead.
+    dispatch({
+      type: 'ENQUEUE',
+      conversationId: id,
+      queued: { text: trimmed, selection },
+    })
+  }, [])
 
   const hydrate = useCallback(async (id: string): Promise<void> => {
     if (stateRef.current.streams.get(id)?.isHydrated) return
@@ -457,8 +468,7 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
           message: persistedToMessage(event.message),
           usage: event.usage,
         })
-        // Stale closure — read latest via ref. Drain any queued sends.
-        queueMicrotask(() => startNextRef.current(event.conversationId))
+        // Drain effect picks up the next queued send after FINISH commits.
       }),
       window.api.onError((event: ChatErrorEvent) => {
         dispatch({
@@ -467,7 +477,6 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
           messageId: event.messageId,
           message: persistedToMessage(event.message),
         })
-        queueMicrotask(() => startNextRef.current(event.conversationId))
       }),
       window.api.conversations.onUpdated((summary) => {
         onConversationUpdatedRef.current?.(summary)

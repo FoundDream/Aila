@@ -44,6 +44,7 @@ export function ChatPage({
   const messages = stream?.messages ?? []
   const isStreaming = stream?.runningMessageId !== null && stream?.runningMessageId !== undefined
   const usage = stream?.usage ?? null
+  const queuedCount = stream?.queue.length ?? 0
 
   const handleSubmit = useCallback(
     async (text: string) => {
@@ -89,6 +90,7 @@ export function ChatPage({
         <Transcript messages={messages} />
         <Composer
           isStreaming={isStreaming}
+          queuedCount={queuedCount}
           onSubmit={handleSubmit}
           onAbort={handleAbort}
           usage={usage}
