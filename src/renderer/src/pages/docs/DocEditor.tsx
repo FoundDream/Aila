@@ -7,7 +7,13 @@ interface DocEditorProps {
   initialTitle: string
   initialContent: DocContent
   onChange: (patch: { title?: string; content?: DocContent }) => Promise<void> | void
+  // Fires synchronously on every keystroke. Use for live consumers like the
+  // preview panel — distinct from `onChange`, which is debounced for saving.
+  onLiveChange?: (patch: { title?: string; content?: DocContent }) => void
   onCreateView?: (view: EditorView) => void
+  // Callback ref for the scroll container, used by DocsPage to drive scroll
+  // sync between editor and preview.
+  onScrollContainer?: (el: HTMLDivElement | null) => void
 }
 
 const SAVE_DEBOUNCE_MS = 500
@@ -20,7 +26,9 @@ export function DocEditor({
   initialTitle,
   initialContent,
   onChange,
+  onLiveChange,
   onCreateView,
+  onScrollContainer,
 }: DocEditorProps): ReactElement {
   const [title, setTitle] = useState(initialTitle)
   const [content, setContent] = useState(initialContent)
@@ -29,6 +37,8 @@ export function DocEditor({
 
   const onChangeRef = useRef(onChange)
   onChangeRef.current = onChange
+  const onLiveChangeRef = useRef(onLiveChange)
+  onLiveChangeRef.current = onLiveChange
 
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pendingPatchRef = useRef<DocPatch | null>(null)
@@ -95,13 +105,14 @@ export function DocEditor({
     (next: string) => {
       setContent(next)
       scheduleSave({ content: next })
+      onLiveChangeRef.current?.({ content: next })
     },
     [scheduleSave],
   )
 
   return (
     <div className="flex h-full flex-col bg-[var(--bg)]">
-      <div className="flex-1 overflow-y-auto">
+      <div ref={onScrollContainer} className="flex-1 overflow-y-auto">
         <div className="relative mx-auto w-full max-w-[760px] px-12 pt-12 pb-24">
           <div className="pointer-events-none absolute top-3 right-12 text-[12px] text-[var(--text-dim)]">
             <SaveStatusLabel status={status} lastSavedAt={lastSavedAt} />
@@ -112,6 +123,7 @@ export function DocEditor({
               const next = event.target.value
               setTitle(next)
               scheduleSave({ title: next })
+              onLiveChangeRef.current?.({ title: next })
             }}
             onBlur={() => void flush()}
             placeholder="无标题文档"

@@ -68,7 +68,7 @@ export function DocChatPanel({
   }, [conversationId, streams])
 
   return (
-    <div className="flex h-full flex-col border-l border-[var(--border)] bg-[var(--bg)]">
+    <div className="flex h-full flex-col">
       <header className="flex h-10 shrink-0 items-center justify-between px-3">
         <span
           className="text-[12.5px] tracking-wide text-[var(--text-dim)]"

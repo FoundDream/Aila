@@ -10,8 +10,12 @@ import type { ProviderId, Settings } from '../../types'
 import { AiEditToast } from './AiEditToast'
 import { DocChatPanel } from './DocChatPanel'
 import { DocEditor } from './DocEditor'
+import { DocPreviewPanel } from './DocPreviewPanel'
+import { SidePanel } from './SidePanel'
 import type { DocRecord } from './types'
 import type { DocsState } from './useDocs'
+
+type PanelMode = 'chat' | 'preview' | null
 
 interface DocsPageProps {
   state: DocsState
@@ -22,7 +26,9 @@ interface DocsPageProps {
   onOpenSettings: () => void
 }
 
-const PANEL_WIDTH = 360
+const SIDE_PANEL_DEFAULT_WIDTH = 360
+const SIDE_PANEL_MIN_WIDTH = 280
+const SIDE_PANEL_STORAGE_KEY = 'docs.sidePanel.width'
 
 function EmptyState({ onCreate }: { onCreate: () => void }): ReactElement {
   return (
@@ -108,10 +114,25 @@ export function DocsPage({
   onOpenSettings,
 }: DocsPageProps): ReactElement {
   const { activeDoc, create, save } = state
-  // Panel open state is session-only — intentionally not persisted, so the
-  // user starts each session in a "writing first" mode and opts in to chat.
-  const [panelOpen, setPanelOpen] = useState(false)
+  // Panel mode is session-only — intentionally not persisted, so the user
+  // starts each session in a "writing first" mode and opts in to chat/preview.
+  const [panelMode, setPanelMode] = useState<PanelMode>(null)
   const [toastMessage, setToastMessage] = useState<string | null>(null)
+  // Live mirror of the editor's title + content, updated synchronously on
+  // every keystroke so the preview panel stays in sync without waiting for
+  // the autosave debounce. The patch is scoped by docId so a stale entry
+  // from a previously-active doc is automatically ignored after switching.
+  const [liveState, setLiveState] = useState<{
+    docId: string | null
+    title?: string
+    content?: string
+  }>({ docId: null })
+
+  const closePanel = useCallback(() => setPanelMode(null), [])
+  const togglePanel = useCallback(
+    (mode: Exclude<PanelMode, null>) => setPanelMode((prev) => (prev === mode ? null : mode)),
+    [],
+  )
 
   // Ref to the active doc's CodeMirror EditorView, captured from MarkdownEditor
   // via onCreateView. Used to apply AI-driven edits as a single transaction
@@ -129,6 +150,47 @@ export function DocsPage({
     viewRef.current = view
     viewDocIdRef.current = docId
   }, [])
+
+  const handleLiveChange = useCallback((patch: { title?: string; content?: string }) => {
+    const docId = activeDocIdRef.current
+    if (!docId) return
+    setLiveState((prev) => (prev.docId === docId ? { ...prev, ...patch } : { docId, ...patch }))
+  }, [])
+
+  // Scroll containers for the editor and preview, captured via callback refs.
+  // When both are mounted (preview mode is open), wire up two-way ratio sync.
+  const [editorScrollEl, setEditorScrollEl] = useState<HTMLElement | null>(null)
+  const [previewScrollEl, setPreviewScrollEl] = useState<HTMLElement | null>(null)
+
+  useEffect(() => {
+    if (!editorScrollEl || !previewScrollEl) return
+    let syncing = false
+    const sync = (source: HTMLElement, target: HTMLElement) => (): void => {
+      if (syncing) return
+      const sourceMax = source.scrollHeight - source.clientHeight
+      const targetMax = target.scrollHeight - target.clientHeight
+      if (sourceMax <= 0 || targetMax <= 0) return
+      const ratio = source.scrollTop / sourceMax
+      syncing = true
+      target.scrollTop = ratio * targetMax
+      // Release the lock after the browser dispatches the resulting scroll
+      // event so the target's listener doesn't bounce it back.
+      requestAnimationFrame(() => {
+        syncing = false
+      })
+    }
+    const onEditor = sync(editorScrollEl, previewScrollEl)
+    const onPreview = sync(previewScrollEl, editorScrollEl)
+    editorScrollEl.addEventListener('scroll', onEditor, { passive: true })
+    previewScrollEl.addEventListener('scroll', onPreview, { passive: true })
+    // Initial alignment so preview matches the editor's current scroll
+    // position when it first opens.
+    onEditor()
+    return () => {
+      editorScrollEl.removeEventListener('scroll', onEditor)
+      previewScrollEl.removeEventListener('scroll', onPreview)
+    }
+  }, [editorScrollEl, previewScrollEl])
 
   useEffect(() => {
     const off = window.api.docs.onEditRequest(async (req: DocEditRequestEvent) => {
@@ -174,29 +236,22 @@ export function DocsPage({
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="relative flex h-10 shrink-0 items-center justify-end pr-3 [-webkit-app-region:drag]">
+      <div className="relative flex h-10 shrink-0 items-center justify-end gap-1 pr-3 [-webkit-app-region:drag]">
         {activeDoc && (
-          <button
-            type="button"
-            onClick={() => setPanelOpen((v) => !v)}
-            aria-label={panelOpen ? 'Close chat panel' : 'Open chat panel'}
-            className="[-webkit-app-region:no-drag] flex h-6 items-center gap-1.5 rounded-md px-2 text-[12px] text-[var(--text-soft)] transition hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
-          >
-            <svg
-              width="14"
-              height="14"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.6"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden="true"
-            >
-              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-            </svg>
-            <span>{panelOpen ? 'Hide chat' : 'Ask AI'}</span>
-          </button>
+          <>
+            <PanelToggleButton
+              active={panelMode === 'preview'}
+              onClick={() => togglePanel('preview')}
+              icon={<EyeIcon />}
+              label="Preview"
+            />
+            <PanelToggleButton
+              active={panelMode === 'chat'}
+              onClick={() => togglePanel('chat')}
+              icon={<ChatIcon />}
+              label="Ask AI"
+            />
+          </>
         )}
       </div>
       <div className="flex min-h-0 flex-1">
@@ -205,14 +260,21 @@ export function DocsPage({
             <ActiveEditor
               doc={activeDoc}
               onSave={save}
+              onLiveChange={handleLiveChange}
               onCreateView={(view) => handleCreateView(view, activeDoc.id)}
+              onScrollContainer={setEditorScrollEl}
             />
           ) : (
             <EmptyState onCreate={create} />
           )}
         </div>
-        {activeDoc && panelOpen && (
-          <div className="shrink-0" style={{ width: `${PANEL_WIDTH}px` }}>
+        <SidePanel
+          open={Boolean(activeDoc) && panelMode !== null}
+          storageKey={SIDE_PANEL_STORAGE_KEY}
+          defaultWidth={SIDE_PANEL_DEFAULT_WIDTH}
+          minWidth={SIDE_PANEL_MIN_WIDTH}
+        >
+          {activeDoc && panelMode === 'chat' && (
             <DocChatPanel
               key={activeDoc.id}
               docId={activeDoc.id}
@@ -221,10 +283,23 @@ export function DocsPage({
               configuredProviders={configuredProviders}
               onUpdateSettings={onUpdateSettings}
               onOpenSettings={onOpenSettings}
-              onClose={() => setPanelOpen(false)}
+              onClose={closePanel}
             />
-          </div>
-        )}
+          )}
+          {activeDoc && panelMode === 'preview' && (
+            <DocPreviewPanel
+              title={
+                (liveState.docId === activeDoc.id ? liveState.title : undefined) ?? activeDoc.title
+              }
+              content={
+                (liveState.docId === activeDoc.id ? liveState.content : undefined) ??
+                activeDoc.content
+              }
+              onClose={closePanel}
+              onScrollContainer={setPreviewScrollEl}
+            />
+          )}
+        </SidePanel>
       </div>
       <AiEditToast message={toastMessage} onDismiss={() => setToastMessage(null)} />
     </div>
@@ -234,11 +309,15 @@ export function DocsPage({
 function ActiveEditor({
   doc,
   onSave,
+  onLiveChange,
   onCreateView,
+  onScrollContainer,
 }: {
   doc: DocRecord
   onSave: DocsState['save']
+  onLiveChange: (patch: { title?: string; content?: string }) => void
   onCreateView: (view: EditorView) => void
+  onScrollContainer: (el: HTMLDivElement | null) => void
 }): ReactElement {
   return (
     <DocEditor
@@ -246,7 +325,72 @@ function ActiveEditor({
       initialTitle={doc.title}
       initialContent={doc.content}
       onChange={onSave}
+      onLiveChange={onLiveChange}
       onCreateView={onCreateView}
+      onScrollContainer={onScrollContainer}
     />
+  )
+}
+
+interface PanelToggleButtonProps {
+  active: boolean
+  onClick: () => void
+  icon: ReactElement
+  label: string
+}
+
+function PanelToggleButton({ active, onClick, icon, label }: PanelToggleButtonProps): ReactElement {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      aria-label={`${active ? 'Close' : 'Open'} ${label.toLowerCase()} panel`}
+      className={`[-webkit-app-region:no-drag] flex h-6 items-center gap-1.5 rounded-md px-2 text-[12px] transition ${
+        active
+          ? 'bg-[var(--surface-hover)] text-[var(--text)]'
+          : 'text-[var(--text-soft)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]'
+      }`}
+    >
+      {icon}
+      <span>{label}</span>
+    </button>
+  )
+}
+
+function EyeIcon(): ReactElement {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z" />
+      <circle cx="12" cy="12" r="3" />
+    </svg>
+  )
+}
+
+function ChatIcon(): ReactElement {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+    </svg>
   )
 }
