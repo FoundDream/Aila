@@ -162,12 +162,22 @@ body {
 .aila-md > * + * {
   margin-top: 0.6em;
 }
+.aila-md-read > * + * {
+  margin-top: 0.95em;
+}
+.aila-md-read p + p {
+  margin-top: 1.1em;
+}
 .aila-md h1, .aila-md h2, .aila-md h3, .aila-md h4 {
   font-family: var(--font-serif);
   font-weight: 500;
   line-height: 1.3;
   margin-top: 1em;
   margin-bottom: 0.4em;
+}
+.aila-md-read h1, .aila-md-read h2, .aila-md-read h3, .aila-md-read h4 {
+  margin-top: 1.35em;
+  margin-bottom: 0.55em;
 }
 .aila-md h1 { font-size: 1.4em; }
 .aila-md h2 { font-size: 1.25em; }

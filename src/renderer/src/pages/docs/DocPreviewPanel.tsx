@@ -1,6 +1,5 @@
-import { type ReactElement, useMemo } from 'react'
-import { Streamdown } from 'streamdown'
-import { createHeadingIdRehypePlugin } from './markdownHeadings'
+import type { ReactElement } from 'react'
+import { DocMarkdownView } from './DocMarkdownView'
 
 interface DocPreviewPanelProps {
   title: string
@@ -15,9 +14,6 @@ export function DocPreviewPanel({
   onClose,
   onScrollContainer,
 }: DocPreviewPanelProps): ReactElement {
-  const trimmedTitle = title.trim()
-  const rehypePlugins = useMemo(() => [createHeadingIdRehypePlugin()], [])
-
   return (
     <div className="flex h-full flex-col">
       <header className="flex h-10 shrink-0 items-center gap-1 px-2">
@@ -38,21 +34,12 @@ export function DocPreviewPanel({
       </header>
       <main ref={onScrollContainer} className="flex min-h-0 flex-1 flex-col overflow-y-auto">
         <div className="px-6 pt-4 pb-12">
-          {trimmedTitle && (
-            <h1
-              className="mb-4 text-[26px] leading-[1.25] font-normal tracking-tight text-[var(--text)]"
-              style={{ fontFamily: 'var(--font-serif)' }}
-            >
-              {trimmedTitle}
-            </h1>
-          )}
-          <Streamdown
-            mode="static"
-            rehypePlugins={rehypePlugins}
-            className="aila-md text-[15px] leading-[1.7]"
-          >
-            {content}
-          </Streamdown>
+          <DocMarkdownView
+            title={title}
+            content={content}
+            titleSpacingClassName="mb-4"
+            titleClassName="text-[26px] leading-[1.25] font-normal tracking-tight text-[var(--text)]"
+          />
         </div>
       </main>
     </div>
