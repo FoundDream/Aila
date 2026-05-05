@@ -207,6 +207,7 @@ export default function App(): ReactElement {
           </div>
           <div className={tab === 'docs' ? 'h-full' : 'hidden'}>
             <DocsPage
+              active={tab === 'docs'}
               state={docsState}
               streams={chatStreams}
               settings={settingsState?.settings ?? null}

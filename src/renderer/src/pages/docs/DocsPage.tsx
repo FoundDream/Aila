@@ -20,6 +20,7 @@ type PanelMode = 'chat' | 'preview' | null
 type ViewMode = 'edit' | 'read'
 
 interface DocsPageProps {
+  active: boolean
   state: DocsState
   streams: ChatStreamsApi
   settings: Settings | null
@@ -108,6 +109,7 @@ function planChanges(
 }
 
 export function DocsPage({
+  active,
   state,
   streams,
   settings,
@@ -151,6 +153,40 @@ export function DocsPage({
       return 'edit'
     })
   }, [])
+
+  useEffect(() => {
+    if (!active || !activeDoc) return
+
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (!(event.metaKey || event.ctrlKey) || event.shiftKey || event.altKey) return
+
+      if (event.key === '1') {
+        event.preventDefault()
+        setViewMode((prev) => {
+          if (prev === 'edit') {
+            setPanelMode((mode) => (mode === 'preview' ? null : mode))
+            return 'read'
+          }
+          return 'edit'
+        })
+        return
+      }
+
+      if (event.key === '2') {
+        event.preventDefault()
+        setPanelMode((prev) => (prev === 'preview' ? null : 'preview'))
+        return
+      }
+
+      if (event.key === '3') {
+        event.preventDefault()
+        setPanelMode((prev) => (prev === 'chat' ? null : 'chat'))
+      }
+    }
+
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [active, activeDoc])
 
   // Ref to the active doc's CodeMirror EditorView, captured from MarkdownEditor
   // via onCreateView. Used to apply AI-driven edits as a single transaction
@@ -265,18 +301,21 @@ export function DocsPage({
               onClick={toggleReadMode}
               icon={<BookIcon />}
               label="Read"
+              shortcut="⌘1"
             />
             <PanelToggleButton
               active={panelMode === 'preview'}
               onClick={() => togglePanel('preview')}
               icon={<EyeIcon />}
               label="Preview"
+              shortcut="⌘2"
             />
             <PanelToggleButton
               active={panelMode === 'chat'}
               onClick={() => togglePanel('chat')}
               icon={<ChatIcon />}
               label="Ask AI"
+              shortcut="⌘3"
             />
           </>
         )}
@@ -390,15 +429,23 @@ interface PanelToggleButtonProps {
   onClick: () => void
   icon: ReactElement
   label: string
+  shortcut?: string
 }
 
-function PanelToggleButton({ active, onClick, icon, label }: PanelToggleButtonProps): ReactElement {
+function PanelToggleButton({
+  active,
+  onClick,
+  icon,
+  label,
+  shortcut,
+}: PanelToggleButtonProps): ReactElement {
   return (
     <button
       type="button"
       onClick={onClick}
       aria-pressed={active}
       aria-label={`${active ? 'Close' : 'Open'} ${label.toLowerCase()} panel`}
+      title={shortcut ? `${label} (${shortcut})` : label}
       className={`[-webkit-app-region:no-drag] flex h-6 items-center gap-1.5 rounded-md px-2 text-[12px] transition ${
         active
           ? 'bg-[var(--surface-hover)] text-[var(--text)]'
@@ -407,6 +454,7 @@ function PanelToggleButton({ active, onClick, icon, label }: PanelToggleButtonPr
     >
       {icon}
       <span>{label}</span>
+      {shortcut && <span className="text-[10.5px] text-[var(--text-dim)]">{shortcut}</span>}
     </button>
   )
 }
