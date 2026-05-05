@@ -21,6 +21,7 @@ import type {
   PersistedMessage,
   ReasoningDeltaEvent,
   TextDeltaEvent,
+  ToolCallArgsDeltaEvent,
   ToolCallResultEvent,
   ToolCallStartEvent,
   UsageInfo,
@@ -81,6 +82,13 @@ type Action =
       toolCallId: string
       name: string
       args: string
+    }
+  | {
+      type: 'TOOL_CALL_ARGS_DELTA'
+      conversationId: string
+      messageId: string
+      toolCallId: string
+      delta: string
     }
   | {
       type: 'TOOL_CALL_RESULT'
@@ -204,6 +212,20 @@ function reducer(state: State, action: Action): State {
               arguments: action.args,
               status: 'running',
             },
+          ),
+        })),
+      }))
+
+    case 'TOOL_CALL_ARGS_DELTA':
+      if (!action.delta) return state
+      return withStream(state, action.conversationId, (current) => ({
+        ...current,
+        messages: patchMessage(current.messages, action.messageId, (m) => ({
+          ...m,
+          blocks: m.blocks.map((b) =>
+            b.type === 'tool_call' && b.id === action.toolCallId
+              ? { ...b, arguments: b.arguments + action.delta }
+              : b,
           ),
         })),
       }))
@@ -435,6 +457,15 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
           toolCallId: event.toolCallId,
           name: event.name,
           args: event.arguments,
+        }),
+      ),
+      window.api.onToolCallArgsDelta((event: ToolCallArgsDeltaEvent) =>
+        dispatch({
+          type: 'TOOL_CALL_ARGS_DELTA',
+          conversationId: event.conversationId,
+          messageId: event.messageId,
+          toolCallId: event.toolCallId,
+          delta: event.delta,
         }),
       ),
       window.api.onToolCallResult((event: ToolCallResultEvent) =>

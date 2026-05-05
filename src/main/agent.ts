@@ -44,6 +44,13 @@ export interface ToolCallEvent {
   arguments: string
 }
 
+export interface ToolCallArgsDeltaEvent {
+  conversationId: string
+  messageId: string
+  toolCallId: string
+  delta: string
+}
+
 export interface ToolResultEvent {
   conversationId: string
   messageId: string
@@ -88,6 +95,7 @@ export interface StreamHandlers {
   onTextDelta: (event: DeltaEvent) => void
   onReasoningDelta: (event: DeltaEvent) => void
   onToolCallStart: (event: ToolCallEvent) => void
+  onToolCallArgsDelta: (event: ToolCallArgsDeltaEvent) => void
   onToolCallResult: (event: ToolResultEvent) => void
   onImageBlock: (event: ImageBlockEvent) => void
   onDone: (event: DoneEvent) => void
@@ -227,6 +235,14 @@ class AssistantBuilder {
     this.blocks.push(block)
   }
 
+  appendToolCallArgs(id: string, delta: string): void {
+    if (!delta) return
+    const idx = this.toolBlockIndex.get(id)
+    if (idx === undefined) return
+    const block = this.blocks[idx] as PersistedToolCallBlock
+    block.arguments += delta
+  }
+
   appendImage(block: PersistedImageBlock): void {
     this.blocks.push(block)
   }
@@ -342,7 +358,35 @@ export async function streamChat(req: StreamRequest, handlers: StreamHandlers): 
             delta: part.text,
           })
           break
+        case 'tool-input-start': {
+          // Fired when the model starts streaming a tool call. Args are still
+          // empty here; we surface the running block immediately so a long
+          // arguments payload (e.g. edit_doc's new_string) doesn't look like
+          // the UI is frozen.
+          builder.startToolCall(part.id, part.toolName, '')
+          handlers.onToolCallStart({
+            conversationId,
+            messageId: assistantMessageId,
+            toolCallId: part.id,
+            name: part.toolName,
+            arguments: '',
+          })
+          break
+        }
+        case 'tool-input-delta': {
+          builder.appendToolCallArgs(part.id, part.delta)
+          handlers.onToolCallArgsDelta({
+            conversationId,
+            messageId: assistantMessageId,
+            toolCallId: part.id,
+            delta: part.delta,
+          })
+          break
+        }
         case 'tool-call': {
+          // Args are complete here. Overwrite the running block with the
+          // canonical JSON in case delta accumulation drifted (it shouldn't,
+          // but the SDK guarantees this is the source of truth).
           const args = JSON.stringify(part.input ?? {})
           builder.startToolCall(part.toolCallId, part.toolName, args)
           handlers.onToolCallStart({

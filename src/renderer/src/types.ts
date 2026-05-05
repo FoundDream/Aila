@@ -28,6 +28,7 @@ export type {
   Settings,
   SettingsState,
   TextDeltaEvent,
+  ToolCallArgsDeltaEvent,
   ToolCallPayload,
   ToolCallResultEvent,
   ToolCallStartEvent,
