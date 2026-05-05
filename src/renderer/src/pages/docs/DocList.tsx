@@ -4,18 +4,18 @@ import type { DocSummary, FolderSummary } from './types'
 interface DocListProps {
   docs: DocSummary[]
   folders: FolderSummary[]
-  activeId: string | null
-  onSelect: (id: string) => void
+  activePath: string | null
+  onSelect: (path: string) => void
   onCreateDoc: (folderPath: string | null) => void
-  onDeleteDoc: (id: string) => void
-  onMoveDoc: (id: string, folderPath: string | null) => void
+  onDeleteDoc: (path: string) => void
+  onMoveDoc: (path: string, folderPath: string | null) => void
   onCreateFolder: (parentPath: string | null, name: string) => Promise<unknown>
   onRenameFolder: (path: string, newName: string) => Promise<unknown>
   onMoveFolder: (path: string, newParentPath: string | null) => Promise<unknown>
   onDeleteFolder: (path: string) => void
 }
 
-type DragPayload = { kind: 'doc'; id: string } | { kind: 'folder'; path: string }
+type DragPayload = { kind: 'doc'; path: string } | { kind: 'folder'; path: string }
 
 interface FolderNode {
   kind: 'folder'
@@ -200,7 +200,7 @@ function ancestorsOf(folderPath: string | null): string[] {
 export function DocList({
   docs,
   folders,
-  activeId,
+  activePath,
   onSelect,
   onCreateDoc,
   onDeleteDoc,
@@ -221,7 +221,7 @@ export function DocList({
   const justCreatedRef = useRef<string | null>(null)
 
   useEffect(() => {
-    const activeDoc = docs.find((d) => d.id === activeId)
+    const activeDoc = docs.find((d) => d.path === activePath)
     if (!activeDoc) return
     const chain = ancestorsOf(activeDoc.folderPath)
     if (chain.length === 0) return
@@ -230,7 +230,7 @@ export function DocList({
       for (const p of chain) next.add(p)
       return next
     })
-  }, [activeId, docs])
+  }, [activePath, docs])
 
   useEffect(() => {
     const newly = justCreatedRef.current
@@ -269,7 +269,7 @@ export function DocList({
   const performDrop = async (targetPath: string | null): Promise<void> => {
     if (!drag) return
     if (drag.kind === 'doc') {
-      onMoveDoc(drag.id, targetPath)
+      onMoveDoc(drag.path, targetPath)
     } else {
       await onMoveFolder(drag.path, targetPath)
     }
@@ -427,18 +427,18 @@ export function DocList({
   }
 
   const renderDoc = (doc: DocSummary, depth: number): ReactElement => {
-    const isActive = doc.id === activeId
-    const isDragging = drag?.kind === 'doc' && drag.id === doc.id
+    const isActive = doc.path === activePath
+    const isDragging = drag?.kind === 'doc' && drag.path === doc.path
     const title = doc.title || '无标题文档'
     return (
-      <li key={`doc:${doc.id}`}>
+      <li key={`doc:${doc.path}`}>
         <div
           draggable
           onDragStart={(event) => {
             event.stopPropagation()
             event.dataTransfer.effectAllowed = 'move'
-            event.dataTransfer.setData(DRAG_MIME, JSON.stringify({ kind: 'doc', id: doc.id }))
-            setDrag({ kind: 'doc', id: doc.id })
+            event.dataTransfer.setData(DRAG_MIME, JSON.stringify({ kind: 'doc', path: doc.path }))
+            setDrag({ kind: 'doc', path: doc.path })
           }}
           onDragEnd={finishDrag}
           className={`group flex h-7 cursor-grab items-center rounded-md transition active:cursor-grabbing ${
@@ -455,7 +455,7 @@ export function DocList({
           </span>
           <button
             type="button"
-            onClick={() => onSelect(doc.id)}
+            onClick={() => onSelect(doc.path)}
             className="flex min-w-0 flex-1 cursor-pointer items-center px-2 text-left"
             draggable={false}
           >
@@ -471,7 +471,7 @@ export function DocList({
             type="button"
             onClick={() => {
               if (window.confirm(`Delete "${title}"?`)) {
-                onDeleteDoc(doc.id)
+                onDeleteDoc(doc.path)
               }
             }}
             aria-label="Delete document"

@@ -17,8 +17,8 @@ import {
   createConversation,
   deleteConversation,
   getConversation,
-  getOrCreateDocConversation,
   listConversations,
+  listDocConversations,
   type PersistedImageBlock,
   type PersistedMessage,
   type PersistedTextBlock,
@@ -103,7 +103,6 @@ function createWindow(): void {
 
   if (is.dev) {
     mainWindow.loadURL(DEV_RENDERER_URL)
-    mainWindow.webContents.openDevTools({ mode: 'detach' })
   } else {
     mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
   }
@@ -209,10 +208,10 @@ function registerIpcHandlers(): void {
       // system message every time. Re-reading on each send keeps the context
       // fresh — the user might be editing while chatting in the sidebar — at
       // the cost of resending the body. Fine for personal-scale notes.
-      const boundDocId = record.meta.docId ?? null
-      if (boundDocId) {
+      const boundDocPath = record.meta.docId ?? null
+      if (boundDocPath) {
         try {
-          const doc = await getDoc(boundDocId)
+          const doc = await getDoc(boundDocPath)
           const titleLine = doc.title ? `# ${doc.title}\n\n` : ''
           messages.unshift({
             role: 'system',
@@ -220,14 +219,14 @@ function registerIpcHandlers(): void {
               '你正在协助用户编辑一篇 Markdown 文档。可以用 `edit_doc` 工具直接修改' +
               '它（find/replace 形式，old_string 必须唯一匹配；多个 edits 会作为' +
               '单次 undo 应用）。文档元信息：\n' +
-              `  - id: ${doc.id}\n` +
+              `  - path: ${doc.path}\n` +
               `  - title: ${doc.title}\n\n` +
               '当前完整内容如下：\n\n---\n\n' +
               titleLine +
               doc.content,
           })
         } catch (err) {
-          console.warn('[chat:send] doc context fetch failed for', boundDocId, err)
+          console.warn('[chat:send] doc context fetch failed for', boundDocPath, err)
         }
       }
 
@@ -235,7 +234,7 @@ function registerIpcHandlers(): void {
       // chat-tab conversations don't get edit_doc capability — there's no
       // "current document" to operate on, and we don't want the model going
       // off and editing arbitrary docs from the chat tab.
-      const onDocEdit = boundDocId
+      const onDocEdit = boundDocPath
         ? (req: DocEditRequest): Promise<DocEditResult> =>
             new Promise<DocEditResult>((resolve) => {
               const requestId = randomUUID()
@@ -247,7 +246,7 @@ function registerIpcHandlers(): void {
               pendingDocEdits.set(requestId, { resolve, timer })
               send('docs:edit-request', {
                 requestId,
-                docId: req.docId,
+                docPath: req.docPath,
                 edits: req.edits,
                 reason: req.reason,
               })
@@ -269,6 +268,7 @@ function registerIpcHandlers(): void {
               onTextDelta: (event) => send('chat:text-delta', event),
               onReasoningDelta: (event) => send('chat:reasoning-delta', event),
               onToolCallStart: (event) => send('chat:tool-call-start', event),
+              onToolCallArgsDelta: (event) => send('chat:tool-call-args-delta', event),
               onToolCallResult: (event) => send('chat:tool-call-result', event),
               onImageBlock: (event) => send('chat:image-block', event),
               onDone: async (event) => {
@@ -323,11 +323,13 @@ function registerIpcHandlers(): void {
   })
 
   ipcMain.handle('docs:list', () => listAll())
-  ipcMain.handle('docs:get', (_event, id: string) => getDoc(id))
+  ipcMain.handle('docs:get', (_event, docPath: string) => getDoc(docPath))
   ipcMain.handle('docs:create', (_event, folderPath?: string | null) =>
     createDoc(folderPath ?? null),
   )
-  ipcMain.handle('docs:update', (_event, id: string, patch: DocPatch) => updateDoc(id, patch))
+  ipcMain.handle('docs:update', (_event, docPath: string, patch: DocPatch) =>
+    updateDoc(docPath, patch),
+  )
 
   ipcMain.handle('folders:create', (_event, parentPath: string | null, name: string) =>
     createFolder(parentPath, name),
@@ -354,26 +356,29 @@ function registerIpcHandlers(): void {
   // the editor. Used by the renderer when edit_doc targets an inactive doc.
   ipcMain.handle(
     'docs:apply-edit-direct',
-    async (_event, input: { docId: string; edits: FindReplaceEdit[] }): Promise<DocEditResult> => {
+    async (
+      _event,
+      input: { docPath: string; edits: FindReplaceEdit[] },
+    ): Promise<DocEditResult> => {
       let doc: Awaited<ReturnType<typeof getDoc>>
       try {
-        doc = await getDoc(input.docId)
+        doc = await getDoc(input.docPath)
       } catch {
-        return { ok: false, error: `doc not found: ${input.docId}` }
+        return { ok: false, error: `doc not found: ${input.docPath}` }
       }
       const result = applyFindReplace(doc.content, input.edits)
       if (!result.ok) {
         return { ok: false, error: formatFindReplaceErrors(result.errors) }
       }
-      await updateDoc(input.docId, { content: result.body })
+      await updateDoc(input.docPath, { content: result.body })
       return { ok: true, title: doc.title, appliedCount: result.appliedCount }
     },
   )
 
   async function sweepOrphanedDocConversations(): Promise<void> {
     const [{ docs }, convos] = await Promise.all([listAll(), listConversations()])
-    const liveDocIds = new Set(docs.map((d) => d.id))
-    const orphans = convos.filter((c) => c.docId && !liveDocIds.has(c.docId))
+    const liveDocPaths = new Set(docs.map((d) => d.path))
+    const orphans = convos.filter((c) => c.docId && !liveDocPaths.has(c.docId))
     await Promise.all(
       orphans.map(async (orphan) => {
         const slot = activeStreams.get(orphan.id)
@@ -386,8 +391,8 @@ function registerIpcHandlers(): void {
     )
   }
 
-  ipcMain.handle('docs:delete', async (_event, id: string) => {
-    await deleteDoc(id)
+  ipcMain.handle('docs:delete', async (_event, docPath: string) => {
+    await deleteDoc(docPath)
     await sweepOrphanedDocConversations()
   })
 
@@ -416,9 +421,9 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle('conversations:list', () => listConversations())
   ipcMain.handle('conversations:get', (_event, id: string) => getConversation(id))
-  ipcMain.handle('conversations:create', () => createConversation())
-  ipcMain.handle('conversations:get-or-create-for-doc', (_event, docId: string) =>
-    getOrCreateDocConversation(docId),
+  ipcMain.handle('conversations:create', (_event, docPath?: string) => createConversation(docPath))
+  ipcMain.handle('conversations:list-for-doc', (_event, docPath: string) =>
+    listDocConversations(docPath),
   )
   ipcMain.handle('conversations:rename', (_event, id: string, title: string) =>
     renameConversation(id, title),

@@ -4,12 +4,12 @@ import type { DocContent, DocRecord, DocSummary, FolderSummary } from './types'
 export interface DocsState {
   docs: DocSummary[]
   folders: FolderSummary[]
-  activeId: string | null
+  activePath: string | null
   activeDoc: DocRecord | null
-  select: (id: string) => void
+  select: (path: string) => void
   create: (folderPath?: string | null) => Promise<void>
-  remove: (id: string) => Promise<void>
-  move: (id: string, folderPath: string | null) => Promise<void>
+  remove: (path: string) => Promise<void>
+  move: (path: string, folderPath: string | null) => Promise<void>
   save: (patch: {
     folderPath?: string | null
     title?: string
@@ -24,7 +24,7 @@ export interface DocsState {
 export function useDocs(): DocsState {
   const [docs, setDocs] = useState<DocSummary[]>([])
   const [folders, setFolders] = useState<FolderSummary[]>([])
-  const [activeId, setActiveId] = useState<string | null>(null)
+  const [activePath, setActivePath] = useState<string | null>(null)
   const [activeDoc, setActiveDoc] = useState<DocRecord | null>(null)
 
   const refreshList = useCallback(async () => {
@@ -37,79 +37,83 @@ export function useDocs(): DocsState {
   useEffect(() => {
     void (async () => {
       const result = await refreshList()
-      if (result.docs.length > 0) setActiveId(result.docs[0].id)
+      if (result.docs.length > 0) setActivePath(result.docs[0].path)
     })()
   }, [refreshList])
 
   useEffect(() => {
-    if (!activeId) {
+    if (!activePath) {
       setActiveDoc(null)
       return
     }
     let cancelled = false
     void (async () => {
-      const doc = (await window.api.docs.get(activeId)) as DocRecord
+      const doc = (await window.api.docs.get(activePath)) as DocRecord
       if (!cancelled) setActiveDoc(doc)
     })()
     return () => {
       cancelled = true
     }
-  }, [activeId])
+  }, [activePath])
 
   const create = useCallback(
     async (folderPath: string | null = null) => {
       const doc = (await window.api.docs.create(folderPath)) as DocRecord
       await refreshList()
-      setActiveId(doc.id)
+      setActivePath(doc.path)
     },
     [refreshList],
   )
 
   const remove = useCallback(
-    async (id: string) => {
-      await window.api.docs.delete(id)
+    async (path: string) => {
+      await window.api.docs.delete(path)
       const result = await refreshList()
-      if (activeId && !result.docs.some((doc) => doc.id === activeId)) {
-        setActiveId(result.docs.length > 0 ? result.docs[0].id : null)
+      if (activePath && !result.docs.some((doc) => doc.path === activePath)) {
+        setActivePath(result.docs.length > 0 ? result.docs[0].path : null)
       }
     },
-    [activeId, refreshList],
+    [activePath, refreshList],
   )
 
-  const applyUpdated = useCallback((updated: DocRecord) => {
-    setDocs((prev) => {
-      const next = prev.map((doc) =>
-        doc.id === updated.id
-          ? {
-              id: updated.id,
-              folderPath: updated.folderPath,
-              title: updated.title,
-              createdAt: updated.createdAt,
-              updatedAt: updated.updatedAt,
-            }
-          : doc,
-      )
-      next.sort((a, b) => b.updatedAt - a.updatedAt)
-      return next
-    })
-    setActiveDoc((prev) => (prev && prev.id === updated.id ? updated : prev))
-  }, [])
+  // After a full refresh, the doc the user was editing may have a NEW path
+  // (rename) or be gone. Reconcile activePath against fresh data and fall
+  // back to the first doc if the active one disappeared.
+  const reconcileActiveAfterUpdate = useCallback(
+    (updated: DocRecord, prevActive: string | null): string | null => {
+      if (prevActive === updated.path) return updated.path
+      // If activePath no longer matches anything in the list, the rename moved
+      // the doc — adopt the new path.
+      return updated.path
+    },
+    [],
+  )
 
   const move = useCallback(
-    async (id: string, folderPath: string | null) => {
-      const updated = (await window.api.docs.update(id, { folderPath })) as DocRecord
-      applyUpdated(updated)
+    async (path: string, folderPath: string | null) => {
+      const updated = (await window.api.docs.update(path, { folderPath })) as DocRecord
+      await refreshList()
+      if (activePath === path) setActivePath(reconcileActiveAfterUpdate(updated, activePath))
     },
-    [applyUpdated],
+    [activePath, refreshList, reconcileActiveAfterUpdate],
   )
 
   const save = useCallback(
     async (patch: { folderPath?: string | null; title?: string; content?: DocContent }) => {
-      if (!activeId) return
-      const updated = (await window.api.docs.update(activeId, patch)) as DocRecord
-      applyUpdated(updated)
+      if (!activePath) return
+      const updated = (await window.api.docs.update(activePath, patch)) as DocRecord
+      // A title or folderPath patch may have renamed the file on disk. Refresh
+      // the list and adopt the new path so subsequent saves target the right
+      // file. Content-only patches keep the same path — refresh is still cheap
+      // and keeps mtime sort accurate.
+      await refreshList()
+      if (updated.path !== activePath) {
+        setActivePath(updated.path)
+      } else {
+        setActiveDoc(updated)
+      }
     },
-    [activeId, applyUpdated],
+    [activePath, refreshList],
   )
 
   const createFolder = useCallback(
@@ -124,39 +128,56 @@ export function useDocs(): DocsState {
   const renameFolder = useCallback(
     async (path: string, newName: string) => {
       const folder = (await window.api.folders.rename(path, newName)) as FolderSummary
-      // Folder rename changes child doc folderPaths — refresh both lists.
-      await refreshList()
+      // Folder rename changes child doc paths — refresh and re-target activePath
+      // if it was inside the renamed folder.
+      const result = await refreshList()
+      if (activePath?.startsWith(`${path}/`)) {
+        const remapped = `${folder.path}${activePath.slice(path.length)}`
+        if (result.docs.some((d) => d.path === remapped)) {
+          setActivePath(remapped)
+        } else if (result.docs.length > 0) {
+          setActivePath(result.docs[0].path)
+        } else {
+          setActivePath(null)
+        }
+      }
       return folder
     },
-    [refreshList],
+    [activePath, refreshList],
   )
 
   const moveFolderAction = useCallback(
     async (path: string, newParentPath: string | null) => {
       const folder = (await window.api.folders.move(path, newParentPath)) as FolderSummary
-      await refreshList()
+      const result = await refreshList()
+      if (activePath?.startsWith(`${path}/`)) {
+        const remapped = `${folder.path}${activePath.slice(path.length)}`
+        if (result.docs.some((d) => d.path === remapped)) {
+          setActivePath(remapped)
+        }
+      }
       return folder
     },
-    [refreshList],
+    [activePath, refreshList],
   )
 
   const deleteFolderAction = useCallback(
     async (path: string) => {
       await window.api.folders.delete(path)
       const result = await refreshList()
-      if (activeId && !result.docs.some((doc) => doc.id === activeId)) {
-        setActiveId(result.docs.length > 0 ? result.docs[0].id : null)
+      if (activePath && !result.docs.some((doc) => doc.path === activePath)) {
+        setActivePath(result.docs.length > 0 ? result.docs[0].path : null)
       }
     },
-    [activeId, refreshList],
+    [activePath, refreshList],
   )
 
   return {
     docs,
     folders,
-    activeId,
+    activePath,
     activeDoc,
-    select: setActiveId,
+    select: setActivePath,
     create,
     remove,
     move,

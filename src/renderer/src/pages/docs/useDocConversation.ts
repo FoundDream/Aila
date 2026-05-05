@@ -1,40 +1,88 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import type { ConversationSummary } from '../../../../preload/index'
 
-// Each doc has at most one conversation (lazy-created on first sidebar open).
-// Main scans listConversations for `docId` match — there's no in-memory cache,
-// so the renderer doesn't need to invalidate anything when docs are deleted.
-export function useDocConversation(docId: string | null): {
-  summary: ConversationSummary | null
+// A doc owns N conversations (all carry docId, which under the vault model is
+// the doc's vault-relative path). The chat-tab sidebar filters these out, so
+// they only surface here. New sessions are lazy: clicking "New chat" just
+// clears activeId; the row is created on the first send so abandoned empties
+// don't pile up.
+//
+// Note: external Finder renames of doc files will silently desync the
+// conversation refs (no fs watcher) — affected sidebars will appear empty.
+// In-app doc renames cascade-rewrite meta.docId via docs.ts → conversations.ts.
+export interface DocConversationApi {
+  sessions: ConversationSummary[]
+  activeId: string | null
   isReady: boolean
-} {
-  const [summary, setSummary] = useState<ConversationSummary | null>(null)
+  newSession: () => void
+  selectSession: (id: string) => void
+  ensureActiveSession: () => Promise<string | null>
+}
+
+export function useDocConversation(docPath: string | null): DocConversationApi {
+  const [sessions, setSessions] = useState<ConversationSummary[]>([])
+  const [activeId, setActiveId] = useState<string | null>(null)
   const [isReady, setIsReady] = useState(false)
 
   useEffect(() => {
-    if (!docId) {
-      setSummary(null)
-      setIsReady(false)
+    if (!docPath) {
+      setSessions([])
+      setActiveId(null)
+      setIsReady(true)
       return
     }
     let cancelled = false
     setIsReady(false)
     void (async () => {
       try {
-        const next = await window.api.conversations.getOrCreateForDoc(docId)
-        if (!cancelled) {
-          setSummary(next)
-          setIsReady(true)
-        }
+        const list = await window.api.conversations.listForDoc(docPath)
+        if (cancelled) return
+        setSessions(list)
+        setActiveId(list[0]?.id ?? null)
       } catch (err) {
-        console.error('[useDocConversation] failed for', docId, err)
+        console.error('[useDocConversation] list failed for', docPath, err)
+      } finally {
         if (!cancelled) setIsReady(true)
       }
     })()
     return () => {
       cancelled = true
     }
-  }, [docId])
+  }, [docPath])
 
-  return { summary, isReady }
+  // Stay in sync with title/updatedAt changes (derived after the first user
+  // message lands) so the picker reflects the latest state without a refetch.
+  useEffect(() => {
+    if (!docPath) return
+    return window.api.conversations.onUpdated((summary) => {
+      if (summary.docId !== docPath) return
+      setSessions((prev) => {
+        const found = prev.some((s) => s.id === summary.id)
+        const next = found
+          ? prev.map((s) => (s.id === summary.id ? summary : s))
+          : [summary, ...prev]
+        next.sort((a, b) => b.updatedAt - a.updatedAt)
+        return next
+      })
+    })
+  }, [docPath])
+
+  const newSession = useCallback(() => {
+    setActiveId(null)
+  }, [])
+
+  const selectSession = useCallback((id: string) => {
+    setActiveId(id)
+  }, [])
+
+  const ensureActiveSession = useCallback(async (): Promise<string | null> => {
+    if (activeId) return activeId
+    if (!docPath) return null
+    const fresh = await window.api.conversations.create(docPath)
+    setSessions((prev) => [fresh, ...prev])
+    setActiveId(fresh.id)
+    return fresh.id
+  }, [activeId, docPath])
+
+  return { sessions, activeId, isReady, newSession, selectSession, ensureActiveSession }
 }

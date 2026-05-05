@@ -40,17 +40,27 @@ export function DocEditor({
   const onLiveChangeRef = useRef(onLiveChange)
   onLiveChangeRef.current = onLiveChange
 
+  // Title and content are tracked separately because they save under different
+  // policies. Content is debounced (cheap writeFile, frequent edits). Title
+  // commits only on blur / Cmd-S / unmount — every commit is `fs.rename`
+  // followed by a meta-file cascade rewrite, so per-keystroke commits would
+  // produce N renames + N event refreshes per word typed, plus break Chinese
+  // IME (partial composition can briefly produce filename-illegal chars).
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const pendingPatchRef = useRef<DocPatch | null>(null)
+  const pendingTitleRef = useRef<string | null>(null)
+  const pendingContentRef = useRef<DocContent | null>(null)
 
   const flush = useCallback(async () => {
     if (debounceRef.current) {
       clearTimeout(debounceRef.current)
       debounceRef.current = null
     }
-    const patch = pendingPatchRef.current
-    if (!patch) return
-    pendingPatchRef.current = null
+    const patch: DocPatch = {}
+    if (pendingTitleRef.current !== null) patch.title = pendingTitleRef.current
+    if (pendingContentRef.current !== null) patch.content = pendingContentRef.current
+    if (patch.title === undefined && patch.content === undefined) return
+    pendingTitleRef.current = null
+    pendingContentRef.current = null
     setStatus('saving')
     try {
       await onChangeRef.current(patch)
@@ -58,14 +68,21 @@ export function DocEditor({
       setStatus((prev) => (prev === 'saving' ? 'saved' : prev))
     } catch (err) {
       console.error('Failed to save doc', err)
-      pendingPatchRef.current = { ...patch, ...(pendingPatchRef.current ?? {}) }
+      // Re-stage what we tried to save so the next flush will retry. New
+      // pending edits arriving in the meantime take precedence.
+      if (patch.title !== undefined && pendingTitleRef.current === null) {
+        pendingTitleRef.current = patch.title
+      }
+      if (patch.content !== undefined && pendingContentRef.current === null) {
+        pendingContentRef.current = patch.content
+      }
       setStatus('dirty')
     }
   }, [])
 
-  const scheduleSave = useCallback(
-    (patch: DocPatch) => {
-      pendingPatchRef.current = { ...pendingPatchRef.current, ...patch }
+  const scheduleContentSave = useCallback(
+    (next: DocContent) => {
+      pendingContentRef.current = next
       setStatus('dirty')
       if (debounceRef.current) clearTimeout(debounceRef.current)
       debounceRef.current = setTimeout(() => {
@@ -93,21 +110,23 @@ export function DocEditor({
         clearTimeout(debounceRef.current)
         debounceRef.current = null
       }
-      const patch = pendingPatchRef.current
-      if (patch) {
-        pendingPatchRef.current = null
-        void onChangeRef.current(patch)
-      }
+      const patch: DocPatch = {}
+      if (pendingTitleRef.current !== null) patch.title = pendingTitleRef.current
+      if (pendingContentRef.current !== null) patch.content = pendingContentRef.current
+      if (patch.title === undefined && patch.content === undefined) return
+      pendingTitleRef.current = null
+      pendingContentRef.current = null
+      void onChangeRef.current(patch)
     }
   }, [])
 
   const handleContentChange = useCallback(
     (next: string) => {
       setContent(next)
-      scheduleSave({ content: next })
+      scheduleContentSave(next)
       onLiveChangeRef.current?.({ content: next })
     },
-    [scheduleSave],
+    [scheduleContentSave],
   )
 
   return (
@@ -122,7 +141,8 @@ export function DocEditor({
             onChange={(event) => {
               const next = event.target.value
               setTitle(next)
-              scheduleSave({ title: next })
+              pendingTitleRef.current = next
+              setStatus('dirty')
               onLiveChangeRef.current?.({ title: next })
             }}
             onBlur={() => void flush()}

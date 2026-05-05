@@ -1,7 +1,9 @@
 export type DocContent = string
 
 export interface DocSummary {
-  id: string
+  // Vault-relative posix path WITHOUT .md (e.g. "notes/Foo"). The filename
+  // IS the doc's identity in Obsidian-style storage.
+  path: string
   folderPath: string | null
   title: string
   createdAt: number

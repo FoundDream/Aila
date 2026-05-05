@@ -35,6 +35,11 @@ export interface ToolCallStartEvent extends ChatStreamEventBase {
   arguments: string
 }
 
+export interface ToolCallArgsDeltaEvent extends ChatStreamEventBase {
+  toolCallId: string
+  delta: string
+}
+
 export interface ToolCallResultEvent extends ChatStreamEventBase {
   toolCallId: string
   result: string
@@ -42,7 +47,9 @@ export interface ToolCallResultEvent extends ChatStreamEventBase {
 }
 
 export interface DocRecord {
-  id: string
+  // Vault-relative posix path WITHOUT .md extension (e.g. "notes/Foo"). Filename
+  // is the doc's identity — title is derived from the basename.
+  path: string
   folderPath: string | null
   title: string
   content: string
@@ -50,7 +57,10 @@ export interface DocRecord {
   updatedAt: number
 }
 
-export type DocSummary = Pick<DocRecord, 'id' | 'folderPath' | 'title' | 'createdAt' | 'updatedAt'>
+export type DocSummary = Pick<
+  DocRecord,
+  'path' | 'folderPath' | 'title' | 'createdAt' | 'updatedAt'
+>
 
 export interface FolderSummary {
   path: string
@@ -72,7 +82,7 @@ export interface DocEditFindReplace {
 
 export interface DocEditRequestEvent {
   requestId: string
-  docId: string
+  docPath: string
   edits: DocEditFindReplace[]
   reason?: string
 }
@@ -209,6 +219,8 @@ const api = {
     on<ReasoningDeltaEvent>('chat:reasoning-delta', cb),
   onToolCallStart: (cb: (event: ToolCallStartEvent) => void) =>
     on<ToolCallStartEvent>('chat:tool-call-start', cb),
+  onToolCallArgsDelta: (cb: (event: ToolCallArgsDeltaEvent) => void) =>
+    on<ToolCallArgsDeltaEvent>('chat:tool-call-args-delta', cb),
   onToolCallResult: (cb: (event: ToolCallResultEvent) => void) =>
     on<ToolCallResultEvent>('chat:tool-call-result', cb),
   onImageBlock: (cb: (event: ImageBlockEvent) => void) =>
@@ -227,12 +239,12 @@ const api = {
   },
   docs: {
     list: (): Promise<DocsListResult> => ipcRenderer.invoke('docs:list'),
-    get: (id: string): Promise<DocRecord> => ipcRenderer.invoke('docs:get', id),
+    get: (docPath: string): Promise<DocRecord> => ipcRenderer.invoke('docs:get', docPath),
     create: (folderPath?: string | null): Promise<DocRecord> =>
       ipcRenderer.invoke('docs:create', folderPath ?? null),
-    update: (id: string, patch: DocPatch): Promise<DocRecord> =>
-      ipcRenderer.invoke('docs:update', id, patch),
-    delete: (id: string): Promise<void> => ipcRenderer.invoke('docs:delete', id),
+    update: (docPath: string, patch: DocPatch): Promise<DocRecord> =>
+      ipcRenderer.invoke('docs:update', docPath, patch),
+    delete: (docPath: string): Promise<void> => ipcRenderer.invoke('docs:delete', docPath),
     // Subscribed by the active DocEditor: each event represents an edit_doc
     // tool call that needs to be applied via the live CodeMirror view.
     onEditRequest: (cb: (event: DocEditRequestEvent) => void) =>
@@ -243,8 +255,8 @@ const api = {
     // Disk-only find/replace for docs that aren't currently mounted in the
     // editor. The renderer falls back to this when an edit_doc tool call
     // targets an inactive doc.
-    applyEditDirect: (docId: string, edits: DocEditFindReplace[]): Promise<DocEditResult> =>
-      ipcRenderer.invoke('docs:apply-edit-direct', { docId, edits }),
+    applyEditDirect: (docPath: string, edits: DocEditFindReplace[]): Promise<DocEditResult> =>
+      ipcRenderer.invoke('docs:apply-edit-direct', { docPath, edits }),
   },
   folders: {
     create: (parentPath: string | null, name: string): Promise<FolderSummary> =>
@@ -262,9 +274,10 @@ const api = {
   conversations: {
     list: (): Promise<ConversationSummary[]> => ipcRenderer.invoke('conversations:list'),
     get: (id: string): Promise<ConversationRecord> => ipcRenderer.invoke('conversations:get', id),
-    create: (): Promise<ConversationSummary> => ipcRenderer.invoke('conversations:create'),
-    getOrCreateForDoc: (docId: string): Promise<ConversationSummary> =>
-      ipcRenderer.invoke('conversations:get-or-create-for-doc', docId),
+    create: (docPath?: string): Promise<ConversationSummary> =>
+      ipcRenderer.invoke('conversations:create', docPath),
+    listForDoc: (docPath: string): Promise<ConversationSummary[]> =>
+      ipcRenderer.invoke('conversations:list-for-doc', docPath),
     rename: (id: string, title: string): Promise<ConversationSummary> =>
       ipcRenderer.invoke('conversations:rename', id, title),
     delete: (id: string): Promise<void> => ipcRenderer.invoke('conversations:delete', id),

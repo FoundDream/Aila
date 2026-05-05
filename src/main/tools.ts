@@ -191,15 +191,16 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         'undo step in the editor). If any edit fails, NONE are applied and you ' +
         'will receive an error with details to retry. Use this to refine, ' +
         "restructure, or extend a doc the user is working on. The target doc's " +
-        'id is given in the system message of doc-bound conversations.',
+        'path is given in the system message of doc-bound conversations.',
       parameters: {
         type: 'object',
         properties: {
-          docId: {
+          docPath: {
             type: 'string',
             description:
-              'Target document id. In doc-bound conversations, default to the ' +
-              'doc id mentioned in the system message.',
+              'Target document path (vault-relative, no .md extension). In ' +
+              'doc-bound conversations, default to the path mentioned in the ' +
+              'system message.',
           },
           edits: {
             type: 'array',
@@ -228,7 +229,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
             description: 'One short line explaining why these edits.',
           },
         },
-        required: ['docId', 'edits'],
+        required: ['docPath', 'edits'],
         additionalProperties: false,
       },
     },
@@ -377,7 +378,7 @@ export interface ImageSideChannelBlock {
 }
 
 export interface DocEditRequest {
-  docId: string
+  docPath: string
   edits: FindReplaceEdit[]
   reason?: string
 }
@@ -430,12 +431,12 @@ async function runGenerateImage(args: { prompt?: unknown }, ctx: ToolContext): P
 }
 
 async function runEditDoc(
-  args: { docId?: unknown; edits?: unknown; reason?: unknown },
+  args: { docPath?: unknown; edits?: unknown; reason?: unknown },
   ctx: ToolContext,
 ): Promise<string> {
-  const { docId, edits, reason } = args
-  if (typeof docId !== 'string' || docId.length === 0) {
-    throw new Error('`docId` must be a non-empty string')
+  const { docPath, edits, reason } = args
+  if (typeof docPath !== 'string' || docPath.length === 0) {
+    throw new Error('`docPath` must be a non-empty string')
   }
   if (!Array.isArray(edits) || edits.length === 0) {
     throw new Error('`edits` must be a non-empty array')
@@ -459,7 +460,7 @@ async function runEditDoc(
   }
 
   const result = await ctx.onDocEdit({
-    docId,
+    docPath,
     edits: validatedEdits,
     reason: typeof reason === 'string' ? reason : undefined,
   })

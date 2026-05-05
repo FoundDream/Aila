@@ -123,13 +123,13 @@ export function DocsPage({
   const [toastMessage, setToastMessage] = useState<string | null>(null)
   // Live mirror of the editor's title + content, updated synchronously on
   // every keystroke so the preview panel stays in sync without waiting for
-  // the autosave debounce. The patch is scoped by docId so a stale entry
+  // the autosave debounce. The patch is scoped by docPath so a stale entry
   // from a previously-active doc is automatically ignored after switching.
   const [liveState, setLiveState] = useState<{
-    docId: string | null
+    docPath: string | null
     title?: string
     content?: string
-  }>({ docId: null })
+  }>({ docPath: null })
 
   const closePanel = useCallback(() => setPanelMode(null), [])
   const togglePanel = useCallback(
@@ -156,21 +156,23 @@ export function DocsPage({
   const viewRef = useRef<EditorView | null>(null)
   // Track which doc the captured view belongs to, since onCreateView fires
   // independently of the activeDoc prop.
-  const viewDocIdRef = useRef<string | null>(null)
-  // Mirror activeDoc.id in a ref so the IPC handler closure sees the latest
+  const viewDocPathRef = useRef<string | null>(null)
+  // Mirror activeDoc.path in a ref so the IPC handler closure sees the latest
   // value without re-subscribing.
-  const activeDocIdRef = useRef<string | null>(null)
-  activeDocIdRef.current = activeDoc?.id ?? null
+  const activeDocPathRef = useRef<string | null>(null)
+  activeDocPathRef.current = activeDoc?.path ?? null
 
-  const handleCreateView = useCallback((view: EditorView, docId: string) => {
+  const handleCreateView = useCallback((view: EditorView, docPath: string) => {
     viewRef.current = view
-    viewDocIdRef.current = docId
+    viewDocPathRef.current = docPath
   }, [])
 
   const handleLiveChange = useCallback((patch: { title?: string; content?: string }) => {
-    const docId = activeDocIdRef.current
-    if (!docId) return
-    setLiveState((prev) => (prev.docId === docId ? { ...prev, ...patch } : { docId, ...patch }))
+    const docPath = activeDocPathRef.current
+    if (!docPath) return
+    setLiveState((prev) =>
+      prev.docPath === docPath ? { ...prev, ...patch } : { docPath, ...patch },
+    )
   }, [])
 
   // Scroll containers for the editor and preview, captured via callback refs.
@@ -213,7 +215,8 @@ export function DocsPage({
       const result = await applyEditRequest(req)
       window.api.docs.sendEditResponse({ requestId: req.requestId, ...result })
       if (result.ok) {
-        const isLive = req.docId === activeDocIdRef.current && viewDocIdRef.current === req.docId
+        const isLive =
+          req.docPath === activeDocPathRef.current && viewDocPathRef.current === req.docPath
         setToastMessage(isLive ? 'Edited by AI' : `Edited "${result.title}"`)
       }
     })
@@ -226,9 +229,9 @@ export function DocsPage({
       // CodeMirror transaction so the change participates in undo history and
       // the existing autosave debounce naturally writes it to disk.
       if (
-        req.docId === activeDocIdRef.current &&
+        req.docPath === activeDocPathRef.current &&
         viewRef.current &&
-        viewDocIdRef.current === req.docId
+        viewDocPathRef.current === req.docPath
       ) {
         const view = viewRef.current
         const body = view.state.doc.toString()
@@ -245,7 +248,7 @@ export function DocsPage({
         }
       }
       // Inactive doc: fall back to main's disk-only path.
-      return window.api.docs.applyEditDirect(req.docId, req.edits)
+      return window.api.docs.applyEditDirect(req.docPath, req.edits)
     },
     [activeDoc?.title],
   )
@@ -281,13 +284,13 @@ export function DocsPage({
           {activeDoc ? (
             viewMode === 'read' ? (
               <DocReadView
-                key={activeDoc.id}
+                key={activeDoc.path}
                 title={
-                  (liveState.docId === activeDoc.id ? liveState.title : undefined) ??
+                  (liveState.docPath === activeDoc.path ? liveState.title : undefined) ??
                   activeDoc.title
                 }
                 content={
-                  (liveState.docId === activeDoc.id ? liveState.content : undefined) ??
+                  (liveState.docPath === activeDoc.path ? liveState.content : undefined) ??
                   activeDoc.content
                 }
                 onScrollContainer={setEditorScrollEl}
@@ -297,7 +300,7 @@ export function DocsPage({
                 doc={activeDoc}
                 onSave={save}
                 onLiveChange={handleLiveChange}
-                onCreateView={(view) => handleCreateView(view, activeDoc.id)}
+                onCreateView={(view) => handleCreateView(view, activeDoc.path)}
                 onScrollContainer={setEditorScrollEl}
               />
             )
@@ -313,8 +316,8 @@ export function DocsPage({
         >
           {activeDoc && panelMode === 'chat' && (
             <DocChatPanel
-              key={activeDoc.id}
-              docId={activeDoc.id}
+              key={activeDoc.path}
+              docPath={activeDoc.path}
               streams={streams}
               settings={settings}
               configuredProviders={configuredProviders}
@@ -326,10 +329,11 @@ export function DocsPage({
           {activeDoc && panelMode === 'preview' && (
             <DocPreviewPanel
               title={
-                (liveState.docId === activeDoc.id ? liveState.title : undefined) ?? activeDoc.title
+                (liveState.docPath === activeDoc.path ? liveState.title : undefined) ??
+                activeDoc.title
               }
               content={
-                (liveState.docId === activeDoc.id ? liveState.content : undefined) ??
+                (liveState.docPath === activeDoc.path ? liveState.content : undefined) ??
                 activeDoc.content
               }
               onClose={closePanel}
@@ -358,7 +362,7 @@ function ActiveEditor({
 }): ReactElement {
   return (
     <DocEditor
-      key={doc.id}
+      key={doc.path}
       initialTitle={doc.title}
       initialContent={doc.content}
       onChange={onSave}

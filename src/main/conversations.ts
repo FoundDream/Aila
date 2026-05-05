@@ -141,7 +141,7 @@ export async function getConversation(id: string): Promise<ConversationRecord> {
   return { meta, messages }
 }
 
-export async function createConversation(): Promise<ConversationSummary> {
+export async function createConversation(docId?: string): Promise<ConversationSummary> {
   await ensureDir()
   const now = Date.now()
   const meta: ConversationMeta = {
@@ -149,32 +149,19 @@ export async function createConversation(): Promise<ConversationSummary> {
     title: DEFAULT_TITLE,
     createdAt: now,
     updatedAt: now,
+    ...(docId ? { docId } : {}),
   }
   await writeMeta(meta)
   await writeFile(logPath(meta.id), '', 'utf-8')
   return meta
 }
 
-// Doc-bound conversation: one per doc, lazily created on first sidebar use.
-// Title is fixed (the doc owns its own title); listConversations returns it
-// alongside chat-tab conversations and the renderer filters by docId.
-export async function getOrCreateDocConversation(docId: string): Promise<ConversationSummary> {
+// Doc-bound conversations: a doc may have N of them. Title is derived from
+// the first user message (same path as chat-tab conversations); listConversations
+// already sorts by updatedAt desc, so we just filter.
+export async function listDocConversations(docId: string): Promise<ConversationSummary[]> {
   const list = await listConversations()
-  const existing = list.find((meta) => meta.docId === docId)
-  if (existing) return existing
-
-  await ensureDir()
-  const now = Date.now()
-  const meta: ConversationMeta = {
-    id: randomUUID(),
-    title: 'Doc chat',
-    createdAt: now,
-    updatedAt: now,
-    docId,
-  }
-  await writeMeta(meta)
-  await writeFile(logPath(meta.id), '', 'utf-8')
-  return meta
+  return list.filter((meta) => meta.docId === docId)
 }
 
 export async function appendMessage(
@@ -222,4 +209,63 @@ export async function setConversationUsage(
 
 export async function deleteConversation(id: string): Promise<void> {
   await Promise.all([rm(metaPath(id), { force: true }), rm(logPath(id), { force: true })])
+}
+
+export interface DocRefRewrite {
+  oldPath: string
+  newPath: string
+  // True for folder renames/moves: matches docIds equal to oldPath or starting
+  // with `${oldPath}/`. False (or omitted) for doc renames: only exact match.
+  isFolder?: boolean
+}
+
+// Cascade-rewrite meta.docId across every doc-bound conversation after a doc
+// or folder is renamed/moved. Mirrors Obsidian's "rename + scan vault and
+// rewrite wikilinks" behaviour. Caller (docs.ts) invokes after fs.rename has
+// already committed; failure here leaves the file rename in place and the
+// affected conversations show broken doc-bindings.
+export async function rewriteDocRefs(rewrites: DocRefRewrite[]): Promise<ConversationSummary[]> {
+  if (rewrites.length === 0) return []
+  await ensureDir()
+  const dir = getConversationsDir()
+  const entries = await readdir(dir)
+  const updated: ConversationSummary[] = []
+  await Promise.all(
+    entries
+      .filter((name) => name.endsWith('.meta.json'))
+      .map(async (name) => {
+        const path = join(dir, name)
+        let raw: string
+        try {
+          raw = await readFile(path, 'utf-8')
+        } catch {
+          return
+        }
+        let meta: ConversationMeta
+        try {
+          meta = JSON.parse(raw) as ConversationMeta
+        } catch {
+          return
+        }
+        const docId = meta.docId
+        if (!docId) return
+        let nextDocId: string | null = null
+        for (const r of rewrites) {
+          if (r.isFolder) {
+            if (docId === r.oldPath || docId.startsWith(`${r.oldPath}/`)) {
+              nextDocId = `${r.newPath}${docId.slice(r.oldPath.length)}`
+              break
+            }
+          } else if (docId === r.oldPath) {
+            nextDocId = r.newPath
+            break
+          }
+        }
+        if (nextDocId === null) return
+        const next: ConversationMeta = { ...meta, docId: nextDocId }
+        await writeFile(path, JSON.stringify(next, null, 2), 'utf-8')
+        updated.push(next)
+      }),
+  )
+  return updated
 }

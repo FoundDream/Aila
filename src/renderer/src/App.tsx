@@ -181,7 +181,7 @@ export default function App(): ReactElement {
             <DocList
               docs={docsState.docs}
               folders={docsState.folders}
-              activeId={docsState.activeId}
+              activePath={docsState.activePath}
               onSelect={docsState.select}
               onCreateDoc={docsState.create}
               onDeleteDoc={docsState.remove}
