@@ -1,6 +1,8 @@
-import type { EditorView } from '@codemirror/view'
-import { type ReactElement, useCallback, useEffect, useRef, useState } from 'react'
+import { EditorView } from '@codemirror/view'
+import { type ReactElement, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { MarkdownEditor } from '@/components/markdown-editor/MarkdownEditor'
+import { DocToc } from './DocToc'
+import { extractMarkdownHeadings, type MarkdownHeading } from './markdownHeadings'
 import type { DocContent } from './types'
 
 interface DocEditorProps {
@@ -14,6 +16,8 @@ interface DocEditorProps {
   // Callback ref for the scroll container, used by DocsPage to drive scroll
   // sync between editor and preview.
   onScrollContainer?: (el: HTMLDivElement | null) => void
+  tocCollapsed: boolean
+  onToggleToc: () => void
 }
 
 const SAVE_DEBOUNCE_MS = 500
@@ -29,6 +33,8 @@ export function DocEditor({
   onLiveChange,
   onCreateView,
   onScrollContainer,
+  tocCollapsed,
+  onToggleToc,
 }: DocEditorProps): ReactElement {
   const [title, setTitle] = useState(initialTitle)
   const [content, setContent] = useState(initialContent)
@@ -39,6 +45,12 @@ export function DocEditor({
   onChangeRef.current = onChange
   const onLiveChangeRef = useRef(onLiveChange)
   onLiveChangeRef.current = onLiveChange
+  const viewRef = useRef<EditorView | null>(null)
+
+  const headings = useMemo(() => {
+    const allHeadings = extractMarkdownHeadings(content)
+    return allHeadings.filter((heading) => heading.level >= 2 && heading.level <= 4)
+  }, [content])
 
   // Title and content are tracked separately because they save under different
   // policies. Content is debounced (cheap writeFile, frequent edits). Title
@@ -129,8 +141,29 @@ export function DocEditor({
     [scheduleContentSave],
   )
 
+  const handleCreateView = useCallback(
+    (view: EditorView) => {
+      viewRef.current = view
+      onCreateView?.(view)
+    },
+    [onCreateView],
+  )
+
+  const selectHeading = useCallback((heading: MarkdownHeading) => {
+    const view = viewRef.current
+    if (!view) return
+
+    const lineNumber = Math.min(Math.max(heading.line, 1), view.state.doc.lines)
+    const pos = view.state.doc.line(lineNumber).from
+    view.focus()
+    view.dispatch({
+      selection: { anchor: pos },
+      effects: EditorView.scrollIntoView(pos, { y: 'start' }),
+    })
+  }, [])
+
   return (
-    <div className="flex h-full flex-col bg-[var(--bg)]">
+    <div className="relative flex h-full flex-col bg-[var(--bg)]">
       <div ref={onScrollContainer} className="flex-1 overflow-y-auto">
         <div className="relative mx-auto w-full max-w-[760px] px-12 pt-12 pb-24">
           <div className="pointer-events-none absolute top-3 right-12 text-[12px] text-[var(--text-dim)]">
@@ -156,13 +189,20 @@ export function DocEditor({
               onChange={handleContentChange}
               onBlur={() => void flush()}
               onSave={() => void flush()}
-              onCreateView={onCreateView}
+              onCreateView={handleCreateView}
               autoFocus
               placeholder="Type markdown — # for headings, * for lists, ``` for code…"
             />
           </div>
         </div>
       </div>
+      <DocToc
+        headings={headings}
+        collapsed={tocCollapsed}
+        onToggleCollapsed={onToggleToc}
+        onSelect={selectHeading}
+        className="absolute top-4 right-4 z-20 max-[900px]:hidden"
+      />
     </div>
   )
 }

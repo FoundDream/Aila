@@ -120,6 +120,7 @@ export function DocsPage({
   // starts each session in a "writing first" mode and opts in to chat/preview.
   const [panelMode, setPanelMode] = useState<PanelMode>(null)
   const [viewMode, setViewMode] = useState<ViewMode>('edit')
+  const [tocCollapsed, setTocCollapsed] = useState(false)
   const [toastMessage, setToastMessage] = useState<string | null>(null)
   // Live mirror of the editor's title + content, updated synchronously on
   // every keystroke so the preview panel stays in sync without waiting for
@@ -136,6 +137,7 @@ export function DocsPage({
     (mode: Exclude<PanelMode, null>) => setPanelMode((prev) => (prev === mode ? null : mode)),
     [],
   )
+  const toggleToc = useCallback(() => setTocCollapsed((prev) => !prev), [])
 
   const toggleReadMode = useCallback(() => {
     setViewMode((prev) => {
@@ -210,19 +212,6 @@ export function DocsPage({
     }
   }, [editorScrollEl, previewScrollEl])
 
-  useEffect(() => {
-    const off = window.api.docs.onEditRequest(async (req: DocEditRequestEvent) => {
-      const result = await applyEditRequest(req)
-      window.api.docs.sendEditResponse({ requestId: req.requestId, ...result })
-      if (result.ok) {
-        const isLive =
-          req.docPath === activeDocPathRef.current && viewDocPathRef.current === req.docPath
-        setToastMessage(isLive ? 'Edited by AI' : `Edited "${result.title}"`)
-      }
-    })
-    return off
-  }, [])
-
   const applyEditRequest = useCallback(
     async (req: DocEditRequestEvent): Promise<DocEditResult> => {
       // Live path: target doc is currently mounted in the editor. Apply via
@@ -252,6 +241,19 @@ export function DocsPage({
     },
     [activeDoc?.title],
   )
+
+  useEffect(() => {
+    const off = window.api.docs.onEditRequest(async (req: DocEditRequestEvent) => {
+      const result = await applyEditRequest(req)
+      window.api.docs.sendEditResponse({ requestId: req.requestId, ...result })
+      if (result.ok) {
+        const isLive =
+          req.docPath === activeDocPathRef.current && viewDocPathRef.current === req.docPath
+        setToastMessage(isLive ? 'Edited by AI' : `Edited "${result.title}"`)
+      }
+    })
+    return off
+  }, [applyEditRequest])
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -293,6 +295,8 @@ export function DocsPage({
                   (liveState.docPath === activeDoc.path ? liveState.content : undefined) ??
                   activeDoc.content
                 }
+                tocCollapsed={tocCollapsed}
+                onToggleToc={toggleToc}
                 onScrollContainer={setEditorScrollEl}
               />
             ) : (
@@ -302,6 +306,8 @@ export function DocsPage({
                 onLiveChange={handleLiveChange}
                 onCreateView={(view) => handleCreateView(view, activeDoc.path)}
                 onScrollContainer={setEditorScrollEl}
+                tocCollapsed={tocCollapsed}
+                onToggleToc={toggleToc}
               />
             )
           ) : (
@@ -353,12 +359,16 @@ function ActiveEditor({
   onLiveChange,
   onCreateView,
   onScrollContainer,
+  tocCollapsed,
+  onToggleToc,
 }: {
   doc: DocRecord
   onSave: DocsState['save']
   onLiveChange: (patch: { title?: string; content?: string }) => void
   onCreateView: (view: EditorView) => void
   onScrollContainer: (el: HTMLDivElement | null) => void
+  tocCollapsed: boolean
+  onToggleToc: () => void
 }): ReactElement {
   return (
     <DocEditor
@@ -369,6 +379,8 @@ function ActiveEditor({
       onLiveChange={onLiveChange}
       onCreateView={onCreateView}
       onScrollContainer={onScrollContainer}
+      tocCollapsed={tocCollapsed}
+      onToggleToc={onToggleToc}
     />
   )
 }

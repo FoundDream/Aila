@@ -1,5 +1,6 @@
-import type { ReactElement } from 'react'
+import { type ReactElement, useMemo } from 'react'
 import { Streamdown } from 'streamdown'
+import { createHeadingIdRehypePlugin } from './markdownHeadings'
 
 interface DocPreviewPanelProps {
   title: string
@@ -15,6 +16,8 @@ export function DocPreviewPanel({
   onScrollContainer,
 }: DocPreviewPanelProps): ReactElement {
   const trimmedTitle = title.trim()
+  const rehypePlugins = useMemo(() => [createHeadingIdRehypePlugin()], [])
+
   return (
     <div className="flex h-full flex-col">
       <header className="flex h-10 shrink-0 items-center gap-1 px-2">
@@ -43,7 +46,11 @@ export function DocPreviewPanel({
               {trimmedTitle}
             </h1>
           )}
-          <Streamdown mode="static" className="aila-md text-[15px] leading-[1.7]">
+          <Streamdown
+            mode="static"
+            rehypePlugins={rehypePlugins}
+            className="aila-md text-[15px] leading-[1.7]"
+          >
             {content}
           </Streamdown>
         </div>
