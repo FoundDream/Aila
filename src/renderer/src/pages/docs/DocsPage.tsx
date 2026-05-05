@@ -122,7 +122,7 @@ export function DocsPage({
   // starts each session in a "writing first" mode and opts in to chat/preview.
   const [panelMode, setPanelMode] = useState<PanelMode>(null)
   const [viewMode, setViewMode] = useState<ViewMode>('edit')
-  const [tocCollapsed, setTocCollapsed] = useState(false)
+  const [tocCollapsed, setTocCollapsed] = useState(true)
   const [toastMessage, setToastMessage] = useState<string | null>(null)
   // Live mirror of the editor's title + content, updated synchronously on
   // every keystroke so the preview panel stays in sync without waiting for
@@ -141,7 +141,32 @@ export function DocsPage({
   )
   const toggleToc = useCallback(() => setTocCollapsed((prev) => !prev), [])
 
+  // Read/edit swap different scroll containers. Preserve relative position so
+  // toggling read mode doesn't jump back to the top of the document.
+  const pendingMainScrollRatioRef = useRef<number | null>(null)
+  const [editorScrollEl, setEditorScrollEl] = useState<HTMLElement | null>(null)
+  const [previewScrollEl, setPreviewScrollEl] = useState<HTMLElement | null>(null)
+
+  const rememberMainScrollPosition = useCallback(() => {
+    if (!editorScrollEl) return
+    const max = editorScrollEl.scrollHeight - editorScrollEl.clientHeight
+    pendingMainScrollRatioRef.current = max > 0 ? editorScrollEl.scrollTop / max : 0
+  }, [editorScrollEl])
+
+  const handleMainScrollContainer = useCallback((el: HTMLElement | null) => {
+    setEditorScrollEl(el)
+    if (!el || pendingMainScrollRatioRef.current === null) return
+
+    const ratio = pendingMainScrollRatioRef.current
+    pendingMainScrollRatioRef.current = null
+    requestAnimationFrame(() => {
+      const max = el.scrollHeight - el.clientHeight
+      el.scrollTop = max > 0 ? ratio * max : 0
+    })
+  }, [])
+
   const toggleReadMode = useCallback(() => {
+    rememberMainScrollPosition()
     setViewMode((prev) => {
       if (prev === 'edit') {
         // Entering read mode: close the right-side preview if open, since
@@ -152,7 +177,7 @@ export function DocsPage({
       }
       return 'edit'
     })
-  }, [])
+  }, [rememberMainScrollPosition])
 
   useEffect(() => {
     if (!active || !activeDoc) return
@@ -162,13 +187,7 @@ export function DocsPage({
 
       if (event.key === '1') {
         event.preventDefault()
-        setViewMode((prev) => {
-          if (prev === 'edit') {
-            setPanelMode((mode) => (mode === 'preview' ? null : mode))
-            return 'read'
-          }
-          return 'edit'
-        })
+        toggleReadMode()
         return
       }
 
@@ -186,7 +205,7 @@ export function DocsPage({
 
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [active, activeDoc])
+  }, [active, activeDoc, toggleReadMode])
 
   // Ref to the active doc's CodeMirror EditorView, captured from MarkdownEditor
   // via onCreateView. Used to apply AI-driven edits as a single transaction
@@ -212,11 +231,6 @@ export function DocsPage({
       prev.docPath === docPath ? { ...prev, ...patch } : { docPath, ...patch },
     )
   }, [])
-
-  // Scroll containers for the editor and preview, captured via callback refs.
-  // When both are mounted (preview mode is open), wire up two-way ratio sync.
-  const [editorScrollEl, setEditorScrollEl] = useState<HTMLElement | null>(null)
-  const [previewScrollEl, setPreviewScrollEl] = useState<HTMLElement | null>(null)
 
   useEffect(() => {
     if (!editorScrollEl || !previewScrollEl) return
@@ -336,7 +350,7 @@ export function DocsPage({
                 }
                 tocCollapsed={tocCollapsed}
                 onToggleToc={toggleToc}
-                onScrollContainer={setEditorScrollEl}
+                onScrollContainer={handleMainScrollContainer}
               />
             ) : (
               <ActiveEditor
@@ -344,7 +358,7 @@ export function DocsPage({
                 onSave={save}
                 onLiveChange={handleLiveChange}
                 onCreateView={(view) => handleCreateView(view, activeDoc.path)}
-                onScrollContainer={setEditorScrollEl}
+                onScrollContainer={handleMainScrollContainer}
                 tocCollapsed={tocCollapsed}
                 onToggleToc={toggleToc}
               />
