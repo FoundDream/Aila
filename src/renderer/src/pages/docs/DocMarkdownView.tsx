@@ -1,6 +1,6 @@
 import { type ReactElement, useMemo } from 'react'
 import { Streamdown } from 'streamdown'
-import { createHeadingIdRehypePlugin } from './markdownHeadings'
+import { docsRehypePlugins } from './docHtmlRendering'
 
 interface DocMarkdownViewProps {
   title: string
@@ -16,7 +16,7 @@ export function DocMarkdownView({
   titleSpacingClassName,
 }: DocMarkdownViewProps): ReactElement {
   const trimmedTitle = title.trim()
-  const rehypePlugins = useMemo(() => [createHeadingIdRehypePlugin()], [])
+  const rehypePlugins = useMemo(() => docsRehypePlugins, [])
 
   return (
     <>
