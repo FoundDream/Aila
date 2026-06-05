@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { appendFile, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { ProviderId } from '@shared/models'
+import type { AgentEvent } from './agent'
 import { getConversationsDir } from './paths'
 
 export interface PersistedTextBlock {
@@ -73,6 +74,10 @@ async function ensureDir(): Promise<string> {
 
 function logPath(id: string): string {
   return join(getConversationsDir(), `${id}.jsonl`)
+}
+
+function eventLogPath(id: string): string {
+  return join(getConversationsDir(), `${id}.events.jsonl`)
 }
 
 function metaPath(id: string): string {
@@ -183,6 +188,11 @@ export async function appendMessage(
   return next
 }
 
+export async function appendAgentEvent(id: string, event: AgentEvent): Promise<void> {
+  await ensureDir()
+  await appendFile(eventLogPath(id), `${JSON.stringify(event)}\n`, 'utf-8')
+}
+
 export async function renameConversation(id: string, title: string): Promise<ConversationSummary> {
   const current = await readMeta(id)
   const next: ConversationMeta = {
@@ -208,7 +218,11 @@ export async function setConversationUsage(
 }
 
 export async function deleteConversation(id: string): Promise<void> {
-  await Promise.all([rm(metaPath(id), { force: true }), rm(logPath(id), { force: true })])
+  await Promise.all([
+    rm(metaPath(id), { force: true }),
+    rm(logPath(id), { force: true }),
+    rm(eventLogPath(id), { force: true }),
+  ])
 }
 
 export interface DocRefRewrite {

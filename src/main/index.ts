@@ -13,6 +13,7 @@ import {
   type ToolCall,
 } from "./agent";
 import {
+  appendAgentEvent,
   appendMessage,
   createConversation,
   deleteConversation,
@@ -214,6 +215,7 @@ function registerIpcHandlers(): void {
       const assistantMessageId = randomUUID();
       const controller = new AbortController();
       let resolveCleanup: () => void = () => {};
+      let eventLogChain = Promise.resolve();
       const cleanup = new Promise<void>((resolve) => {
         resolveCleanup = resolve;
       });
@@ -287,6 +289,13 @@ function registerIpcHandlers(): void {
               messages,
               selection,
               signal: controller.signal,
+              onAgentEvent: (event) => {
+                eventLogChain = eventLogChain
+                  .then(() => appendAgentEvent(conversationId, event))
+                  .catch((err) => {
+                    console.warn("[agent-event] append failed:", err);
+                  });
+              },
               onDocEdit,
             },
             {
@@ -336,6 +345,7 @@ function registerIpcHandlers(): void {
           if (activeStreams.get(conversationId)?.controller === controller) {
             activeStreams.delete(conversationId);
           }
+          await eventLogChain;
           resolveCleanup();
         }
       })();
