@@ -10,6 +10,7 @@
 
 import { findModel, type ProviderId } from '@shared/models'
 import { jsonSchema, type ModelMessage, smoothStream, stepCountIs, streamText, tool } from 'ai'
+import type { AgentProfileId } from './agent-profile'
 import type {
   PersistedBlock,
   PersistedImageBlock,
@@ -20,8 +21,8 @@ import { MissingApiKeyError, resolveModel } from './providers'
 import { loadSettings } from './settings'
 import {
   executeTool,
+  getToolDefinitionsForProfile,
   type ImageSideChannelBlock,
-  TOOL_DEFINITIONS,
   type ToolContext,
 } from './tools'
 
@@ -121,7 +122,7 @@ export function getModelInfo(providerId: ProviderId, modelId: string): ModelInfo
 // per-call ToolContext (settings, abort signal, image side-channel).
 function buildTools(ctx: Parameters<typeof executeTool>[2]) {
   return Object.fromEntries(
-    TOOL_DEFINITIONS.map((td) => [
+    getToolDefinitionsForProfile(ctx.profileId).map((td) => [
       td.function.name,
       tool({
         description: td.function.description,
@@ -283,14 +284,25 @@ export interface StreamRequest {
   messages: ChatMessage[]
   selection: ModelSelection
   signal: AbortSignal
+  profileId: AgentProfileId
   // Optional doc-edit side-channel; only set for doc-bound conversations so
   // edit_doc resolves through the active editor's CodeMirror view (or the
   // disk path for inactive docs). See main/index.ts.
   onDocEdit?: ToolContext['onDocEdit']
+  boundDocPath?: string
 }
 
 export async function streamChat(req: StreamRequest, handlers: StreamHandlers): Promise<void> {
-  const { conversationId, assistantMessageId, messages, selection, signal, onDocEdit } = req
+  const {
+    conversationId,
+    assistantMessageId,
+    messages,
+    selection,
+    signal,
+    profileId,
+    onDocEdit,
+    boundDocPath,
+  } = req
 
   const builder = new AssistantBuilder()
   let lastUsage: UsageInfo | null = null
@@ -331,7 +343,14 @@ export async function streamChat(req: StreamRequest, handlers: StreamHandlers): 
     const result = streamText({
       model,
       messages: toModelMessages(messages),
-      tools: buildTools({ settings, signal, onImage: onImageFromTool, onDocEdit }),
+      tools: buildTools({
+        settings,
+        profileId,
+        boundDocPath,
+        signal,
+        onImage: onImageFromTool,
+        onDocEdit,
+      }),
       stopWhen: stepCountIs(MAX_STEPS),
       abortSignal: signal,
       experimental_transform: smoothStream({

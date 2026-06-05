@@ -8,8 +8,9 @@
 
 import { exec } from 'node:child_process'
 import { readFile, writeFile } from 'node:fs/promises'
-import { isAbsolute } from 'node:path'
+import { basename, isAbsolute, relative, resolve, sep } from 'node:path'
 import { promisify } from 'node:util'
+import type { AgentProfileId } from './agent-profile'
 import type { FindReplaceEdit } from './find-replace'
 import { generateImage } from './image'
 import { saveImage } from './images'
@@ -26,7 +27,25 @@ export interface ToolDefinition {
   }
 }
 
-export const TOOL_DEFINITIONS: ToolDefinition[] = [
+type ToolAccess = 'read' | 'write' | 'shell' | 'network' | 'image' | 'doc'
+type ToolScope = 'workspace' | 'current_doc' | 'external' | 'image_library'
+
+export interface ToolMetadata {
+  name: string
+  readOnly: boolean
+  destructive: boolean
+  requiresApproval: boolean
+  access: ToolAccess[]
+  scope: ToolScope[]
+  allowedProfiles: AgentProfileId[]
+  maxResultBytes?: number
+}
+
+export interface ToolSpec extends ToolDefinition {
+  metadata: ToolMetadata
+}
+
+export const TOOL_SPECS: ToolSpec[] = [
   {
     type: 'function',
     function: {
@@ -44,6 +63,16 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         required: ['path'],
         additionalProperties: false,
       },
+    },
+    metadata: {
+      name: 'read',
+      readOnly: true,
+      destructive: false,
+      requiresApproval: false,
+      access: ['read'],
+      scope: ['workspace'],
+      allowedProfiles: ['coding', 'research'],
+      maxResultBytes: 64 * 1024,
     },
   },
   {
@@ -67,6 +96,15 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         required: ['path', 'content'],
         additionalProperties: false,
       },
+    },
+    metadata: {
+      name: 'write',
+      readOnly: false,
+      destructive: true,
+      requiresApproval: true,
+      access: ['write'],
+      scope: ['workspace'],
+      allowedProfiles: ['coding'],
     },
   },
   {
@@ -99,6 +137,15 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         required: ['path', 'oldText', 'newText'],
         additionalProperties: false,
       },
+    },
+    metadata: {
+      name: 'edit',
+      readOnly: false,
+      destructive: true,
+      requiresApproval: true,
+      access: ['read', 'write'],
+      scope: ['workspace'],
+      allowedProfiles: ['coding'],
     },
   },
   {
@@ -140,6 +187,15 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         additionalProperties: false,
       },
     },
+    metadata: {
+      name: 'web_search',
+      readOnly: true,
+      destructive: false,
+      requiresApproval: false,
+      access: ['network'],
+      scope: ['external'],
+      allowedProfiles: ['chat', 'doc', 'coding', 'research'],
+    },
   },
   {
     type: 'function',
@@ -160,6 +216,15 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         additionalProperties: false,
       },
     },
+    metadata: {
+      name: 'generate_image',
+      readOnly: false,
+      destructive: false,
+      requiresApproval: false,
+      access: ['image'],
+      scope: ['image_library'],
+      allowedProfiles: ['chat', 'doc'],
+    },
   },
   {
     type: 'function',
@@ -178,6 +243,16 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         required: ['command'],
         additionalProperties: false,
       },
+    },
+    metadata: {
+      name: 'bash',
+      readOnly: false,
+      destructive: true,
+      requiresApproval: true,
+      access: ['shell'],
+      scope: ['workspace', 'external'],
+      allowedProfiles: ['coding'],
+      maxResultBytes: 64 * 1024,
     },
   },
   {
@@ -233,11 +308,74 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         additionalProperties: false,
       },
     },
+    metadata: {
+      name: 'edit_doc',
+      readOnly: false,
+      destructive: true,
+      requiresApproval: false,
+      access: ['doc'],
+      scope: ['current_doc'],
+      allowedProfiles: ['doc'],
+    },
   },
 ]
 
+export const TOOL_DEFINITIONS: ToolDefinition[] = TOOL_SPECS.map(({ type, function: fn }) => ({
+  type,
+  function: fn,
+}))
+
+const TOOL_SPECS_BY_NAME = new Map(TOOL_SPECS.map((spec) => [spec.function.name, spec]))
+
+export function getToolDefinitionsForProfile(profileId: AgentProfileId): ToolDefinition[] {
+  return TOOL_SPECS.filter((spec) => spec.metadata.allowedProfiles.includes(profileId)).map(
+    ({ type, function: fn }) => ({ type, function: fn }),
+  )
+}
+
 const MAX_OUTPUT_BYTES = 64 * 1024
 const BASH_TIMEOUT_MS = 30_000
+const WORKSPACE_ROOT = resolve(process.cwd())
+
+const SENSITIVE_BASENAMES = new Set([
+  '.env',
+  '.env.local',
+  '.env.production',
+  '.env.development',
+  '.env.test',
+  '.npmrc',
+  '.netrc',
+  '.pypirc',
+  'id_rsa',
+  'id_dsa',
+  'id_ecdsa',
+  'id_ed25519',
+  'known_hosts',
+  'credentials',
+  'credentials.json',
+])
+
+const SENSITIVE_SEGMENTS = new Set(['.git', '.ssh', '.aws', '.gcp', '.gnupg'])
+
+const SENSITIVE_EXEMPTIONS = new Set([
+  '.env.example',
+  '.env.sample',
+  '.env.template',
+  'id_rsa.pub',
+  'id_dsa.pub',
+  'id_ecdsa.pub',
+  'id_ed25519.pub',
+])
+
+const BLOCKED_SHELL_PATTERNS: RegExp[] = [
+  /\bsudo\b/,
+  /\brm\s+-(?:[^\s]*r[^\s]*f|[^\s]*f[^\s]*r)\b/,
+  /\bchmod\s+-R\s+777\b/,
+  /\b(?:curl|wget)\b[\s\S]*\|\s*(?:sh|bash|zsh)\b/,
+  /\bssh\b/,
+  /\bscp\b/,
+  /\brsync\b/,
+]
 
 function truncate(text: string): string {
   if (Buffer.byteLength(text, 'utf-8') <= MAX_OUTPUT_BYTES) return text
@@ -245,19 +383,65 @@ function truncate(text: string): string {
   return `${buf.toString('utf-8')}\n…[truncated]`
 }
 
-async function runRead(args: { path?: unknown }): Promise<string> {
-  const path = args.path
+function assertToolAllowed(name: string, profileId: AgentProfileId): ToolSpec {
+  const spec = TOOL_SPECS_BY_NAME.get(name)
+  if (!spec) throw new Error(`unknown tool: ${name}`)
+  if (!spec.metadata.allowedProfiles.includes(profileId)) {
+    throw new Error(`tool "${name}" is not available in the ${profileId} agent profile`)
+  }
+  return spec
+}
+
+function isInsideWorkspace(path: string): boolean {
+  const rel = relative(WORKSPACE_ROOT, path)
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
+}
+
+function assertNotSensitivePath(path: string, operation: 'read' | 'write'): void {
+  const name = basename(path)
+  if (SENSITIVE_EXEMPTIONS.has(name)) return
+  if (SENSITIVE_BASENAMES.has(name) || name.startsWith('.env.')) {
+    throw new Error(`${operation} denied for sensitive file: ${name}`)
+  }
+
+  const segments = path.split(sep)
+  for (const segment of segments) {
+    if (SENSITIVE_SEGMENTS.has(segment)) {
+      throw new Error(`${operation} denied for sensitive path segment: ${segment}`)
+    }
+  }
+}
+
+function resolveWorkspacePath(path: unknown, operation: 'read' | 'write'): string {
   if (typeof path !== 'string') throw new Error('`path` must be a string')
   if (!isAbsolute(path)) throw new Error('`path` must be absolute')
+  const normalized = resolve(path)
+  if (!isInsideWorkspace(normalized)) {
+    throw new Error(`${operation} denied outside workspace: ${normalized}`)
+  }
+  assertNotSensitivePath(normalized, operation)
+  return normalized
+}
+
+function assertBashCommandAllowed(command: string): void {
+  const trimmed = command.trim()
+  if (trimmed.length === 0) throw new Error('`command` must not be empty')
+  for (const pattern of BLOCKED_SHELL_PATTERNS) {
+    if (pattern.test(trimmed)) {
+      throw new Error(`shell command denied by policy: ${pattern.source}`)
+    }
+  }
+}
+
+async function runRead(args: { path?: unknown }): Promise<string> {
+  const path = resolveWorkspacePath(args.path, 'read')
   const content = await readFile(path, 'utf-8')
   return truncate(content)
 }
 
 async function runWrite(args: { path?: unknown; content?: unknown }): Promise<string> {
-  const path = args.path
+  const path = resolveWorkspacePath(args.path, 'write')
   const content = args.content
-  if (typeof path !== 'string') throw new Error('`path` must be a string')
-  if (!isAbsolute(path)) throw new Error('`path` must be absolute')
   if (typeof content !== 'string') throw new Error('`content` must be a string')
   await writeFile(path, content, 'utf-8')
   return `Wrote ${Buffer.byteLength(content, 'utf-8')} bytes to ${path}`
@@ -269,12 +453,10 @@ async function runEdit(args: {
   newText?: unknown
   replaceAll?: unknown
 }): Promise<string> {
-  const path = args.path
+  const path = resolveWorkspacePath(args.path, 'write')
   const oldText = args.oldText
   const newText = args.newText
   const replaceAll = args.replaceAll === true
-  if (typeof path !== 'string') throw new Error('`path` must be a string')
-  if (!isAbsolute(path)) throw new Error('`path` must be absolute')
   if (typeof oldText !== 'string') throw new Error('`oldText` must be a string')
   if (typeof newText !== 'string') throw new Error('`newText` must be a string')
   if (oldText.length === 0) throw new Error('`oldText` must not be empty')
@@ -389,6 +571,8 @@ export type DocEditResult =
 
 export interface ToolContext {
   settings: Settings
+  profileId: AgentProfileId
+  boundDocPath?: string
   signal?: AbortSignal
   onImage?: (block: ImageSideChannelBlock) => void
   // Round-trips through the renderer (active doc → CodeMirror transaction)
@@ -438,6 +622,9 @@ async function runEditDoc(
   if (typeof docPath !== 'string' || docPath.length === 0) {
     throw new Error('`docPath` must be a non-empty string')
   }
+  if (ctx.boundDocPath && docPath !== ctx.boundDocPath) {
+    throw new Error(`document editing is only available for the active doc: ${ctx.boundDocPath}`)
+  }
   if (!Array.isArray(edits) || edits.length === 0) {
     throw new Error('`edits` must be a non-empty array')
   }
@@ -474,10 +661,12 @@ async function runEditDoc(
 async function runBash(args: { command?: unknown }): Promise<string> {
   const command = args.command
   if (typeof command !== 'string') throw new Error('`command` must be a string')
+  assertBashCommandAllowed(command)
 
   try {
     const { stdout, stderr } = await execAsync(command, {
       cwd: process.cwd(),
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
       timeout: BASH_TIMEOUT_MS,
       maxBuffer: MAX_OUTPUT_BYTES * 2,
     })
@@ -501,6 +690,7 @@ export async function executeTool(
   args: Record<string, unknown>,
   ctx: ToolContext,
 ): Promise<string> {
+  assertToolAllowed(name, ctx.profileId)
   switch (name) {
     case 'read':
       return runRead(args)
