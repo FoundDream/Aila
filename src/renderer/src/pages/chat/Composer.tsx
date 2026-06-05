@@ -1,4 +1,11 @@
-import { PaperclipIcon, SendIcon, SquareIcon } from 'lucide-react'
+import {
+  Code2Icon,
+  MessageCircleIcon,
+  PaperclipIcon,
+  SearchIcon,
+  SendIcon,
+  SquareIcon,
+} from 'lucide-react'
 import {
   type KeyboardEvent,
   type ReactElement,
@@ -9,7 +16,7 @@ import {
 } from 'react'
 import { ModelPicker } from '@/components/ModelPicker'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import type { ModelSelection, ProviderId, UsageInfo } from '../../types'
+import type { AgentProfileId, ModelSelection, ProviderId, UsageInfo } from '../../types'
 
 interface ComposerProps {
   isStreaming: boolean
@@ -23,9 +30,37 @@ interface ComposerProps {
   configuredProviders: ProviderId[]
   selection: ModelSelection | null
   onSelectionChange: (selection: ModelSelection) => void
+  agentProfileId?: AgentProfileId
+  onAgentProfileChange?: (profileId: AgentProfileId) => void
   onOpenSettings: () => void
   recentOpenRouterModels: string[]
 }
+
+const CHAT_PROFILE_OPTIONS: Array<{
+  id: AgentProfileId
+  label: string
+  tooltip: string
+  icon: ReactElement
+}> = [
+  {
+    id: 'chat',
+    label: 'Chat',
+    tooltip: 'Chat profile',
+    icon: <MessageCircleIcon className="size-3.5" />,
+  },
+  {
+    id: 'research',
+    label: 'Research',
+    tooltip: 'Research profile',
+    icon: <SearchIcon className="size-3.5" />,
+  },
+  {
+    id: 'coding',
+    label: 'Code',
+    tooltip: 'Coding profile',
+    icon: <Code2Icon className="size-3.5" />,
+  },
+]
 
 function formatTokens(n: number): string {
   if (n < 1000) return `${n}`
@@ -63,6 +98,43 @@ function ComposerToolButton({
   )
 }
 
+function AgentProfileControl({
+  value,
+  onChange,
+}: {
+  value: AgentProfileId
+  onChange: (profileId: AgentProfileId) => void
+}): ReactElement {
+  return (
+    <div className="flex h-6 shrink-0 items-center overflow-hidden rounded-md border border-[var(--border)] bg-[var(--surface)]">
+      {CHAT_PROFILE_OPTIONS.map((option) => {
+        const active = option.id === value
+        return (
+          <Tooltip key={option.id}>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                aria-label={option.tooltip}
+                aria-pressed={active}
+                onClick={() => onChange(option.id)}
+                className={`flex h-6 items-center gap-1 px-1.5 text-[11px] transition-colors ${
+                  active
+                    ? 'bg-[var(--brand-ink)] text-[var(--brand-ink-fg)]'
+                    : 'text-[var(--text-dim)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]'
+                }`}
+              >
+                {option.icon}
+                <span className="hidden sm:inline">{option.label}</span>
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>{option.tooltip}</TooltipContent>
+          </Tooltip>
+        )
+      })}
+    </div>
+  )
+}
+
 export function Composer({
   isStreaming,
   queuedCount = 0,
@@ -73,6 +145,8 @@ export function Composer({
   configuredProviders,
   selection,
   onSelectionChange,
+  agentProfileId,
+  onAgentProfileChange,
   onOpenSettings,
   recentOpenRouterModels,
 }: ComposerProps): ReactElement {
@@ -126,6 +200,9 @@ export function Composer({
                 onOpenSettings={onOpenSettings}
                 recentOpenRouterModels={recentOpenRouterModels}
               />
+              {agentProfileId && onAgentProfileChange ? (
+                <AgentProfileControl value={agentProfileId} onChange={onAgentProfileChange} />
+              ) : null}
               {queuedCount > 0 && (
                 <span
                   aria-live="polite"

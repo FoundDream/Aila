@@ -1,6 +1,7 @@
 // Re-exports renderer-facing types from preload so renderer code doesn't have
 // to dig into ../../preload paths.
 export type {
+  AgentProfileId,
   ChatDoneEvent,
   ChatErrorEvent,
   ChatMessage,
