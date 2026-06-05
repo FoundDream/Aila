@@ -356,10 +356,20 @@ function registerIpcHandlers(): void {
       }
       const result = applyFindReplace(doc.content, input.edits);
       if (!result.ok) {
-        return { ok: false, error: formatFindReplaceErrors(result.errors) };
+        return {
+          ok: false,
+          error: formatFindReplaceErrors(result.errors),
+          conflicts: result.errors.map((e) => `edit #${e.index}: ${e.reason}`),
+        };
       }
       await updateDoc(input.docPath, { content: result.body });
-      return { ok: true, title: doc.title, appliedCount: result.appliedCount };
+      return {
+        ok: true,
+        title: doc.title,
+        appliedCount: result.appliedCount,
+        patches: result.patches,
+        diffPreview: result.diffPreview,
+      };
     },
   );
 
