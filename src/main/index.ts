@@ -227,6 +227,7 @@ function registerIpcHandlers(): void {
       // fresh — the user might be editing while chatting in the sidebar — at
       // the cost of resending the body. Fine for personal-scale notes.
       const boundDocPath = record.meta.docId ?? null;
+      const profileId = boundDocPath ? "doc" : "chat";
       if (boundDocPath) {
         try {
           const doc = await getDoc(boundDocPath);
@@ -287,7 +288,9 @@ function registerIpcHandlers(): void {
               messages,
               selection,
               signal: controller.signal,
+              profileId,
               onDocEdit,
+              boundDocPath: boundDocPath ?? undefined,
             },
             {
               onTextDelta: (event) => send("chat:text-delta", event),
