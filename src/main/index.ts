@@ -6,11 +6,9 @@ import type { ProviderId } from "@shared/models";
 import * as dotenv from "dotenv";
 import { app, BrowserWindow, ipcMain } from "electron";
 import {
-  type ChatMessage,
   getModelInfo,
   type ModelSelection,
   streamChat,
-  type ToolCall,
 } from "./agent";
 import {
   appendMessage,
@@ -21,11 +19,11 @@ import {
   listDocConversations,
   type PersistedImageBlock,
   type PersistedMessage,
-  type PersistedTextBlock,
-  type PersistedToolCallBlock,
   renameConversation,
   setConversationUsage,
 } from "./conversations";
+import { buildAgentContext } from "./context";
+import type { DocRecord } from "./docs";
 import type { DocPatch } from "./docs";
 import {
   createDoc,
@@ -127,58 +125,6 @@ function send(channel: string, data?: unknown): void {
   }
 }
 
-// Reconstructs LLM-format ChatMessage[] from persisted blocks. Reasoning is
-// dropped (providers don't accept it as input). Each tool_call block produces
-// both a `tool_calls` entry on the parent assistant message and a following
-// role:'tool' message carrying its result.
-function persistedToChatMessages(messages: PersistedMessage[]): ChatMessage[] {
-  const out: ChatMessage[] = [];
-  for (const message of messages) {
-    if (message.role === "user") {
-      const content = message.blocks
-        .filter((b): b is PersistedTextBlock => b.type === "text")
-        .map((b) => b.content)
-        .join("");
-      if (content) out.push({ role: "user", content });
-      continue;
-    }
-
-    const text = message.blocks
-      .filter((b): b is PersistedTextBlock => b.type === "text")
-      .map((b) => b.content)
-      .join("");
-    const toolCalls = message.blocks.filter(
-      (b): b is PersistedToolCallBlock => b.type === "tool_call",
-    );
-
-    if (text || toolCalls.length > 0) {
-      const assistant: ChatMessage = {
-        role: "assistant",
-        content: text,
-        ...(toolCalls.length > 0 && {
-          tool_calls: toolCalls.map(
-            (tc): ToolCall => ({
-              id: tc.id,
-              type: "function",
-              function: { name: tc.name, arguments: tc.arguments || "{}" },
-            }),
-          ),
-        }),
-      };
-      out.push(assistant);
-    }
-
-    for (const tc of toolCalls) {
-      out.push({
-        role: "tool",
-        tool_call_id: tc.id,
-        content: tc.result ?? "",
-      });
-    }
-  }
-  return out;
-}
-
 async function persistAndAnnounce(
   conversationId: string,
   message: PersistedMessage,
@@ -220,29 +166,15 @@ function registerIpcHandlers(): void {
       activeStreams.set(conversationId, { controller, cleanup });
 
       const record = await getConversation(conversationId);
-      const messages = persistedToChatMessages(record.messages);
+      let boundDoc: DocRecord | null = null;
 
       // Doc-bound conversation: read the current doc body and prepend it as a
-      // system message every time. Re-reading on each send keeps the context
-      // fresh — the user might be editing while chatting in the sidebar — at
-      // the cost of resending the body. Fine for personal-scale notes.
+      // budgeted system message every time. Re-reading on each send keeps the
+      // context fresh — the user might be editing while chatting in the sidebar.
       const boundDocPath = record.meta.docId ?? null;
       if (boundDocPath) {
         try {
-          const doc = await getDoc(boundDocPath);
-          const titleLine = doc.title ? `# ${doc.title}\n\n` : "";
-          messages.unshift({
-            role: "system",
-            content:
-              "你正在协助用户编辑一篇 Markdown 文档。可以用 `edit_doc` 工具直接修改" +
-              "它（find/replace 形式，old_string 必须唯一匹配；多个 edits 会作为" +
-              "单次 undo 应用）。文档元信息：\n" +
-              `  - path: ${doc.path}\n` +
-              `  - title: ${doc.title}\n\n` +
-              "当前完整内容如下：\n\n---\n\n" +
-              titleLine +
-              doc.content,
-          });
+          boundDoc = await getDoc(boundDocPath);
         } catch (err) {
           console.warn(
             "[chat:send] doc context fetch failed for",
@@ -251,6 +183,13 @@ function registerIpcHandlers(): void {
           );
         }
       }
+      const context = buildAgentContext({
+        messages: record.messages,
+        doc: boundDoc,
+        latestUserText: userText,
+        modelInfo: getModelInfo(selection.providerId, selection.modelId),
+      });
+      const messages = context.messages;
 
       // Wire the doc-edit side-channel only for doc-bound conversations. Plain
       // chat-tab conversations don't get edit_doc capability — there's no
