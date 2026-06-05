@@ -1,5 +1,11 @@
-import { type ReactElement, useCallback, useEffect } from 'react'
-import type { ConversationRecord, ConversationSummary, ProviderId, Settings } from '../../types'
+import { type ReactElement, useCallback, useEffect, useState } from 'react'
+import type {
+  AgentProfileId,
+  ConversationRecord,
+  ConversationSummary,
+  ProviderId,
+  Settings,
+} from '../../types'
 import { Composer } from './Composer'
 import { Transcript } from './Transcript'
 import type { ChatStreamsApi } from './useChatStreams'
@@ -15,6 +21,14 @@ interface ChatPageProps {
   onOpenSettings: () => void
 }
 
+const CHAT_PROFILE_STORAGE_KEY = 'chat.agentProfile'
+
+function readStoredProfile(): AgentProfileId {
+  if (typeof window === 'undefined') return 'chat'
+  const stored = window.localStorage.getItem(CHAT_PROFILE_STORAGE_KEY)
+  return stored === 'research' || stored === 'coding' ? stored : 'chat'
+}
+
 export function ChatPage({
   conversation,
   onCreateConversation,
@@ -24,6 +38,7 @@ export function ChatPage({
   onUpdateSettings,
   onOpenSettings,
 }: ChatPageProps): ReactElement {
+  const [profileId, setProfileId] = useState<AgentProfileId>(readStoredProfile)
   const { selection, selectionRef, contextLength, handleSelectionChange } = useModelSelection(
     settings,
     configuredProviders,
@@ -39,6 +54,10 @@ export function ChatPage({
     if (!conversationId) return
     void streams.hydrate(conversationId)
   }, [conversationId, streams])
+
+  useEffect(() => {
+    window.localStorage.setItem(CHAT_PROFILE_STORAGE_KEY, profileId)
+  }, [profileId])
 
   const stream = conversationId ? streams.getStream(conversationId) : null
   const messages = stream?.messages ?? []
@@ -66,9 +85,16 @@ export function ChatPage({
         streams.markHydrated(id)
       }
 
-      streams.enqueueSend(id, trimmed, currentSelection)
+      streams.enqueueSend(id, trimmed, currentSelection, profileId)
     },
-    [conversationId, onCreateConversation, streams, onOpenSettings],
+    [
+      conversationId,
+      onCreateConversation,
+      streams,
+      onOpenSettings,
+      profileId,
+      selectionRef.current,
+    ],
   )
 
   const handleAbort = useCallback(() => {
@@ -98,6 +124,8 @@ export function ChatPage({
           configuredProviders={configuredProviders}
           selection={selection}
           onSelectionChange={handleSelectionChange}
+          agentProfileId={profileId}
+          onAgentProfileChange={setProfileId}
           onOpenSettings={onOpenSettings}
           recentOpenRouterModels={settings?.recentOpenRouterModels ?? []}
         />

@@ -5,6 +5,8 @@ import { contextBridge, ipcRenderer } from 'electron'
 export type { OrCatalog, OrFamily, OrModel } from '@shared/openrouter'
 export type { ProviderId }
 
+export type AgentProfileId = 'chat' | 'doc' | 'coding' | 'research'
+
 export interface ToolCallPayload {
   id: string
   type: 'function'
@@ -211,7 +213,9 @@ const api = {
     conversationId: string,
     userText: string,
     selection: ModelSelection,
-  ): Promise<SendResult> => ipcRenderer.invoke('chat:send', conversationId, userText, selection),
+    profileId?: AgentProfileId,
+  ): Promise<SendResult> =>
+    ipcRenderer.invoke('chat:send', conversationId, userText, selection, profileId),
   abort: (conversationId: string): Promise<void> =>
     ipcRenderer.invoke('chat:abort', conversationId),
   onTextDelta: (cb: (event: TextDeltaEvent) => void) => on<TextDeltaEvent>('chat:text-delta', cb),

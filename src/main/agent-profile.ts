@@ -32,3 +32,7 @@ export const AGENT_PROFILES: Record<AgentProfileId, AgentProfile> = {
 export function getAgentProfile(id: AgentProfileId): AgentProfile {
   return AGENT_PROFILES[id]
 }
+
+export function normalizeChatAgentProfileId(value: unknown): AgentProfileId {
+  return value === 'research' || value === 'coding' ? value : 'chat'
+}
