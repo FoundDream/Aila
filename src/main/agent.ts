@@ -10,6 +10,7 @@
 
 import { findModel, type ProviderId } from '@shared/models'
 import { jsonSchema, type ModelMessage, smoothStream, stepCountIs, streamText, tool } from 'ai'
+import type { AgentProfileId } from './agent-profile'
 import type {
   PersistedBlock,
   PersistedImageBlock,
@@ -20,8 +21,8 @@ import { MissingApiKeyError, resolveModel } from './providers'
 import { loadSettings } from './settings'
 import {
   executeTool,
+  getToolDefinitionsForProfile,
   type ImageSideChannelBlock,
-  TOOL_DEFINITIONS,
   type ToolContext,
 } from './tools'
 
@@ -155,7 +156,7 @@ function buildTools(
   emitAgentEvent: (type: AgentEventType, data?: Record<string, unknown>) => void,
 ) {
   return Object.fromEntries(
-    TOOL_DEFINITIONS.map((td) => [
+    getToolDefinitionsForProfile(ctx.profileId).map((td) => [
       td.function.name,
       tool({
         description: td.function.description,
@@ -336,10 +337,12 @@ export interface StreamRequest {
   selection: ModelSelection
   signal: AbortSignal
   onAgentEvent?: AgentEventSink
+  profileId: AgentProfileId
   // Optional doc-edit side-channel; only set for doc-bound conversations so
   // edit_doc resolves through the active editor's CodeMirror view (or the
   // disk path for inactive docs). See main/index.ts.
   onDocEdit?: ToolContext['onDocEdit']
+  boundDocPath?: string
 }
 
 export async function streamChat(req: StreamRequest, handlers: StreamHandlers): Promise<void> {
@@ -350,7 +353,9 @@ export async function streamChat(req: StreamRequest, handlers: StreamHandlers): 
     selection,
     signal,
     onAgentEvent,
+    profileId,
     onDocEdit,
+    boundDocPath,
   } = req
 
   const builder = new AssistantBuilder()
@@ -408,7 +413,17 @@ export async function streamChat(req: StreamRequest, handlers: StreamHandlers): 
     const result = streamText({
       model,
       messages: toModelMessages(messages),
-      tools: buildTools({ settings, signal, onImage: onImageFromTool, onDocEdit }, emitAgentEvent),
+      tools: buildTools(
+        {
+          settings,
+          profileId,
+          boundDocPath,
+          signal,
+          onImage: onImageFromTool,
+          onDocEdit,
+        },
+        emitAgentEvent,
+      ),
       stopWhen: stepCountIs(MAX_STEPS),
       abortSignal: signal,
       experimental_transform: smoothStream({
