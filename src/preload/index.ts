@@ -82,6 +82,17 @@ export interface DocEditFindReplace {
   new_string: string
 }
 
+export interface DocEditPatch {
+  index: number
+  from: number
+  to: number
+  oldLength: number
+  newLength: number
+  oldPreview: string
+  newPreview: string
+  diffPreview: string
+}
+
 export interface DocEditRequestEvent {
   requestId: string
   docPath: string
@@ -90,8 +101,8 @@ export interface DocEditRequestEvent {
 }
 
 export type DocEditResult =
-  | { ok: true; title: string; appliedCount: number }
-  | { ok: false; error: string }
+  | { ok: true; title: string; appliedCount: number; patches: DocEditPatch[]; diffPreview: string }
+  | { ok: false; error: string; conflicts?: string[] }
 
 export type DocEditResponse = DocEditResult & { requestId: string }
 

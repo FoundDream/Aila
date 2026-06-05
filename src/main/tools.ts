@@ -565,9 +565,20 @@ export interface DocEditRequest {
   reason?: string
 }
 
+export interface DocEditPatch {
+  index: number
+  from: number
+  to: number
+  oldLength: number
+  newLength: number
+  oldPreview: string
+  newPreview: string
+  diffPreview: string
+}
+
 export type DocEditResult =
-  | { ok: true; title: string; appliedCount: number }
-  | { ok: false; error: string }
+  | { ok: true; title: string; appliedCount: number; patches: DocEditPatch[]; diffPreview: string }
+  | { ok: false; error: string; conflicts?: string[] }
 
 export interface ToolContext {
   settings: Settings
@@ -655,7 +666,14 @@ async function runEditDoc(
   if (!result.ok) throw new Error(result.error)
 
   const word = result.appliedCount === 1 ? 'edit' : 'edits'
-  return `Applied ${result.appliedCount} ${word} to "${result.title}"`
+  return JSON.stringify({
+    ok: true,
+    title: result.title,
+    appliedCount: result.appliedCount,
+    summary: `Applied ${result.appliedCount} ${word} to "${result.title}"`,
+    patches: result.patches,
+    diffPreview: result.diffPreview,
+  })
 }
 
 async function runBash(args: { command?: unknown }): Promise<string> {

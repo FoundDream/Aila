@@ -12,6 +12,7 @@ import {
 } from './agent'
 import { type AgentProfileId, normalizeChatAgentProfileId } from './agent-profile'
 import {
+  appendAgentEvent,
   appendMessage,
   createConversation,
   deleteConversation,
@@ -151,6 +152,7 @@ function registerIpcHandlers(): void {
       const assistantMessageId = randomUUID()
       const controller = new AbortController()
       let resolveCleanup: () => void = () => {}
+      let eventLogChain = Promise.resolve()
       const cleanup = new Promise<void>((resolve) => {
         resolveCleanup = resolve
       })
@@ -215,6 +217,13 @@ function registerIpcHandlers(): void {
               selection,
               signal: controller.signal,
               profileId,
+              onAgentEvent: (event) => {
+                eventLogChain = eventLogChain
+                  .then(() => appendAgentEvent(conversationId, event))
+                  .catch((err) => {
+                    console.warn("[agent-event] append failed:", err);
+                  });
+              },
               onDocEdit,
               boundDocPath: boundDocPath ?? undefined,
             },
@@ -261,6 +270,7 @@ function registerIpcHandlers(): void {
           if (activeStreams.get(conversationId)?.controller === controller) {
             activeStreams.delete(conversationId)
           }
+          await eventLogChain
           resolveCleanup()
         }
       })()
@@ -322,10 +332,20 @@ function registerIpcHandlers(): void {
       }
       const result = applyFindReplace(doc.content, input.edits)
       if (!result.ok) {
-        return { ok: false, error: formatFindReplaceErrors(result.errors) }
+        return {
+          ok: false,
+          error: formatFindReplaceErrors(result.errors),
+          conflicts: result.errors.map((e) => `edit #${e.index}: ${e.reason}`),
+        }
       }
       await updateDoc(input.docPath, { content: result.body })
-      return { ok: true, title: doc.title, appliedCount: result.appliedCount }
+      return {
+        ok: true,
+        title: doc.title,
+        appliedCount: result.appliedCount,
+        patches: result.patches,
+        diffPreview: result.diffPreview,
+      }
     },
   )
 
