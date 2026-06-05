@@ -92,6 +92,28 @@ export interface ErrorEvent {
   message: PersistedMessage
 }
 
+export type AgentEventType =
+  | 'turn.started'
+  | 'turn.completed'
+  | 'turn.failed'
+  | 'tool.requested'
+  | 'tool.input.delta'
+  | 'tool.input.completed'
+  | 'tool.execution.started'
+  | 'tool.execution.completed'
+  | 'tool.execution.failed'
+  | 'tool.result.returned'
+
+export interface AgentEvent {
+  timestamp: number
+  conversationId: string
+  messageId: string
+  type: AgentEventType
+  data?: Record<string, unknown>
+}
+
+export type AgentEventSink = (event: AgentEvent) => void
+
 export interface StreamHandlers {
   onTextDelta: (event: DeltaEvent) => void
   onReasoningDelta: (event: DeltaEvent) => void
@@ -104,6 +126,7 @@ export interface StreamHandlers {
 }
 
 const MAX_STEPS = 10
+const EVENT_PREVIEW_CHARS = 1000
 
 export interface ModelInfo {
   model: string
@@ -118,17 +141,46 @@ export function getModelInfo(providerId: ProviderId, modelId: string): ModelInfo
   }
 }
 
+function previewEventValue(value: unknown): { preview: string; size: number } {
+  const text = typeof value === 'string' ? value : value == null ? '' : JSON.stringify(value)
+  return {
+    preview: text.length > EVENT_PREVIEW_CHARS ? `${text.slice(0, EVENT_PREVIEW_CHARS)}...` : text,
+    size: text.length,
+  }
+}
+
 // Tool registry is rebuilt per-stream so each `execute` closes over the
 // per-call ToolContext (settings, abort signal, image side-channel).
-function buildTools(ctx: Parameters<typeof executeTool>[2]) {
+function buildTools(
+  ctx: Parameters<typeof executeTool>[2],
+  emitAgentEvent: (type: AgentEventType, data?: Record<string, unknown>) => void,
+) {
   return Object.fromEntries(
     getToolDefinitionsForProfile(ctx.profileId).map((td) => [
       td.function.name,
       tool({
         description: td.function.description,
         inputSchema: jsonSchema(td.function.parameters as Parameters<typeof jsonSchema>[0]),
-        execute: async (args) =>
-          executeTool(td.function.name, args as Record<string, unknown>, ctx),
+        execute: async (args) => {
+          emitAgentEvent('tool.execution.started', {
+            toolName: td.function.name,
+            input: previewEventValue(args),
+          })
+          try {
+            const result = await executeTool(td.function.name, args as Record<string, unknown>, ctx)
+            emitAgentEvent('tool.execution.completed', {
+              toolName: td.function.name,
+              result: previewEventValue(result),
+            })
+            return result
+          } catch (error) {
+            emitAgentEvent('tool.execution.failed', {
+              toolName: td.function.name,
+              error: error instanceof Error ? error.message : String(error),
+            })
+            throw error
+          }
+        },
       }),
     ]),
   )
@@ -284,6 +336,7 @@ export interface StreamRequest {
   messages: ChatMessage[]
   selection: ModelSelection
   signal: AbortSignal
+  onAgentEvent?: AgentEventSink
   profileId: AgentProfileId
   // Optional doc-edit side-channel; only set for doc-bound conversations so
   // edit_doc resolves through the active editor's CodeMirror view (or the
@@ -299,6 +352,7 @@ export async function streamChat(req: StreamRequest, handlers: StreamHandlers): 
     messages,
     selection,
     signal,
+    onAgentEvent,
     profileId,
     onDocEdit,
     boundDocPath,
@@ -307,9 +361,24 @@ export async function streamChat(req: StreamRequest, handlers: StreamHandlers): 
   const builder = new AssistantBuilder()
   let lastUsage: UsageInfo | null = null
 
+  const emitAgentEvent = (type: AgentEventType, data?: Record<string, unknown>): void => {
+    onAgentEvent?.({
+      timestamp: Date.now(),
+      conversationId,
+      messageId: assistantMessageId,
+      type,
+      ...(data && { data }),
+    })
+  }
+
   // Snapshot settings once per stream so the image tool sees the same key/model
   // selection that resolveModel did.
   const settings = loadSettings()
+  emitAgentEvent('turn.started', {
+    providerId: selection.providerId,
+    modelId: selection.modelId,
+    inputMessageCount: messages.length,
+  })
 
   const onImageFromTool = (block: ImageSideChannelBlock): void => {
     builder.appendImage(block)
@@ -336,6 +405,7 @@ export async function streamChat(req: StreamRequest, handlers: StreamHandlers): 
       error: message,
       message: builder.build(assistantMessageId, 'error', selection, message),
     })
+    emitAgentEvent('turn.failed', { error: message })
     return
   }
 
@@ -343,14 +413,17 @@ export async function streamChat(req: StreamRequest, handlers: StreamHandlers): 
     const result = streamText({
       model,
       messages: toModelMessages(messages),
-      tools: buildTools({
-        settings,
-        profileId,
-        boundDocPath,
-        signal,
-        onImage: onImageFromTool,
-        onDocEdit,
-      }),
+      tools: buildTools(
+        {
+          settings,
+          profileId,
+          boundDocPath,
+          signal,
+          onImage: onImageFromTool,
+          onDocEdit,
+        },
+        emitAgentEvent,
+      ),
       stopWhen: stepCountIs(MAX_STEPS),
       abortSignal: signal,
       experimental_transform: smoothStream({
@@ -383,6 +456,10 @@ export async function streamChat(req: StreamRequest, handlers: StreamHandlers): 
           // arguments payload (e.g. edit_doc's new_string) doesn't look like
           // the UI is frozen.
           builder.startToolCall(part.id, part.toolName, '')
+          emitAgentEvent('tool.requested', {
+            toolCallId: part.id,
+            toolName: part.toolName,
+          })
           handlers.onToolCallStart({
             conversationId,
             messageId: assistantMessageId,
@@ -394,6 +471,10 @@ export async function streamChat(req: StreamRequest, handlers: StreamHandlers): 
         }
         case 'tool-input-delta': {
           builder.appendToolCallArgs(part.id, part.delta)
+          emitAgentEvent('tool.input.delta', {
+            toolCallId: part.id,
+            deltaSize: part.delta.length,
+          })
           handlers.onToolCallArgsDelta({
             conversationId,
             messageId: assistantMessageId,
@@ -408,6 +489,11 @@ export async function streamChat(req: StreamRequest, handlers: StreamHandlers): 
           // but the SDK guarantees this is the source of truth).
           const args = JSON.stringify(part.input ?? {})
           builder.startToolCall(part.toolCallId, part.toolName, args)
+          emitAgentEvent('tool.input.completed', {
+            toolCallId: part.toolCallId,
+            toolName: part.toolName,
+            input: previewEventValue(part.input ?? {}),
+          })
           handlers.onToolCallStart({
             conversationId,
             messageId: assistantMessageId,
@@ -421,6 +507,11 @@ export async function streamChat(req: StreamRequest, handlers: StreamHandlers): 
           const out = part.output
           const result = typeof out === 'string' ? out : out == null ? '' : JSON.stringify(out)
           builder.finishToolCall(part.toolCallId, result, false)
+          emitAgentEvent('tool.result.returned', {
+            toolCallId: part.toolCallId,
+            result: previewEventValue(result),
+            isError: false,
+          })
           handlers.onToolCallResult({
             conversationId,
             messageId: assistantMessageId,
@@ -433,6 +524,11 @@ export async function streamChat(req: StreamRequest, handlers: StreamHandlers): 
         case 'tool-error': {
           const message = part.error instanceof Error ? part.error.message : String(part.error)
           builder.finishToolCall(part.toolCallId, message, true)
+          emitAgentEvent('tool.result.returned', {
+            toolCallId: part.toolCallId,
+            result: previewEventValue(message),
+            isError: true,
+          })
           handlers.onToolCallResult({
             conversationId,
             messageId: assistantMessageId,
@@ -461,6 +557,7 @@ export async function streamChat(req: StreamRequest, handlers: StreamHandlers): 
             error: 'Aborted',
             message: builder.build(assistantMessageId, 'error', selection, 'Aborted'),
           })
+          emitAgentEvent('turn.failed', { error: 'Aborted' })
           return
         }
         case 'error': {
@@ -471,11 +568,16 @@ export async function streamChat(req: StreamRequest, handlers: StreamHandlers): 
             error: message,
             message: builder.build(assistantMessageId, 'error', selection, message),
           })
+          emitAgentEvent('turn.failed', { error: message })
           return
         }
       }
     }
 
+    emitAgentEvent('turn.completed', {
+      usage: lastUsage ?? undefined,
+      outputBlockCount: builder.blocks.length,
+    })
     handlers.onDone({
       conversationId,
       messageId: assistantMessageId,
@@ -491,5 +593,6 @@ export async function streamChat(req: StreamRequest, handlers: StreamHandlers): 
       error: message,
       message: builder.build(assistantMessageId, 'error', selection, message),
     })
+    emitAgentEvent('turn.failed', { error: message })
   }
 }
