@@ -19,6 +19,7 @@ import {
   appendAgentEventAndTouchConversation,
   appendMessage,
   type ConversationRecord,
+  type ConversationSummary,
   configureDataDir,
   createConversation,
   createDefaultToolRegistry,
@@ -517,6 +518,159 @@ async function testRuntimeInjectableStoreContract(): Promise<void> {
       'injected store delete should remove persisted conversation',
     )
   })
+}
+
+async function testRuntimeRecoveryDelegatesToInjectedStore(): Promise<void> {
+  const summary: ConversationSummary = {
+    schemaVersion: AILA_CONVERSATION_META_SCHEMA_VERSION,
+    id: 'delegated-recovery',
+    title: 'delegated recovery',
+    createdAt: 1,
+    updatedAt: 2,
+  }
+  let delegatedReason: string | undefined
+  const events: AgentRuntimeEvent[] = []
+  const store: AgentRuntimeStore = {
+    getConversation: async () => {
+      throw new Error('delegated recovery should not read conversations directly')
+    },
+    upsertMessage: async () => {
+      throw new Error('delegated recovery should not upsert messages')
+    },
+    appendAgentEventAndTouchConversation: async () => {
+      throw new Error('delegated recovery should not append directly')
+    },
+    recoverInterruptedConversationActivities: async (reason) => {
+      delegatedReason = reason
+      return [summary]
+    },
+    setConversationUsage: async () => {
+      throw new Error('delegated recovery should not persist usage')
+    },
+    deleteConversation: async () => {
+      throw new Error('delegated recovery should not delete conversations')
+    },
+  }
+
+  const runtime = new AgentRuntime({
+    store,
+    onEvent: (event) => events.push(event),
+    logger: { warn() {}, error() {} },
+  })
+  const recovered = await runtime.recoverInterruptedActivities('delegated host restart')
+
+  assertEqual(delegatedReason, 'delegated host restart', 'runtime should pass recovery reason')
+  assertEqual(recovered[0]?.id, 'delegated-recovery', 'runtime should return delegated recovery')
+  assert(
+    events.some(
+      (event) => event.type === 'conversations:updated' && event.data.id === 'delegated-recovery',
+    ),
+    'delegated recovery should emit conversation update',
+  )
+}
+
+async function testRuntimeRecoveryUsesInjectedStoreReplay(): Promise<void> {
+  const conversationId = 'injected-replay-recovery'
+  let summary: ConversationSummary = {
+    schemaVersion: AILA_CONVERSATION_META_SCHEMA_VERSION,
+    id: conversationId,
+    title: 'injected replay recovery',
+    createdAt: 1,
+    updatedAt: 10,
+    activity: {
+      state: 'running',
+      title: 'Model streaming',
+      updatedAt: 10,
+      eventType: 'turn.started',
+      messageId: 'assistant-injected-recovery',
+      detail: 'contract/mock',
+    },
+  }
+  const storedEvents: PersistedAgentEvent[] = [
+    {
+      schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+      timestamp: 10,
+      conversationId,
+      messageId: 'assistant-injected-recovery',
+      type: 'turn.started',
+      data: { providerId: 'openrouter', modelId: 'contract/mock' },
+    },
+  ]
+  const calls: string[] = []
+  const emitted: AgentRuntimeEvent[] = []
+  let appendedEvent: PersistedAgentEvent | undefined
+  const store: AgentRuntimeStore = {
+    getConversation: async () => {
+      throw new Error('injected replay recovery should not read a conversation record')
+    },
+    upsertMessage: async () => {
+      throw new Error('injected replay recovery should not upsert messages')
+    },
+    listConversations: async () => {
+      calls.push('list-conversations')
+      return [summary]
+    },
+    listAgentEvents: async (id) => {
+      calls.push(`list-events:${id}`)
+      return storedEvents
+    },
+    appendAgentEventAndTouchConversation: async (id, event) => {
+      calls.push(`append:${event.type}:${id}`)
+      appendedEvent = {
+        schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+        ...event,
+      }
+      storedEvents.push(appendedEvent)
+      summary = {
+        ...summary,
+        updatedAt: event.timestamp,
+        activity: replayConversationActivity(storedEvents),
+      }
+      return { event: appendedEvent, summary }
+    },
+    setConversationUsage: async () => {
+      throw new Error('injected replay recovery should not persist usage')
+    },
+    deleteConversation: async () => {
+      throw new Error('injected replay recovery should not delete conversations')
+    },
+  }
+
+  const runtime = new AgentRuntime({
+    store,
+    onEvent: (event) => emitted.push(event),
+    logger: { warn() {}, error() {} },
+  })
+  const recovered = await runtime.recoverInterruptedActivities('injected host restart')
+
+  assertEqual(
+    calls.join(','),
+    `list-conversations,list-events:${conversationId},append:turn.interrupted:${conversationId}`,
+    'runtime should recover through injected store methods',
+  )
+  assertEqual(appendedEvent?.type, 'turn.interrupted', 'injected replay should append interrupted')
+  assertEqual(
+    appendedEvent?.data?.previousEventType,
+    'turn.started',
+    'injected replay should preserve previous event',
+  )
+  assertEqual(
+    appendedEvent?.data?.modelId,
+    'contract/mock',
+    'injected replay should preserve model id',
+  )
+  assertEqual(recovered[0]?.activity?.state, 'interrupted', 'injected replay recovered state')
+  assert(
+    emitted.some((event) => event.type === 'agent:event' && event.data.type === 'turn.interrupted'),
+    'injected replay recovery should emit agent event',
+  )
+  assert(
+    emitted.some(
+      (event) =>
+        event.type === 'conversations:updated' && event.data.activity?.state === 'interrupted',
+    ),
+    'injected replay recovery should emit conversation update',
+  )
 }
 
 async function testRuntimeDeleteAssetCleanupHostBoundary(): Promise<void> {
@@ -3519,6 +3673,8 @@ async function main(): Promise<void> {
   await testRuntimeHostBoundaryContract()
   await testRuntimeHostStaticExtensionContract()
   await testRuntimeInjectableStoreContract()
+  await testRuntimeRecoveryDelegatesToInjectedStore()
+  await testRuntimeRecoveryUsesInjectedStoreReplay()
   await testRuntimeDeleteAssetCleanupHostBoundary()
   await testRuntimeRetriesDanglingUserTurn()
   await testRuntimeRetriesFailedAssistantTurn()

@@ -21,10 +21,16 @@ import {
   appendAgentEventAndTouchConversation,
   type ConversationRecord,
   type ConversationSummary,
+  createInterruptedConversationRecoveryEvent,
   getConversation,
+  listAgentEvents,
+  listConversations,
+  type PersistedAgentEvent,
   type PersistedMessage,
   type PersistedTextBlock,
+  recoverInterruptedConversationActivities,
   deleteConversation as removeConversation,
+  replayConversationActivity,
   setConversationUsage,
   upsertMessage,
 } from './conversations'
@@ -189,6 +195,9 @@ export interface AgentRuntimeStore {
     conversationId: string,
     event: Parameters<typeof appendAgentEventAndTouchConversation>[1],
   ) => Promise<AgentEventAppendResult>
+  listConversations?: () => Promise<readonly ConversationSummary[]>
+  listAgentEvents?: (conversationId: string) => Promise<readonly PersistedAgentEvent[]>
+  recoverInterruptedConversationActivities?: (reason?: string) => Promise<ConversationSummary[]>
   setConversationUsage: (
     conversationId: string,
     usage: { promptTokens: number; completionTokens: number; totalTokens: number },
@@ -200,6 +209,9 @@ const DEFAULT_RUNTIME_STORE: AgentRuntimeStore = {
   getConversation,
   upsertMessage,
   appendAgentEventAndTouchConversation,
+  listConversations,
+  listAgentEvents,
+  recoverInterruptedConversationActivities,
   setConversationUsage,
   deleteConversation: removeConversation,
 }
@@ -475,6 +487,41 @@ export class AgentRuntime {
       assistantMessageId: slot.assistantMessageId,
       selection: slot.selection,
     }))
+  }
+
+  async recoverInterruptedActivities(
+    reason = 'runtime restarted before this turn finished',
+  ): Promise<ConversationSummary[]> {
+    if (this.store.recoverInterruptedConversationActivities) {
+      const recovered = await this.store.recoverInterruptedConversationActivities(reason)
+      for (const summary of recovered) {
+        this.emit(createRuntimeEvent('conversations:updated', summary))
+      }
+      return [...recovered].sort((a, b) => b.updatedAt - a.updatedAt)
+    }
+
+    if (!this.store.listConversations || !this.store.listAgentEvents) return []
+
+    const conversations = await this.store.listConversations()
+    const recovered: ConversationSummary[] = []
+    await Promise.all(
+      conversations.map(async (summary) => {
+        const events = await this.store.listAgentEvents?.(summary.id)
+        if (!events) return
+        const recoveryEvent = createInterruptedConversationRecoveryEvent(events, {
+          reason,
+          activity: replayConversationActivity(events) ?? summary.activity,
+        })
+        if (!recoveryEvent) return
+        const { event, summary: nextSummary } =
+          await this.store.appendAgentEventAndTouchConversation(summary.id, recoveryEvent)
+        this.emit(createRuntimeEvent('agent:event', event))
+        if (!nextSummary) return
+        this.emit(createRuntimeEvent('conversations:updated', nextSummary))
+        recovered.push(nextSummary)
+      }),
+    )
+    return recovered.sort((a, b) => b.updatedAt - a.updatedAt)
   }
 
   async abortAll(reason: ConversationAbortReason = 'shutdown'): Promise<void> {
