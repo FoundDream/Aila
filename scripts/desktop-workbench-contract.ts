@@ -339,6 +339,97 @@ function testRendererHydratesActiveAssistantTurn(): void {
   assertEqual(assistant?.model?.modelId, 'contract/mock', 'active hydrate assistant model')
 }
 
+function testRendererHydratePreservesLocalStreamingMessages(): void {
+  let state = createChatStreamsStateForTest()
+  state = reduceChatStreamsForTest(state, {
+    type: 'RUN_STARTED',
+    conversationId: 'conversation-hydrate-race',
+    userMessage: {
+      id: 'user-hydrate-race',
+      role: 'user',
+      blocks: [{ type: 'text', content: 'draft prompt' }],
+      status: 'done',
+    },
+    assistantMessage: {
+      id: 'assistant-hydrate-race',
+      role: 'assistant',
+      blocks: [{ type: 'text', content: 'partial' }],
+      status: 'streaming',
+      model: { providerId: 'openrouter', modelId: 'contract/mock' },
+    },
+  })
+  state = reduceChatStreamsForTest(state, {
+    type: 'HYDRATE',
+    conversationId: 'conversation-hydrate-race',
+    messages: [],
+    usage: null,
+    events: [],
+  })
+
+  const stream = state.streams.get('conversation-hydrate-race')
+  assert(stream, 'hydrate race should keep stream')
+  assertEqual(stream.messages.length, 2, 'hydrate should keep local user and assistant')
+  assertEqual(stream.messages[0]?.id, 'user-hydrate-race', 'hydrate should keep local user')
+  assertEqual(
+    stream.messages[1]?.id,
+    'assistant-hydrate-race',
+    'hydrate should keep local assistant',
+  )
+  assertEqual(stream.runningMessageId, 'assistant-hydrate-race', 'hydrate should keep running id')
+}
+
+function testRendererHydrateReplacesStreamingWithPersistedTerminal(): void {
+  let state = createChatStreamsStateForTest()
+  state = reduceChatStreamsForTest(state, {
+    type: 'RUN_STARTED',
+    conversationId: 'conversation-hydrate-terminal',
+    userMessage: {
+      id: 'user-hydrate-terminal',
+      role: 'user',
+      blocks: [{ type: 'text', content: 'finish before hydrate' }],
+      status: 'done',
+    },
+    assistantMessage: {
+      id: 'assistant-hydrate-terminal',
+      role: 'assistant',
+      blocks: [{ type: 'text', content: 'partial' }],
+      status: 'streaming',
+      model: { providerId: 'openrouter', modelId: 'contract/mock' },
+    },
+  })
+  state = reduceChatStreamsForTest(state, {
+    type: 'HYDRATE',
+    conversationId: 'conversation-hydrate-terminal',
+    messages: [
+      {
+        id: 'user-hydrate-terminal',
+        role: 'user',
+        blocks: [{ type: 'text', content: 'finish before hydrate' }],
+        status: 'done',
+      },
+      {
+        id: 'assistant-hydrate-terminal',
+        role: 'assistant',
+        blocks: [{ type: 'text', content: 'final answer' }],
+        status: 'done',
+        model: { providerId: 'openrouter', modelId: 'contract/mock' },
+      },
+    ],
+    usage: null,
+    events: [],
+  })
+
+  const stream = state.streams.get('conversation-hydrate-terminal')
+  assert(stream, 'terminal hydrate should keep stream')
+  assertEqual(stream.messages.length, 2, 'terminal hydrate should keep merged messages')
+  assertEqual(
+    stream.messages[1]?.status,
+    'done',
+    'terminal hydrate should replace local streaming assistant',
+  )
+  assertEqual(stream.runningMessageId, null, 'terminal hydrate should clear running id')
+}
+
 function testRendererFinishAppendsMissingAssistantMessage(): void {
   let state = createChatStreamsStateForTest()
   state = reduceChatStreamsForTest(state, {
@@ -692,6 +783,8 @@ async function main(): Promise<void> {
   await testStaleActivityDoesNotOverwriteNewerSummary()
   await testToolResultActivityKeepsToolName()
   testRendererHydratesActiveAssistantTurn()
+  testRendererHydratePreservesLocalStreamingMessages()
+  testRendererHydrateReplacesStreamingWithPersistedTerminal()
   testRendererFinishAppendsMissingAssistantMessage()
   testRendererRunStartedDoesNotDuplicateFinishedAssistant()
   testRendererToolResultAppendsMissingAssistantMessage()

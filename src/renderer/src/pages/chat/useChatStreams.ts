@@ -229,6 +229,42 @@ function hydrateMessages(messages: Message[], activeTurn?: ActiveAssistantTurn |
   return ensureAssistantMessage(messages, activeTurn.assistantMessageId, activeTurn.selection)
 }
 
+function preferHydratedMessage(current: Message | undefined, incoming: Message): Message {
+  if (!current) return incoming
+  if (current.status === 'streaming' && incoming.status !== 'streaming') return incoming
+  if (current.status !== 'streaming' && incoming.status === 'streaming') return current
+  return incoming
+}
+
+function mergeHydratedMessages(
+  current: Message[],
+  incoming: Message[],
+  activeTurn?: ActiveAssistantTurn | null,
+): Message[] {
+  const messagesById = new Map<string, Message>()
+  for (const message of current) messagesById.set(message.id, message)
+  for (const message of incoming) {
+    messagesById.set(message.id, preferHydratedMessage(messagesById.get(message.id), message))
+  }
+
+  const merged: Message[] = []
+  const pushed = new Set<string>()
+  for (const message of [...incoming, ...current]) {
+    const selected = messagesById.get(message.id)
+    if (!selected || pushed.has(selected.id)) continue
+    merged.push(selected)
+    pushed.add(selected.id)
+  }
+
+  return hydrateMessages(merged, activeTurn)
+}
+
+function hasTerminalMessage(messages: Message[], messageId: string | null): boolean {
+  if (!messageId) return false
+  const message = messages.find((candidate) => candidate.id === messageId)
+  return Boolean(message && message.status !== 'streaming')
+}
+
 function selectionFromAgentEventData(
   data: Record<string, unknown> | undefined,
 ): ModelSelection | undefined {
@@ -275,14 +311,21 @@ function mergeAgentEvents(
 function reducer(state: State, action: Action): State {
   switch (action.type) {
     case 'HYDRATE':
-      return withStream(state, action.conversationId, (current) => ({
-        ...current,
-        messages: hydrateMessages(action.messages, action.activeTurn),
-        usage: action.usage,
-        events: mergeAgentEvents(current.events, action.events),
-        runningMessageId: action.activeTurn?.assistantMessageId ?? current.runningMessageId,
-        isHydrated: true,
-      }))
+      return withStream(state, action.conversationId, (current) => {
+        const messages = mergeHydratedMessages(current.messages, action.messages, action.activeTurn)
+        return {
+          ...current,
+          messages,
+          usage: action.usage,
+          events: mergeAgentEvents(current.events, action.events),
+          runningMessageId:
+            action.activeTurn?.assistantMessageId ??
+            (hasTerminalMessage(messages, current.runningMessageId)
+              ? null
+              : current.runningMessageId),
+          isHydrated: true,
+        }
+      })
 
     case 'ENQUEUE':
       return withStream(state, action.conversationId, (current) => ({
