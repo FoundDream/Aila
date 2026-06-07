@@ -49,6 +49,18 @@ export interface ConversationUsage {
   updatedAt: number
 }
 
+export type ConversationActivityState = 'running' | 'approval' | 'completed' | 'failed'
+
+export interface ConversationActivity {
+  state: ConversationActivityState
+  title: string
+  updatedAt: number
+  eventType: AgentEvent['type']
+  messageId: string
+  detail?: string
+  toolName?: string
+}
+
 export interface ConversationMeta {
   schemaVersion: typeof AILA_CONVERSATION_META_SCHEMA_VERSION
   id: string
@@ -56,6 +68,7 @@ export interface ConversationMeta {
   createdAt: number
   updatedAt: number
   usage?: ConversationUsage
+  activity?: ConversationActivity
   // When set, this conversation is the AI sidebar attached to a specific doc.
   // The chat tab filters these out; Desktop owns docs workspace behavior.
   docId?: string | null
@@ -74,12 +87,18 @@ export interface PersistedAgentEvent extends AgentEvent {
 
 export interface AgentEventAppendResult {
   event: PersistedAgentEvent
-  summary: ConversationSummary
+  summary?: ConversationSummary
 }
 
 const DEFAULT_TITLE = '新对话'
 const TITLE_MAX = 40
 const metaWriteChains = new Map<string, Promise<void>>()
+const CONVERSATION_ACTIVITY_STATES = new Set<ConversationActivityState>([
+  'running',
+  'approval',
+  'completed',
+  'failed',
+])
 
 async function ensureDir(): Promise<string> {
   const dir = getConversationsDir()
@@ -141,6 +160,29 @@ function nextUpdatedAt(current: ConversationMeta, timestamp = Date.now()): numbe
   return Math.max(Date.now(), timestamp, current.updatedAt + 1)
 }
 
+function normalizeConversationActivity(value: unknown): ConversationActivity | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const record = value as Partial<ConversationActivity>
+  if (!record.state || !CONVERSATION_ACTIVITY_STATES.has(record.state)) return undefined
+  if (typeof record.title !== 'string' || record.title.length === 0) return undefined
+  if (typeof record.updatedAt !== 'number') return undefined
+  if (typeof record.eventType !== 'string' || record.eventType.length === 0) return undefined
+  if (typeof record.messageId !== 'string' || record.messageId.length === 0) return undefined
+  return {
+    state: record.state,
+    title: record.title,
+    updatedAt: record.updatedAt,
+    eventType: record.eventType as AgentEvent['type'],
+    messageId: record.messageId,
+    ...(typeof record.detail === 'string' && record.detail.length > 0
+      ? { detail: record.detail }
+      : {}),
+    ...(typeof record.toolName === 'string' && record.toolName.length > 0
+      ? { toolName: record.toolName }
+      : {}),
+  }
+}
+
 function normalizeConversationMeta(
   value: Partial<ConversationMeta>,
   fallbackId?: string,
@@ -148,6 +190,7 @@ function normalizeConversationMeta(
   const now = Date.now()
   const id = typeof value.id === 'string' && value.id.length > 0 ? value.id : fallbackId
   if (!id) throw new Error('conversation meta is missing id')
+  const activity = normalizeConversationActivity(value.activity)
 
   return {
     schemaVersion: AILA_CONVERSATION_META_SCHEMA_VERSION,
@@ -156,6 +199,7 @@ function normalizeConversationMeta(
     createdAt: typeof value.createdAt === 'number' ? value.createdAt : now,
     updatedAt: typeof value.updatedAt === 'number' ? value.updatedAt : now,
     ...(value.usage ? { usage: value.usage } : {}),
+    ...(activity ? { activity } : {}),
     ...(value.docId !== undefined ? { docId: value.docId } : {}),
   }
 }
@@ -227,6 +271,88 @@ function deriveTitle(message: PersistedMessage): string | null {
     .trim()
   if (!text) return null
   return text.length > TITLE_MAX ? `${text.slice(0, TITLE_MAX)}…` : text
+}
+
+function dataString(data: Record<string, unknown> | undefined, key: string): string | undefined {
+  const value = data?.[key]
+  return typeof value === 'string' && value.length > 0 ? value : undefined
+}
+
+function dataBool(data: Record<string, unknown> | undefined, key: string): boolean | undefined {
+  const value = data?.[key]
+  return typeof value === 'boolean' ? value : undefined
+}
+
+function activityFromAgentEvent(event: PersistedAgentEvent): ConversationActivity | null {
+  const data = event.data
+  const toolName = dataString(data, 'toolName')
+  const toolLabel = toolName ?? 'tool'
+  const base = {
+    updatedAt: event.timestamp,
+    eventType: event.type,
+    messageId: event.messageId,
+    ...(toolName ? { toolName } : {}),
+  }
+
+  switch (event.type) {
+    case 'turn.started':
+      return {
+        ...base,
+        state: 'running',
+        title: 'Model streaming',
+        detail: dataString(data, 'modelId'),
+      }
+    case 'turn.completed':
+      return { ...base, state: 'completed', title: 'Done' }
+    case 'turn.failed':
+      return {
+        ...base,
+        state: 'failed',
+        title: 'Error',
+        detail: dataString(data, 'error'),
+      }
+    case 'tool.requested':
+      return { ...base, state: 'running', title: `Tool requested: ${toolLabel}` }
+    case 'tool.input.delta':
+      return null
+    case 'tool.input.completed':
+      return { ...base, state: 'running', title: `Args ready: ${toolLabel}` }
+    case 'tool.execution.started':
+      return { ...base, state: 'running', title: `Running: ${toolLabel}` }
+    case 'tool.execution.completed':
+      return { ...base, state: 'running', title: `Tool completed: ${toolLabel}` }
+    case 'tool.execution.failed':
+      return {
+        ...base,
+        state: 'failed',
+        title: `Tool failed: ${toolLabel}`,
+        detail: dataString(data, 'error'),
+      }
+    case 'tool.result.returned':
+      return {
+        ...base,
+        state: dataBool(data, 'isError') ? 'failed' : 'running',
+        title: dataBool(data, 'isError')
+          ? `Tool result failed: ${toolLabel}`
+          : `Tool result returned: ${toolLabel}`,
+      }
+    case 'tool.approval.requested':
+      return {
+        ...base,
+        state: 'approval',
+        title: `Approval pending: ${toolLabel}`,
+        detail: dataString(data, 'risk'),
+      }
+    case 'tool.approval.resolved': {
+      const approved = dataBool(data, 'approved') === true
+      return {
+        ...base,
+        state: approved ? 'running' : 'failed',
+        title: approved ? `Approved: ${toolLabel}` : `Denied: ${toolLabel}`,
+        detail: dataString(data, 'reason'),
+      }
+    }
+  }
 }
 
 export async function listConversations(): Promise<ConversationSummary[]> {
@@ -334,11 +460,15 @@ export async function appendAgentEventAndTouchConversation(
   event: AgentEvent,
 ): Promise<AgentEventAppendResult> {
   const persisted = await appendAgentEvent(id, event)
-  const summary = await updateMeta(id, (current) => ({
-    ...current,
-    updatedAt: nextUpdatedAt(current, persisted.timestamp),
-  }))
-  return { event: persisted, summary }
+  const activity = activityFromAgentEvent(persisted)
+  const summary = activity
+    ? await updateMeta(id, (current) => ({
+        ...current,
+        updatedAt: nextUpdatedAt(current, persisted.timestamp),
+        activity,
+      }))
+    : undefined
+  return { event: persisted, ...(summary ? { summary } : {}) }
 }
 
 export async function listAgentEvents(id: string): Promise<PersistedAgentEvent[]> {

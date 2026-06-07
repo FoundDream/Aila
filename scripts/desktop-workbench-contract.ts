@@ -173,9 +173,18 @@ async function testActivityUpdatesConversationSummary(): Promise<void> {
     })
 
     assertEqual(event.schemaVersion, 1, 'activity event should be versioned')
+    assert(summary, 'activity append should return refreshed summary')
     assert(
       summary.updatedAt > before.meta.updatedAt,
       'activity append should bump conversation updatedAt',
+    )
+    assertEqual(summary.activity?.state, 'running', 'activity summary state')
+    assertEqual(summary.activity?.title, 'Running: read', 'activity summary title')
+    assertEqual(summary.activity?.toolName, 'read', 'activity summary tool')
+    assertEqual(
+      summary.activity?.eventType,
+      'tool.execution.started',
+      'activity summary event type',
     )
     assertEqual(
       (await listAgentEvents(conversation.id))[0]?.type,
@@ -190,6 +199,37 @@ async function testActivityUpdatesConversationSummary(): Promise<void> {
   })
 }
 
+async function testActivityDeltaDoesNotTouchConversationSummary(): Promise<void> {
+  await withTempDataDir(async () => {
+    const conversation = await createConversation()
+    const before = await getConversation(conversation.id)
+
+    const { event, summary } = await appendAgentEventAndTouchConversation(conversation.id, {
+      timestamp: before.meta.updatedAt + 10,
+      conversationId: conversation.id,
+      messageId: 'assistant-message',
+      type: 'tool.input.delta',
+      data: { deltaSize: 64, toolCallId: 'tool-call' },
+    })
+
+    assertEqual(event.schemaVersion, 1, 'delta event should be versioned')
+    assertEqual(summary, undefined, 'input deltas should not refresh conversation summaries')
+    assertEqual(
+      (await listAgentEvents(conversation.id))[0]?.type,
+      'tool.input.delta',
+      'input deltas should still persist the event log',
+    )
+
+    const after = await getConversation(conversation.id)
+    assertEqual(
+      after.meta.updatedAt,
+      before.meta.updatedAt,
+      'input deltas should not bump conversation updatedAt',
+    )
+    assertEqual(after.meta.activity, undefined, 'input deltas should not set activity')
+  })
+}
+
 async function main(): Promise<void> {
   await testDocConversationWorkspaceContext()
   await testDesktopWorkspaceRoots()
@@ -197,6 +237,7 @@ async function main(): Promise<void> {
   await testDocConversationFollowsDocRename()
   await testConversationDeleteCleansActivity()
   await testActivityUpdatesConversationSummary()
+  await testActivityDeltaDoesNotTouchConversationSummary()
   console.log('desktop workbench contract: ok')
 }
 

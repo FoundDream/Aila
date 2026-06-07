@@ -202,6 +202,18 @@ export interface ConversationUsage {
   updatedAt: number
 }
 
+export type ConversationActivityState = 'running' | 'approval' | 'completed' | 'failed'
+
+export interface ConversationActivity {
+  state: ConversationActivityState
+  title: string
+  updatedAt: number
+  eventType: AgentEventType
+  messageId: string
+  detail?: string
+  toolName?: string
+}
+
 export interface ConversationSummary {
   schemaVersion: typeof AILA_CONVERSATION_META_SCHEMA_VERSION
   id: string
@@ -209,6 +221,7 @@ export interface ConversationSummary {
   createdAt: number
   updatedAt: number
   usage?: ConversationUsage
+  activity?: ConversationActivity
   // Set when Desktop owns this conversation as the AI sidebar of a specific
   // doc. Runtime treats it as ordinary conversation metadata.
   docId?: string | null

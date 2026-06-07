@@ -1,5 +1,6 @@
 import type { ReactElement } from 'react'
 import type { ConversationSummary } from '../../../../preload/index'
+import { type ConversationStatusTone, getConversationStatus } from './conversationStatus'
 
 interface ConversationListProps {
   conversations: ConversationSummary[]
@@ -84,6 +85,12 @@ function PencilIcon(): ReactElement {
   )
 }
 
+function statusClassName(tone: ConversationStatusTone): string {
+  if (tone === 'approval') return 'bg-amber-100 text-amber-700'
+  if (tone === 'failed') return 'bg-red-100 text-red-700'
+  return 'bg-blue-100 text-blue-700'
+}
+
 export function ConversationList({
   conversations,
   activeId,
@@ -128,7 +135,10 @@ export function ConversationList({
             {conversations.map((conversation) => {
               const isActive = conversation.id === activeId
               const isBusy = busyIds.has(conversation.id)
-              const needsApproval = pendingApprovalIds.has(conversation.id)
+              const status = getConversationStatus(conversation, {
+                isBusy,
+                needsApproval: pendingApprovalIds.has(conversation.id),
+              })
               const title = conversation.title || '新对话'
               return (
                 <li
@@ -156,24 +166,17 @@ export function ConversationList({
                     >
                       {title}
                     </span>
-                    {needsApproval ? (
+                    {status && (
                       <span
                         role="status"
-                        aria-label="Approval required"
-                        title="Approval required"
-                        className="mr-1 shrink-0 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] leading-none text-amber-700"
+                        aria-label={status.ariaLabel}
+                        title={status.title}
+                        className={`mr-1 shrink-0 rounded px-1.5 py-0.5 text-[10px] leading-none ${statusClassName(
+                          status.tone,
+                        )}`}
                       >
-                        review
+                        {status.label}
                       </span>
-                    ) : (
-                      isBusy && (
-                        <span
-                          role="status"
-                          aria-label="Streaming"
-                          title="Streaming"
-                          className="mr-1 inline-block h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-[var(--accent,#3b82f6)]"
-                        />
-                      )
                     )}
                   </button>
                   <button

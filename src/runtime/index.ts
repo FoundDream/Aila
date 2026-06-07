@@ -19,6 +19,8 @@ export {
   appendAgentEvent,
   appendAgentEventAndTouchConversation,
   appendMessage,
+  type ConversationActivity,
+  type ConversationActivityState,
   type ConversationRecord,
   type ConversationSummary,
   type ConversationUsage,

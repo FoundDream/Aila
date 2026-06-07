@@ -1,6 +1,7 @@
 import { type ReactElement, useCallback, useEffect, useRef, useState } from 'react'
 import { ActivityTimeline } from '@/pages/chat/ActivityTimeline'
 import { Composer } from '@/pages/chat/Composer'
+import { type ConversationStatusTone, getConversationStatus } from '@/pages/chat/conversationStatus'
 import { Transcript } from '@/pages/chat/Transcript'
 import type { ChatStreamsApi } from '@/pages/chat/useChatStreams'
 import { useModelSelection } from '@/pages/chat/useModelSelection'
@@ -122,6 +123,7 @@ export function DocChatPanel({
           sessions={sessions}
           active={activeSession}
           pendingApprovalConversationIds={pendingApprovalConversationIds}
+          busyIds={streams.busyIds}
           onSelect={selectSession}
           onNewSession={newSession}
           onRenameSession={handleRenameSession}
@@ -182,6 +184,7 @@ interface SessionPickerProps {
   sessions: ConversationSummary[]
   active: ConversationSummary | null
   pendingApprovalConversationIds: Set<string>
+  busyIds: Set<string>
   onSelect: (id: string) => void
   onNewSession: () => void
   onRenameSession: (id: string, title: string) => void
@@ -192,6 +195,7 @@ function SessionPicker({
   sessions,
   active,
   pendingApprovalConversationIds,
+  busyIds,
   onSelect,
   onNewSession,
   onRenameSession,
@@ -210,7 +214,12 @@ function SessionPicker({
   }, [open])
 
   const label = active?.title || 'New chat'
-  const activeNeedsApproval = active ? pendingApprovalConversationIds.has(active.id) : false
+  const activeStatus = active
+    ? getConversationStatus(active, {
+        isBusy: busyIds.has(active.id),
+        needsApproval: pendingApprovalConversationIds.has(active.id),
+      })
+    : null
 
   return (
     <div className="relative min-w-0 flex-1" ref={ref}>
@@ -221,14 +230,16 @@ function SessionPicker({
         style={{ fontFamily: 'var(--font-serif)', fontStyle: 'italic' }}
       >
         <span className="truncate">{label}</span>
-        {activeNeedsApproval && (
+        {activeStatus && (
           <span
             role="status"
-            aria-label="Approval required"
-            title="Approval required"
-            className="ml-1 shrink-0 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] leading-none text-amber-700"
+            aria-label={activeStatus.ariaLabel}
+            title={activeStatus.title}
+            className={`ml-1 shrink-0 rounded px-1.5 py-0.5 text-[10px] leading-none ${statusClassName(
+              activeStatus.tone,
+            )}`}
           >
-            review
+            {activeStatus.label}
           </span>
         )}
         <ChevronDownIcon />
@@ -254,7 +265,10 @@ function SessionPicker({
               <ul className="max-h-[280px] overflow-y-auto">
                 {sessions.map((session) => {
                   const isActive = session.id === active?.id
-                  const needsApproval = pendingApprovalConversationIds.has(session.id)
+                  const status = getConversationStatus(session, {
+                    isBusy: busyIds.has(session.id),
+                    needsApproval: pendingApprovalConversationIds.has(session.id),
+                  })
                   return (
                     <li
                       key={session.id}
@@ -273,14 +287,16 @@ function SessionPicker({
                         className="flex h-7 min-w-0 flex-1 items-center px-2 text-[13px]"
                       >
                         <span className="truncate">{session.title || '新对话'}</span>
-                        {needsApproval && (
+                        {status && (
                           <span
                             role="status"
-                            aria-label="Approval required"
-                            title="Approval required"
-                            className="ml-2 shrink-0 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] leading-none text-amber-700"
+                            aria-label={status.ariaLabel}
+                            title={status.title}
+                            className={`ml-2 shrink-0 rounded px-1.5 py-0.5 text-[10px] leading-none ${statusClassName(
+                              status.tone,
+                            )}`}
                           >
-                            review
+                            {status.label}
                           </span>
                         )}
                       </button>
@@ -321,6 +337,12 @@ function SessionPicker({
       )}
     </div>
   )
+}
+
+function statusClassName(tone: ConversationStatusTone): string {
+  if (tone === 'approval') return 'bg-amber-100 text-amber-700'
+  if (tone === 'failed') return 'bg-red-100 text-red-700'
+  return 'bg-blue-100 text-blue-700'
 }
 
 function PlusIcon(): ReactElement {

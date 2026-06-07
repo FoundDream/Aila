@@ -9,6 +9,8 @@ export type {
   ChatErrorEvent,
   ChatMessage,
   ChatStreamEventBase,
+  ConversationActivity,
+  ConversationActivityState,
   ConversationRecord,
   ConversationSummary,
   ConversationUsage,

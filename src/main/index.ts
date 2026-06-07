@@ -176,7 +176,7 @@ async function recordToolApprovalActivity(
       event,
     )
     send('agent:event', persisted)
-    send('conversations:updated', summary)
+    if (summary) send('conversations:updated', summary)
   } catch (error) {
     console.warn('[activity] tool approval event append failed:', error)
   }

@@ -363,7 +363,7 @@ export class AgentRuntime {
                   event,
                 )
                 this.emit(createRuntimeEvent('agent:event', persisted))
-                this.emit(createRuntimeEvent('conversations:updated', summary))
+                if (summary) this.emit(createRuntimeEvent('conversations:updated', summary))
               })
               .catch((err) => {
                 this.logger.warn('[runtime] agent-event append failed:', err)
