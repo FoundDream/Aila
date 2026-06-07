@@ -143,6 +143,8 @@ export interface AgentRuntimeHost {
   toolPacks?: readonly ToolPack[]
   loadToolPacks?: () => Promise<readonly ToolPack[]>
   loadSettings?: () => MaybePromise<Settings>
+  generateImage?: ToolContext['generateImage']
+  saveImage?: ToolContext['saveImage']
   workspaceRoots?: ToolContext['workspaceRoots'] | (() => ToolContext['workspaceRoots'])
   streamChat?: typeof defaultStreamChat
   logger?: Pick<Console, 'error' | 'warn'>
@@ -190,6 +192,8 @@ function normalizeRuntimeHost(options: AgentRuntimeOptions): AgentRuntimeHost {
   if (options.loadProfiles) host.loadProfiles = options.loadProfiles
   if (options.loadToolPacks) host.loadToolPacks = options.loadToolPacks
   if (options.loadSettings) host.loadSettings = options.loadSettings
+  if (options.generateImage) host.generateImage = options.generateImage
+  if (options.saveImage) host.saveImage = options.saveImage
   if (options.workspaceRoots !== undefined) host.workspaceRoots = options.workspaceRoots
   if (options.streamChat) host.streamChat = options.streamChat
   if (options.logger) host.logger = options.logger
@@ -205,6 +209,8 @@ function normalizeRuntimeHost(options: AgentRuntimeOptions): AgentRuntimeHost {
   if (options.host.loadProfiles) host.loadProfiles = options.host.loadProfiles
   if (options.host.loadToolPacks) host.loadToolPacks = options.host.loadToolPacks
   if (options.host.loadSettings) host.loadSettings = options.host.loadSettings
+  if (options.host.generateImage) host.generateImage = options.host.generateImage
+  if (options.host.saveImage) host.saveImage = options.host.saveImage
   if (options.host.workspaceRoots !== undefined) host.workspaceRoots = options.host.workspaceRoots
   if (options.host.streamChat) host.streamChat = options.host.streamChat
   if (options.host.logger) host.logger = options.host.logger
@@ -800,6 +806,8 @@ export class AgentRuntime {
           profileId,
           workspaceRoots,
           settings,
+          generateImage: this.host.generateImage,
+          saveImage: this.host.saveImage,
           onToolPolicy: this.host.onToolPolicy,
           onToolApproval: this.host.onToolApproval,
           onAgentEvent: queueAgentEvent,

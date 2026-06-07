@@ -367,6 +367,8 @@ export interface StreamRequest {
   onToolPolicy?: ToolContext['onToolPolicy']
   onToolApproval?: ToolContext['onToolApproval']
   settings?: Settings
+  generateImage?: ToolContext['generateImage']
+  saveImage?: ToolContext['saveImage']
   toolRegistry?: ToolRegistry
 }
 
@@ -383,6 +385,8 @@ export async function streamChat(req: StreamRequest, handlers: StreamHandlers): 
     onToolPolicy,
     onToolApproval,
     settings: requestSettings,
+    generateImage,
+    saveImage,
     toolRegistry,
   } = req
 
@@ -452,6 +456,8 @@ export async function streamChat(req: StreamRequest, handlers: StreamHandlers): 
           signal,
           onToolPolicy,
           onToolApproval,
+          generateImage,
+          saveImage,
           onImage: onImageFromTool,
         },
         emitAgentEvent,

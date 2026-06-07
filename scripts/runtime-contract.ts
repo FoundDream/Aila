@@ -2911,6 +2911,51 @@ async function testToolRegistryContract(): Promise<void> {
   }
 }
 
+async function testGenerateImageToolUsesInjectedImageDependencies(): Promise<void> {
+  const imageBlocks: Array<{ url: string; mime: string; prompt: string }> = []
+  let generatedPrompt: string | null = null
+  let savedFilename: string | null = null
+  let savedBytesLength = 0
+
+  const result = await executeTool(
+    'generate_image',
+    { prompt: 'contract image' },
+    {
+      settings: {
+        apiKeys: {},
+        defaultModel: null,
+        defaultImageModel: { providerId: 'openrouter', modelId: 'openai/gpt-image-1' },
+      },
+      profileId: 'chat',
+      generateImage: async (request) => {
+        generatedPrompt = request.prompt
+        return { bytes: Buffer.from([1, 2, 3, 4]), mime: 'image/webp' }
+      },
+      saveImage: async (bytes, filename) => {
+        savedFilename = filename
+        savedBytesLength = bytes instanceof Uint8Array ? bytes.byteLength : bytes.byteLength
+        return { url: 'aila-image://i/contract.webp' }
+      },
+      onImage: (block) => imageBlocks.push(block),
+    },
+  )
+
+  const parsed = JSON.parse(result) as { ok?: unknown; model?: unknown }
+  assertEqual(parsed.ok, true, 'generate_image injected dependency result ok')
+  assertEqual(
+    parsed.model,
+    'openrouter:openai/gpt-image-1',
+    'generate_image injected dependency model',
+  )
+  assertEqual(generatedPrompt, 'contract image', 'injected image generator prompt')
+  assertEqual(savedFilename, 'image.webp', 'injected image saver filename')
+  assertEqual(savedBytesLength, 4, 'injected image saver bytes')
+  assertEqual(imageBlocks.length, 1, 'generate_image should emit image side channel')
+  assertEqual(imageBlocks[0]?.url, 'aila-image://i/contract.webp', 'image side channel url')
+  assertEqual(imageBlocks[0]?.mime, 'image/webp', 'image side channel mime')
+  assertEqual(imageBlocks[0]?.prompt, 'contract image', 'image side channel prompt')
+}
+
 function testToolActivityTargetContract(): void {
   assertEqual(
     summarizeToolTarget('read', { path: '/workspace/src/app.ts' })?.preview,
@@ -3446,6 +3491,7 @@ async function main(): Promise<void> {
   await testInterruptedRecoveryUsesRuntimeReplayForNonTerminalToolFailure()
   await testLegacyPersistenceNormalization()
   await testToolRegistryContract()
+  await testGenerateImageToolUsesInjectedImageDependencies()
   testToolActivityTargetContract()
   await testFilesystemToolWorkspaceRootsContract()
   await testRuntimeCoreHasNoDocToolContract()

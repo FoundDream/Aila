@@ -11,8 +11,8 @@ import { readFile, writeFile } from 'node:fs/promises'
 import { basename, isAbsolute, relative, resolve, sep } from 'node:path'
 import { promisify } from 'node:util'
 import type { AgentProfileId } from './agent-profile'
-import { generateImage } from './image'
-import { saveImage } from './image-store'
+import { generateImage as defaultGenerateImage } from './image'
+import { saveImage as defaultSaveImage } from './image-store'
 import type { Settings } from './settings'
 
 const execAsync = promisify(exec)
@@ -694,6 +694,9 @@ export interface ImageSideChannelBlock {
   prompt: string
 }
 
+export type ToolImageGenerator = typeof defaultGenerateImage
+export type ToolImageSaver = typeof defaultSaveImage
+
 export interface ToolApprovalRequest {
   name: string
   args: Record<string, unknown>
@@ -729,6 +732,8 @@ export interface ToolContext {
   signal?: AbortSignal
   onToolPolicy?: ToolPolicyEvaluator
   onToolApproval?: (request: ToolApprovalRequest) => Promise<boolean>
+  generateImage?: ToolImageGenerator
+  saveImage?: ToolImageSaver
   onImage?: (block: ImageSideChannelBlock) => void
 }
 
@@ -743,6 +748,9 @@ async function runGenerateImage(args: { prompt?: unknown }, ctx: ToolContext): P
       'No default image model configured. Open Settings and pick one under "Default Image Model".',
     )
   }
+
+  const generateImage = ctx.generateImage ?? defaultGenerateImage
+  const saveImage = ctx.saveImage ?? defaultSaveImage
 
   const { bytes, mime } = await generateImage(
     {
