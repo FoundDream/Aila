@@ -5,7 +5,6 @@ import { app, BrowserWindow, ipcMain } from 'electron'
 import type { ProviderId } from '../shared/models'
 import { getModelInfo, type ModelSelection } from './agent'
 import type { AgentProfileId } from './agent-profile'
-import { listDocConversations } from './conversations'
 import { sweepOrphanedDocConversations } from './doc-conversation-cleanup'
 import type { DocPatch } from './docs'
 import {
@@ -188,12 +187,18 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle('docs:delete', async (_event, docPath: string) => {
     await deleteDoc(docPath)
-    await sweepOrphanedDocConversations((id) => agentRuntime.deleteConversation(id))
+    await sweepOrphanedDocConversations({
+      listConversations: () => agentRuntime.listConversations(),
+      deleteConversation: (id) => agentRuntime.deleteConversation(id),
+    })
   })
 
   ipcMain.handle('folders:delete', async (_event, path: string) => {
     await deleteFolder(path)
-    await sweepOrphanedDocConversations((id) => agentRuntime.deleteConversation(id))
+    await sweepOrphanedDocConversations({
+      listConversations: () => agentRuntime.listConversations(),
+      deleteConversation: (id) => agentRuntime.deleteConversation(id),
+    })
   })
 
   ipcMain.handle('images:save', (_event, bytes: ArrayBuffer, filename: string) =>
@@ -240,7 +245,7 @@ function registerIpcHandlers(): void {
     agentRuntime.createConversation({ docId: docPath ?? null }),
   )
   ipcMain.handle('conversations:list-for-doc', (_event, docPath: string) =>
-    listDocConversations(docPath),
+    agentRuntime.listConversations({ docId: docPath }),
   )
   ipcMain.handle('conversations:rename', (_event, id: string, title: string) =>
     agentRuntime.renameConversation(id, title),

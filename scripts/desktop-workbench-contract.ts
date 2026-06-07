@@ -13,6 +13,7 @@ import {
   getConversation,
   listAgentEvents,
   listChatConversations,
+  listConversations,
   listDocConversations,
   recoverInterruptedConversationActivities,
 } from '../src/main/conversations'
@@ -171,8 +172,16 @@ async function testDocDeleteSweepsOnlyDeletedDocConversations(): Promise<void> {
     const chatConversation = await createConversation()
 
     await deleteDoc(deletedDoc.path)
-    const swept = await sweepOrphanedDocConversations(deleteConversation)
+    let usedInjectedList = false
+    const swept = await sweepOrphanedDocConversations({
+      listConversations: async () => {
+        usedInjectedList = true
+        return listConversations()
+      },
+      deleteConversation,
+    })
 
+    assertEqual(usedInjectedList, true, 'doc delete sweep should use injected conversation list')
     assertEqual(swept.length, 1, 'doc delete sweep should return one orphan')
     assertEqual(
       swept[0]?.id,
@@ -209,7 +218,10 @@ async function testFolderDeleteSweepsNestedDocConversations(): Promise<void> {
     const keptConversation = await createConversation(keptDoc.path)
 
     await deleteFolder(folder.path)
-    const swept = await sweepOrphanedDocConversations(deleteConversation)
+    const swept = await sweepOrphanedDocConversations({
+      listConversations,
+      deleteConversation,
+    })
 
     assertEqual(swept.length, 1, 'folder delete sweep should return one nested orphan')
     assertEqual(
