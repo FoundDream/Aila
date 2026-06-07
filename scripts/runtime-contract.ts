@@ -47,6 +47,7 @@ import {
   isRuntimeEventType,
   loadAgentProfilesFromDir,
   loadToolPacksFromDir,
+  type RuntimeRecordAgentEventInput,
   replayConversationActivity,
   replayConversationRuntimeState,
   type Settings,
@@ -173,6 +174,8 @@ async function testRuntimeHostBoundaryContract(): Promise<void> {
     let shellCwdPath: string | null = null
     let settingsLoaded = false
     let streamSettingsKey: string | null = null
+    let activeSelectionModelIdDuringStream: string | null = null
+    let runtime: AgentRuntime | undefined
 
     const host: AgentRuntimeHost = {
       onEvent: (event) => events.push(event),
@@ -207,6 +210,9 @@ async function testRuntimeHostBoundaryContract(): Promise<void> {
         profileId = req.profileId
         shellCwdPath = req.shellCwd ?? null
         streamSettingsKey = req.settings?.apiKeys.openrouter ?? null
+        req.selection.modelId = 'host-mutated-model'
+        activeSelectionModelIdDuringStream =
+          runtime?.listActiveStreams()[0]?.selection.modelId ?? null
         const [root] = req.workspaceRoots ?? []
         if (root && typeof root !== 'string') {
           workspaceRootPath = root.path
@@ -251,7 +257,7 @@ async function testRuntimeHostBoundaryContract(): Promise<void> {
           conversationId: req.conversationId,
           messageId: req.assistantMessageId,
           type: 'turn.started',
-          data: { providerId: req.selection.providerId, modelId: req.selection.modelId },
+          data: {},
         })
         streamStarted = true
         await new Promise<void>((resolve) => {
@@ -285,7 +291,7 @@ async function testRuntimeHostBoundaryContract(): Promise<void> {
       },
       logger: { warn() {}, error() {} },
     }
-    const runtime = new AgentRuntime({ store: createPersistedRuntimeStore(), host })
+    runtime = new AgentRuntime({ store: createPersistedRuntimeStore(), host })
 
     await runtime.send({
       conversationId: conversation.id,
@@ -306,6 +312,11 @@ async function testRuntimeHostBoundaryContract(): Promise<void> {
     assertEqual(workspaceRootPath, '/host/workspace', 'host workspace root path')
     assertEqual(workspaceRootLabel, 'host-root', 'host workspace root label')
     assertEqual(shellCwdPath, '/host/shell', 'host shell cwd should pass to streamChat')
+    assertEqual(
+      activeSelectionModelIdDuringStream,
+      'contract/mock',
+      'host stream request mutation should not affect active stream selection',
+    )
     assertEqual(policyRequested, true, 'host tool policy should receive tool request')
     assertEqual(approvalRequested, true, 'host tool approval should receive tool request')
     assertEqual(approvalResult, true, 'host tool approval should resolve request')
@@ -314,6 +325,15 @@ async function testRuntimeHostBoundaryContract(): Promise<void> {
     assert(
       events.some((event) => event.type === 'agent:event' && event.data.type === 'turn.cancelled'),
       'host onEvent should receive runtime events',
+    )
+    assert(
+      events.some(
+        (event) =>
+          event.type === 'agent:event' &&
+          event.data.type === 'turn.started' &&
+          event.data.data?.modelId === 'contract/mock',
+      ),
+      'runtime should fill turn selection from its own snapshot',
     )
     assertEqual(runtime.listActiveStreams().length, 0, 'host aborted stream should settle')
   })
@@ -871,19 +891,42 @@ async function testRuntimeConversationStoreFacadeContract(): Promise<void> {
 
   const runtime = new AgentRuntime({
     store,
-    onEvent: (event) => emitted.push(event),
+    onEvent: (event) => {
+      if (event.type === 'conversations:updated') {
+        event.data.title = `event-mutated:${event.data.title}`
+      }
+      if (event.type === 'agent:event' && event.data.data) {
+        event.data.data.modelId = 'event-mutated'
+      }
+      emitted.push(event)
+    },
     logger: { warn() {}, error() {} },
   })
 
   const chat = await runtime.createConversation()
   const doc = await runtime.createConversation({ docId: 'docs/facade.md' })
+  assertEqual(
+    chat.title,
+    'injected conversation',
+    'runtime create should isolate returned summary from onEvent mutation',
+  )
+  chat.title = 'caller-mutated-chat'
+  assertEqual(
+    summaries.get(chat.id)?.title,
+    'injected conversation',
+    'runtime create should isolate store summary from caller mutation',
+  )
   assertEqual(chat.docId, undefined, 'runtime create chat conversation')
   assertEqual(doc.docId, 'docs/facade.md', 'runtime create doc-bound conversation')
 
+  const listedConversations = await runtime.listConversations()
+  assertEqual(listedConversations.length, 2, 'runtime should list all conversations')
+  const listedChat = listedConversations.find((summary) => summary.id === chat.id)
+  if (listedChat) listedChat.title = 'caller-mutated-list'
   assertEqual(
-    (await runtime.listConversations()).length,
-    2,
-    'runtime should list all conversations',
+    summaries.get(chat.id)?.title,
+    'injected conversation',
+    'runtime list should isolate store summaries from caller mutation',
   )
   assertEqual(
     (await runtime.listConversations({ docId: null })).map((summary) => summary.id).join(','),
@@ -896,10 +939,13 @@ async function testRuntimeConversationStoreFacadeContract(): Promise<void> {
     'runtime should filter doc-bound conversations by metadata',
   )
 
+  const fetchedChat = await runtime.getConversation(chat.id)
+  assertEqual(fetchedChat.meta.id, chat.id, 'runtime get conversation should delegate to store')
+  fetchedChat.meta.title = 'caller-mutated-record'
   assertEqual(
-    (await runtime.getConversation(chat.id)).meta.id,
-    chat.id,
-    'runtime get conversation should delegate to store',
+    records.get(chat.id)?.meta.title,
+    'injected conversation',
+    'runtime get should isolate store records from caller mutation',
   )
   assertEqual(
     (await runtime.resolveConversation({ conversationId: doc.id })).summary.id,
@@ -928,13 +974,27 @@ async function testRuntimeConversationStoreFacadeContract(): Promise<void> {
       'runtime resolve should reject ambiguous conversation options',
     )
   }
+  const listedEvents = await runtime.listAgentEvents(chat.id)
+  assertEqual(listedEvents[0]?.type, 'turn.started', 'runtime list events should delegate to store')
+  if (listedEvents[0]?.data) listedEvents[0].data.modelId = 'caller-mutated-event'
   assertEqual(
-    (await runtime.listAgentEvents(chat.id))[0]?.type,
-    'turn.started',
-    'runtime list events should delegate to store',
+    eventsByConversation.get(chat.id)?.[0]?.data?.modelId,
+    'contract/mock',
+    'runtime list events should isolate store events from caller mutation',
   )
   const renamed = await runtime.renameConversation(chat.id, 'renamed via runtime')
   assertEqual(renamed.title, 'renamed via runtime', 'runtime rename should delegate to store')
+  assertEqual(
+    summaries.get(chat.id)?.title,
+    'renamed via runtime',
+    'runtime rename should isolate store summary from onEvent mutation',
+  )
+  renamed.title = 'caller-mutated-rename'
+  assertEqual(
+    summaries.get(chat.id)?.title,
+    'renamed via runtime',
+    'runtime rename should isolate store summary from caller mutation',
+  )
   assert(
     emitted.filter((event) => event.type === 'conversations:updated').length >= 3,
     'runtime create and rename should emit conversation updates',
@@ -1002,6 +1062,8 @@ async function testRuntimeAppendUserMessageUsesInjectedStore(): Promise<void> {
     },
     upsertMessage: async (id, message) => {
       calls.push(`upsert:${id}:${message.role}`)
+      const [block] = message.blocks
+      if (block?.type === 'text') block.content = 'store-mutated-message'
       const summary: ConversationSummary = {
         schemaVersion: AILA_CONVERSATION_META_SCHEMA_VERSION,
         id,
@@ -1055,6 +1117,8 @@ async function testRuntimeRecordAgentEventUsesInjectedStore(): Promise<void> {
   const conversationId = 'record-agent-event-contract'
   const calls: string[] = []
   const emitted: AgentRuntimeEvent[] = []
+  let persistedFromStore: PersistedAgentEvent | undefined
+  let summaryFromStore: ConversationSummary | undefined
   const store: AgentRuntimeStore = {
     getConversation: async () => {
       throw new Error('record agent event should not read conversation')
@@ -1064,18 +1128,21 @@ async function testRuntimeRecordAgentEventUsesInjectedStore(): Promise<void> {
     },
     appendAgentEventAndTouchConversation: async (id, event) => {
       calls.push(`event:${id}:${event.type}`)
+      if (event.data) event.data.requestId = 'store-mutated-request'
+      persistedFromStore = {
+        ...event,
+        schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+      }
+      summaryFromStore = {
+        schemaVersion: AILA_CONVERSATION_META_SCHEMA_VERSION,
+        id,
+        title: 'record agent event',
+        createdAt: 1,
+        updatedAt: 3,
+      }
       return {
-        event: {
-          ...event,
-          schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
-        },
-        summary: {
-          schemaVersion: AILA_CONVERSATION_META_SCHEMA_VERSION,
-          id,
-          title: 'record agent event',
-          createdAt: 1,
-          updatedAt: 3,
-        },
+        event: persistedFromStore,
+        summary: summaryFromStore,
       }
     },
     setConversationUsage: async () => {
@@ -1088,18 +1155,42 @@ async function testRuntimeRecordAgentEventUsesInjectedStore(): Promise<void> {
 
   const runtime = new AgentRuntime({
     store,
-    onEvent: (event) => emitted.push(event),
+    onEvent: (event) => {
+      if (event.type === 'agent:event' && event.data.data) {
+        event.data.data.requestId = 'event-mutated-request'
+      }
+      if (event.type === 'conversations:updated') {
+        event.data.title = 'event-mutated-summary'
+      }
+      emitted.push(event)
+    },
     logger: { warn() {}, error() {} },
   })
-  const recorded = await runtime.recordAgentEvent({
+  const inputEvent: RuntimeRecordAgentEventInput = {
     timestamp: 2,
     conversationId,
     messageId: 'assistant-message',
     type: 'tool.approval.requested',
     data: { requestId: 'approval-request', toolName: 'write_file' },
-  })
+  }
+  const recorded = await runtime.recordAgentEvent(inputEvent)
 
   assertEqual(recorded, true, 'runtime record agent event result')
+  assertEqual(
+    inputEvent.data?.requestId,
+    'approval-request',
+    'runtime record should isolate caller event from store mutation',
+  )
+  assertEqual(
+    persistedFromStore?.data?.requestId,
+    'store-mutated-request',
+    'runtime record should isolate persisted event from onEvent mutation',
+  )
+  assertEqual(
+    summaryFromStore?.title,
+    'record agent event',
+    'runtime record should isolate persisted summary from onEvent mutation',
+  )
   assertEqual(
     calls.join(','),
     `event:${conversationId}:tool.approval.requested`,

@@ -548,6 +548,38 @@ function cloneRuntimeConversationRecord(record: ConversationRecord): Conversatio
   return cloneRuntimeValue(record)
 }
 
+function cloneRuntimeConversationSummary(summary: ConversationSummary): ConversationSummary {
+  return cloneRuntimeValue(summary)
+}
+
+function cloneRuntimeConversationSummaries(
+  summaries: readonly ConversationSummary[],
+): ConversationSummary[] {
+  return cloneRuntimeValue([...summaries])
+}
+
+function cloneRuntimePersistedMessage(message: PersistedMessage): PersistedMessage {
+  return cloneRuntimeValue(message)
+}
+
+function cloneRuntimePersistedAgentEvent(event: PersistedAgentEvent): PersistedAgentEvent {
+  return cloneRuntimeValue(event)
+}
+
+function cloneRuntimePersistedAgentEvents(
+  events: readonly PersistedAgentEvent[],
+): PersistedAgentEvent[] {
+  return cloneRuntimeValue([...events])
+}
+
+function cloneRuntimeAgentEventAppendResult(
+  result: AgentEventAppendResult,
+): AgentEventAppendResult {
+  const event = cloneRuntimePersistedAgentEvent(result.event)
+  if (!result.summary) return { event }
+  return { event, summary: cloneRuntimeConversationSummary(result.summary) }
+}
+
 function resolveStaticProfiles(options: AgentRuntimeOptions): readonly AgentProfile[] {
   return (options.host?.profiles ?? options.profiles ?? []).map(cloneRuntimeProfile)
 }
@@ -605,7 +637,9 @@ export class AgentRuntime {
     input: RuntimeCreateConversationInput = {},
   ): Promise<ConversationSummary> {
     if (!this.store.createConversation) throw new Error('runtime store cannot create conversations')
-    const summary = await this.store.createConversation(input.docId ?? undefined)
+    const summary = cloneRuntimeConversationSummary(
+      await this.store.createConversation(input.docId ?? undefined),
+    )
     this.emit(createRuntimeEvent('conversations:updated', summary))
     return summary
   }
@@ -614,14 +648,14 @@ export class AgentRuntime {
     input: RuntimeListConversationsInput = {},
   ): Promise<ConversationSummary[]> {
     if (!this.store.listConversations) throw new Error('runtime store cannot list conversations')
-    const conversations = [...(await this.store.listConversations())]
+    const conversations = cloneRuntimeConversationSummaries(await this.store.listConversations())
     if (input.docId === undefined) return conversations
     if (input.docId === null) return conversations.filter((summary) => !summary.docId)
     return conversations.filter((summary) => summary.docId === input.docId)
   }
 
-  getConversation(conversationId: string): Promise<ConversationRecord> {
-    return this.store.getConversation(conversationId)
+  async getConversation(conversationId: string): Promise<ConversationRecord> {
+    return cloneRuntimeConversationRecord(await this.store.getConversation(conversationId))
   }
 
   async resolveConversation(
@@ -639,7 +673,11 @@ export class AgentRuntime {
 
     if (input.conversationId) {
       const record = await this.getConversation(input.conversationId)
-      return { conversationId: input.conversationId, isExisting: true, summary: record.meta }
+      return {
+        conversationId: input.conversationId,
+        isExisting: true,
+        summary: cloneRuntimeConversationSummary(record.meta),
+      }
     }
 
     const summary = await this.createConversation({ docId: input.docId })
@@ -648,19 +686,21 @@ export class AgentRuntime {
 
   async listAgentEvents(conversationId: string): Promise<PersistedAgentEvent[]> {
     if (!this.store.listAgentEvents) throw new Error('runtime store cannot list agent events')
-    return [...(await this.store.listAgentEvents(conversationId))]
+    return cloneRuntimePersistedAgentEvents(await this.store.listAgentEvents(conversationId))
   }
 
   async renameConversation(conversationId: string, title: string): Promise<ConversationSummary> {
     if (!this.store.renameConversation) throw new Error('runtime store cannot rename conversations')
-    const summary = await this.store.renameConversation(conversationId, title)
+    const summary = cloneRuntimeConversationSummary(
+      await this.store.renameConversation(conversationId, title),
+    )
     this.emit(createRuntimeEvent('conversations:updated', summary))
     return summary
   }
 
   async rewriteDocRefs(rewrites: readonly DocRefRewrite[]): Promise<ConversationSummary[]> {
     if (!this.store.rewriteDocRefs) throw new Error('runtime store cannot rewrite doc refs')
-    const summaries = [...(await this.store.rewriteDocRefs(rewrites))]
+    const summaries = cloneRuntimeConversationSummaries(await this.store.rewriteDocRefs(rewrites))
     for (const summary of summaries) {
       this.emit(createRuntimeEvent('conversations:updated', summary))
     }
@@ -724,7 +764,7 @@ export class AgentRuntime {
     }
     this.assertCanStartTurn(conversationId)
 
-    const record = await this.store.getConversation(conversationId)
+    const record = await this.getConversation(conversationId)
     this.assertCanStartTurn(conversationId)
     return this.startAssistantTurn({
       conversationId,
@@ -745,7 +785,7 @@ export class AgentRuntime {
     if (previous) await this.waitForPriorStreamBeforeNextTurn(conversationId, previous)
     this.assertCanStartTurn(conversationId)
 
-    const record = await this.store.getConversation(conversationId)
+    const record = await this.getConversation(conversationId)
     this.assertCanStartTurn(conversationId)
     const retry = resolveRetryTurn(record)
 
@@ -773,15 +813,9 @@ export class AgentRuntime {
     transientContext?: ChatMessage[]
     source: RuntimeTransientContextInput['source']
   }): Promise<RuntimeSendResult> {
-    const {
-      conversationId,
-      userMessage,
-      record,
-      selection,
-      requestedProfileId,
-      transientContext,
-      source,
-    } = input
+    const { conversationId, userMessage, record, requestedProfileId, transientContext, source } =
+      input
+    const selection = cloneRuntimeValue(input.selection)
     const assistantMessageId = randomUUID()
     this.assertCanStartTurn(conversationId)
 
@@ -882,7 +916,7 @@ export class AgentRuntime {
     return Array.from(this.activeStreams.entries()).map(([conversationId, slot]) => ({
       conversationId,
       assistantMessageId: slot.assistantMessageId,
-      selection: slot.selection,
+      selection: cloneRuntimeValue(slot.selection),
     }))
   }
 
@@ -890,7 +924,9 @@ export class AgentRuntime {
     reason = 'runtime restarted before this turn finished',
   ): Promise<ConversationSummary[]> {
     if (this.store.recoverInterruptedConversationActivities) {
-      const recovered = await this.store.recoverInterruptedConversationActivities(reason)
+      const recovered = cloneRuntimeConversationSummaries(
+        await this.store.recoverInterruptedConversationActivities(reason),
+      )
       for (const summary of recovered) {
         this.emit(createRuntimeEvent('conversations:updated', summary))
       }
@@ -899,19 +935,24 @@ export class AgentRuntime {
 
     if (!this.store.listConversations || !this.store.listAgentEvents) return []
 
-    const conversations = await this.store.listConversations()
+    const conversations = cloneRuntimeConversationSummaries(await this.store.listConversations())
     const recovered: ConversationSummary[] = []
     await Promise.all(
       conversations.map(async (summary) => {
-        const events = await this.store.listAgentEvents?.(summary.id)
+        const loadedEvents = await this.store.listAgentEvents?.(summary.id)
+        const events = loadedEvents ? cloneRuntimePersistedAgentEvents(loadedEvents) : undefined
         if (!events) return
         const recoveryEvent = createInterruptedConversationRecoveryEvent(events, {
           reason,
           activity: replayConversationActivity(events) ?? summary.activity,
         })
         if (!recoveryEvent) return
-        const { event, summary: nextSummary } =
-          await this.store.appendAgentEventAndTouchConversation(summary.id, recoveryEvent)
+        const { event, summary: nextSummary } = cloneRuntimeAgentEventAppendResult(
+          await this.store.appendAgentEventAndTouchConversation(
+            summary.id,
+            cloneRuntimeValue(recoveryEvent),
+          ),
+        )
         this.emit(createRuntimeEvent('agent:event', event))
         if (!nextSummary) return
         this.emit(createRuntimeEvent('conversations:updated', nextSummary))
@@ -1007,7 +1048,9 @@ export class AgentRuntime {
     message: PersistedMessage,
   ): Promise<boolean> {
     if (this.deletedConversations.has(conversationId)) return false
-    const summary = await this.store.upsertMessage(conversationId, message)
+    const summary = cloneRuntimeConversationSummary(
+      await this.store.upsertMessage(conversationId, cloneRuntimePersistedMessage(message)),
+    )
     if (this.deletedConversations.has(conversationId)) return false
     this.emit(createRuntimeEvent('conversations:updated', summary))
     return true
@@ -1058,7 +1101,7 @@ export class AgentRuntime {
   }
 
   private emit(event: AgentRuntimeEvent): void {
-    this.host.onEvent?.(event)
+    this.host.onEvent?.(cloneRuntimeValue(event))
   }
 
   private emitStreamEvent(
@@ -1072,9 +1115,11 @@ export class AgentRuntime {
 
   async recordAgentEvent(event: RuntimeRecordAgentEventInput): Promise<boolean> {
     if (this.deletedConversations.has(event.conversationId)) return false
-    const { event: persisted, summary } = await this.store.appendAgentEventAndTouchConversation(
-      event.conversationId,
-      event,
+    const { event: persisted, summary } = cloneRuntimeAgentEventAppendResult(
+      await this.store.appendAgentEventAndTouchConversation(
+        event.conversationId,
+        cloneRuntimeValue(event),
+      ),
     )
     if (this.deletedConversations.has(event.conversationId)) return false
     this.emit(createRuntimeEvent('agent:event', persisted))
@@ -1356,13 +1401,13 @@ export class AgentRuntime {
         {
           conversationId,
           assistantMessageId,
-          messages,
-          selection,
+          messages: cloneRuntimeChatMessages(messages) ?? [],
+          selection: cloneRuntimeValue(selection),
           signal: controller.signal,
           profileId: toolContext.profileId,
-          workspaceRoots: toolContext.workspaceRoots,
+          workspaceRoots: cloneRuntimeWorkspaceRoots(toolContext.workspaceRoots),
           shellCwd: toolContext.shellCwd,
-          settings: toolContext.settings,
+          settings: cloneRuntimeSettings(toolContext.settings),
           generateImage: toolContext.generateImage,
           saveImage: toolContext.saveImage,
           onToolPolicy: toolContext.onToolPolicy,
@@ -1414,7 +1459,12 @@ export class AgentRuntime {
             this.emit(createRuntimeEvent('chat:done', event))
             if (event.usage) {
               try {
-                const summary = await this.store.setConversationUsage(conversationId, event.usage)
+                const summary = cloneRuntimeConversationSummary(
+                  await this.store.setConversationUsage(
+                    conversationId,
+                    cloneRuntimeValue(event.usage),
+                  ),
+                )
                 this.emit(createRuntimeEvent('conversations:updated', summary))
               } catch (err) {
                 this.logger.warn('[runtime] usage persistence failed:', err)
