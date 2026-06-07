@@ -718,7 +718,7 @@ export type ToolPolicyRequest = ToolApprovalRequest
 
 export type ToolPolicyEvaluator = (
   request: ToolPolicyRequest,
-) => ToolPolicyDecision | Promise<ToolPolicyDecision>
+) => ToolPolicyDecision | undefined | Promise<ToolPolicyDecision | undefined>
 
 const TOOL_POLICY_ACTIONS = new Set<ToolPolicyAction>(['allow', 'ask', 'deny'])
 
@@ -738,6 +738,18 @@ function normalizeToolPolicyDecision(
     throw new Error(`invalid tool policy reason for "${request.name}"`)
   }
   return { action: action as ToolPolicyAction, ...(reason ? { reason } : {}) }
+}
+
+function cloneToolPolicyRequest(request: ToolPolicyRequest): ToolPolicyRequest {
+  return {
+    name: request.name,
+    args: structuredClone(request.args),
+    metadata: structuredClone(request.metadata),
+    ...(request.target ? { target: structuredClone(request.target) } : {}),
+    ...(request.conversationId ? { conversationId: request.conversationId } : {}),
+    ...(request.messageId ? { messageId: request.messageId } : {}),
+    ...(request.toolCallId ? { toolCallId: request.toolCallId } : {}),
+  }
 }
 
 export type ToolWorkspaceRoot = string | { path: string; label?: string }
@@ -846,7 +858,7 @@ export async function executeTool(
     if (!ctx.onToolApproval) {
       throw new Error(`tool "${name}" requires approval but no approval host is available`)
     }
-    const approved = await ctx.onToolApproval(request)
+    const approved = await ctx.onToolApproval(cloneToolPolicyRequest(request))
     if (approved !== true) throw new Error(`tool "${name}" was rejected by user`)
   }
   const runner = registry.runnersByName.get(name)
@@ -858,8 +870,9 @@ export async function evaluateToolPolicy(
   request: ToolPolicyRequest,
   ctx: Pick<ToolContext, 'onToolPolicy' | 'onToolApproval'>,
 ): Promise<ToolPolicyDecision> {
-  const decision = await ctx.onToolPolicy?.(request)
+  const requiresApproval = request.metadata.requiresApproval
+  const decision = await ctx.onToolPolicy?.(cloneToolPolicyRequest(request))
   if (decision !== undefined) return normalizeToolPolicyDecision(request, decision)
-  if (request.metadata.requiresApproval && ctx.onToolApproval) return { action: 'ask' }
+  if (requiresApproval && ctx.onToolApproval) return { action: 'ask' }
   return { action: 'allow' }
 }

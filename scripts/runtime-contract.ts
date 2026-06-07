@@ -3655,6 +3655,7 @@ async function testToolRegistryContract(): Promise<void> {
   }
 
   let policyAllowedRunnerCalled = false
+  let policyRunnerMode: unknown = null
   const policyPack: ToolPack = {
     id: 'policy-contract',
     name: 'Policy Contract',
@@ -3682,8 +3683,9 @@ async function testToolRegistryContract(): Promise<void> {
             allowedProfiles: ['coding'],
           },
         },
-        async run() {
+        async run(args) {
           policyAllowedRunnerCalled = true
+          policyRunnerMode = args.mode
           return 'policy ok'
         },
       },
@@ -3726,6 +3728,40 @@ async function testToolRegistryContract(): Promise<void> {
     policyRegistry,
   )
   assertEqual(askApprovalRequested, true, 'ask policy should call approval hook')
+
+  policyAllowedRunnerCalled = false
+  policyRunnerMode = null
+  let immutableApprovalRequested = false
+  await executeTool(
+    'contract_policy_tool',
+    { mode: 'immutable-boundary' },
+    {
+      settings,
+      profileId: 'coding',
+      onToolPolicy: (request) => {
+        request.args.mode = 'policy-mutated'
+        request.metadata.requiresApproval = false
+        return undefined
+      },
+      onToolApproval: async (request) => {
+        immutableApprovalRequested = true
+        request.args.mode = 'approval-mutated'
+        return true
+      },
+    },
+    policyRegistry,
+  )
+  assertEqual(
+    immutableApprovalRequested,
+    true,
+    'policy request mutation should not bypass approval',
+  )
+  assertEqual(policyAllowedRunnerCalled, true, 'immutable boundary should still run handler')
+  assertEqual(
+    policyRunnerMode,
+    'immutable-boundary',
+    'policy and approval request mutation should not change runner args',
+  )
 
   policyAllowedRunnerCalled = false
   try {
