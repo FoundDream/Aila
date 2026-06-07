@@ -1,0 +1,30 @@
+import {
+  appendAgentEventAndTouchConversation,
+  createConversation,
+  deleteConversation,
+  getConversation,
+  listAgentEvents,
+  listConversations,
+  recoverInterruptedConversationActivities,
+  renameConversation,
+  rewriteDocRefs,
+  setConversationUsage,
+  upsertMessage,
+} from './conversations'
+import type { AgentRuntimeStore } from './runtime'
+
+export function createPersistedRuntimeStore(): AgentRuntimeStore {
+  return {
+    createConversation,
+    getConversation,
+    upsertMessage,
+    appendAgentEventAndTouchConversation,
+    listConversations,
+    listAgentEvents,
+    recoverInterruptedConversationActivities,
+    renameConversation,
+    rewriteDocRefs: (rewrites) => rewriteDocRefs([...rewrites]),
+    setConversationUsage,
+    deleteConversation,
+  }
+}

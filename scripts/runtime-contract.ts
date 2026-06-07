@@ -3920,6 +3920,20 @@ async function testRuntimeSdkDoesNotExportDocsContract(): Promise<void> {
   ]) {
     assert(!(name in sdk), `runtime SDK must not export raw persistence helper: ${name}`)
   }
+
+  assertEqual(
+    typeof runtimeSdk.createPersistedRuntimeStore,
+    'function',
+    'runtime SDK should expose the persisted store adapter factory',
+  )
+  const store = runtimeSdk.createPersistedRuntimeStore()
+  assertEqual(typeof store.getConversation, 'function', 'persisted store should read records')
+  assertEqual(typeof store.upsertMessage, 'function', 'persisted store should persist messages')
+  assertEqual(
+    typeof store.appendAgentEventAndTouchConversation,
+    'function',
+    'persisted store should persist agent events',
+  )
 }
 
 async function testToolPackManifestLoader(): Promise<void> {

@@ -26,6 +26,7 @@ import { getOpenRouterCatalog } from './openrouter-catalog'
 import { configureDataDir, getDataDir } from './paths'
 import { loadAgentProfilesFromDir } from './profile-loader'
 import { AgentRuntime } from './runtime'
+import { createPersistedRuntimeStore } from './runtime-store'
 import { configuredProviders, loadSettings, type Settings, saveSettings } from './settings'
 import { ToolApprovalStore } from './tool-approvals'
 import { loadToolPacksFromDir } from './tool-pack-loader'
@@ -103,6 +104,7 @@ async function cancelConversationApprovals(conversationId: string): Promise<void
 }
 
 const agentRuntime = new AgentRuntime({
+  store: createPersistedRuntimeStore(),
   host: {
     onEvent: (event) => send(event.type, event.data),
     onToolApproval: requestToolApproval,

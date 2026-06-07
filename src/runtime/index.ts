@@ -104,6 +104,7 @@ export {
   type RuntimeSendResult,
   type RuntimeTransientContextInput,
 } from '../main/runtime'
+export { createPersistedRuntimeStore } from '../main/runtime-store'
 export {
   configuredProviders,
   loadSettings,

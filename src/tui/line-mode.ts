@@ -13,6 +13,7 @@ import {
   type ConversationSummary,
   configureDataDir,
   configuredProviders,
+  createPersistedRuntimeStore,
   type ExtensionReport,
   findModel,
   getDataDir,
@@ -61,6 +62,7 @@ export interface TuiRuntimeInput {
 
 export function createTuiRuntime(input: TuiRuntimeInput = {}): AgentRuntime {
   return new AgentRuntime({
+    store: createPersistedRuntimeStore(),
     ...(input.onEvent ? { onEvent: input.onEvent } : {}),
     ...(input.onToolApproval ? { onToolApproval: input.onToolApproval } : {}),
     loadSettings,

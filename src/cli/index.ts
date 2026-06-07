@@ -13,6 +13,7 @@ import {
   type ConversationSummary,
   configureDataDir,
   configuredProviders,
+  createPersistedRuntimeStore,
   findModel,
   getDataDir,
   getExtensionReport,
@@ -344,6 +345,7 @@ function createRuntime(input: {
   const toolNames = new Map<string, string>()
 
   return new AgentRuntime({
+    store: createPersistedRuntimeStore(),
     onEvent: (event) => {
       if (input.events) output.write(`${JSON.stringify(event)}\n`)
       handleRuntimeEvent(event, {
