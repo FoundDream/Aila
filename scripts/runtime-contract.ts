@@ -472,6 +472,72 @@ async function testRuntimeUnexpectedStreamErrorPersistsFailureActivity(): Promis
   })
 }
 
+async function testRuntimeSetupFailurePersistsAssistantError(): Promise<void> {
+  await withTempDataDir(async () => {
+    const conversation = await createConversation()
+    const events: AgentRuntimeEvent[] = []
+    const runtime = new AgentRuntime({
+      onEvent: (event) => events.push(event),
+      logger: { warn() {}, error() {} },
+      workspaceRoots: () => {
+        throw new Error('workspace roots unavailable')
+      },
+      streamChat: async () => {
+        throw new Error('stream should not start after setup failure')
+      },
+    })
+
+    const result = await runtime.send({
+      conversationId: conversation.id,
+      userText: 'fail before stream starts',
+      selection: { providerId: 'openrouter', modelId: 'contract/mock' },
+      requestedProfileId: 'coding',
+    })
+
+    assertEqual(runtime.listActiveStreams().length, 0, 'setup failure should not stay active')
+    assert(
+      events.some(
+        (event) =>
+          event.type === 'chat:error' && event.data.messageId === result.assistantMessageId,
+      ),
+      'setup failure should emit chat:error',
+    )
+    assert(
+      events.some(
+        (event) =>
+          event.type === 'agent:event' &&
+          event.data.type === 'turn.failed' &&
+          event.data.messageId === result.assistantMessageId,
+      ),
+      'setup failure should emit persisted turn.failed event',
+    )
+
+    const agentEvents = await listAgentEvents(conversation.id)
+    assertEqual(agentEvents.at(-1)?.type, 'turn.failed', 'setup failure final activity event')
+    assertEqual(agentEvents.at(-1)?.data?.phase, 'setup', 'setup failure activity phase')
+    assertEqual(
+      agentEvents.at(-1)?.data?.error,
+      'workspace roots unavailable',
+      'setup failure activity detail',
+    )
+
+    const record = await getConversation(conversation.id)
+    assertEqual(record.meta.activity?.state, 'failed', 'setup failure activity state')
+    assertEqual(
+      record.meta.activity?.messageId,
+      result.assistantMessageId,
+      'setup failure activity message id',
+    )
+    assertEqual(record.messages.length, 2, 'setup failure should persist user and assistant')
+    assertEqual(record.messages[1]?.status, 'error', 'setup failure assistant status')
+    assertEqual(
+      record.messages[1]?.error,
+      'workspace roots unavailable',
+      'setup failure assistant detail',
+    )
+  })
+}
+
 async function testRuntimeListsActiveAssistantTurns(): Promise<void> {
   await withTempDataDir(async () => {
     const conversation = await createConversation()
@@ -1306,6 +1372,7 @@ async function main(): Promise<void> {
   await testRuntimeRetriesFailedAssistantTurn()
   await testRuntimeAbortPersistsCancellationActivity()
   await testRuntimeUnexpectedStreamErrorPersistsFailureActivity()
+  await testRuntimeSetupFailurePersistsAssistantError()
   await testRuntimeListsActiveAssistantTurns()
   await testRuntimeDeleteRunsAbortCleanupBeforeWaitingForStream()
   await testPersistenceContract()

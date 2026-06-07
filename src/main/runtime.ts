@@ -57,6 +57,10 @@ function messageText(message: PersistedMessage): string {
     .join('')
 }
 
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
 function resolveRetryTurn(record: ConversationRecord): {
   userMessage: PersistedMessage
   record: ConversationRecord
@@ -241,6 +245,34 @@ export class AgentRuntime {
     const { conversationId, userMessage, record, selection, requestedProfileId, transientContext } =
       input
     const assistantMessageId = randomUUID()
+
+    let profileId: AgentProfileId
+    let messages: Parameters<typeof defaultStreamChat>[0]['messages']
+    let workspaceRoots: ToolContext['workspaceRoots']
+    let toolRegistry: ToolRegistry
+    try {
+      const profile = await this.resolveProfile(requestedProfileId)
+      profileId = profile.baseProfileId
+
+      const context = buildAgentContext({
+        messages: record.messages,
+        modelInfo: getModelInfo(selection.providerId, selection.modelId),
+        profileInstructions: profile.instructions,
+        transientContext,
+      })
+      messages = context.messages
+      toolRegistry = await this.getToolRegistry()
+      workspaceRoots = this.resolveWorkspaceRoots()
+    } catch (error) {
+      await this.persistSetupFailure(
+        conversationId,
+        assistantMessageId,
+        selection,
+        errorMessage(error),
+      )
+      return { userMessage, assistantMessageId }
+    }
+
     const controller = new AbortController()
     let resolveCleanup: () => void = () => {}
     const cleanup = new Promise<void>((resolve) => {
@@ -254,17 +286,6 @@ export class AgentRuntime {
       abortRecorded: false,
     })
 
-    const profile = await this.resolveProfile(requestedProfileId)
-    const profileId = profile.baseProfileId
-
-    const context = buildAgentContext({
-      messages: record.messages,
-      modelInfo: getModelInfo(selection.providerId, selection.modelId),
-      profileInstructions: profile.instructions,
-      transientContext,
-    })
-    const toolRegistry = await this.getToolRegistry()
-
     void this.runStream({
       conversationId,
       assistantMessageId,
@@ -272,8 +293,8 @@ export class AgentRuntime {
       controller,
       resolveCleanup,
       profileId,
-      messages: context.messages,
-      workspaceRoots: this.resolveWorkspaceRoots(),
+      messages,
+      workspaceRoots,
       toolRegistry,
     })
 
@@ -353,6 +374,43 @@ export class AgentRuntime {
   ): Promise<void> {
     const summary = await appendMessage(conversationId, message)
     this.emit(createRuntimeEvent('conversations:updated', summary))
+  }
+
+  private async persistSetupFailure(
+    conversationId: string,
+    assistantMessageId: string,
+    selection: ModelSelection,
+    message: string,
+  ): Promise<void> {
+    const errored: PersistedMessage = {
+      schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+      id: assistantMessageId,
+      role: 'assistant',
+      blocks: [],
+      status: 'error',
+      error: message,
+      model: selection,
+    }
+    await this.persistAndAnnounce(conversationId, errored)
+    try {
+      await this.recordAgentEvent({
+        timestamp: Date.now(),
+        conversationId,
+        messageId: assistantMessageId,
+        type: 'turn.failed',
+        data: { phase: 'setup', error: message },
+      })
+    } catch (error) {
+      this.logger.warn('[runtime] setup failure activity append failed:', error)
+    }
+    this.emit(
+      createRuntimeEvent('chat:error', {
+        conversationId,
+        messageId: assistantMessageId,
+        error: message,
+        message: errored,
+      }),
+    )
   }
 
   private emit(event: AgentRuntimeEvent): void {

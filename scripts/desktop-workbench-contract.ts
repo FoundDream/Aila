@@ -330,6 +330,54 @@ function testRendererFinishAppendsMissingAssistantMessage(): void {
   assertEqual(stream.messages[0]?.status, 'done', 'finish appended assistant status')
 }
 
+function testRendererRunStartedDoesNotDuplicateFinishedAssistant(): void {
+  let state = createChatStreamsStateForTest()
+  state = reduceChatStreamsForTest(state, {
+    type: 'FINISH',
+    conversationId: 'conversation-early-error',
+    messageId: 'assistant-early-error',
+    message: {
+      id: 'assistant-early-error',
+      role: 'assistant',
+      blocks: [],
+      status: 'error',
+      error: 'workspace roots unavailable',
+      model: { providerId: 'openrouter', modelId: 'contract/mock' },
+    },
+  })
+  state = reduceChatStreamsForTest(state, {
+    type: 'RUN_STARTED',
+    conversationId: 'conversation-early-error',
+    userMessage: {
+      id: 'user-early-error',
+      role: 'user',
+      blocks: [{ type: 'text', content: 'fail before stream starts' }],
+      status: 'done',
+    },
+    assistantMessage: {
+      id: 'assistant-early-error',
+      role: 'assistant',
+      blocks: [],
+      status: 'streaming',
+      model: { providerId: 'openrouter', modelId: 'contract/mock' },
+    },
+  })
+
+  const stream = state.streams.get('conversation-early-error')
+  assert(stream, 'early error should create a stream')
+  assertEqual(
+    stream.messages.filter((message) => message.id === 'assistant-early-error').length,
+    1,
+    'RUN_STARTED should not duplicate an already finished assistant',
+  )
+  assertEqual(
+    stream.messages.find((message) => message.id === 'assistant-early-error')?.status,
+    'error',
+    'RUN_STARTED should not downgrade an early error to streaming',
+  )
+  assertEqual(stream.runningMessageId, null, 'early error should not become running')
+}
+
 function testRendererToolResultAppendsMissingAssistantMessage(): void {
   let state = createChatStreamsStateForTest()
   state = reduceChatStreamsForTest(state, {
@@ -613,6 +661,7 @@ async function main(): Promise<void> {
   await testToolResultActivityKeepsToolName()
   testRendererHydratesActiveAssistantTurn()
   testRendererFinishAppendsMissingAssistantMessage()
+  testRendererRunStartedDoesNotDuplicateFinishedAssistant()
   testRendererToolResultAppendsMissingAssistantMessage()
   await testInterruptedActivityRecovery()
   await testToolApprovalsCanHydrateAndResolvePendingRequests()

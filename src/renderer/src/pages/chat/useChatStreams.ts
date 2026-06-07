@@ -218,6 +218,12 @@ function replaceOrAppendMessage(messages: Message[], message: Message): Message[
     : [...messages, message]
 }
 
+function appendMissingMessage(messages: Message[], message: Message): Message[] {
+  return messages.some((candidate) => candidate.id === message.id)
+    ? messages
+    : [...messages, message]
+}
+
 function hydrateMessages(messages: Message[], activeTurn?: ActiveAssistantTurn | null): Message[] {
   if (!activeTurn) return messages
   return ensureAssistantMessage(messages, activeTurn.assistantMessageId, activeTurn.selection)
@@ -291,18 +297,35 @@ function reducer(state: State, action: Action): State {
       }))
 
     case 'RUN_STARTED':
-      return withStream(state, action.conversationId, (current) => ({
-        ...current,
-        messages: [...current.messages, action.userMessage, action.assistantMessage],
-        runningMessageId: action.assistantMessage.id,
-      }))
+      return withStream(state, action.conversationId, (current) => {
+        const messages = appendMissingMessage(
+          appendMissingMessage(current.messages, action.userMessage),
+          action.assistantMessage,
+        )
+        const assistant = messages.find((message) => message.id === action.assistantMessage.id)
+        return {
+          ...current,
+          messages,
+          runningMessageId:
+            assistant?.status === 'streaming'
+              ? action.assistantMessage.id
+              : current.runningMessageId,
+        }
+      })
 
     case 'RETRY_STARTED':
-      return withStream(state, action.conversationId, (current) => ({
-        ...current,
-        messages: [...current.messages, action.assistantMessage],
-        runningMessageId: action.assistantMessage.id,
-      }))
+      return withStream(state, action.conversationId, (current) => {
+        const messages = appendMissingMessage(current.messages, action.assistantMessage)
+        const assistant = messages.find((message) => message.id === action.assistantMessage.id)
+        return {
+          ...current,
+          messages,
+          runningMessageId:
+            assistant?.status === 'streaming'
+              ? action.assistantMessage.id
+              : current.runningMessageId,
+        }
+      })
 
     case 'TEXT_DELTA':
       return withStream(state, action.conversationId, (current) => ({
