@@ -97,6 +97,8 @@ export {
   type RuntimeExecuteToolInput,
   type RuntimeListConversationsInput,
   type RuntimeRecordAgentEventInput,
+  type RuntimeResolveConversationInput,
+  type RuntimeResolveConversationResult,
   type RuntimeRetryLastInput,
   type RuntimeSendInput,
   type RuntimeSendResult,

@@ -47,7 +47,6 @@ import {
   parseModel,
   printConversationList,
   readShellToken,
-  resolveConversation,
   resolveSelection,
   splitShellWords,
   workspacePath,
@@ -201,8 +200,7 @@ class AilaFullScreenApp {
     conversationId?: string
     resumeLatest?: boolean
   }): Promise<void> {
-    const resolved = await resolveConversation({
-      runtime: this.runtime,
+    const resolved = await this.runtime.resolveConversation({
       conversationId: input.conversationId,
       resumeLatest: input.resumeLatest,
     })

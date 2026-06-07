@@ -724,6 +724,33 @@ async function testRuntimeConversationStoreFacadeContract(): Promise<void> {
     'runtime get conversation should delegate to store',
   )
   assertEqual(
+    (await runtime.resolveConversation({ conversationId: doc.id })).summary.id,
+    doc.id,
+    'runtime resolve should validate and return explicit conversations',
+  )
+  assertEqual(
+    (await runtime.resolveConversation({ resumeLatest: true, docId: 'docs/facade.md' }))
+      .conversationId,
+    doc.id,
+    'runtime resolve should resume within a conversation scope',
+  )
+  const resolvedNew = await runtime.resolveConversation({ docId: 'docs/resolved.md' })
+  assertEqual(resolvedNew.isExisting, false, 'runtime resolve should create missing input')
+  assertEqual(
+    resolvedNew.summary.docId,
+    'docs/resolved.md',
+    'runtime resolve should pass create metadata through the store',
+  )
+  try {
+    await runtime.resolveConversation({ conversationId: chat.id, resumeLatest: true })
+    throw new Error('combined resolve options unexpectedly succeeded')
+  } catch (error) {
+    assert(
+      error instanceof Error && error.message.includes('cannot be combined'),
+      'runtime resolve should reject ambiguous conversation options',
+    )
+  }
+  assertEqual(
     (await runtime.listAgentEvents(chat.id))[0]?.type,
     'turn.started',
     'runtime list events should delegate to store',

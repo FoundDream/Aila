@@ -180,6 +180,18 @@ export interface RuntimeListConversationsInput {
   docId?: string | null
 }
 
+export interface RuntimeResolveConversationInput {
+  conversationId?: string
+  resumeLatest?: boolean
+  docId?: string | null
+}
+
+export interface RuntimeResolveConversationResult {
+  conversationId: string
+  isExisting: boolean
+  summary: ConversationSummary
+}
+
 export interface RuntimeAppendUserMessageInput {
   conversationId: string
   text: string
@@ -389,6 +401,28 @@ export class AgentRuntime {
 
   getConversation(conversationId: string): Promise<ConversationRecord> {
     return this.store.getConversation(conversationId)
+  }
+
+  async resolveConversation(
+    input: RuntimeResolveConversationInput = {},
+  ): Promise<RuntimeResolveConversationResult> {
+    if (input.conversationId && input.resumeLatest) {
+      throw new Error('conversationId and resumeLatest cannot be combined')
+    }
+
+    if (input.resumeLatest) {
+      const [summary] = await this.listConversations({ docId: input.docId })
+      if (!summary) throw new Error('no conversations found to resume')
+      return { conversationId: summary.id, isExisting: true, summary }
+    }
+
+    if (input.conversationId) {
+      const record = await this.getConversation(input.conversationId)
+      return { conversationId: input.conversationId, isExisting: true, summary: record.meta }
+    }
+
+    const summary = await this.createConversation({ docId: input.docId })
+    return { conversationId: summary.id, isExisting: false, summary }
   }
 
   async listAgentEvents(conversationId: string): Promise<PersistedAgentEvent[]> {

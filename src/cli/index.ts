@@ -318,29 +318,6 @@ async function printExtensionReport(json: boolean): Promise<boolean> {
   return report.ok
 }
 
-async function resolveConversation(input: {
-  runtime: AgentRuntime
-  conversationId?: string
-  resumeLatest?: boolean
-}): Promise<{ conversationId: string; isExisting: boolean }> {
-  if (input.resumeLatest) {
-    const [summary] = await input.runtime.listConversations()
-    if (!summary) throw new Error('no conversations found to resume')
-    return {
-      conversationId: summary.id,
-      isExisting: true,
-    }
-  }
-
-  if (input.conversationId) {
-    await input.runtime.getConversation(input.conversationId)
-    return { conversationId: input.conversationId, isExisting: true }
-  }
-
-  const summary = await input.runtime.createConversation()
-  return { conversationId: summary.id, isExisting: false }
-}
-
 function readPrompt(options: CliOptions): string {
   if (options.prompt !== undefined) return options.prompt
   if (!input.isTTY) return readFileSync(0, 'utf-8').trim()
@@ -515,8 +492,7 @@ async function main(): Promise<void> {
       resolveCompletion()
     },
   })
-  const { conversationId, isExisting } = await resolveConversation({
-    runtime,
+  const { conversationId, isExisting } = await runtime.resolveConversation({
     conversationId: options.conversationId,
     resumeLatest: options.resumeLatest,
   })

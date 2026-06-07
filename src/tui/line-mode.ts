@@ -225,29 +225,6 @@ export function displayPreview(text: string, max = 8000): string {
   return `${text.slice(0, max)}\n...[display truncated; full result was saved to conversation context]`
 }
 
-export async function resolveConversation(input: {
-  runtime: AgentRuntime
-  conversationId?: string
-  resumeLatest?: boolean
-}): Promise<{ conversationId: string; isExisting: boolean }> {
-  if (input.resumeLatest) {
-    const [summary] = await input.runtime.listConversations()
-    if (!summary) throw new Error('no conversations found to resume')
-    return {
-      conversationId: summary.id,
-      isExisting: true,
-    }
-  }
-
-  if (input.conversationId) {
-    await input.runtime.getConversation(input.conversationId)
-    return { conversationId: input.conversationId, isExisting: true }
-  }
-
-  const summary = await input.runtime.createConversation()
-  return { conversationId: summary.id, isExisting: false }
-}
-
 function writeLine(line = ''): void {
   output.write(`${line}\n`)
 }
@@ -727,8 +704,7 @@ export async function runLineMode(argv: string[] = process.argv.slice(2)): Promi
     },
     onToolApproval: (request) => askToolApproval(prompt, request),
   })
-  const { conversationId, isExisting } = await resolveConversation({
-    runtime,
+  const { conversationId, isExisting } = await runtime.resolveConversation({
     conversationId: options.conversationId,
     resumeLatest: options.resumeLatest,
   })
