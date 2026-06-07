@@ -844,6 +844,115 @@ async function testRuntimeHostTransientContextUsesInjectedRecord(): Promise<void
   assertEqual(record.messages.length, 2, 'host transient context should not mutate store record')
 }
 
+async function testRuntimeStreamHandlerSnapshots(): Promise<void> {
+  const conversationId = 'stream-handler-snapshot-contract'
+  const emitted: AgentRuntimeEvent[] = []
+  let storedUsageTotal: number | null = null
+  let record: ConversationRecord = {
+    meta: {
+      schemaVersion: AILA_CONVERSATION_META_SCHEMA_VERSION,
+      id: conversationId,
+      title: 'stream handler snapshot',
+      createdAt: 1,
+      updatedAt: 1,
+    },
+    messages: [],
+  }
+
+  const store: AgentRuntimeStore = {
+    getConversation: async (id) => {
+      if (id !== conversationId) throw new Error(`unexpected conversation: ${id}`)
+      return record
+    },
+    upsertMessage: async (_id, message) => {
+      await Promise.resolve()
+      const index = record.messages.findIndex((current) => current.id === message.id)
+      record =
+        index >= 0
+          ? {
+              ...record,
+              messages: record.messages.map((current, currentIndex) =>
+                currentIndex === index ? message : current,
+              ),
+            }
+          : { ...record, messages: [...record.messages, message] }
+      return { ...record.meta, updatedAt: record.meta.updatedAt + record.messages.length }
+    },
+    appendAgentEventAndTouchConversation: async (_id, event) => ({
+      event: {
+        ...event,
+        schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+      },
+      summary: { ...record.meta, updatedAt: record.meta.updatedAt + record.messages.length + 1 },
+    }),
+    setConversationUsage: async (_id, usage) => {
+      storedUsageTotal = usage.totalTokens
+      return {
+        ...record.meta,
+        updatedAt: record.meta.updatedAt + record.messages.length + 2,
+        usage: { ...usage, updatedAt: 3 },
+      }
+    },
+    deleteConversation: async () => {
+      throw new Error('stream handler snapshot should not delete conversation')
+    },
+  }
+
+  const runtime = new AgentRuntime({
+    store,
+    onEvent: (event) => emitted.push(event),
+    streamChat: async (req, handlers) => {
+      const doneEvent = {
+        conversationId: req.conversationId,
+        messageId: req.assistantMessageId,
+        message: {
+          schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+          id: req.assistantMessageId,
+          role: 'assistant' as const,
+          blocks: [{ type: 'text' as const, content: 'original stream result' }],
+          status: 'done' as const,
+          model: req.selection,
+        },
+        usage: { promptTokens: 1, completionTokens: 2, totalTokens: 3 },
+      } satisfies Parameters<typeof handlers.onDone>[0]
+      const done = handlers.onDone(doneEvent)
+      const [block] = doneEvent.message.blocks
+      if (block?.type === 'text') block.content = 'mutated stream result'
+      doneEvent.usage.totalTokens = 999
+      await done
+    },
+    logger: { warn() {}, error() {} },
+  })
+
+  await runtime.send({
+    conversationId,
+    userText: 'snapshot stream handler event',
+    selection: { providerId: 'openrouter', modelId: 'contract/mock' },
+    requestedProfileId: 'coding',
+  })
+  await waitFor(
+    () => runtime.listActiveStreams().length === 0,
+    'stream handler snapshot should settle',
+  )
+
+  const doneEvent = emitted.find((event) => event.type === 'chat:done')
+  const doneText =
+    doneEvent?.type === 'chat:done' && doneEvent.data.message.blocks[0]?.type === 'text'
+      ? doneEvent.data.message.blocks[0].content
+      : null
+  assertEqual(
+    doneText,
+    'original stream result',
+    'runtime should snapshot stream handler done events before host mutation',
+  )
+  assertEqual(
+    doneEvent?.type === 'chat:done' ? doneEvent.data.usage?.totalTokens : null,
+    3,
+    'runtime should snapshot stream handler usage before host mutation',
+  )
+  assertEqual(storedUsageTotal, 3, 'runtime should persist snapshotted stream usage')
+}
+
 async function testRuntimeConversationStoreFacadeContract(): Promise<void> {
   const calls: string[] = []
   const emitted: AgentRuntimeEvent[] = []
@@ -3940,6 +4049,7 @@ async function testToolRegistryContract(): Promise<void> {
 
   let policyAllowedRunnerCalled = false
   let policyRunnerMode: unknown = null
+  let policyRunnerNestedValue: unknown = null
   const policyPack: ToolPack = {
     id: 'policy-contract',
     name: 'Policy Contract',
@@ -3967,9 +4077,16 @@ async function testToolRegistryContract(): Promise<void> {
             allowedProfiles: ['coding'],
           },
         },
-        async run(args) {
+        async run(args, ctx) {
           policyAllowedRunnerCalled = true
           policyRunnerMode = args.mode
+          const nested = args.nested as { value?: unknown } | undefined
+          policyRunnerNestedValue = nested?.value ?? null
+          args.mode = 'runner-mutated'
+          if (nested) nested.value = 'runner-mutated'
+          ctx.settings.apiKeys.openrouter = 'runner-mutated'
+          const root = ctx.workspaceRoots?.[0]
+          if (root && typeof root !== 'string') root.label = 'runner-mutated'
           return 'policy ok'
         },
       },
@@ -4015,26 +4132,33 @@ async function testToolRegistryContract(): Promise<void> {
 
   policyAllowedRunnerCalled = false
   policyRunnerMode = null
+  policyRunnerNestedValue = null
   let immutableApprovalRequested = false
-  await executeTool(
-    'contract_policy_tool',
-    { mode: 'immutable-boundary' },
-    {
-      settings,
-      profileId: 'coding',
-      onToolPolicy: (request) => {
-        request.args.mode = 'policy-mutated'
-        request.metadata.requiresApproval = false
-        return undefined
-      },
-      onToolApproval: async (request) => {
-        immutableApprovalRequested = true
-        request.args.mode = 'approval-mutated'
-        return true
-      },
+  const immutableArgs: Record<string, unknown> = {
+    mode: 'immutable-boundary',
+    nested: { value: 'original-nested' },
+  }
+  const immutableWorkspaceRoots = [{ path: '/contract/tool-root', label: 'contract-root' }]
+  const immutableContext = {
+    settings,
+    profileId: 'coding' as const,
+    workspaceRoots: immutableWorkspaceRoots,
+    onToolPolicy: (request) => {
+      request.args.mode = 'policy-mutated'
+      const nested = request.args.nested as { value?: unknown } | undefined
+      if (nested) nested.value = 'policy-mutated'
+      request.metadata.requiresApproval = false
+      return undefined
     },
-    policyRegistry,
-  )
+    onToolApproval: async (request) => {
+      immutableApprovalRequested = true
+      request.args.mode = 'approval-mutated'
+      const nested = request.args.nested as { value?: unknown } | undefined
+      if (nested) nested.value = 'approval-mutated'
+      return true
+    },
+  }
+  await executeTool('contract_policy_tool', immutableArgs, immutableContext, policyRegistry)
   assertEqual(
     immutableApprovalRequested,
     true,
@@ -4045,6 +4169,31 @@ async function testToolRegistryContract(): Promise<void> {
     policyRunnerMode,
     'immutable-boundary',
     'policy and approval request mutation should not change runner args',
+  )
+  assertEqual(
+    policyRunnerNestedValue,
+    'original-nested',
+    'policy and approval request mutation should not change nested runner args',
+  )
+  assertEqual(
+    immutableArgs.mode,
+    'immutable-boundary',
+    'runner mutation should not change caller tool args',
+  )
+  assertEqual(
+    (immutableArgs.nested as { value?: unknown }).value,
+    'original-nested',
+    'runner mutation should not change caller nested tool args',
+  )
+  assertEqual(
+    settings.apiKeys.openrouter,
+    undefined,
+    'runner mutation should not change caller tool settings context',
+  )
+  assertEqual(
+    immutableWorkspaceRoots[0]?.label,
+    'contract-root',
+    'runner mutation should not change caller workspace roots context',
   )
 
   policyAllowedRunnerCalled = false
@@ -4841,6 +4990,7 @@ async function main(): Promise<void> {
   await testRuntimeDynamicExtensionLoaderSnapshots()
   await testRuntimeInjectableStoreContract()
   await testRuntimeHostTransientContextUsesInjectedRecord()
+  await testRuntimeStreamHandlerSnapshots()
   await testRuntimeConversationStoreFacadeContract()
   await testInMemoryRuntimeStoreEventListContract()
   await testRuntimeAppendUserMessageUsesInjectedStore()

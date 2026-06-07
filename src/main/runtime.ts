@@ -1391,7 +1391,7 @@ export class AgentRuntime {
     let eventLogChain = Promise.resolve()
     let terminalAgentEventQueued = false
     const queueAgentEvent = (event: AgentEventInput): void => {
-      const eventWithSelection = withTurnSelection(event, selection)
+      const eventWithSelection = withTurnSelection(cloneRuntimeValue(event), selection)
       if (
         eventWithSelection.type === 'turn.completed' ||
         eventWithSelection.type === 'turn.failed' ||
@@ -1428,56 +1428,57 @@ export class AgentRuntime {
           onToolPolicy: toolContext.onToolPolicy,
           onToolApproval: toolContext.onToolApproval,
           onAgentEvent: queueAgentEvent,
-          toolRegistry,
+          toolRegistry: cloneRuntimeToolRegistry(toolRegistry),
         },
         {
           onTextDelta: (event) =>
             this.emitStreamEvent(
               conversationId,
               controller,
-              createRuntimeEvent('chat:text-delta', event),
+              createRuntimeEvent('chat:text-delta', cloneRuntimeValue(event)),
             ),
           onReasoningDelta: (event) =>
             this.emitStreamEvent(
               conversationId,
               controller,
-              createRuntimeEvent('chat:reasoning-delta', event),
+              createRuntimeEvent('chat:reasoning-delta', cloneRuntimeValue(event)),
             ),
           onToolCallStart: (event) =>
             this.emitStreamEvent(
               conversationId,
               controller,
-              createRuntimeEvent('chat:tool-call-start', event),
+              createRuntimeEvent('chat:tool-call-start', cloneRuntimeValue(event)),
             ),
           onToolCallArgsDelta: (event) =>
             this.emitStreamEvent(
               conversationId,
               controller,
-              createRuntimeEvent('chat:tool-call-args-delta', event),
+              createRuntimeEvent('chat:tool-call-args-delta', cloneRuntimeValue(event)),
             ),
           onToolCallResult: (event) =>
             this.emitStreamEvent(
               conversationId,
               controller,
-              createRuntimeEvent('chat:tool-call-result', event),
+              createRuntimeEvent('chat:tool-call-result', cloneRuntimeValue(event)),
             ),
           onImageBlock: (event) =>
             this.emitStreamEvent(
               conversationId,
               controller,
-              createRuntimeEvent('chat:image-block', event),
+              createRuntimeEvent('chat:image-block', cloneRuntimeValue(event)),
             ),
           onDone: async (event) => {
+            const doneEvent = cloneRuntimeValue(event)
             if (!this.acceptsStreamEvents(conversationId, controller)) return
-            const persisted = await this.persistAndAnnounce(conversationId, event.message)
+            const persisted = await this.persistAndAnnounce(conversationId, doneEvent.message)
             if (!persisted || !this.acceptsStreamEvents(conversationId, controller)) return
-            this.emit(createRuntimeEvent('chat:done', event))
-            if (event.usage) {
+            this.emit(createRuntimeEvent('chat:done', doneEvent))
+            if (doneEvent.usage) {
               try {
                 const summary = cloneRuntimeConversationSummary(
                   await this.store.setConversationUsage(
                     conversationId,
-                    cloneRuntimeValue(event.usage),
+                    cloneRuntimeValue(doneEvent.usage),
                   ),
                 )
                 this.emit(createRuntimeEvent('conversations:updated', summary))
@@ -1487,10 +1488,11 @@ export class AgentRuntime {
             }
           },
           onError: async (event) => {
+            const errorEvent = cloneRuntimeValue(event)
             if (!this.acceptsStreamEvents(conversationId, controller)) return
-            const persisted = await this.persistAndAnnounce(conversationId, event.message)
+            const persisted = await this.persistAndAnnounce(conversationId, errorEvent.message)
             if (!persisted || !this.acceptsStreamEvents(conversationId, controller)) return
-            this.emit(createRuntimeEvent('chat:error', event))
+            this.emit(createRuntimeEvent('chat:error', errorEvent))
           },
         },
       )

@@ -160,6 +160,39 @@ function previewEventValue(value: unknown): { preview: string; size: number } {
   }
 }
 
+function cloneAgentValue<T>(value: T): T {
+  return structuredClone(value)
+}
+
+function cloneAgentMessages(messages: readonly ChatMessage[]): ChatMessage[] {
+  return cloneAgentValue([...messages])
+}
+
+function cloneAgentSettings(settings: Settings): Settings {
+  return cloneAgentValue(settings)
+}
+
+function cloneAgentWorkspaceRoots(
+  roots: ToolContext['workspaceRoots'],
+): ToolContext['workspaceRoots'] {
+  return roots === undefined ? undefined : cloneAgentValue(roots)
+}
+
+function cloneAgentToolArgs(args: Record<string, unknown>): Record<string, unknown> {
+  return cloneAgentValue(args)
+}
+
+function callStreamHandler<TEvent>(handler: (event: TEvent) => void, event: TEvent): void {
+  handler(cloneAgentValue(event))
+}
+
+async function callAsyncStreamHandler<TEvent>(
+  handler: (event: TEvent) => MaybePromise<void>,
+  event: TEvent,
+): Promise<void> {
+  await handler(cloneAgentValue(event))
+}
+
 // Tool registry is rebuilt per-stream so each `execute` closes over the
 // per-call ToolContext (settings, abort signal, image side-channel).
 function buildTools(
@@ -177,13 +210,13 @@ function buildTools(
         execute: async (args, options) => {
           const toolCallId = options.toolCallId
           const toolName = td.function.name
-          const input = args as Record<string, unknown>
+          const input = cloneAgentToolArgs(args as Record<string, unknown>)
           const target = summarizeToolTarget(toolName, input)
           if (target) toolTargets.set(toolCallId, target)
           emitAgentEvent('tool.execution.started', {
             toolCallId,
             toolName,
-            input: previewEventValue(args),
+            input: previewEventValue(input),
             ...(target && { target }),
           })
           try {
@@ -321,7 +354,7 @@ class AssistantBuilder {
   }
 
   appendImage(block: PersistedImageBlock): void {
-    this.blocks.push(block)
+    this.blocks.push(cloneAgentValue(block))
   }
 
   finishToolCall(id: string, result: string, isError: boolean): void {
@@ -342,10 +375,10 @@ class AssistantBuilder {
       schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
       id: messageId,
       role: 'assistant',
-      blocks: this.blocks,
+      blocks: cloneAgentValue(this.blocks),
       status,
       ...(error !== undefined && { error }),
-      model: selection,
+      model: cloneAgentValue(selection),
     }
   }
 }
@@ -377,12 +410,12 @@ export async function streamChat(req: StreamRequest, handlers: StreamHandlers): 
   const {
     conversationId,
     assistantMessageId,
-    messages,
-    selection,
+    messages: requestMessages,
+    selection: requestSelection,
     signal,
     onAgentEvent,
     profileId,
-    workspaceRoots,
+    workspaceRoots: requestWorkspaceRoots,
     shellCwd,
     onToolPolicy,
     onToolApproval,
@@ -392,23 +425,27 @@ export async function streamChat(req: StreamRequest, handlers: StreamHandlers): 
     toolRegistry,
   } = req
 
+  const messages = cloneAgentMessages(requestMessages)
+  const selection = cloneAgentValue(requestSelection)
+  const workspaceRoots = cloneAgentWorkspaceRoots(requestWorkspaceRoots)
   const builder = new AssistantBuilder()
   let lastUsage: UsageInfo | null = null
   const toolTargets = new Map<string, ToolActivityTarget>()
 
   const emitAgentEvent = (type: AgentEventType, data?: Record<string, unknown>): void => {
-    onAgentEvent?.({
+    const event: AgentEvent = {
       timestamp: Date.now(),
       conversationId,
       messageId: assistantMessageId,
       type,
-      ...(data && { data }),
-    })
+      ...(data && { data: cloneAgentValue(data) }),
+    }
+    onAgentEvent?.(cloneAgentValue(event))
   }
 
   // Snapshot settings once per stream so the image tool sees the same key/model
   // selection that resolveModel did.
-  const settings = requestSettings ?? loadSettings()
+  const settings = cloneAgentSettings(requestSettings ?? loadSettings())
   emitAgentEvent('turn.started', {
     providerId: selection.providerId,
     modelId: selection.modelId,
@@ -416,11 +453,12 @@ export async function streamChat(req: StreamRequest, handlers: StreamHandlers): 
   })
 
   const onImageFromTool = (block: ImageSideChannelBlock): void => {
-    builder.appendImage(block)
-    handlers.onImageBlock({
+    const imageBlock = cloneAgentValue(block)
+    builder.appendImage(imageBlock)
+    callStreamHandler(handlers.onImageBlock, {
       conversationId,
       messageId: assistantMessageId,
-      block,
+      block: imageBlock,
     })
   }
 
@@ -434,7 +472,7 @@ export async function streamChat(req: StreamRequest, handlers: StreamHandlers): 
         : err instanceof Error
           ? err.message
           : String(err)
-    await handlers.onError({
+    await callAsyncStreamHandler(handlers.onError, {
       conversationId,
       messageId: assistantMessageId,
       error: message,
@@ -479,7 +517,7 @@ export async function streamChat(req: StreamRequest, handlers: StreamHandlers): 
       switch (part.type) {
         case 'text-delta':
           builder.appendText('text', part.text)
-          handlers.onTextDelta({
+          callStreamHandler(handlers.onTextDelta, {
             conversationId,
             messageId: assistantMessageId,
             delta: part.text,
@@ -487,7 +525,7 @@ export async function streamChat(req: StreamRequest, handlers: StreamHandlers): 
           break
         case 'reasoning-delta':
           builder.appendText('reasoning', part.text)
-          handlers.onReasoningDelta({
+          callStreamHandler(handlers.onReasoningDelta, {
             conversationId,
             messageId: assistantMessageId,
             delta: part.text,
@@ -502,7 +540,7 @@ export async function streamChat(req: StreamRequest, handlers: StreamHandlers): 
             toolCallId: part.id,
             toolName: part.toolName,
           })
-          handlers.onToolCallStart({
+          callStreamHandler(handlers.onToolCallStart, {
             conversationId,
             messageId: assistantMessageId,
             toolCallId: part.id,
@@ -517,7 +555,7 @@ export async function streamChat(req: StreamRequest, handlers: StreamHandlers): 
             toolCallId: part.id,
             deltaSize: part.delta.length,
           })
-          handlers.onToolCallArgsDelta({
+          callStreamHandler(handlers.onToolCallArgsDelta, {
             conversationId,
             messageId: assistantMessageId,
             toolCallId: part.id,
@@ -543,7 +581,7 @@ export async function streamChat(req: StreamRequest, handlers: StreamHandlers): 
             input: previewEventValue(part.input ?? {}),
             ...(target && { target }),
           })
-          handlers.onToolCallStart({
+          callStreamHandler(handlers.onToolCallStart, {
             conversationId,
             messageId: assistantMessageId,
             toolCallId: part.toolCallId,
@@ -563,7 +601,7 @@ export async function streamChat(req: StreamRequest, handlers: StreamHandlers): 
             isError: false,
             ...(toolTargets.get(part.toolCallId) && { target: toolTargets.get(part.toolCallId) }),
           })
-          handlers.onToolCallResult({
+          callStreamHandler(handlers.onToolCallResult, {
             conversationId,
             messageId: assistantMessageId,
             toolCallId: part.toolCallId,
@@ -583,7 +621,7 @@ export async function streamChat(req: StreamRequest, handlers: StreamHandlers): 
             isError: true,
             ...(toolTargets.get(part.toolCallId) && { target: toolTargets.get(part.toolCallId) }),
           })
-          handlers.onToolCallResult({
+          callStreamHandler(handlers.onToolCallResult, {
             conversationId,
             messageId: assistantMessageId,
             toolCallId: part.toolCallId,
@@ -606,7 +644,7 @@ export async function streamChat(req: StreamRequest, handlers: StreamHandlers): 
           break
         }
         case 'abort': {
-          await handlers.onError({
+          await callAsyncStreamHandler(handlers.onError, {
             conversationId,
             messageId: assistantMessageId,
             error: 'Aborted',
@@ -617,7 +655,7 @@ export async function streamChat(req: StreamRequest, handlers: StreamHandlers): 
         }
         case 'error': {
           const message = part.error instanceof Error ? part.error.message : String(part.error)
-          await handlers.onError({
+          await callAsyncStreamHandler(handlers.onError, {
             conversationId,
             messageId: assistantMessageId,
             error: message,
@@ -633,7 +671,7 @@ export async function streamChat(req: StreamRequest, handlers: StreamHandlers): 
       usage: lastUsage ?? undefined,
       outputBlockCount: builder.blocks.length,
     })
-    await handlers.onDone({
+    await callAsyncStreamHandler(handlers.onDone, {
       conversationId,
       messageId: assistantMessageId,
       message: builder.build(assistantMessageId, 'done', selection),
@@ -642,7 +680,7 @@ export async function streamChat(req: StreamRequest, handlers: StreamHandlers): 
   } catch (error) {
     const isAbort = signal.aborted
     const message = isAbort ? 'Aborted' : error instanceof Error ? error.message : String(error)
-    await handlers.onError({
+    await callAsyncStreamHandler(handlers.onError, {
       conversationId,
       messageId: assistantMessageId,
       error: message,

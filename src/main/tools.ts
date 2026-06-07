@@ -752,6 +752,24 @@ function cloneToolPolicyRequest(request: ToolPolicyRequest): ToolPolicyRequest {
   }
 }
 
+function cloneToolValue<T>(value: T): T {
+  return structuredClone(value)
+}
+
+function cloneToolArgs(args: Record<string, unknown>): Record<string, unknown> {
+  return cloneToolValue(args)
+}
+
+function cloneToolContext(ctx: ToolContext): ToolContext {
+  return {
+    ...ctx,
+    settings: cloneToolValue(ctx.settings),
+    ...(ctx.workspaceRoots !== undefined && {
+      workspaceRoots: cloneToolValue(ctx.workspaceRoots),
+    }),
+  }
+}
+
 export type ToolWorkspaceRoot = string | { path: string; label?: string }
 
 export interface ToolContext {
@@ -841,29 +859,31 @@ export async function executeTool(
   registry: ToolRegistry = DEFAULT_TOOL_REGISTRY,
 ): Promise<string> {
   const spec = assertToolAllowed(name, ctx.profileId, registry)
+  const toolArgs = cloneToolArgs(args)
+  const toolContext = cloneToolContext(ctx)
   const request: ToolPolicyRequest = {
     name,
-    args,
-    metadata: spec.metadata,
-    target: summarizeToolTarget(name, args),
+    args: cloneToolArgs(toolArgs),
+    metadata: cloneToolValue(spec.metadata),
+    target: summarizeToolTarget(name, toolArgs),
     ...(ctx.conversationId && { conversationId: ctx.conversationId }),
     ...(ctx.messageId && { messageId: ctx.messageId }),
     ...(ctx.toolCallId && { toolCallId: ctx.toolCallId }),
   }
-  const decision = await evaluateToolPolicy(request, ctx)
+  const decision = await evaluateToolPolicy(request, toolContext)
   if (decision.action === 'deny') {
     throw new Error(decision.reason ?? `tool "${name}" was denied by policy`)
   }
   if (decision.action === 'ask') {
-    if (!ctx.onToolApproval) {
+    if (!toolContext.onToolApproval) {
       throw new Error(`tool "${name}" requires approval but no approval host is available`)
     }
-    const approved = await ctx.onToolApproval(cloneToolPolicyRequest(request))
+    const approved = await toolContext.onToolApproval(cloneToolPolicyRequest(request))
     if (approved !== true) throw new Error(`tool "${name}" was rejected by user`)
   }
   const runner = registry.runnersByName.get(name)
   if (!runner) throw new Error(`unknown tool: ${name}`)
-  return runner(args, ctx)
+  return runner(cloneToolArgs(toolArgs), toolContext)
 }
 
 export async function evaluateToolPolicy(
