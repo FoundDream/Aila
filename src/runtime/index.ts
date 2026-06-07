@@ -90,6 +90,7 @@ export {
   AILA_RUNTIME_EVENT_TYPES,
   type AilaRuntimeEventType,
   type ConversationAbortReason,
+  createInMemoryRuntimeStore,
   createRuntimeEvent,
   isRuntimeEventType,
   type RuntimeAppendUserMessageInput,

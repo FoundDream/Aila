@@ -17,26 +17,17 @@ import {
 import { buildAgentContext } from './context'
 import {
   type AgentEventAppendResult,
+  AILA_AGENT_EVENT_SCHEMA_VERSION,
+  AILA_CONVERSATION_META_SCHEMA_VERSION,
   AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
-  createConversation as addConversation,
-  appendAgentEventAndTouchConversation,
   type ConversationRecord,
   type ConversationSummary,
   createInterruptedConversationRecoveryEvent,
   type DocRefRewrite,
-  getConversation,
-  listAgentEvents,
-  listConversations,
   type PersistedAgentEvent,
   type PersistedMessage,
   type PersistedTextBlock,
-  recoverInterruptedConversationActivities,
-  deleteConversation as removeConversation,
-  renameConversation,
   replayConversationActivity,
-  rewriteDocRefs as rewritePersistedDocRefs,
-  setConversationUsage,
-  upsertMessage,
 } from './conversations'
 import { type AgentRuntimeEvent, createRuntimeEvent } from './runtime-events'
 import type { Settings } from './settings'
@@ -65,14 +56,14 @@ interface RuntimeToolContextInput {
 }
 
 type MaybePromise<T> = T | Promise<T>
-export type RuntimeRecordAgentEventInput = Parameters<
-  typeof appendAgentEventAndTouchConversation
->[1]
+export type RuntimeRecordAgentEventInput = AgentEvent
 type AgentEventInput = RuntimeRecordAgentEventInput
 
 export type ConversationAbortReason = 'user' | 'delete' | 'shutdown'
 
 const DEFAULT_ABORT_ALL_CLEANUP_TIMEOUT_MS = 5_000
+const DEFAULT_CONVERSATION_TITLE = '新对话'
+const CONVERSATION_TITLE_MAX = 40
 const EMPTY_RUNTIME_SETTINGS: Settings = { apiKeys: {}, defaultModel: null }
 const TURN_LIFECYCLE_EVENTS = new Set<AgentEvent['type']>([
   'turn.started',
@@ -257,7 +248,7 @@ export interface AgentRuntimeStore {
   upsertMessage: (conversationId: string, message: PersistedMessage) => Promise<ConversationSummary>
   appendAgentEventAndTouchConversation: (
     conversationId: string,
-    event: Parameters<typeof appendAgentEventAndTouchConversation>[1],
+    event: AgentEvent,
   ) => Promise<AgentEventAppendResult>
   listConversations?: () => Promise<readonly ConversationSummary[]>
   listAgentEvents?: (conversationId: string) => Promise<readonly PersistedAgentEvent[]>
@@ -271,18 +262,213 @@ export interface AgentRuntimeStore {
   deleteConversation: (conversationId: string) => Promise<void>
 }
 
-const DEFAULT_RUNTIME_STORE: AgentRuntimeStore = {
-  createConversation: addConversation,
-  getConversation,
-  upsertMessage,
-  appendAgentEventAndTouchConversation,
-  listConversations,
-  listAgentEvents,
-  recoverInterruptedConversationActivities,
-  renameConversation,
-  rewriteDocRefs: (rewrites) => rewritePersistedDocRefs([...rewrites]),
-  setConversationUsage,
-  deleteConversation: removeConversation,
+function cloneRuntimeValue<T>(value: T): T {
+  return structuredClone(value)
+}
+
+function nextRuntimeUpdatedAt(current: ConversationSummary, timestamp = Date.now()): number {
+  return Math.max(current.updatedAt + 1, timestamp)
+}
+
+function deriveConversationTitle(message: PersistedMessage): string | null {
+  if (message.role !== 'user') return null
+  const title = messageText(message).replace(/\s+/g, ' ').trim()
+  if (!title) return null
+  if (title.length <= CONVERSATION_TITLE_MAX) return title
+  return `${title.slice(0, CONVERSATION_TITLE_MAX - 3)}...`
+}
+
+function sameConversationActivity(
+  left: ConversationSummary['activity'],
+  right: ConversationSummary['activity'],
+): boolean {
+  return (
+    left?.state === right?.state &&
+    left?.title === right?.title &&
+    left?.updatedAt === right?.updatedAt &&
+    left?.eventType === right?.eventType &&
+    left?.messageId === right?.messageId &&
+    left?.detail === right?.detail &&
+    left?.toolName === right?.toolName
+  )
+}
+
+function rewriteRuntimeDocId(docId: string, rewrites: readonly DocRefRewrite[]): string | null {
+  for (const rewrite of rewrites) {
+    if (rewrite.isFolder) {
+      if (docId === rewrite.oldPath || docId.startsWith(`${rewrite.oldPath}/`)) {
+        return `${rewrite.newPath}${docId.slice(rewrite.oldPath.length)}`
+      }
+    } else if (docId === rewrite.oldPath) {
+      return rewrite.newPath
+    }
+  }
+  return null
+}
+
+export function createInMemoryRuntimeStore(): AgentRuntimeStore {
+  const records = new Map<string, ConversationRecord>()
+  const agentEvents = new Map<string, PersistedAgentEvent[]>()
+
+  function requireRecord(conversationId: string): ConversationRecord {
+    const record = records.get(conversationId)
+    if (!record) throw new Error(`conversation not found: ${conversationId}`)
+    return record
+  }
+
+  function summary(record: ConversationRecord): ConversationSummary {
+    return cloneRuntimeValue(record.meta)
+  }
+
+  function updateMeta(
+    conversationId: string,
+    updater: (current: ConversationSummary) => ConversationSummary,
+  ): ConversationSummary {
+    const record = requireRecord(conversationId)
+    record.meta = cloneRuntimeValue(updater(record.meta))
+    return summary(record)
+  }
+
+  async function appendAgentEventAndTouchConversation(
+    conversationId: string,
+    event: AgentEvent,
+  ): Promise<AgentEventAppendResult> {
+    const record = requireRecord(conversationId)
+    const events = agentEvents.get(conversationId) ?? []
+    const previousActivity = replayConversationActivity(events)
+    const persisted: PersistedAgentEvent = {
+      ...cloneRuntimeValue(event),
+      schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+    }
+    events.push(persisted)
+    agentEvents.set(conversationId, events)
+
+    const activity = replayConversationActivity(events)
+    if (!activity || sameConversationActivity(previousActivity, activity)) {
+      return { event: cloneRuntimeValue(persisted) }
+    }
+    if (record.meta.activity && record.meta.activity.updatedAt > activity.updatedAt) {
+      return { event: cloneRuntimeValue(persisted) }
+    }
+
+    const updated = updateMeta(conversationId, (current) => ({
+      ...current,
+      updatedAt: nextRuntimeUpdatedAt(current, persisted.timestamp),
+      activity,
+    }))
+    return { event: cloneRuntimeValue(persisted), summary: updated }
+  }
+
+  return {
+    async createConversation(docId?: string): Promise<ConversationSummary> {
+      const now = Date.now()
+      const meta: ConversationSummary = {
+        schemaVersion: AILA_CONVERSATION_META_SCHEMA_VERSION,
+        id: randomUUID(),
+        title: DEFAULT_CONVERSATION_TITLE,
+        createdAt: now,
+        updatedAt: now,
+        ...(docId ? { docId } : {}),
+      }
+      records.set(meta.id, { meta, messages: [] })
+      agentEvents.set(meta.id, [])
+      return cloneRuntimeValue(meta)
+    },
+    async getConversation(conversationId): Promise<ConversationRecord> {
+      return cloneRuntimeValue(requireRecord(conversationId))
+    },
+    async upsertMessage(conversationId, message): Promise<ConversationSummary> {
+      const record = requireRecord(conversationId)
+      const prepared = cloneRuntimeValue(message)
+      const index = record.messages.findIndex((current) => current.id === prepared.id)
+      if (index >= 0) {
+        record.messages[index] = prepared
+      } else {
+        record.messages.push(prepared)
+      }
+
+      record.meta = {
+        ...record.meta,
+        updatedAt: nextRuntimeUpdatedAt(record.meta),
+      }
+      if (record.meta.title === DEFAULT_CONVERSATION_TITLE) {
+        const title = deriveConversationTitle(prepared)
+        if (title) record.meta.title = title
+      }
+      return summary(record)
+    },
+    appendAgentEventAndTouchConversation,
+    async listConversations(): Promise<readonly ConversationSummary[]> {
+      return [...records.values()]
+        .map((record) => summary(record))
+        .sort((left, right) => right.updatedAt - left.updatedAt)
+    },
+    async listAgentEvents(conversationId): Promise<readonly PersistedAgentEvent[]> {
+      requireRecord(conversationId)
+      return cloneRuntimeValue(agentEvents.get(conversationId) ?? [])
+    },
+    async recoverInterruptedConversationActivities(reason): Promise<ConversationSummary[]> {
+      const recovered: ConversationSummary[] = []
+      for (const [conversationId, record] of records) {
+        const events = agentEvents.get(conversationId) ?? []
+        const replayedActivity = replayConversationActivity(events)
+        if (replayedActivity && !sameConversationActivity(record.meta.activity, replayedActivity)) {
+          updateMeta(conversationId, (current) =>
+            current.activity && current.activity.updatedAt > replayedActivity.updatedAt
+              ? current
+              : {
+                  ...current,
+                  updatedAt: nextRuntimeUpdatedAt(current, replayedActivity.updatedAt),
+                  activity: replayedActivity,
+                },
+          )
+        }
+        const recoveryEvent = createInterruptedConversationRecoveryEvent(events, {
+          reason,
+          activity: replayedActivity ?? record.meta.activity,
+        })
+        if (!recoveryEvent) continue
+        const result = await appendAgentEventAndTouchConversation(conversationId, recoveryEvent)
+        if (result.summary) recovered.push(result.summary)
+      }
+      return recovered.sort((left, right) => right.updatedAt - left.updatedAt)
+    },
+    async renameConversation(conversationId, title): Promise<ConversationSummary> {
+      return updateMeta(conversationId, (current) => ({
+        ...current,
+        title: title.trim() || DEFAULT_CONVERSATION_TITLE,
+        updatedAt: nextRuntimeUpdatedAt(current),
+      }))
+    },
+    async rewriteDocRefs(rewrites): Promise<readonly ConversationSummary[]> {
+      if (rewrites.length === 0) return []
+      const updated: ConversationSummary[] = []
+      for (const [conversationId, record] of records) {
+        const docId = record.meta.docId
+        if (!docId) continue
+        const nextDocId = rewriteRuntimeDocId(docId, rewrites)
+        if (nextDocId === null) continue
+        updated.push(
+          updateMeta(conversationId, (current) => ({
+            ...current,
+            docId: nextDocId,
+          })),
+        )
+      }
+      return updated
+    },
+    async setConversationUsage(conversationId, usage): Promise<ConversationSummary> {
+      return updateMeta(conversationId, (current) => ({
+        ...current,
+        updatedAt: nextRuntimeUpdatedAt(current),
+        usage: { ...usage, updatedAt: Date.now() },
+      }))
+    },
+    async deleteConversation(conversationId): Promise<void> {
+      records.delete(conversationId)
+      agentEvents.delete(conversationId)
+    },
+  }
 }
 
 function normalizeRuntimeHost(options: AgentRuntimeOptions): AgentRuntimeHost {
@@ -352,7 +538,7 @@ export class AgentRuntime {
 
   constructor(private readonly options: AgentRuntimeOptions = {}) {
     this.host = normalizeRuntimeHost(options)
-    this.store = options.store ?? DEFAULT_RUNTIME_STORE
+    this.store = options.store ?? createInMemoryRuntimeStore()
     this.logger = this.host.logger ?? console
     this.staticProfiles = resolveStaticProfiles(options)
     this.staticToolPacks = resolveStaticToolPacks(options)

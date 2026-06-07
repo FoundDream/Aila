@@ -34,6 +34,7 @@ import {
   configureDataDir,
   createDefaultToolRegistry,
   createInterruptedConversationRecoveryEvent,
+  createPersistedRuntimeStore,
   createRuntimeEvent,
   executeTool,
   getConversationsDir,
@@ -119,12 +120,12 @@ async function testRuntimeEmitsVersionedEvents(): Promise<void> {
     const previousOpenRouterKey = process.env.OPENROUTER_API_KEY
     process.env.OPENROUTER_API_KEY = ''
     try {
-      const conversation = await createConversation()
       const events: AgentRuntimeEvent[] = []
       const runtime = new AgentRuntime({
         onEvent: (event) => events.push(event),
         logger: { warn() {}, error() {} },
       })
+      const conversation = await runtime.createConversation()
 
       await runtime.send({
         conversationId: conversation.id,
@@ -282,7 +283,7 @@ async function testRuntimeHostBoundaryContract(): Promise<void> {
       },
       logger: { warn() {}, error() {} },
     }
-    const runtime = new AgentRuntime({ host })
+    const runtime = new AgentRuntime({ store: createPersistedRuntimeStore(), host })
 
     await runtime.send({
       conversationId: conversation.id,
@@ -326,6 +327,7 @@ async function testRuntimeSettingsFallbackIsHostAgnostic(): Promise<void> {
       let streamSettingsKey: string | null | undefined
       let streamDefaultModel: Settings['defaultModel'] | undefined
       const runtime = new AgentRuntime({
+        store: createPersistedRuntimeStore(),
         streamChat: async (req, handlers) => {
           streamSettingsKey = req.settings?.apiKeys.openrouter
           streamDefaultModel = req.settings?.defaultModel
@@ -1279,6 +1281,7 @@ async function testRuntimeRetriesDanglingUserTurn(): Promise<void> {
 
       const events: AgentRuntimeEvent[] = []
       const runtime = new AgentRuntime({
+        store: createPersistedRuntimeStore(),
         onEvent: (event) => events.push(event),
         logger: { warn() {}, error() {} },
       })
@@ -1341,6 +1344,7 @@ async function testRuntimeRetriesFailedAssistantTurn(): Promise<void> {
     const events: AgentRuntimeEvent[] = []
     let modelInput = ''
     const runtime = new AgentRuntime({
+      store: createPersistedRuntimeStore(),
       onEvent: (event) => events.push(event),
       logger: { warn() {}, error() {} },
       streamChat: async (req, handlers) => {
@@ -1449,6 +1453,7 @@ async function testRuntimeContextSkipsNonDoneAssistantHistory(): Promise<void> {
 
     let modelInput = ''
     const runtime = new AgentRuntime({
+      store: createPersistedRuntimeStore(),
       logger: { warn() {}, error() {} },
       streamChat: async (req, handlers) => {
         modelInput = JSON.stringify(req.messages)
@@ -1516,6 +1521,7 @@ async function testRuntimeAbortPersistsCancellationActivity(): Promise<void> {
       resolveStarted = resolve
     })
     const runtime = new AgentRuntime({
+      store: createPersistedRuntimeStore(),
       onEvent: (event) => events.push(event),
       logger: { warn() {}, error() {} },
       streamChat: async (req, handlers) => {
@@ -1625,6 +1631,7 @@ async function testRuntimeAbortTimesOutStuckStreamCleanup(): Promise<void> {
     let cleanupReason: string | null = null
 
     const runtime = new AgentRuntime({
+      store: createPersistedRuntimeStore(),
       abortAllCleanupTimeoutMs: 10,
       onEvent: (event) => events.push(event),
       logger: { warn() {}, error() {} },
@@ -1709,6 +1716,7 @@ async function testRuntimeUnexpectedStreamErrorPersistsFailureActivity(): Promis
     const conversation = await createConversation()
     const events: AgentRuntimeEvent[] = []
     const runtime = new AgentRuntime({
+      store: createPersistedRuntimeStore(),
       onEvent: (event) => events.push(event),
       logger: { warn() {}, error() {} },
       streamChat: async (req) => {
@@ -1780,6 +1788,7 @@ async function testRuntimeSetupFailurePersistsAssistantError(): Promise<void> {
     const conversation = await createConversation()
     const events: AgentRuntimeEvent[] = []
     const runtime = new AgentRuntime({
+      store: createPersistedRuntimeStore(),
       onEvent: (event) => events.push(event),
       logger: { warn() {}, error() {} },
       workspaceRoots: () => {
@@ -1867,6 +1876,7 @@ async function testRuntimeSetupFailureRejectsWhenConversationDeleted(): Promise<
     let runtime: AgentRuntime
 
     runtime = new AgentRuntime({
+      store: createPersistedRuntimeStore(),
       onEvent: (event) => events.push(event),
       logger: { warn() {}, error() {} },
       workspaceRoots: () => {
@@ -1919,6 +1929,7 @@ async function testRuntimeSetupFailureSuppressesChatErrorAfterDelete(): Promise<
     let runtime: AgentRuntime
 
     runtime = new AgentRuntime({
+      store: createPersistedRuntimeStore(),
       onEvent: (event) => {
         events.push(event)
         if (
@@ -1985,6 +1996,7 @@ async function testRuntimeListsActiveAssistantTurns(): Promise<void> {
       resolveStream = resolve
     })
     const runtime = new AgentRuntime({
+      store: createPersistedRuntimeStore(),
       logger: { warn() {}, error() {} },
       streamChat: async (req, handlers) => {
         req.onAgentEvent?.({
@@ -2058,6 +2070,7 @@ async function testRuntimeDeleteRunsAbortCleanupBeforeWaitingForStream(): Promis
     let cleanupReason: string | null = null
 
     const runtime = new AgentRuntime({
+      store: createPersistedRuntimeStore(),
       logger: { warn() {}, error() {} },
       onConversationAbort: (conversationId, reason) => {
         cleanupConversationId = conversationId
@@ -2136,6 +2149,7 @@ async function testRuntimeDeleteTimesOutStuckStreamAndSuppressesLateEvents(): Pr
     let lateStreamFinished = false
 
     const runtime = new AgentRuntime({
+      store: createPersistedRuntimeStore(),
       abortAllCleanupTimeoutMs: 10,
       onEvent: (event) => events.push(event),
       logger: { warn() {}, error() {} },
@@ -2240,6 +2254,7 @@ async function testRuntimeRejectsNewTurnsAfterDeleteStarts(): Promise<void> {
     })
 
     const runtime = new AgentRuntime({
+      store: createPersistedRuntimeStore(),
       abortAllCleanupTimeoutMs: 10,
       logger: { warn() {}, error() {} },
       onConversationAbort: () => {
@@ -2305,6 +2320,7 @@ async function testRuntimeDeleteFailureReopensConversation(): Promise<void> {
     const conversationsDir = getConversationsDir()
     let streamCount = 0
     const runtime = new AgentRuntime({
+      store: createPersistedRuntimeStore(),
       logger: { warn() {}, error() {} },
       streamChat: async (req, handlers) => {
         streamCount += 1
@@ -2389,6 +2405,7 @@ async function testRuntimeSendRecoversAbortedStuckPreviousStream(): Promise<void
     let firstLateStreamFinished = false
 
     const runtime = new AgentRuntime({
+      store: createPersistedRuntimeStore(),
       abortAllCleanupTimeoutMs: 10,
       onEvent: (event) => events.push(event),
       logger: { warn() {}, error() {} },
@@ -2531,6 +2548,7 @@ async function testRuntimeAbortAllWaitsForShutdownCleanup(): Promise<void> {
     let streamFinished = false
 
     const runtime = new AgentRuntime({
+      store: createPersistedRuntimeStore(),
       logger: { warn() {}, error() {} },
       onConversationAbort: (conversationId, reason) => {
         cleanupConversationId = conversationId
@@ -2620,6 +2638,7 @@ async function testRuntimeAbortAllTimesOutStuckStreamCleanup(): Promise<void> {
     let cleanupReason: string | null = null
 
     const runtime = new AgentRuntime({
+      store: createPersistedRuntimeStore(),
       abortAllCleanupTimeoutMs: 10,
       logger: { warn() {}, error() {} },
       onConversationAbort: (_conversationId, reason) => {
@@ -2688,6 +2707,7 @@ async function testRuntimeShutdownRejectsNewTurns(): Promise<void> {
     let streamFinished = false
 
     const runtime = new AgentRuntime({
+      store: createPersistedRuntimeStore(),
       logger: { warn() {}, error() {} },
       streamChat: async (req, handlers) => {
         streamCount += 1
@@ -3933,6 +3953,20 @@ async function testRuntimeSdkDoesNotExportDocsContract(): Promise<void> {
     typeof store.appendAgentEventAndTouchConversation,
     'function',
     'persisted store should persist agent events',
+  )
+
+  assertEqual(
+    typeof runtimeSdk.createInMemoryRuntimeStore,
+    'function',
+    'runtime SDK should expose the in-memory store factory',
+  )
+  const memoryStore = runtimeSdk.createInMemoryRuntimeStore()
+  const memoryConversation = await memoryStore.createConversation?.()
+  assert(memoryConversation, 'in-memory store should create conversations')
+  assertEqual(
+    (await memoryStore.getConversation(memoryConversation.id)).meta.id,
+    memoryConversation.id,
+    'in-memory store should keep records without a host adapter',
   )
 }
 
