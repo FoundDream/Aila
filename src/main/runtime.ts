@@ -50,6 +50,8 @@ type MaybePromise<T> = T | Promise<T>
 
 export type ConversationAbortReason = 'user' | 'delete' | 'shutdown'
 
+const DEFAULT_ABORT_ALL_CLEANUP_TIMEOUT_MS = 5_000
+
 function messageText(message: PersistedMessage): string {
   return message.blocks
     .filter((block): block is PersistedTextBlock => block.type === 'text')
@@ -142,6 +144,7 @@ export interface AgentRuntimeOptions {
   loadToolPacks?: () => Promise<readonly ToolPack[]>
   workspaceRoots?: ToolContext['workspaceRoots'] | (() => ToolContext['workspaceRoots'])
   streamChat?: typeof defaultStreamChat
+  abortAllCleanupTimeoutMs?: number
   logger?: Pick<Console, 'error' | 'warn'>
 }
 
@@ -335,6 +338,8 @@ export class AgentRuntime {
   }
 
   async abortAll(reason: ConversationAbortReason = 'shutdown'): Promise<void> {
+    const cleanupTimeoutMs =
+      this.options.abortAllCleanupTimeoutMs ?? DEFAULT_ABORT_ALL_CLEANUP_TIMEOUT_MS
     await Promise.all(
       Array.from(this.activeStreams.entries()).map(async ([conversationId, slot]) => {
         slot.controller.abort()
@@ -354,7 +359,28 @@ export class AgentRuntime {
           }
         }
         await abortCleanup
-        await slot.cleanup.catch(() => {})
+        const cleanedUp = await this.waitForStreamCleanup(slot, cleanupTimeoutMs)
+        if (!cleanedUp) {
+          if (this.activeStreams.get(conversationId)?.controller === slot.controller) {
+            this.activeStreams.delete(conversationId)
+          }
+          try {
+            await this.recordAgentEvent({
+              timestamp: Date.now(),
+              conversationId,
+              messageId: slot.assistantMessageId,
+              type: 'turn.interrupted',
+              data: {
+                reason: `${reason} cleanup timed out`,
+                previousState: 'cancelled',
+                previousEventType: 'turn.cancelled',
+                previousTitle: 'Stop requested',
+              },
+            })
+          } catch (err) {
+            this.logger.warn('[runtime] interrupted shutdown activity append failed:', err)
+          }
+        }
       }),
     )
   }
@@ -459,6 +485,21 @@ export class AgentRuntime {
       await this.options.onConversationAbort?.(conversationId, reason)
     } catch (error) {
       this.logger.warn('[runtime] conversation abort cleanup failed:', error)
+    }
+  }
+
+  private async waitForStreamCleanup(slot: StreamSlot, timeoutMs: number): Promise<boolean> {
+    if (timeoutMs <= 0) return false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      return await Promise.race([
+        slot.cleanup.catch(() => {}).then(() => true),
+        new Promise<boolean>((resolve) => {
+          timer = setTimeout(() => resolve(false), timeoutMs)
+        }),
+      ])
+    } finally {
+      if (timer) clearTimeout(timer)
     }
   }
 

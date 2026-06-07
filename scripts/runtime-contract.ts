@@ -777,6 +777,73 @@ async function testRuntimeAbortAllWaitsForShutdownCleanup(): Promise<void> {
   })
 }
 
+async function testRuntimeAbortAllTimesOutStuckStreamCleanup(): Promise<void> {
+  await withTempDataDir(async () => {
+    const conversation = await createConversation()
+    let resolveStarted: () => void = () => {}
+    const started = new Promise<void>((resolve) => {
+      resolveStarted = resolve
+    })
+    let cleanupReason: string | null = null
+
+    const runtime = new AgentRuntime({
+      abortAllCleanupTimeoutMs: 10,
+      logger: { warn() {}, error() {} },
+      onConversationAbort: (_conversationId, reason) => {
+        cleanupReason = reason
+      },
+      streamChat: async (req) => {
+        req.onAgentEvent?.({
+          timestamp: Date.now(),
+          conversationId: req.conversationId,
+          messageId: req.assistantMessageId,
+          type: 'turn.started',
+          data: { providerId: req.selection.providerId, modelId: req.selection.modelId },
+        })
+        resolveStarted()
+        await new Promise<void>(() => {})
+      },
+    })
+
+    await runtime.send({
+      conversationId: conversation.id,
+      userText: 'shutdown stuck stream',
+      selection: { providerId: 'openrouter', modelId: 'contract/mock' },
+      requestedProfileId: 'coding',
+    })
+    await started
+
+    await withTimeout(runtime.abortAll('shutdown'), 'abortAll should time out stuck cleanup', 500)
+    assertEqual(cleanupReason, 'shutdown', 'stuck abortAll cleanup reason')
+    assertEqual(runtime.listActiveStreams().length, 0, 'stuck cleanup should clear active stream')
+
+    const agentEvents = await listAgentEvents(conversation.id)
+    assert(
+      agentEvents.some(
+        (event) =>
+          event.type === 'turn.cancelled' &&
+          event.data?.phase === 'requested' &&
+          event.data.reason === 'shutdown',
+      ),
+      'stuck cleanup should persist shutdown cancellation request',
+    )
+    assertEqual(
+      agentEvents.at(-1)?.type,
+      'turn.interrupted',
+      'stuck cleanup should end with interrupted event',
+    )
+    assertEqual(
+      agentEvents.at(-1)?.data?.reason,
+      'shutdown cleanup timed out',
+      'stuck cleanup interrupted reason',
+    )
+
+    const record = await getConversation(conversation.id)
+    assertEqual(record.meta.activity?.state, 'interrupted', 'stuck cleanup activity state')
+    assertEqual(record.meta.activity?.title, 'Interrupted', 'stuck cleanup activity title')
+  })
+}
+
 async function testPersistenceContract(): Promise<void> {
   await withTempDataDir(async () => {
     const conversation = await createConversation('docs/runtime-contract')
@@ -1545,6 +1612,7 @@ async function main(): Promise<void> {
   await testRuntimeListsActiveAssistantTurns()
   await testRuntimeDeleteRunsAbortCleanupBeforeWaitingForStream()
   await testRuntimeAbortAllWaitsForShutdownCleanup()
+  await testRuntimeAbortAllTimesOutStuckStreamCleanup()
   await testPersistenceContract()
   await testMessageUpsertPreventsDuplicatePersistedMessages()
   await testAgentEventReplayDeduplicatesExactDuplicates()
