@@ -1,5 +1,5 @@
 import type { ChatMessage } from './agent'
-import { type ConversationRecord, getConversation } from './conversations'
+import type { ConversationRecord } from './conversations'
 import { getDoc, getDocFilePath } from './docs'
 import { getDocumentsDir } from './paths'
 import type { ToolContext } from './tools'
@@ -52,8 +52,4 @@ export async function buildDesktopWorkspaceContextFromRecord(
       },
     ]
   }
-}
-
-export async function buildDesktopWorkspaceContext(conversationId: string): Promise<ChatMessage[]> {
-  return buildDesktopWorkspaceContextFromRecord(await getConversation(conversationId))
 }

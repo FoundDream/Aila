@@ -34,7 +34,7 @@ import {
   ToolApprovalStore,
 } from '../src/main/tool-approvals'
 import {
-  buildDesktopWorkspaceContext,
+  buildDesktopWorkspaceContextFromRecord,
   getDesktopWorkspaceRoots,
 } from '../src/main/workspace-context'
 import type { ConversationSummary } from '../src/preload'
@@ -89,7 +89,9 @@ async function testDocConversationWorkspaceContext(): Promise<void> {
     })
     const conversation = await createConversation(doc.path)
 
-    const context = await buildDesktopWorkspaceContext(conversation.id)
+    const context = await buildDesktopWorkspaceContextFromRecord(
+      await getConversation(conversation.id),
+    )
     assertEqual(context.length, 1, 'doc-bound conversation should get one context message')
     assertEqual(context[0]?.role, 'system', 'context should be a system message')
 
