@@ -447,6 +447,38 @@ function activityFromAgentEvent(event: PersistedAgentEvent): ConversationActivit
   }
 }
 
+export function replayConversationActivity(
+  events: readonly PersistedAgentEvent[],
+): ConversationActivity | undefined {
+  const seen = new Set<string>()
+  let activity: ConversationActivity | undefined
+  for (const event of [...events].sort((a, b) => a.timestamp - b.timestamp)) {
+    const key = agentEventReplayKey(event)
+    if (seen.has(key)) continue
+    seen.add(key)
+    const next = activityFromAgentEvent(event)
+    if (!next) continue
+    if (activity && activity.updatedAt > next.updatedAt) continue
+    activity = next
+  }
+  return activity
+}
+
+function activityEquals(
+  left: ConversationActivity | undefined,
+  right: ConversationActivity | undefined,
+): boolean {
+  return (
+    left?.state === right?.state &&
+    left?.title === right?.title &&
+    left?.updatedAt === right?.updatedAt &&
+    left?.eventType === right?.eventType &&
+    left?.messageId === right?.messageId &&
+    left?.detail === right?.detail &&
+    left?.toolName === right?.toolName
+  )
+}
+
 export async function listConversations(): Promise<ConversationSummary[]> {
   await ensureDir()
   const entries = await readdir(getConversationsDir())
@@ -476,14 +508,24 @@ export async function recoverInterruptedConversationActivities(
   reason = 'runtime restarted before this turn finished',
 ): Promise<ConversationSummary[]> {
   const list = await listConversations()
-  const active = list.filter(
-    (meta) => meta.activity?.state === 'running' || meta.activity?.state === 'approval',
-  )
   const recovered: ConversationSummary[] = []
   await Promise.all(
-    active.map(async (meta) => {
-      const activity = meta.activity
+    list.map(async (meta) => {
+      const replayedActivity = replayConversationActivity(await listAgentEvents(meta.id))
+      const activity = replayedActivity ?? meta.activity
       if (!activity) return
+      if (replayedActivity && !activityEquals(meta.activity, replayedActivity)) {
+        await updateMeta(meta.id, (current) =>
+          current.activity && current.activity.updatedAt > replayedActivity.updatedAt
+            ? current
+            : {
+                ...current,
+                updatedAt: nextUpdatedAt(current, replayedActivity.updatedAt),
+                activity: replayedActivity,
+              },
+        )
+      }
+      if (activity.state !== 'running' && activity.state !== 'approval') return
       const { summary } = await appendAgentEventAndTouchConversation(meta.id, {
         timestamp: Date.now(),
         conversationId: meta.id,

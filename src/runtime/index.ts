@@ -38,6 +38,7 @@ export {
   type PersistedToolCallBlock,
   recoverInterruptedConversationActivities,
   renameConversation,
+  replayConversationActivity,
   setConversationUsage,
   upsertMessage,
 } from '../main/conversations'

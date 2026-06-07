@@ -15,6 +15,7 @@ import {
   AILA_TOOL_PACK_MANIFEST_FILE,
   AILA_TOOL_PACK_MANIFEST_SCHEMA_VERSION,
   appendAgentEvent,
+  appendAgentEventAndTouchConversation,
   appendMessage,
   configureDataDir,
   createConversation,
@@ -32,6 +33,9 @@ import {
   listConversations,
   loadAgentProfilesFromDir,
   loadToolPacksFromDir,
+  type PersistedAgentEvent,
+  recoverInterruptedConversationActivities,
+  replayConversationActivity,
   type Settings,
   summarizeToolTarget,
   type ToolPack,
@@ -1790,6 +1794,89 @@ async function testAgentEventReplayDeduplicatesExactDuplicates(): Promise<void> 
   })
 }
 
+function testAgentEventReplayDerivesLatestActivity(): void {
+  const events: PersistedAgentEvent[] = [
+    {
+      schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+      timestamp: 30,
+      conversationId: 'conversation-replay',
+      messageId: 'assistant-replay',
+      type: 'turn.completed' as const,
+    },
+    {
+      schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+      timestamp: 10,
+      conversationId: 'conversation-replay',
+      messageId: 'assistant-replay',
+      type: 'turn.started' as const,
+      data: { modelId: 'contract/mock' },
+    },
+    {
+      schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+      timestamp: 20,
+      conversationId: 'conversation-replay',
+      messageId: 'assistant-replay',
+      type: 'tool.input.delta' as const,
+      data: { deltaSize: 20 },
+    },
+    {
+      schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+      timestamp: 30,
+      conversationId: 'conversation-replay',
+      messageId: 'assistant-replay',
+      type: 'turn.completed' as const,
+    },
+  ]
+
+  const activity = replayConversationActivity(events)
+  assert(activity, 'event replay should derive an activity')
+  assertEqual(activity.state, 'completed', 'event replay should use latest non-delta activity')
+  assertEqual(activity.eventType, 'turn.completed', 'event replay activity event type')
+  assertEqual(activity.updatedAt, 30, 'event replay activity timestamp')
+}
+
+async function testInterruptedRecoveryUsesEventReplayOverStaleMeta(): Promise<void> {
+  await withTempDataDir(async () => {
+    const conversation = await createConversation()
+    await appendAgentEventAndTouchConversation(conversation.id, {
+      timestamp: 10,
+      conversationId: conversation.id,
+      messageId: 'assistant-stale-meta',
+      type: 'turn.started',
+      data: { modelId: 'contract/mock' },
+    })
+    await appendAgentEvent(conversation.id, {
+      timestamp: 20,
+      conversationId: conversation.id,
+      messageId: 'assistant-stale-meta',
+      type: 'turn.completed',
+    })
+
+    const before = await getConversation(conversation.id)
+    assertEqual(before.meta.activity?.state, 'running', 'fixture should start with stale meta')
+
+    const recovered = await recoverInterruptedConversationActivities('contract restart')
+    assertEqual(
+      recovered.some((summary) => summary.id === conversation.id),
+      false,
+      'completed replay should not be recovered as interrupted',
+    )
+
+    const events = await listAgentEvents(conversation.id)
+    assert(
+      !events.some((event) => event.type === 'turn.interrupted'),
+      'completed replay should not append interrupted event',
+    )
+    const after = await getConversation(conversation.id)
+    assertEqual(after.meta.activity?.state, 'completed', 'recovery should repair stale activity')
+    assertEqual(
+      after.meta.activity?.eventType,
+      'turn.completed',
+      'recovery should repair activity event type from replay',
+    )
+  })
+}
+
 async function testLegacyPersistenceNormalization(): Promise<void> {
   await withTempDataDir(async () => {
     const dir = getConversationsDir()
@@ -2470,6 +2557,8 @@ async function main(): Promise<void> {
   await testPersistenceContract()
   await testMessageUpsertPreventsDuplicatePersistedMessages()
   await testAgentEventReplayDeduplicatesExactDuplicates()
+  testAgentEventReplayDerivesLatestActivity()
+  await testInterruptedRecoveryUsesEventReplayOverStaleMeta()
   await testLegacyPersistenceNormalization()
   await testToolRegistryContract()
   testToolActivityTargetContract()
