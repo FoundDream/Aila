@@ -105,6 +105,11 @@ export {
   type RuntimeSendResult,
   type RuntimeTransientContextInput,
 } from '../main/runtime'
+export {
+  type CreatePersistedAgentRuntimeInput,
+  createDefaultRuntimeHost,
+  createPersistedAgentRuntime,
+} from '../main/runtime-host'
 export { createPersistedRuntimeStore } from '../main/runtime-store'
 export {
   configuredProviders,

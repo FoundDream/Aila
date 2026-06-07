@@ -8,20 +8,18 @@ import { stdin as input, stdout as output, stderr } from 'node:process'
 import * as dotenv from 'dotenv'
 import {
   type AgentProfileId,
-  AgentRuntime,
+  type AgentRuntime,
   type AgentRuntimeEvent,
   type ConversationSummary,
   configureDataDir,
   configuredProviders,
-  createPersistedRuntimeStore,
+  createPersistedAgentRuntime,
   findModel,
   getDataDir,
   getExtensionReport,
   getProfilesDir,
   getToolPacksDir,
-  loadAgentProfilesFromDir,
   loadSettings,
-  loadToolPacksFromDir,
   MODEL_CATALOG,
   type ModelSelection,
   type PersistedMessage,
@@ -344,25 +342,23 @@ function createRuntime(input: {
   let assistantText = ''
   const toolNames = new Map<string, string>()
 
-  return new AgentRuntime({
-    store: createPersistedRuntimeStore(),
-    onEvent: (event) => {
-      if (input.events) output.write(`${JSON.stringify(event)}\n`)
-      handleRuntimeEvent(event, {
-        assistantText,
-        events: input.events,
-        json: input.json,
-        toolNames,
-        onAssistantText: (delta) => {
-          assistantText += delta
-        },
-        onCompletion: input.onCompletion ?? (() => {}),
-      })
+  return createPersistedAgentRuntime({
+    host: {
+      onEvent: (event) => {
+        if (input.events) output.write(`${JSON.stringify(event)}\n`)
+        handleRuntimeEvent(event, {
+          assistantText,
+          events: input.events,
+          json: input.json,
+          toolNames,
+          onAssistantText: (delta) => {
+            assistantText += delta
+          },
+          onCompletion: input.onCompletion ?? (() => {}),
+        })
+      },
+      onToolApproval: (request) => approveTool(request, input.autoApprove, input.events),
     },
-    onToolApproval: (request) => approveTool(request, input.autoApprove, input.events),
-    loadSettings,
-    loadProfiles: async () => (await loadAgentProfilesFromDir()).map((profile) => profile.profile),
-    loadToolPacks: async () => (await loadToolPacksFromDir()).map((pack) => pack.toolPack),
   })
 }
 

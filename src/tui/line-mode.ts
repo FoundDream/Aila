@@ -8,21 +8,19 @@ import { createInterface } from 'node:readline/promises'
 import * as dotenv from 'dotenv'
 import {
   type AgentProfileId,
-  AgentRuntime,
+  type AgentRuntime,
   type AgentRuntimeEvent,
   type ConversationSummary,
   configureDataDir,
   configuredProviders,
-  createPersistedRuntimeStore,
+  createPersistedAgentRuntime,
   type ExtensionReport,
   findModel,
   getDataDir,
   getExtensionReport,
   getProfilesDir,
   getToolPacksDir,
-  loadAgentProfilesFromDir,
   loadSettings,
-  loadToolPacksFromDir,
   MODEL_CATALOG,
   type ModelSelection,
   type PersistedMessage,
@@ -61,13 +59,11 @@ export interface TuiRuntimeInput {
 }
 
 export function createTuiRuntime(input: TuiRuntimeInput = {}): AgentRuntime {
-  return new AgentRuntime({
-    store: createPersistedRuntimeStore(),
-    ...(input.onEvent ? { onEvent: input.onEvent } : {}),
-    ...(input.onToolApproval ? { onToolApproval: input.onToolApproval } : {}),
-    loadSettings,
-    loadProfiles: async () => (await loadAgentProfilesFromDir()).map((profile) => profile.profile),
-    loadToolPacks: async () => (await loadToolPacksFromDir()).map((pack) => pack.toolPack),
+  return createPersistedAgentRuntime({
+    host: {
+      ...(input.onEvent ? { onEvent: input.onEvent } : {}),
+      ...(input.onToolApproval ? { onToolApproval: input.onToolApproval } : {}),
+    },
   })
 }
 

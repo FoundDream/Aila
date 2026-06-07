@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { handleRuntimeEvent } from '../src/cli/index'
@@ -164,10 +164,31 @@ function testInterruptedAgentEventCompletesCliAdapter(): void {
   assertEqual(completed.assistantText, 'partial output', 'CLI interrupted partial text')
 }
 
+async function testCliUsesSharedRuntimeFactory(): Promise<void> {
+  const source = await readFile(join(process.cwd(), 'src/cli/index.ts'), 'utf-8')
+  assert(
+    source.includes('createPersistedAgentRuntime'),
+    'CLI adapter should use the shared persisted runtime factory',
+  )
+  assert(
+    !source.includes('createPersistedRuntimeStore'),
+    'CLI adapter should not wire the persisted store directly',
+  )
+  assert(
+    !source.includes('loadAgentProfilesFromDir'),
+    'CLI adapter should not wire profile loaders directly',
+  )
+  assert(
+    !source.includes('loadToolPacksFromDir'),
+    'CLI adapter should not wire tool-pack loaders directly',
+  )
+}
+
 async function main(): Promise<void> {
   await testExtensionReportFailure()
   await testRetryLastDoesNotDuplicateUser()
   testInterruptedAgentEventCompletesCliAdapter()
+  await testCliUsesSharedRuntimeFactory()
   console.log('cli contract: ok')
 }
 

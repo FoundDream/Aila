@@ -24,12 +24,9 @@ import { cleanupConversationImages, saveImage } from './image-store'
 import { handleImageProtocol, registerImageProtocolScheme } from './images'
 import { getOpenRouterCatalog } from './openrouter-catalog'
 import { configureDataDir, getDataDir } from './paths'
-import { loadAgentProfilesFromDir } from './profile-loader'
-import { AgentRuntime } from './runtime'
-import { createPersistedRuntimeStore } from './runtime-store'
+import { createPersistedAgentRuntime } from './runtime-host'
 import { configuredProviders, loadSettings, type Settings, saveSettings } from './settings'
 import { ToolApprovalStore } from './tool-approvals'
-import { loadToolPacksFromDir } from './tool-pack-loader'
 import type { ToolApprovalRequest } from './tools'
 import {
   buildDesktopWorkspaceContextFromRecord,
@@ -103,16 +100,12 @@ async function cancelConversationApprovals(conversationId: string): Promise<void
   if (resolved > 0) await toolApprovals.flushActivity()
 }
 
-const agentRuntime = new AgentRuntime({
-  store: createPersistedRuntimeStore(),
+const agentRuntime = createPersistedAgentRuntime({
   host: {
     onEvent: (event) => send(event.type, event.data),
     onToolApproval: requestToolApproval,
     onConversationAbort: cancelConversationApprovals,
     cleanupConversationAssets: cleanupConversationImages,
-    loadSettings,
-    loadProfiles: async () => (await loadAgentProfilesFromDir()).map((profile) => profile.profile),
-    loadToolPacks: async () => (await loadToolPacksFromDir()).map((pack) => pack.toolPack),
     loadTransientContext: ({ record }) => buildDesktopWorkspaceContextFromRecord(record),
     workspaceRoots: getDesktopWorkspaceRoots,
   },

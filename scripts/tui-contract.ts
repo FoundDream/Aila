@@ -264,6 +264,26 @@ function testInterruptedAgentEventCompletesLineModeAdapter(): void {
   assert(completed, 'TUI line-mode interrupted event should complete the adapter')
 }
 
+async function testTuiUsesSharedRuntimeFactory(): Promise<void> {
+  const source = await readFile(join(process.cwd(), 'src/tui/line-mode.ts'), 'utf-8')
+  assert(
+    source.includes('createPersistedAgentRuntime'),
+    'TUI adapter should use the shared persisted runtime factory',
+  )
+  assert(
+    !source.includes('createPersistedRuntimeStore'),
+    'TUI adapter should not wire the persisted store directly',
+  )
+  assert(
+    !source.includes('loadAgentProfilesFromDir'),
+    'TUI adapter should not wire profile loaders directly',
+  )
+  assert(
+    !source.includes('loadToolPacksFromDir'),
+    'TUI adapter should not wire tool-pack loaders directly',
+  )
+}
+
 async function main(): Promise<void> {
   await testLocalSlashCommands()
   await testExtensionAndSessionSlashCommands()
@@ -271,6 +291,7 @@ async function main(): Promise<void> {
   await testDocFlagIsRemoved()
   await testRetryLastDoesNotDuplicateUser()
   testInterruptedAgentEventCompletesLineModeAdapter()
+  await testTuiUsesSharedRuntimeFactory()
   console.log('tui contract: ok')
 }
 

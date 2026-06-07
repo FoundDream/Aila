@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -118,6 +118,30 @@ async function testDesktopWorkspaceRoots(): Promise<void> {
     assert(typeof root !== 'string', 'Desktop workspace root should keep a label')
     assertEqual(root.path, getDocumentsDir(), 'Desktop documents root path')
   })
+}
+
+async function testDesktopUsesSharedRuntimeFactory(): Promise<void> {
+  const source = await readFile(join(process.cwd(), 'src/main/index.ts'), 'utf-8')
+  assert(
+    source.includes('createPersistedAgentRuntime'),
+    'Desktop main process should use the shared persisted runtime factory',
+  )
+  assert(
+    !source.includes('new AgentRuntime'),
+    'Desktop main process should not construct AgentRuntime directly',
+  )
+  assert(
+    !source.includes('createPersistedRuntimeStore'),
+    'Desktop main process should not wire the persisted store directly',
+  )
+  assert(
+    !source.includes('loadAgentProfilesFromDir'),
+    'Desktop main process should not wire profile loaders directly',
+  )
+  assert(
+    !source.includes('loadToolPacksFromDir'),
+    'Desktop main process should not wire tool-pack loaders directly',
+  )
 }
 
 async function testConversationPartitionContract(): Promise<void> {
@@ -1630,6 +1654,7 @@ function testRendererApprovalHydrationSortsPendingRequests(): void {
 async function main(): Promise<void> {
   await testDocConversationWorkspaceContext()
   await testDesktopWorkspaceRoots()
+  await testDesktopUsesSharedRuntimeFactory()
   await testConversationPartitionContract()
   await testDocConversationFollowsDocRename()
   await testDocRenameUsesInjectedConversationRefRewriter()

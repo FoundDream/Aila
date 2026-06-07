@@ -4614,6 +4614,16 @@ async function testRuntimeSdkDoesNotExportDocsContract(): Promise<void> {
     'function',
     'runtime SDK should expose the persisted store adapter factory',
   )
+  assertEqual(
+    typeof runtimeSdk.createDefaultRuntimeHost,
+    'function',
+    'runtime SDK should expose the default runtime host factory',
+  )
+  assertEqual(
+    typeof runtimeSdk.createPersistedAgentRuntime,
+    'function',
+    'runtime SDK should expose the persisted AgentRuntime factory',
+  )
   const store = runtimeSdk.createPersistedRuntimeStore()
   assertEqual(typeof store.getConversation, 'function', 'persisted store should read records')
   assertEqual(typeof store.upsertMessage, 'function', 'persisted store should persist messages')
@@ -4636,6 +4646,109 @@ async function testRuntimeSdkDoesNotExportDocsContract(): Promise<void> {
     memoryConversation.id,
     'in-memory store should keep records without a host adapter',
   )
+}
+
+async function testPersistedAgentRuntimeFactoryContract(): Promise<void> {
+  await withTempDataDir(async () => {
+    const profilesDir = getProfilesDir()
+    const toolPacksDir = getToolPacksDir()
+    const factoryToolPackDir = join(toolPacksDir, 'factory-pack')
+    await mkdir(profilesDir, { recursive: true })
+    await mkdir(factoryToolPackDir, { recursive: true })
+
+    await writeFile(
+      join(profilesDir, 'factory-profile.json'),
+      `${JSON.stringify(
+        {
+          schemaVersion: AILA_PROFILE_MANIFEST_SCHEMA_VERSION,
+          id: 'factory-profile',
+          label: 'Factory Profile',
+          description: 'Factory host profile fixture.',
+          baseProfileId: 'coding',
+        },
+        null,
+        2,
+      )}\n`,
+      'utf-8',
+    )
+    await writeFile(
+      join(factoryToolPackDir, AILA_TOOL_PACK_MANIFEST_FILE),
+      `${JSON.stringify(
+        {
+          schemaVersion: AILA_TOOL_PACK_MANIFEST_SCHEMA_VERSION,
+          id: 'factory-pack',
+          name: 'Factory Pack',
+          entry: 'index.mjs',
+        },
+        null,
+        2,
+      )}\n`,
+      'utf-8',
+    )
+    await writeFile(
+      join(factoryToolPackDir, 'index.mjs'),
+      `
+export default {
+  id: 'factory-pack',
+  name: 'Factory Pack',
+  tools: [
+    {
+      spec: {
+        type: 'function',
+        function: {
+          name: 'factory_tool',
+          description: 'Factory runtime host fixture.',
+          parameters: { type: 'object', properties: {}, additionalProperties: false },
+        },
+        metadata: {
+          name: 'factory_tool',
+          readOnly: true,
+          destructive: false,
+          requiresApproval: false,
+          access: ['read'],
+          scope: ['workspace'],
+          allowedProfiles: ['coding'],
+        },
+      },
+      async run() {
+        return 'factory'
+      },
+    },
+  ],
+}
+`.trimStart(),
+      'utf-8',
+    )
+
+    const emitted: AgentRuntimeEvent[] = []
+    const runtime = runtimeSdk.createPersistedAgentRuntime({
+      host: {
+        onEvent: (event) => emitted.push(event),
+      },
+    })
+
+    assert(
+      (await runtime.getProfiles()).has('factory-profile'),
+      'persisted runtime factory should load manifest profiles through the default host',
+    )
+    assert(
+      (await runtime.getToolRegistry()).specsByName.has('factory_tool'),
+      'persisted runtime factory should load manifest tool packs through the default host',
+    )
+    const conversation = await runtime.createConversation()
+    const record = await runtime.getConversation(conversation.id)
+    assertEqual(
+      record.meta.id,
+      conversation.id,
+      'persisted runtime factory should use persisted store by default',
+    )
+    assert(
+      emitted.some(
+        (event) => event.type === 'conversations:updated' && event.data.id === conversation.id,
+      ),
+      'persisted runtime factory should preserve host event overrides',
+    )
+  })
 }
 
 async function testToolPackManifestLoader(): Promise<void> {
@@ -5037,6 +5150,7 @@ async function main(): Promise<void> {
   await testBashToolShellCwdContract()
   await testRuntimeCoreHasNoDocToolContract()
   await testRuntimeSdkDoesNotExportDocsContract()
+  await testPersistedAgentRuntimeFactoryContract()
   await testToolPackManifestLoader()
   await testToolPackReloadsChangedEntry()
   await testProfileManifestLoader()
