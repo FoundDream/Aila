@@ -19,7 +19,7 @@ import {
   type PersistedToolCallBlock,
 } from './conversations'
 import { MissingApiKeyError, resolveModel } from './providers'
-import { loadSettings } from './settings'
+import { loadSettings, type Settings } from './settings'
 import {
   executeTool,
   getToolDefinitionsForProfile,
@@ -366,6 +366,7 @@ export interface StreamRequest {
   workspaceRoots?: ToolContext['workspaceRoots']
   onToolPolicy?: ToolContext['onToolPolicy']
   onToolApproval?: ToolContext['onToolApproval']
+  settings?: Settings
   toolRegistry?: ToolRegistry
 }
 
@@ -381,6 +382,7 @@ export async function streamChat(req: StreamRequest, handlers: StreamHandlers): 
     workspaceRoots,
     onToolPolicy,
     onToolApproval,
+    settings: requestSettings,
     toolRegistry,
   } = req
 
@@ -400,7 +402,7 @@ export async function streamChat(req: StreamRequest, handlers: StreamHandlers): 
 
   // Snapshot settings once per stream so the image tool sees the same key/model
   // selection that resolveModel did.
-  const settings = loadSettings()
+  const settings = requestSettings ?? loadSettings()
   emitAgentEvent('turn.started', {
     providerId: selection.providerId,
     modelId: selection.modelId,

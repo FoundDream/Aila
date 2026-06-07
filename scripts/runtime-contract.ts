@@ -164,6 +164,8 @@ async function testRuntimeHostBoundaryContract(): Promise<void> {
     let profileId: string | null = null
     let workspaceRootPath: string | null = null
     let workspaceRootLabel: string | null = null
+    let settingsLoaded = false
+    let streamSettingsKey: string | null = null
 
     const host: AgentRuntimeHost = {
       onEvent: (event) => events.push(event),
@@ -188,9 +190,14 @@ async function testRuntimeHostBoundaryContract(): Promise<void> {
           instructions: 'Use host-provided profile instructions.',
         },
       ],
+      loadSettings: () => {
+        settingsLoaded = true
+        return { apiKeys: { openrouter: 'host-openrouter-key' }, defaultModel: null }
+      },
       workspaceRoots: () => [{ path: '/host/workspace', label: 'host-root' }],
       streamChat: async (req, handlers) => {
         profileId = req.profileId
+        streamSettingsKey = req.settings?.apiKeys.openrouter ?? null
         const [root] = req.workspaceRoots ?? []
         if (root && typeof root !== 'string') {
           workspaceRootPath = root.path
@@ -281,6 +288,12 @@ async function testRuntimeHostBoundaryContract(): Promise<void> {
     await runtime.abort(conversation.id)
 
     assertEqual(profileId, 'coding', 'host-loaded profile should resolve to base profile')
+    assertEqual(settingsLoaded, true, 'host settings loader should be called')
+    assertEqual(
+      streamSettingsKey,
+      'host-openrouter-key',
+      'host settings should be passed to streamChat',
+    )
     assertEqual(workspaceRootPath, '/host/workspace', 'host workspace root path')
     assertEqual(workspaceRootLabel, 'host-root', 'host workspace root label')
     assertEqual(policyRequested, true, 'host tool policy should receive tool request')

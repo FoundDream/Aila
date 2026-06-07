@@ -28,6 +28,7 @@ import {
   upsertMessage,
 } from './conversations'
 import { type AgentRuntimeEvent, createRuntimeEvent } from './runtime-events'
+import type { Settings } from './settings'
 import {
   createDefaultToolRegistry,
   type ToolContext,
@@ -141,6 +142,7 @@ export interface AgentRuntimeHost {
   loadProfiles?: () => Promise<readonly AgentProfile[]>
   toolPacks?: readonly ToolPack[]
   loadToolPacks?: () => Promise<readonly ToolPack[]>
+  loadSettings?: () => MaybePromise<Settings>
   workspaceRoots?: ToolContext['workspaceRoots'] | (() => ToolContext['workspaceRoots'])
   streamChat?: typeof defaultStreamChat
   logger?: Pick<Console, 'error' | 'warn'>
@@ -187,6 +189,7 @@ function normalizeRuntimeHost(options: AgentRuntimeOptions): AgentRuntimeHost {
   }
   if (options.loadProfiles) host.loadProfiles = options.loadProfiles
   if (options.loadToolPacks) host.loadToolPacks = options.loadToolPacks
+  if (options.loadSettings) host.loadSettings = options.loadSettings
   if (options.workspaceRoots !== undefined) host.workspaceRoots = options.workspaceRoots
   if (options.streamChat) host.streamChat = options.streamChat
   if (options.logger) host.logger = options.logger
@@ -201,6 +204,7 @@ function normalizeRuntimeHost(options: AgentRuntimeOptions): AgentRuntimeHost {
   }
   if (options.host.loadProfiles) host.loadProfiles = options.host.loadProfiles
   if (options.host.loadToolPacks) host.loadToolPacks = options.host.loadToolPacks
+  if (options.host.loadSettings) host.loadSettings = options.host.loadSettings
   if (options.host.workspaceRoots !== undefined) host.workspaceRoots = options.host.workspaceRoots
   if (options.host.streamChat) host.streamChat = options.host.streamChat
   if (options.host.logger) host.logger = options.host.logger
@@ -593,6 +597,10 @@ export class AgentRuntime {
     return typeof roots === 'function' ? roots() : roots
   }
 
+  private async resolveSettings(): Promise<Settings | undefined> {
+    return this.host.loadSettings?.()
+  }
+
   private cleanupTimeoutMs(): number {
     return this.options.abortAllCleanupTimeoutMs ?? DEFAULT_ABORT_ALL_CLEANUP_TIMEOUT_MS
   }
@@ -781,6 +789,7 @@ export class AgentRuntime {
 
     try {
       const streamChat = this.host.streamChat ?? defaultStreamChat
+      const settings = await this.resolveSettings()
       await streamChat(
         {
           conversationId,
@@ -790,6 +799,7 @@ export class AgentRuntime {
           signal: controller.signal,
           profileId,
           workspaceRoots,
+          settings,
           onToolPolicy: this.host.onToolPolicy,
           onToolApproval: this.host.onToolApproval,
           onAgentEvent: queueAgentEvent,
