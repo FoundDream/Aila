@@ -64,6 +64,9 @@ export interface ToolApprovalRequestEvent {
   requestId: string
   name: string
   args: Record<string, unknown>
+  conversationId?: string
+  messageId?: string
+  toolCallId?: string
   metadata: {
     name: string
     readOnly: boolean
@@ -79,6 +82,29 @@ export interface ToolApprovalRequestEvent {
 export interface ToolApprovalResponse {
   requestId: string
   approved: boolean
+}
+
+export type AgentEventType =
+  | 'turn.started'
+  | 'turn.completed'
+  | 'turn.failed'
+  | 'tool.requested'
+  | 'tool.input.delta'
+  | 'tool.input.completed'
+  | 'tool.execution.started'
+  | 'tool.execution.completed'
+  | 'tool.execution.failed'
+  | 'tool.result.returned'
+  | 'tool.approval.requested'
+  | 'tool.approval.resolved'
+
+export interface PersistedAgentEvent {
+  schemaVersion: number
+  timestamp: number
+  conversationId: string
+  messageId: string
+  type: AgentEventType
+  data?: Record<string, unknown>
 }
 
 export interface DocRecord {
@@ -254,6 +280,8 @@ const api = {
     on<ImageBlockEvent>('chat:image-block', cb),
   onDone: (cb: (event: ChatDoneEvent) => void) => on<ChatDoneEvent>('chat:done', cb),
   onError: (cb: (event: ChatErrorEvent) => void) => on<ChatErrorEvent>('chat:error', cb),
+  onAgentEvent: (cb: (event: PersistedAgentEvent) => void) =>
+    on<PersistedAgentEvent>('agent:event', cb),
   getModelInfo: (providerId: ProviderId, modelId: string): Promise<ModelInfo> =>
     ipcRenderer.invoke('chat:get-model-info', providerId, modelId),
   settings: {
@@ -299,6 +327,8 @@ const api = {
   conversations: {
     list: (): Promise<ConversationSummary[]> => ipcRenderer.invoke('conversations:list'),
     get: (id: string): Promise<ConversationRecord> => ipcRenderer.invoke('conversations:get', id),
+    listEvents: (id: string): Promise<PersistedAgentEvent[]> =>
+      ipcRenderer.invoke('conversations:list-events', id),
     create: (docPath?: string): Promise<ConversationSummary> =>
       ipcRenderer.invoke('conversations:create', docPath),
     listForDoc: (docPath: string): Promise<ConversationSummary[]> =>

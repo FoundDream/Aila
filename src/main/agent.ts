@@ -105,6 +105,8 @@ export type AgentEventType =
   | 'tool.execution.completed'
   | 'tool.execution.failed'
   | 'tool.result.returned'
+  | 'tool.approval.requested'
+  | 'tool.approval.resolved'
 
 export interface AgentEvent {
   timestamp: number
@@ -166,8 +168,10 @@ function buildTools(
       tool({
         description: td.function.description,
         inputSchema: jsonSchema(td.function.parameters as Parameters<typeof jsonSchema>[0]),
-        execute: async (args) => {
+        execute: async (args, options) => {
+          const toolCallId = options.toolCallId
           emitAgentEvent('tool.execution.started', {
+            toolCallId,
             toolName: td.function.name,
             input: previewEventValue(args),
           })
@@ -175,16 +179,18 @@ function buildTools(
             const result = await executeTool(
               td.function.name,
               args as Record<string, unknown>,
-              ctx,
+              { ...ctx, toolCallId },
               toolRegistry,
             )
             emitAgentEvent('tool.execution.completed', {
+              toolCallId,
               toolName: td.function.name,
               result: previewEventValue(result),
             })
             return result
           } catch (error) {
             emitAgentEvent('tool.execution.failed', {
+              toolCallId,
               toolName: td.function.name,
               error: error instanceof Error ? error.message : String(error),
             })
@@ -427,6 +433,8 @@ export async function streamChat(req: StreamRequest, handlers: StreamHandlers): 
         {
           settings,
           profileId,
+          conversationId,
+          messageId: assistantMessageId,
           workspaceRoots,
           signal,
           onToolApproval,

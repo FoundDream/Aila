@@ -159,6 +159,31 @@ function prepareAgentEvent(event: AgentEvent): PersistedAgentEvent {
   }
 }
 
+function normalizeAgentEvent(
+  value: Partial<PersistedAgentEvent>,
+  fallbackConversationId?: string,
+): PersistedAgentEvent | null {
+  const conversationId =
+    typeof value.conversationId === 'string' && value.conversationId.length > 0
+      ? value.conversationId
+      : fallbackConversationId
+  if (!conversationId) return null
+  if (typeof value.messageId !== 'string' || value.messageId.length === 0) return null
+  if (typeof value.type !== 'string' || value.type.length === 0) return null
+
+  return {
+    schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+    timestamp: typeof value.timestamp === 'number' ? value.timestamp : Date.now(),
+    conversationId,
+    messageId: value.messageId,
+    type: value.type as AgentEvent['type'],
+    ...(value.data &&
+      typeof value.data === 'object' && {
+        data: value.data as Record<string, unknown>,
+      }),
+  }
+}
+
 function deriveTitle(message: PersistedMessage): string | null {
   if (message.role !== 'user') return null
   const text = message.blocks
@@ -255,9 +280,37 @@ export async function appendMessage(
   return next
 }
 
-export async function appendAgentEvent(id: string, event: AgentEvent): Promise<void> {
+export async function appendAgentEvent(
+  id: string,
+  event: AgentEvent,
+): Promise<PersistedAgentEvent> {
   await ensureDir()
-  await appendFile(eventLogPath(id), `${JSON.stringify(prepareAgentEvent(event))}\n`, 'utf-8')
+  const prepared = prepareAgentEvent(event)
+  await appendFile(eventLogPath(id), `${JSON.stringify(prepared)}\n`, 'utf-8')
+  return prepared
+}
+
+export async function listAgentEvents(id: string): Promise<PersistedAgentEvent[]> {
+  await ensureDir()
+  let raw = ''
+  try {
+    raw = await readFile(eventLogPath(id), 'utf-8')
+  } catch {
+    return []
+  }
+
+  const events: PersistedAgentEvent[] = []
+  for (const line of raw.split('\n')) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+    try {
+      const event = normalizeAgentEvent(JSON.parse(trimmed) as Partial<PersistedAgentEvent>, id)
+      if (event) events.push(event)
+    } catch {
+      // skip malformed line
+    }
+  }
+  return events.sort((a, b) => a.timestamp - b.timestamp)
 }
 
 export async function renameConversation(id: string, title: string): Promise<ConversationSummary> {

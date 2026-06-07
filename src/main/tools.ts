@@ -646,6 +646,9 @@ export interface ToolApprovalRequest {
   name: string
   args: Record<string, unknown>
   metadata: ToolMetadata
+  conversationId?: string
+  messageId?: string
+  toolCallId?: string
 }
 
 export type ToolWorkspaceRoot = string | { path: string; label?: string }
@@ -653,6 +656,9 @@ export type ToolWorkspaceRoot = string | { path: string; label?: string }
 export interface ToolContext {
   settings: Settings
   profileId: AgentProfileId
+  conversationId?: string
+  messageId?: string
+  toolCallId?: string
   workspaceRoots?: readonly ToolWorkspaceRoot[]
   signal?: AbortSignal
   onToolApproval?: (request: ToolApprovalRequest) => Promise<boolean>
@@ -727,7 +733,14 @@ export async function executeTool(
 ): Promise<string> {
   const spec = assertToolAllowed(name, ctx.profileId, registry)
   if (spec.metadata.requiresApproval && ctx.onToolApproval) {
-    const approved = await ctx.onToolApproval({ name, args, metadata: spec.metadata })
+    const approved = await ctx.onToolApproval({
+      name,
+      args,
+      metadata: spec.metadata,
+      ...(ctx.conversationId && { conversationId: ctx.conversationId }),
+      ...(ctx.messageId && { messageId: ctx.messageId }),
+      ...(ctx.toolCallId && { toolCallId: ctx.toolCallId }),
+    })
     if (!approved) throw new Error(`tool "${name}" was rejected by user`)
   }
   const runner = registry.runnersByName.get(name)

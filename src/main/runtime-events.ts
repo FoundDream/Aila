@@ -7,12 +7,13 @@ import type {
   ToolCallEvent,
   ToolResultEvent,
 } from './agent'
-import type { ConversationSummary } from './conversations'
+import type { ConversationSummary, PersistedAgentEvent } from './conversations'
 
 export const AILA_RUNTIME_EVENT_SCHEMA_VERSION = 1
 
 export interface AgentRuntimeEventMap {
   'conversations:updated': ConversationSummary
+  'agent:event': PersistedAgentEvent
   'chat:text-delta': DeltaEvent
   'chat:reasoning-delta': DeltaEvent
   'chat:tool-call-start': ToolCallEvent
@@ -25,6 +26,7 @@ export interface AgentRuntimeEventMap {
 
 export const AILA_RUNTIME_EVENT_TYPES = [
   'conversations:updated',
+  'agent:event',
   'chat:text-delta',
   'chat:reasoning-delta',
   'chat:tool-call-start',

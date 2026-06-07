@@ -27,6 +27,7 @@ import {
   getToolDefinitionsForProfile,
   getToolPacksDir,
   isRuntimeEventType,
+  listAgentEvents,
   listConversations,
   loadAgentProfilesFromDir,
   loadToolPacksFromDir,
@@ -231,8 +232,15 @@ async function testPersistenceContract(): Promise<void> {
       timestamp: 1,
       conversationId: conversation.id,
       messageId: 'message-1',
-      type: 'turn.started',
+      type: 'tool.approval.requested',
+      data: { toolName: 'write', requestId: 'approval-1', risk: 'destructive write' },
     })
+    const events = await listAgentEvents(conversation.id)
+    assertEqual(events.length, 1, 'agent events should be readable')
+    const [event] = events
+    assert(event, 'listed agent event should exist')
+    assertEqual(event.schemaVersion, AILA_AGENT_EVENT_SCHEMA_VERSION, 'listed event version')
+    assertEqual(event.type, 'tool.approval.requested', 'listed event type')
     const rawAgentEvent = JSON.parse(
       (await readFile(join(dir, `${conversation.id}.events.jsonl`), 'utf-8')).trim(),
     ) as { schemaVersion?: number }
@@ -241,6 +249,9 @@ async function testPersistenceContract(): Promise<void> {
       AILA_AGENT_EVENT_SCHEMA_VERSION,
       'written agent event version',
     )
+
+    const runtimeEvent = createRuntimeEvent('agent:event', event)
+    assertEqual(runtimeEvent.type, 'agent:event', 'agent event runtime wrapper type')
   })
 }
 
@@ -377,8 +388,18 @@ async function testToolRegistryContract(): Promise<void> {
       {
         settings,
         profileId: 'coding',
-        async onToolApproval() {
+        conversationId: 'conversation-approval',
+        messageId: 'assistant-approval',
+        toolCallId: 'tool-call-approval',
+        async onToolApproval(request) {
           approvalRequested = true
+          assertEqual(
+            request.conversationId,
+            'conversation-approval',
+            'approval request conversation id',
+          )
+          assertEqual(request.messageId, 'assistant-approval', 'approval request message id')
+          assertEqual(request.toolCallId, 'tool-call-approval', 'approval request tool call id')
           return false
         },
       },

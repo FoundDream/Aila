@@ -23,6 +23,7 @@ export {
   createConversation,
   deleteConversation,
   getConversation,
+  listAgentEvents,
   listConversations,
   type PersistedAgentEvent,
   type PersistedBlock,

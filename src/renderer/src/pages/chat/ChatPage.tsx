@@ -7,6 +7,7 @@ import type {
   ProviderId,
   Settings,
 } from '../../types'
+import { ActivityTimeline } from './ActivityTimeline'
 import { Composer } from './Composer'
 import { Transcript } from './Transcript'
 import type { ChatStreamsApi } from './useChatStreams'
@@ -84,6 +85,7 @@ export function ChatPage({
   const messages = stream?.messages ?? []
   const isStreaming = stream?.runningMessageId !== null && stream?.runningMessageId !== undefined
   const usage = stream?.usage ?? null
+  const events = stream?.events ?? []
   const queuedCount = stream?.queue.length ?? 0
   const lastMessage = messages.at(-1)
   const canRetryLast =
@@ -148,6 +150,7 @@ export function ChatPage({
       </header>
       <main className="flex min-h-0 flex-1 flex-col">
         <Transcript messages={messages} canRetryLast={canRetryLast} onRetryLast={handleRetryLast} />
+        <ActivityTimeline events={events} />
         <Composer
           isStreaming={isStreaming}
           queuedCount={queuedCount}

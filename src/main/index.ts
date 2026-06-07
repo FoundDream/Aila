@@ -4,11 +4,13 @@ import { is } from '@electron-toolkit/utils'
 import * as dotenv from 'dotenv'
 import { app, BrowserWindow, ipcMain } from 'electron'
 import type { ProviderId } from '../shared/models'
-import { getModelInfo, type ModelSelection } from './agent'
+import { type AgentEvent, getModelInfo, type ModelSelection } from './agent'
 import type { AgentProfileId } from './agent-profile'
 import {
+  appendAgentEvent,
   createConversation,
   getConversation,
+  listAgentEvents,
   listConversations,
   listDocConversations,
   renameConversation,
@@ -52,11 +54,13 @@ let mainWindow: BrowserWindow | null = null
 const TOOL_APPROVAL_TIMEOUT_MS = 60_000
 
 interface PendingToolApproval {
-  resolve: (approved: boolean) => void
+  finish: (approved: boolean, reason: ToolApprovalResolutionReason) => void
   timer: ReturnType<typeof setTimeout>
 }
 
 const pendingToolApprovals = new Map<string, PendingToolApproval>()
+
+type ToolApprovalResolutionReason = 'user' | 'timeout' | 'shutdown'
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -92,17 +96,85 @@ function send(channel: string, data?: unknown): void {
 function requestToolApproval(req: ToolApprovalRequest): Promise<boolean> {
   return new Promise<boolean>((resolve) => {
     const requestId = randomUUID()
+    void recordToolApprovalActivity(req, requestId, 'requested')
+    const finish = (approved: boolean, reason: ToolApprovalResolutionReason): void => {
+      if (!pendingToolApprovals.delete(requestId)) return
+      clearTimeout(timer)
+      void recordToolApprovalActivity(req, requestId, 'resolved', approved, reason)
+      resolve(approved)
+    }
     const timer = setTimeout(() => {
-      if (pendingToolApprovals.delete(requestId)) resolve(false)
+      finish(false, 'timeout')
     }, TOOL_APPROVAL_TIMEOUT_MS)
-    pendingToolApprovals.set(requestId, { resolve, timer })
+    pendingToolApprovals.set(requestId, { finish, timer })
     send('tools:approval-request', {
       requestId,
       name: req.name,
       args: req.args,
       metadata: req.metadata,
+      conversationId: req.conversationId,
+      messageId: req.messageId,
+      toolCallId: req.toolCallId,
     })
   })
+}
+
+function previewActivityValue(value: unknown): { preview: string; size: number } {
+  const text =
+    typeof value === 'string' ? value : value == null ? '' : (JSON.stringify(value) ?? '')
+  return {
+    preview: text.length > 1000 ? `${text.slice(0, 1000)}...` : text,
+    size: text.length,
+  }
+}
+
+function toolRisk(req: ToolApprovalRequest): string {
+  if (req.metadata.access.includes('shell')) return 'shell command'
+  if (req.metadata.destructive) return 'destructive write'
+  if (req.metadata.access.includes('write')) return 'writes workspace data'
+  if (req.metadata.scope.includes('external')) return 'external access'
+  return 'requires approval'
+}
+
+async function recordToolApprovalActivity(
+  req: ToolApprovalRequest,
+  requestId: string,
+  state: 'requested' | 'resolved',
+  approved?: boolean,
+  reason?: ToolApprovalResolutionReason,
+): Promise<void> {
+  if (!req.conversationId || !req.messageId) return
+
+  const event: AgentEvent = {
+    timestamp: Date.now(),
+    conversationId: req.conversationId,
+    messageId: req.messageId,
+    type: state === 'requested' ? 'tool.approval.requested' : 'tool.approval.resolved',
+    data: {
+      requestId,
+      toolName: req.name,
+      ...(req.toolCallId && { toolCallId: req.toolCallId }),
+      ...(state === 'requested'
+        ? {
+            risk: toolRisk(req),
+            args: previewActivityValue(req.args),
+            destructive: req.metadata.destructive,
+            access: req.metadata.access,
+            scope: req.metadata.scope,
+          }
+        : {
+            approved: approved === true,
+            reason: reason ?? 'user',
+          }),
+    },
+  }
+
+  try {
+    const persisted = await appendAgentEvent(req.conversationId, event)
+    send('agent:event', persisted)
+  } catch (error) {
+    console.warn('[activity] tool approval event append failed:', error)
+  }
 }
 
 const agentRuntime = new AgentRuntime({
@@ -188,9 +260,7 @@ function registerIpcHandlers(): void {
     (_event, payload: { requestId: string; approved: boolean }) => {
       const pending = pendingToolApprovals.get(payload.requestId)
       if (!pending) return
-      pendingToolApprovals.delete(payload.requestId)
-      clearTimeout(pending.timer)
-      pending.resolve(payload.approved)
+      pending.finish(payload.approved, 'user')
     },
   )
 
@@ -241,6 +311,7 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle('conversations:list', () => listConversations())
   ipcMain.handle('conversations:get', (_event, id: string) => getConversation(id))
+  ipcMain.handle('conversations:list-events', (_event, id: string) => listAgentEvents(id))
   ipcMain.handle('conversations:create', (_event, docPath?: string) => createConversation(docPath))
   ipcMain.handle('conversations:list-for-doc', (_event, docPath: string) =>
     listDocConversations(docPath),
@@ -271,9 +342,7 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   agentRuntime.abortAll()
-  for (const [requestId, pending] of pendingToolApprovals) {
-    pendingToolApprovals.delete(requestId)
-    clearTimeout(pending.timer)
-    pending.resolve(false)
+  for (const pending of pendingToolApprovals.values()) {
+    pending.finish(false, 'shutdown')
   }
 })

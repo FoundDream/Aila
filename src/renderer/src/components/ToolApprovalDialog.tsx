@@ -5,6 +5,7 @@ import type { ToolApprovalRequestEvent } from '../types'
 
 interface Props {
   request: ToolApprovalRequestEvent | null
+  pendingCount?: number
   onResolve: (requestId: string, approved: boolean) => void
 }
 
@@ -13,7 +14,15 @@ function previewArgs(args: Record<string, unknown>): string {
   return text.length > 1800 ? `${text.slice(0, 1800)}\n...` : text
 }
 
-export function ToolApprovalDialog({ request, onResolve }: Props): ReactElement {
+function riskSummary(request: ToolApprovalRequestEvent): string {
+  if (request.metadata.access.includes('shell')) return 'Runs a shell command'
+  if (request.metadata.destructive) return 'Can overwrite workspace files'
+  if (request.metadata.access.includes('write')) return 'Can write workspace data'
+  if (request.metadata.scope.includes('external')) return 'Touches external services'
+  return 'Requires explicit approval'
+}
+
+export function ToolApprovalDialog({ request, pendingCount = 0, onResolve }: Props): ReactElement {
   const open = request !== null
 
   const resolve = (approved: boolean): void => {
@@ -42,12 +51,15 @@ export function ToolApprovalDialog({ request, onResolve }: Props): ReactElement 
                     Approve {request.name}
                   </DialogPrimitive.Title>
                   <DialogPrimitive.Description className="mt-0.5 text-[12px] text-[var(--text-dim)]">
-                    This tool can change local state or run commands.
+                    Pending approval · {request ? riskSummary(request) : 'Review requested action'}
                   </DialogPrimitive.Description>
                 </div>
               </div>
 
-              <div className="mb-3 flex flex-wrap gap-1.5">
+              <div className="mb-3 flex flex-wrap items-center gap-1.5">
+                <span className="rounded-md bg-amber-100 px-2 py-0.5 text-[11px] text-amber-700">
+                  pending
+                </span>
                 {request.metadata.destructive && (
                   <span className="rounded-md bg-red-100 px-2 py-0.5 text-[11px] text-red-700">
                     destructive
@@ -69,6 +81,16 @@ export function ToolApprovalDialog({ request, onResolve }: Props): ReactElement 
                     {item}
                   </span>
                 ))}
+                {request.toolCallId && (
+                  <span className="rounded-md bg-[var(--bg-soft)] px-2 py-0.5 text-[11px] text-[var(--text-dim)]">
+                    {request.toolCallId}
+                  </span>
+                )}
+                {pendingCount > 1 && (
+                  <span className="rounded-md bg-[var(--bg-soft)] px-2 py-0.5 text-[11px] text-[var(--text-dim)]">
+                    {pendingCount} pending
+                  </span>
+                )}
               </div>
 
               <pre className="max-h-[280px] overflow-auto rounded-lg border border-[var(--border)] bg-[var(--bg-soft)] p-3 text-[11px] leading-5 whitespace-pre-wrap text-[var(--text)]">

@@ -357,7 +357,10 @@ export class AgentRuntime {
           onToolApproval: this.options.onToolApproval,
           onAgentEvent: (event) => {
             eventLogChain = eventLogChain
-              .then(() => appendAgentEvent(conversationId, event))
+              .then(async () => {
+                const persisted = await appendAgentEvent(conversationId, event)
+                this.emit(createRuntimeEvent('agent:event', persisted))
+              })
               .catch((err) => {
                 this.logger.warn('[runtime] agent-event append failed:', err)
               })

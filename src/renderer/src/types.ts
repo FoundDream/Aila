@@ -1,6 +1,7 @@
 // Re-exports renderer-facing types from preload so renderer code doesn't have
 // to dig into ../../preload paths.
 export type {
+  AgentEventType,
   AgentProfile,
   AgentProfileId,
   BuiltinAgentProfileId,
@@ -20,6 +21,7 @@ export type {
   OrCatalog,
   OrFamily,
   OrModel,
+  PersistedAgentEvent,
   PersistedBlock,
   PersistedImageBlock,
   PersistedMessage,

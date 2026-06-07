@@ -19,6 +19,7 @@ import type {
   ConversationSummary,
   ImageBlockEvent,
   ModelSelection,
+  PersistedAgentEvent,
   PersistedMessage,
   ReasoningDeltaEvent,
   TextDeltaEvent,
@@ -48,6 +49,7 @@ export interface ConversationStream {
   queue: QueuedRun[]
   runningMessageId: string | null
   usage: UsageInfo | null
+  events: PersistedAgentEvent[]
 }
 
 interface State {
@@ -60,6 +62,7 @@ const EMPTY_STREAM: ConversationStream = {
   queue: [],
   runningMessageId: null,
   usage: null,
+  events: [],
 }
 
 type Action =
@@ -68,6 +71,7 @@ type Action =
       conversationId: string
       messages: Message[]
       usage: UsageInfo | null
+      events: PersistedAgentEvent[]
     }
   | { type: 'ENQUEUE'; conversationId: string; queued: QueuedRun }
   | { type: 'POP_QUEUE_HEAD'; conversationId: string }
@@ -126,6 +130,7 @@ type Action =
       usage?: UsageInfo
     }
   | { type: 'CLEAR_QUEUE'; conversationId: string }
+  | { type: 'AGENT_EVENT'; event: PersistedAgentEvent }
   | { type: 'DROP'; conversationId: string }
 
 function getStream(state: State, id: string): ConversationStream {
@@ -172,6 +177,31 @@ function patchMessage(
   return messages.map((m) => (m.id === messageId ? patcher(m) : m))
 }
 
+function agentEventKey(event: PersistedAgentEvent): string {
+  return [
+    event.timestamp,
+    event.conversationId,
+    event.messageId,
+    event.type,
+    JSON.stringify(event.data ?? {}),
+  ].join(':')
+}
+
+function mergeAgentEvents(
+  current: PersistedAgentEvent[],
+  incoming: PersistedAgentEvent[],
+): PersistedAgentEvent[] {
+  const seen = new Set(current.map(agentEventKey))
+  const next = [...current]
+  for (const event of incoming) {
+    const key = agentEventKey(event)
+    if (seen.has(key)) continue
+    seen.add(key)
+    next.push(event)
+  }
+  return next.sort((a, b) => a.timestamp - b.timestamp)
+}
+
 function reducer(state: State, action: Action): State {
   switch (action.type) {
     case 'HYDRATE':
@@ -179,6 +209,7 @@ function reducer(state: State, action: Action): State {
         ...current,
         messages: action.messages,
         usage: action.usage,
+        events: mergeAgentEvents(current.events, action.events),
         isHydrated: true,
       }))
 
@@ -286,6 +317,12 @@ function reducer(state: State, action: Action): State {
       return withStream(state, action.conversationId, (current) => ({
         ...current,
         queue: [],
+      }))
+
+    case 'AGENT_EVENT':
+      return withStream(state, action.event.conversationId, (current) => ({
+        ...current,
+        events: mergeAgentEvents(current.events, [action.event]),
       }))
 
     case 'DROP': {
@@ -456,7 +493,10 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
 
   const hydrate = useCallback(async (id: string): Promise<void> => {
     if (stateRef.current.streams.get(id)?.isHydrated) return
-    const record = await window.api.conversations.get(id)
+    const [record, events] = await Promise.all([
+      window.api.conversations.get(id),
+      window.api.conversations.listEvents(id),
+    ])
     if (stateRef.current.streams.get(id)?.isHydrated) return
     const messages = record.messages.map(persistedToMessage)
     const usage = record.meta.usage
@@ -466,7 +506,7 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
           totalTokens: record.meta.usage.totalTokens,
         }
       : null
-    dispatch({ type: 'HYDRATE', conversationId: id, messages, usage })
+    dispatch({ type: 'HYDRATE', conversationId: id, messages, usage, events })
   }, [])
 
   // Mark a freshly-created conversation as hydrated without a disk read. Used
@@ -475,7 +515,7 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
   // with an immediate enqueueSend.
   const markHydrated = useCallback((id: string): void => {
     if (stateRef.current.streams.get(id)?.isHydrated) return
-    dispatch({ type: 'HYDRATE', conversationId: id, messages: [], usage: null })
+    dispatch({ type: 'HYDRATE', conversationId: id, messages: [], usage: null, events: [] })
   }, [])
 
   const abort = useCallback((id: string): void => {
@@ -568,6 +608,9 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
           messageId: event.messageId,
           message: persistedToMessage(event.message),
         })
+      }),
+      window.api.onAgentEvent((event) => {
+        dispatch({ type: 'AGENT_EVENT', event })
       }),
       window.api.conversations.onUpdated((summary) => {
         onConversationUpdatedRef.current?.(summary)

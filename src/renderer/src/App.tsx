@@ -238,7 +238,11 @@ export default function App(): ReactElement {
             onSave={updateSettings}
           />
         )}
-        <ToolApprovalDialog request={toolApprovals[0] ?? null} onResolve={resolveToolApproval} />
+        <ToolApprovalDialog
+          request={toolApprovals[0] ?? null}
+          pendingCount={toolApprovals.length}
+          onResolve={resolveToolApproval}
+        />
       </div>
     </TooltipProvider>
   )
