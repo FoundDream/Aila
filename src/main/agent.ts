@@ -364,6 +364,7 @@ export interface StreamRequest {
   onAgentEvent?: AgentEventSink
   profileId: AgentProfileId
   workspaceRoots?: ToolContext['workspaceRoots']
+  onToolPolicy?: ToolContext['onToolPolicy']
   onToolApproval?: ToolContext['onToolApproval']
   toolRegistry?: ToolRegistry
 }
@@ -378,6 +379,7 @@ export async function streamChat(req: StreamRequest, handlers: StreamHandlers): 
     onAgentEvent,
     profileId,
     workspaceRoots,
+    onToolPolicy,
     onToolApproval,
     toolRegistry,
   } = req
@@ -446,6 +448,7 @@ export async function streamChat(req: StreamRequest, handlers: StreamHandlers): 
           messageId: assistantMessageId,
           workspaceRoots,
           signal,
+          onToolPolicy,
           onToolApproval,
           onImage: onImageFromTool,
         },

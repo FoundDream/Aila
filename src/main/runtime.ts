@@ -135,6 +135,7 @@ export {
 
 export interface AgentRuntimeHost {
   onEvent?: (event: AgentRuntimeEvent) => void
+  onToolPolicy?: ToolContext['onToolPolicy']
   onToolApproval?: ToolContext['onToolApproval']
   onConversationAbort?: (
     conversationId: string,
@@ -182,6 +183,7 @@ const DEFAULT_RUNTIME_STORE: AgentRuntimeStore = {
 function normalizeRuntimeHost(options: AgentRuntimeOptions): AgentRuntimeHost {
   const host: AgentRuntimeHost = {}
   if (options.onEvent) host.onEvent = options.onEvent
+  if (options.onToolPolicy) host.onToolPolicy = options.onToolPolicy
   if (options.onToolApproval) host.onToolApproval = options.onToolApproval
   if (options.onConversationAbort) host.onConversationAbort = options.onConversationAbort
   if (options.loadProfiles) host.loadProfiles = options.loadProfiles
@@ -192,6 +194,7 @@ function normalizeRuntimeHost(options: AgentRuntimeOptions): AgentRuntimeHost {
 
   if (!options.host) return host
   if (options.host.onEvent) host.onEvent = options.host.onEvent
+  if (options.host.onToolPolicy) host.onToolPolicy = options.host.onToolPolicy
   if (options.host.onToolApproval) host.onToolApproval = options.host.onToolApproval
   if (options.host.onConversationAbort) host.onConversationAbort = options.host.onConversationAbort
   if (options.host.loadProfiles) host.loadProfiles = options.host.loadProfiles
@@ -766,6 +769,7 @@ export class AgentRuntime {
           signal: controller.signal,
           profileId,
           workspaceRoots,
+          onToolPolicy: this.host.onToolPolicy,
           onToolApproval: this.host.onToolApproval,
           onAgentEvent: queueAgentEvent,
           toolRegistry,

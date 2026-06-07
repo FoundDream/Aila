@@ -153,6 +153,7 @@ async function testRuntimeHostBoundaryContract(): Promise<void> {
     const conversation = await createConversation()
     const events: AgentRuntimeEvent[] = []
     let streamStarted = false
+    let policyRequested = false
     let approvalRequested = false
     let approvalResult = false
     let abortConversationId: string | null = null
@@ -163,6 +164,10 @@ async function testRuntimeHostBoundaryContract(): Promise<void> {
 
     const host: AgentRuntimeHost = {
       onEvent: (event) => events.push(event),
+      onToolPolicy: async (request) => {
+        policyRequested = request.name === 'write_file'
+        return { action: 'ask', reason: 'host policy fixture' }
+      },
       onToolApproval: async (request) => {
         approvalRequested = request.name === 'write_file'
         return true
@@ -188,7 +193,24 @@ async function testRuntimeHostBoundaryContract(): Promise<void> {
           workspaceRootPath = root.path
           workspaceRootLabel = root.label ?? null
         }
+        const policyDecision = await req.onToolPolicy?.({
+          name: 'write_file',
+          args: { path: '/host/workspace/file.md', content: 'approved' },
+          metadata: {
+            name: 'write_file',
+            readOnly: false,
+            destructive: true,
+            requiresApproval: true,
+            access: ['write'],
+            scope: ['workspace'],
+            allowedProfiles: ['coding'],
+          },
+          conversationId: req.conversationId,
+          messageId: req.assistantMessageId,
+          toolCallId: 'host-tool-call',
+        })
         approvalResult =
+          policyDecision?.action === 'ask' &&
           (await req.onToolApproval?.({
             name: 'write_file',
             args: { path: '/host/workspace/file.md', content: 'approved' },
@@ -258,6 +280,7 @@ async function testRuntimeHostBoundaryContract(): Promise<void> {
     assertEqual(profileId, 'coding', 'host-loaded profile should resolve to base profile')
     assertEqual(workspaceRootPath, '/host/workspace', 'host workspace root path')
     assertEqual(workspaceRootLabel, 'host-root', 'host workspace root label')
+    assertEqual(policyRequested, true, 'host tool policy should receive tool request')
     assertEqual(approvalRequested, true, 'host tool approval should receive tool request')
     assertEqual(approvalResult, true, 'host tool approval should resolve request')
     assertEqual(abortConversationId, conversation.id, 'host abort cleanup conversation id')
@@ -2149,6 +2172,103 @@ async function testToolRegistryContract(): Promise<void> {
     assert(
       error instanceof Error && error.message.includes('rejected by user'),
       'rejected approval should return policy error',
+    )
+  }
+
+  let policyAllowedRunnerCalled = false
+  const policyPack: ToolPack = {
+    id: 'policy-contract',
+    name: 'Policy Contract',
+    tools: [
+      {
+        spec: {
+          type: 'function',
+          function: {
+            name: 'contract_policy_tool',
+            description: 'Exercise policy flow.',
+            parameters: {
+              type: 'object',
+              properties: { mode: { type: 'string' } },
+              required: ['mode'],
+              additionalProperties: false,
+            },
+          },
+          metadata: {
+            name: 'contract_policy_tool',
+            readOnly: false,
+            destructive: true,
+            requiresApproval: true,
+            access: ['write'],
+            scope: ['workspace'],
+            allowedProfiles: ['coding'],
+          },
+        },
+        async run() {
+          policyAllowedRunnerCalled = true
+          return 'policy ok'
+        },
+      },
+    ],
+  }
+  const policyRegistry = createDefaultToolRegistry([policyPack])
+
+  const allowed = await executeTool(
+    'contract_policy_tool',
+    { mode: 'allow' },
+    {
+      settings,
+      profileId: 'coding',
+      onToolPolicy: () => ({ action: 'allow' }),
+      onToolApproval: async () => {
+        throw new Error('allow policy should not ask approval')
+      },
+    },
+    policyRegistry,
+  )
+  assertEqual(allowed, 'policy ok', 'allow policy should execute tool')
+  assertEqual(policyAllowedRunnerCalled, true, 'allow policy should run handler')
+
+  let askApprovalRequested = false
+  await executeTool(
+    'contract_policy_tool',
+    { mode: 'ask' },
+    {
+      settings,
+      profileId: 'coding',
+      onToolPolicy: (request) => {
+        assertEqual(request.metadata.destructive, true, 'policy request metadata')
+        return { action: 'ask', reason: 'contract asks' }
+      },
+      onToolApproval: async (request) => {
+        askApprovalRequested = request.name === 'contract_policy_tool'
+        return true
+      },
+    },
+    policyRegistry,
+  )
+  assertEqual(askApprovalRequested, true, 'ask policy should call approval hook')
+
+  policyAllowedRunnerCalled = false
+  try {
+    await executeTool(
+      'contract_policy_tool',
+      { mode: 'deny' },
+      {
+        settings,
+        profileId: 'coding',
+        onToolPolicy: () => ({ action: 'deny', reason: 'contract denied' }),
+        onToolApproval: async () => {
+          throw new Error('deny policy should not ask approval')
+        },
+      },
+      policyRegistry,
+    )
+    throw new Error('denied tool unexpectedly succeeded')
+  } catch (error) {
+    assertEqual(policyAllowedRunnerCalled, false, 'deny policy should not run handler')
+    assert(
+      error instanceof Error && error.message.includes('contract denied'),
+      'deny policy should expose reason',
     )
   }
 }

@@ -699,10 +699,24 @@ export interface ToolApprovalRequest {
   name: string
   args: Record<string, unknown>
   metadata: ToolMetadata
+  target?: ToolActivityTarget | null
   conversationId?: string
   messageId?: string
   toolCallId?: string
 }
+
+export type ToolPolicyAction = 'allow' | 'ask' | 'deny'
+
+export interface ToolPolicyDecision {
+  action: ToolPolicyAction
+  reason?: string
+}
+
+export type ToolPolicyRequest = ToolApprovalRequest
+
+export type ToolPolicyEvaluator = (
+  request: ToolPolicyRequest,
+) => ToolPolicyDecision | Promise<ToolPolicyDecision>
 
 export type ToolWorkspaceRoot = string | { path: string; label?: string }
 
@@ -714,6 +728,7 @@ export interface ToolContext {
   toolCallId?: string
   workspaceRoots?: readonly ToolWorkspaceRoot[]
   signal?: AbortSignal
+  onToolPolicy?: ToolPolicyEvaluator
   onToolApproval?: (request: ToolApprovalRequest) => Promise<boolean>
   onImage?: (block: ImageSideChannelBlock) => void
 }
@@ -785,18 +800,37 @@ export async function executeTool(
   registry: ToolRegistry = DEFAULT_TOOL_REGISTRY,
 ): Promise<string> {
   const spec = assertToolAllowed(name, ctx.profileId, registry)
-  if (spec.metadata.requiresApproval && ctx.onToolApproval) {
-    const approved = await ctx.onToolApproval({
-      name,
-      args,
-      metadata: spec.metadata,
-      ...(ctx.conversationId && { conversationId: ctx.conversationId }),
-      ...(ctx.messageId && { messageId: ctx.messageId }),
-      ...(ctx.toolCallId && { toolCallId: ctx.toolCallId }),
-    })
+  const request: ToolPolicyRequest = {
+    name,
+    args,
+    metadata: spec.metadata,
+    target: summarizeToolTarget(name, args),
+    ...(ctx.conversationId && { conversationId: ctx.conversationId }),
+    ...(ctx.messageId && { messageId: ctx.messageId }),
+    ...(ctx.toolCallId && { toolCallId: ctx.toolCallId }),
+  }
+  const decision = await evaluateToolPolicy(request, ctx)
+  if (decision.action === 'deny') {
+    throw new Error(decision.reason ?? `tool "${name}" was denied by policy`)
+  }
+  if (decision.action === 'ask') {
+    if (!ctx.onToolApproval) {
+      throw new Error(`tool "${name}" requires approval but no approval host is available`)
+    }
+    const approved = await ctx.onToolApproval(request)
     if (!approved) throw new Error(`tool "${name}" was rejected by user`)
   }
   const runner = registry.runnersByName.get(name)
   if (!runner) throw new Error(`unknown tool: ${name}`)
   return runner(args, ctx)
+}
+
+export async function evaluateToolPolicy(
+  request: ToolPolicyRequest,
+  ctx: Pick<ToolContext, 'onToolPolicy' | 'onToolApproval'>,
+): Promise<ToolPolicyDecision> {
+  const decision = await ctx.onToolPolicy?.(request)
+  if (decision) return decision
+  if (request.metadata.requiresApproval && ctx.onToolApproval) return { action: 'ask' }
+  return { action: 'allow' }
 }
