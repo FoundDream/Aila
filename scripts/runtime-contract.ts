@@ -952,6 +952,88 @@ async function testRuntimeDeleteTimesOutStuckStreamAndSuppressesLateEvents(): Pr
   })
 }
 
+async function testRuntimeRejectsNewTurnsAfterDeleteStarts(): Promise<void> {
+  await withTempDataDir(async () => {
+    const conversation = await createConversation()
+    let streamCount = 0
+    let streamFinished = false
+    let resolveStarted: () => void = () => {}
+    let resolveStream: () => void = () => {}
+    let resolveAbortNotified: () => void = () => {}
+    let resolveAbortCleanup: () => void = () => {}
+    const started = new Promise<void>((resolve) => {
+      resolveStarted = resolve
+    })
+    const streamRelease = new Promise<void>((resolve) => {
+      resolveStream = resolve
+    })
+    const abortNotified = new Promise<void>((resolve) => {
+      resolveAbortNotified = resolve
+    })
+    const abortCleanup = new Promise<void>((resolve) => {
+      resolveAbortCleanup = resolve
+    })
+
+    const runtime = new AgentRuntime({
+      abortAllCleanupTimeoutMs: 10,
+      logger: { warn() {}, error() {} },
+      onConversationAbort: () => {
+        resolveAbortNotified()
+        return abortCleanup
+      },
+      streamChat: async () => {
+        streamCount += 1
+        resolveStarted()
+        await streamRelease
+        streamFinished = true
+      },
+    })
+
+    await runtime.send({
+      conversationId: conversation.id,
+      userText: 'first turn before delete',
+      selection: { providerId: 'openrouter', modelId: 'contract/mock' },
+      requestedProfileId: 'coding',
+    })
+    await started
+
+    const deleting = runtime.deleteConversation(conversation.id)
+    await abortNotified
+
+    for (const operation of ['send', 'retry'] as const) {
+      let rejected = false
+      try {
+        if (operation === 'send') {
+          await runtime.send({
+            conversationId: conversation.id,
+            userText: 'send after delete starts',
+            selection: { providerId: 'openrouter', modelId: 'contract/mock' },
+            requestedProfileId: 'coding',
+          })
+        } else {
+          await runtime.retryLastUserMessage({
+            conversationId: conversation.id,
+            selection: { providerId: 'openrouter', modelId: 'contract/mock' },
+            requestedProfileId: 'coding',
+          })
+        }
+      } catch (error) {
+        rejected = error instanceof Error && error.message.includes('deleted')
+      }
+      assert(rejected, `${operation} should reject after delete starts`)
+    }
+
+    assertEqual(streamCount, 1, 'deleted conversation should not start a replacement stream')
+    resolveAbortCleanup()
+    await withTimeout(deleting, 'delete should finish after rejecting new turns', 500)
+    assertEqual(runtime.listActiveStreams().length, 0, 'delete should clear original stream')
+
+    resolveStream()
+    await waitFor(() => streamFinished, 'original stream should be released')
+    assertEqual(streamCount, 1, 'late stream release should not start another stream')
+  })
+}
+
 async function testRuntimeSendRecoversAbortedStuckPreviousStream(): Promise<void> {
   await withTempDataDir(async () => {
     const conversation = await createConversation()
@@ -2065,6 +2147,7 @@ async function main(): Promise<void> {
   await testRuntimeListsActiveAssistantTurns()
   await testRuntimeDeleteRunsAbortCleanupBeforeWaitingForStream()
   await testRuntimeDeleteTimesOutStuckStreamAndSuppressesLateEvents()
+  await testRuntimeRejectsNewTurnsAfterDeleteStarts()
   await testRuntimeSendRecoversAbortedStuckPreviousStream()
   await testRuntimeAbortAllWaitsForShutdownCleanup()
   await testRuntimeAbortAllTimesOutStuckStreamCleanup()

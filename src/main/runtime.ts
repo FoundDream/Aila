@@ -190,10 +190,13 @@ export class AgentRuntime {
   async send(input: RuntimeSendInput): Promise<RuntimeSendResult> {
     const { conversationId, userText, selection, requestedProfileId, transientContext } = input
 
+    this.assertConversationOpen(conversationId)
+
     // Wait for any prior stream on this conversation to finish its persistence
     // side-effects before appending the next user message.
     const previous = this.activeStreams.get(conversationId)
     if (previous) await this.waitForPriorStreamBeforeNextTurn(conversationId, previous)
+    this.assertConversationOpen(conversationId)
 
     const userMessage: PersistedMessage = {
       schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
@@ -202,9 +205,14 @@ export class AgentRuntime {
       blocks: [{ type: 'text', content: userText }],
       status: 'done',
     }
-    await this.persistAndAnnounce(conversationId, userMessage)
+    if (!(await this.persistAndAnnounce(conversationId, userMessage))) {
+      this.assertConversationOpen(conversationId)
+      throw new Error('conversation was deleted')
+    }
+    this.assertConversationOpen(conversationId)
 
     const record = await getConversation(conversationId)
+    this.assertConversationOpen(conversationId)
     return this.startAssistantTurn({
       conversationId,
       userMessage,
@@ -218,10 +226,13 @@ export class AgentRuntime {
   async retryLastUserMessage(input: RuntimeRetryLastInput): Promise<RuntimeSendResult> {
     const { conversationId, selection, requestedProfileId, transientContext } = input
 
+    this.assertConversationOpen(conversationId)
     const previous = this.activeStreams.get(conversationId)
     if (previous) await this.waitForPriorStreamBeforeNextTurn(conversationId, previous)
+    this.assertConversationOpen(conversationId)
 
     const record = await getConversation(conversationId)
+    this.assertConversationOpen(conversationId)
     const retry = resolveRetryTurn(record)
 
     if (!messageText(retry.userMessage).trim()) {
@@ -249,6 +260,7 @@ export class AgentRuntime {
     const { conversationId, userMessage, record, selection, requestedProfileId, transientContext } =
       input
     const assistantMessageId = randomUUID()
+    this.assertConversationOpen(conversationId)
 
     let profileId: AgentProfileId
     let messages: Parameters<typeof defaultStreamChat>[0]['messages']
@@ -276,6 +288,7 @@ export class AgentRuntime {
       )
       return { userMessage, assistantMessageId }
     }
+    this.assertConversationOpen(conversationId)
 
     const controller = new AbortController()
     let resolveCleanup: () => void = () => {}
@@ -507,6 +520,12 @@ export class AgentRuntime {
 
   private cleanupTimeoutMs(): number {
     return this.options.abortAllCleanupTimeoutMs ?? DEFAULT_ABORT_ALL_CLEANUP_TIMEOUT_MS
+  }
+
+  private assertConversationOpen(conversationId: string): void {
+    if (this.deletedConversations.has(conversationId)) {
+      throw new Error('conversation was deleted')
+    }
   }
 
   private async waitForPriorStreamBeforeNextTurn(
