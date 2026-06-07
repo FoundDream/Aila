@@ -14,6 +14,7 @@ import {
   createToolApprovalsState,
   mergeToolApprovals,
   resolveToolApproval as resolveToolApprovalState,
+  resolveToolApprovalsForConversation,
 } from '@/toolApprovalsState'
 import type { ProviderId, Settings, SettingsState, ToolApprovalRequestEvent } from './types'
 
@@ -144,6 +145,10 @@ export default function App(): ReactElement {
     setToolApprovalsState((current) => resolveToolApprovalState(current, requestId))
   }, [])
 
+  const clearConversationApprovals = useCallback((conversationId: string): void => {
+    setToolApprovalsState((current) => resolveToolApprovalsForConversation(current, conversationId))
+  }, [])
+
   // ⌘\ toggles the sidebar. preventDefault so a stray backslash doesn't reach
   // a focused input/editor.
   useEffect(() => {
@@ -220,6 +225,7 @@ export default function App(): ReactElement {
                 void conversationsState.rename(id, title)
               }}
               onDelete={(id) => {
+                clearConversationApprovals(id)
                 chatStreams.drop(id)
                 void conversationsState.remove(id)
               }}
@@ -270,6 +276,7 @@ export default function App(): ReactElement {
               settings={settingsState?.settings ?? null}
               configuredProviders={settingsState?.configuredProviders ?? ([] as ProviderId[])}
               pendingApprovalConversationIds={pendingApprovalConversationIds}
+              onClearConversationApprovals={clearConversationApprovals}
               onUpdateSettings={updateSettings}
               onOpenSettings={openSettings}
             />

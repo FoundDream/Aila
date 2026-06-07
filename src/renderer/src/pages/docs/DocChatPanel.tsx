@@ -15,6 +15,7 @@ interface DocChatPanelProps {
   settings: Settings | null
   configuredProviders: ProviderId[]
   pendingApprovalConversationIds: Set<string>
+  onClearConversationApprovals: (conversationId: string) => void
   onUpdateSettings: (settings: Settings) => Promise<void>
   onOpenSettings: () => void
   onClose: () => void
@@ -28,6 +29,7 @@ export function DocChatPanel({
   settings,
   configuredProviders,
   pendingApprovalConversationIds,
+  onClearConversationApprovals,
   onUpdateSettings,
   onOpenSettings,
   onClose,
@@ -111,10 +113,11 @@ export function DocChatPanel({
 
   const handleDeleteSession = useCallback(
     (id: string) => {
+      onClearConversationApprovals(id)
       streams.drop(id)
       void deleteSession(id)
     },
-    [deleteSession, streams],
+    [deleteSession, onClearConversationApprovals, streams],
   )
 
   const activeSession = sessions.find((s) => s.id === activeId) ?? null

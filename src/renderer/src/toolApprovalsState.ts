@@ -43,3 +43,23 @@ export function resolveToolApproval(
     resolvedIds: trimResolvedIds(resolvedIds),
   }
 }
+
+export function resolveToolApprovalsForConversation(
+  state: ToolApprovalsState,
+  conversationId: string,
+): ToolApprovalsState {
+  const resolvedIds = new Set(state.resolvedIds)
+  let changed = false
+  const pending = state.pending.filter((request) => {
+    if (request.conversationId !== conversationId) return true
+    resolvedIds.delete(request.requestId)
+    resolvedIds.add(request.requestId)
+    changed = true
+    return false
+  })
+  if (!changed) return state
+  return {
+    pending,
+    resolvedIds: trimResolvedIds(resolvedIds),
+  }
+}

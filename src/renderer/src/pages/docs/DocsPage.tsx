@@ -19,6 +19,7 @@ interface DocsPageProps {
   settings: Settings | null
   configuredProviders: ProviderId[]
   pendingApprovalConversationIds: Set<string>
+  onClearConversationApprovals: (conversationId: string) => void
   onUpdateSettings: (settings: Settings) => Promise<void>
   onOpenSettings: () => void
 }
@@ -57,6 +58,7 @@ export function DocsPage({
   settings,
   configuredProviders,
   pendingApprovalConversationIds,
+  onClearConversationApprovals,
   onUpdateSettings,
   onOpenSettings,
 }: DocsPageProps): ReactElement {
@@ -265,6 +267,7 @@ export function DocsPage({
               settings={settings}
               configuredProviders={configuredProviders}
               pendingApprovalConversationIds={pendingApprovalConversationIds}
+              onClearConversationApprovals={onClearConversationApprovals}
               onUpdateSettings={onUpdateSettings}
               onOpenSettings={onOpenSettings}
               onClose={closePanel}

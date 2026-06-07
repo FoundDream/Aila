@@ -37,6 +37,7 @@ import {
   createToolApprovalsState,
   mergeToolApprovals,
   resolveToolApproval,
+  resolveToolApprovalsForConversation,
 } from '../src/renderer/src/toolApprovalsState'
 
 function assert(condition: unknown, message: string): asserts condition {
@@ -1284,6 +1285,38 @@ function testRendererApprovalHydrationDoesNotResurrectResolvedRequest(): void {
   )
 }
 
+function testRendererConversationApprovalClearDoesNotResurrectHydration(): void {
+  const removedConversationId = 'conversation-approval-removed'
+  const keptConversationId = 'conversation-approval-kept'
+  const removedEarly = toolApprovalRequest('approval-removed-early', 1, removedConversationId)
+  const removedLate = toolApprovalRequest('approval-removed-late', 3, removedConversationId)
+  const kept = toolApprovalRequest('approval-kept', 2, keptConversationId)
+
+  let state = createToolApprovalsState()
+  state = mergeToolApprovals(state, [removedEarly, kept, removedLate])
+  assertEqual(state.pending.length, 3, 'approval state should start with all pending requests')
+
+  state = resolveToolApprovalsForConversation(state, removedConversationId)
+  assertEqual(
+    state.pending.length,
+    1,
+    'conversation approval clear should remove matching requests',
+  )
+  assertEqual(state.pending[0]?.requestId, kept.requestId, 'approval clear should keep other chats')
+  assert(
+    state.resolvedIds.has(removedEarly.requestId) && state.resolvedIds.has(removedLate.requestId),
+    'conversation approval clear should tombstone removed requests',
+  )
+
+  state = mergeToolApprovals(state, [removedEarly, removedLate])
+  assertEqual(
+    state.pending.length,
+    1,
+    'late approval hydration should not resurrect removed conversation requests',
+  )
+  assertEqual(state.pending[0]?.requestId, kept.requestId, 'late hydration should keep other chat')
+}
+
 function testRendererApprovalHydrationSortsPendingRequests(): void {
   let state = createToolApprovalsState()
   state = mergeToolApprovals(state, [
@@ -1334,6 +1367,7 @@ async function main(): Promise<void> {
   await testToolApprovalTimeoutClearsPendingRequests()
   await testToolApprovalCancellationClearsConversationRequests()
   testRendererApprovalHydrationDoesNotResurrectResolvedRequest()
+  testRendererConversationApprovalClearDoesNotResurrectHydration()
   testRendererApprovalHydrationSortsPendingRequests()
   console.log('desktop workbench contract: ok')
 }
