@@ -167,10 +167,11 @@ export class ToolApprovalStore {
     return resolved
   }
 
-  shutdown(): void {
+  async shutdown(): Promise<void> {
     for (const requestId of Array.from(this.pending.keys())) {
       this.resolve(requestId, false, 'shutdown')
     }
+    await this.flushActivity()
   }
 
   async flushActivity(): Promise<void> {

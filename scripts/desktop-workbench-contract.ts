@@ -962,8 +962,23 @@ async function testToolApprovalCancellationClearsConversationRequests(): Promise
     assertEqual(record.meta.activity?.state, 'failed', 'cancelled approval activity state')
     assertEqual(record.meta.activity?.title, 'Denied: write_file', 'cancelled approval title')
 
-    store.shutdown()
+    await store.shutdown()
     assertEqual(await otherApproval, false, 'shutdown should clear remaining approval')
+
+    const shutdownEvents = await listAgentEvents(otherConversation.id)
+    assertEqual(
+      shutdownEvents.at(-1)?.type,
+      'tool.approval.resolved',
+      'shutdown approval event type',
+    )
+    assertEqual(shutdownEvents.at(-1)?.data?.reason, 'shutdown', 'shutdown approval event reason')
+    const shutdownRecord = await getConversation(otherConversation.id)
+    assertEqual(shutdownRecord.meta.activity?.state, 'failed', 'shutdown approval activity state')
+    assertEqual(
+      shutdownRecord.meta.activity?.title,
+      'Denied: write_file',
+      'shutdown approval title',
+    )
   })
 }
 

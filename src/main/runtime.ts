@@ -334,11 +334,29 @@ export class AgentRuntime {
     }))
   }
 
-  abortAll(): void {
-    for (const [conversationId, slot] of this.activeStreams.entries()) {
-      slot.controller.abort()
-      void this.notifyConversationAbort(conversationId, 'shutdown')
-    }
+  async abortAll(reason: ConversationAbortReason = 'shutdown'): Promise<void> {
+    await Promise.all(
+      Array.from(this.activeStreams.entries()).map(async ([conversationId, slot]) => {
+        slot.controller.abort()
+        const abortCleanup = this.notifyConversationAbort(conversationId, reason)
+        if (!slot.abortRecorded) {
+          slot.abortRecorded = true
+          try {
+            await this.recordAgentEvent({
+              timestamp: Date.now(),
+              conversationId,
+              messageId: slot.assistantMessageId,
+              type: 'turn.cancelled',
+              data: { phase: 'requested', reason },
+            })
+          } catch (err) {
+            this.logger.warn('[runtime] cancellation activity append failed:', err)
+          }
+        }
+        await abortCleanup
+        await slot.cleanup.catch(() => {})
+      }),
+    )
   }
 
   async deleteConversation(conversationId: string): Promise<void> {

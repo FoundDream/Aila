@@ -122,7 +122,7 @@ async function testRuntimeEmitsVersionedEvents(): Promise<void> {
         () => events.some((event) => event.type === 'chat:error'),
         'runtime did not emit expected no-key error event',
       )
-      runtime.abortAll()
+      await runtime.abortAll()
 
       assert(events.length >= 2, 'runtime should emit persistence and error events')
       for (const event of events) {
@@ -174,7 +174,7 @@ async function testRuntimeRetriesDanglingUserTurn(): Promise<void> {
         () => events.some((event) => event.type === 'chat:error'),
         'retry did not emit expected no-key error event',
       )
-      runtime.abortAll()
+      await runtime.abortAll()
 
       const record = await getConversation(conversation.id)
       assertEqual(
@@ -682,6 +682,97 @@ async function testRuntimeDeleteRunsAbortCleanupBeforeWaitingForStream(): Promis
     assert(
       !(await listConversations()).some((record) => record.id === conversation.id),
       'delete should remove conversation after cleanup',
+    )
+  })
+}
+
+async function testRuntimeAbortAllWaitsForShutdownCleanup(): Promise<void> {
+  await withTempDataDir(async () => {
+    const conversation = await createConversation()
+    let resolveStarted: () => void = () => {}
+    const started = new Promise<void>((resolve) => {
+      resolveStarted = resolve
+    })
+    let cleanupConversationId: string | null = null
+    let cleanupReason: string | null = null
+    let streamFinished = false
+
+    const runtime = new AgentRuntime({
+      logger: { warn() {}, error() {} },
+      onConversationAbort: (conversationId, reason) => {
+        cleanupConversationId = conversationId
+        cleanupReason = reason
+      },
+      streamChat: async (req, handlers) => {
+        req.onAgentEvent?.({
+          timestamp: Date.now(),
+          conversationId: req.conversationId,
+          messageId: req.assistantMessageId,
+          type: 'turn.started',
+          data: { providerId: req.selection.providerId, modelId: req.selection.modelId },
+        })
+        resolveStarted()
+        await new Promise<void>((resolve) => {
+          if (req.signal.aborted) {
+            resolve()
+            return
+          }
+          req.signal.addEventListener('abort', () => resolve(), { once: true })
+        })
+        req.onAgentEvent?.({
+          timestamp: Date.now(),
+          conversationId: req.conversationId,
+          messageId: req.assistantMessageId,
+          type: 'turn.cancelled',
+          data: { phase: 'completed', reason: 'abort_signal' },
+        })
+        await handlers.onError({
+          conversationId: req.conversationId,
+          messageId: req.assistantMessageId,
+          error: 'Aborted',
+          message: {
+            schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+            id: req.assistantMessageId,
+            role: 'assistant',
+            blocks: [],
+            status: 'error',
+            error: 'Aborted',
+            model: req.selection,
+          },
+        })
+        streamFinished = true
+      },
+    })
+
+    await runtime.send({
+      conversationId: conversation.id,
+      userText: 'shutdown while streaming',
+      selection: { providerId: 'openrouter', modelId: 'contract/mock' },
+      requestedProfileId: 'coding',
+    })
+    await started
+
+    await withTimeout(runtime.abortAll('shutdown'), 'abortAll should wait for shutdown cleanup')
+    assertEqual(cleanupConversationId, conversation.id, 'abortAll cleanup conversation id')
+    assertEqual(cleanupReason, 'shutdown', 'abortAll cleanup reason')
+    assertEqual(streamFinished, true, 'abortAll should wait for stream cleanup')
+    assertEqual(runtime.listActiveStreams().length, 0, 'abortAll should clear active stream')
+
+    const agentEvents = await listAgentEvents(conversation.id)
+    assert(
+      agentEvents.some(
+        (event) =>
+          event.type === 'turn.cancelled' &&
+          event.data?.phase === 'requested' &&
+          event.data.reason === 'shutdown',
+      ),
+      'abortAll should persist shutdown cancellation request',
+    )
+    assert(
+      agentEvents.some(
+        (event) => event.type === 'turn.cancelled' && event.data?.phase === 'completed',
+      ),
+      'abortAll should persist completed cancellation',
     )
   })
 }
@@ -1453,6 +1544,7 @@ async function main(): Promise<void> {
   await testRuntimeSetupFailurePersistsAssistantError()
   await testRuntimeListsActiveAssistantTurns()
   await testRuntimeDeleteRunsAbortCleanupBeforeWaitingForStream()
+  await testRuntimeAbortAllWaitsForShutdownCleanup()
   await testPersistenceContract()
   await testMessageUpsertPreventsDuplicatePersistedMessages()
   await testAgentEventReplayDeduplicatesExactDuplicates()

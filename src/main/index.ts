@@ -51,6 +51,8 @@ registerImageProtocolScheme()
 const DEV_RENDERER_URL = process.env.ELECTRON_RENDERER_URL ?? 'http://localhost:5173'
 
 let mainWindow: BrowserWindow | null = null
+let gracefulShutdownStarted = false
+let gracefulShutdownComplete = false
 
 const TOOL_APPROVAL_TIMEOUT_MS = 60_000
 
@@ -111,6 +113,11 @@ const agentRuntime = new AgentRuntime({
   loadToolPacks: async () => (await loadToolPacksFromDir()).map((pack) => pack.toolPack),
   workspaceRoots: getDesktopWorkspaceRoots,
 })
+
+async function shutdownRuntimeWorkbench(): Promise<void> {
+  await agentRuntime.abortAll('shutdown')
+  await toolApprovals.shutdown()
+}
 
 async function sweepOrphanedDocConversations(): Promise<void> {
   const [{ docs }, conversations] = await Promise.all([listAll(), listConversations()])
@@ -276,7 +283,17 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })
 
-app.on('before-quit', () => {
-  agentRuntime.abortAll()
-  toolApprovals.shutdown()
+app.on('before-quit', (event) => {
+  if (gracefulShutdownComplete) return
+  event.preventDefault()
+  if (gracefulShutdownStarted) return
+  gracefulShutdownStarted = true
+  void shutdownRuntimeWorkbench()
+    .catch((error) => {
+      console.warn('[shutdown] runtime workbench cleanup failed:', error)
+    })
+    .finally(() => {
+      gracefulShutdownComplete = true
+      app.quit()
+    })
 })

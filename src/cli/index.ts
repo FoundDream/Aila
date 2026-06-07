@@ -526,7 +526,7 @@ async function main(): Promise<void> {
     })
     await completionWait
   } finally {
-    runtime.abortAll()
+    await runtime.abortAll()
   }
 
   const completed = completionRef.current

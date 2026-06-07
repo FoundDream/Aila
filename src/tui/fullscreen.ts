@@ -239,7 +239,7 @@ class AilaFullScreenApp {
   private async stop(): Promise<void> {
     if (this.stopped) return
     this.stopped = true
-    this.runtime.abortAll()
+    await this.runtime.abortAll()
     this.terminal.setProgress(false)
     this.ui.stop()
     await this.terminal.drainInput(250, 25).catch(() => {})

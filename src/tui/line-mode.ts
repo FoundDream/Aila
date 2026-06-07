@@ -731,12 +731,14 @@ export async function runLineMode(argv: string[] = process.argv.slice(2)): Promi
 
   process.on('SIGINT', () => {
     if (activeConversationId) {
-      runtime.abort(activeConversationId)
+      void runtime.abort(activeConversationId)
       return
     }
-    runtime.abortAll()
-    output.write('\n')
-    process.exit(0)
+    void (async () => {
+      await runtime.abortAll()
+      output.write('\n')
+      process.exit(0)
+    })()
   })
 
   writeLine('Aila TUI')
@@ -816,7 +818,7 @@ export async function runLineMode(argv: string[] = process.argv.slice(2)): Promi
     }
   } finally {
     prompt.close()
-    runtime.abortAll()
+    await runtime.abortAll()
   }
 }
 
