@@ -193,7 +193,7 @@ export class AgentRuntime {
     // Wait for any prior stream on this conversation to finish its persistence
     // side-effects before appending the next user message.
     const previous = this.activeStreams.get(conversationId)
-    if (previous) await previous.cleanup.catch(() => {})
+    if (previous) await this.waitForPriorStreamBeforeNextTurn(conversationId, previous)
 
     const userMessage: PersistedMessage = {
       schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
@@ -219,7 +219,7 @@ export class AgentRuntime {
     const { conversationId, selection, requestedProfileId, transientContext } = input
 
     const previous = this.activeStreams.get(conversationId)
-    if (previous) await previous.cleanup.catch(() => {})
+    if (previous) await this.waitForPriorStreamBeforeNextTurn(conversationId, previous)
 
     const record = await getConversation(conversationId)
     const retry = resolveRetryTurn(record)
@@ -366,18 +366,11 @@ export class AgentRuntime {
             this.activeStreams.delete(conversationId)
           }
           try {
-            await this.recordAgentEvent({
-              timestamp: Date.now(),
+            await this.recordInterruptedStreamCleanup(
               conversationId,
-              messageId: slot.assistantMessageId,
-              type: 'turn.interrupted',
-              data: {
-                reason: `${reason} cleanup timed out`,
-                previousState: 'cancelled',
-                previousEventType: 'turn.cancelled',
-                previousTitle: 'Stop requested',
-              },
-            })
+              slot,
+              `${reason} cleanup timed out`,
+            )
           } catch (err) {
             this.logger.warn('[runtime] interrupted shutdown activity append failed:', err)
           }
@@ -473,8 +466,12 @@ export class AgentRuntime {
     this.options.onEvent?.(event)
   }
 
-  private emitConversationEvent(conversationId: string, event: AgentRuntimeEvent): void {
-    if (this.deletedConversations.has(conversationId)) return
+  private emitStreamEvent(
+    conversationId: string,
+    controller: AbortController,
+    event: AgentRuntimeEvent,
+  ): void {
+    if (!this.acceptsStreamEvents(conversationId, controller)) return
     this.emit(event)
   }
 
@@ -495,6 +492,52 @@ export class AgentRuntime {
   private resolveWorkspaceRoots(): ToolContext['workspaceRoots'] {
     const roots = this.options.workspaceRoots
     return typeof roots === 'function' ? roots() : roots
+  }
+
+  private cleanupTimeoutMs(): number {
+    return this.options.abortAllCleanupTimeoutMs ?? DEFAULT_ABORT_ALL_CLEANUP_TIMEOUT_MS
+  }
+
+  private async waitForPriorStreamBeforeNextTurn(
+    conversationId: string,
+    slot: StreamSlot,
+  ): Promise<void> {
+    if (!slot.controller.signal.aborted) {
+      await slot.cleanup.catch(() => {})
+      return
+    }
+
+    const cleanedUp = await this.waitForStreamCleanup(slot, this.cleanupTimeoutMs())
+    if (cleanedUp) return
+
+    if (this.activeStreams.get(conversationId)?.controller === slot.controller) {
+      this.activeStreams.delete(conversationId)
+    }
+    await this.recordInterruptedStreamCleanup(conversationId, slot, 'aborted cleanup timed out')
+  }
+
+  private async recordInterruptedStreamCleanup(
+    conversationId: string,
+    slot: StreamSlot,
+    reason: string,
+  ): Promise<void> {
+    await this.recordAgentEvent({
+      timestamp: Date.now(),
+      conversationId,
+      messageId: slot.assistantMessageId,
+      type: 'turn.interrupted',
+      data: {
+        reason,
+        previousState: 'cancelled',
+        previousEventType: 'turn.cancelled',
+        previousTitle: 'Stop requested',
+      },
+    })
+  }
+
+  private acceptsStreamEvents(conversationId: string, controller: AbortController): boolean {
+    if (this.deletedConversations.has(conversationId)) return false
+    return this.activeStreams.get(conversationId)?.controller === controller
   }
 
   private async notifyConversationAbort(
@@ -606,6 +649,7 @@ export class AgentRuntime {
       ) {
         terminalAgentEventQueued = true
       }
+      if (!this.acceptsStreamEvents(conversationId, controller)) return
       eventLogChain = eventLogChain
         .then(async () => {
           await this.recordAgentEvent(event)
@@ -632,38 +676,45 @@ export class AgentRuntime {
         },
         {
           onTextDelta: (event) =>
-            this.emitConversationEvent(
+            this.emitStreamEvent(
               conversationId,
+              controller,
               createRuntimeEvent('chat:text-delta', event),
             ),
           onReasoningDelta: (event) =>
-            this.emitConversationEvent(
+            this.emitStreamEvent(
               conversationId,
+              controller,
               createRuntimeEvent('chat:reasoning-delta', event),
             ),
           onToolCallStart: (event) =>
-            this.emitConversationEvent(
+            this.emitStreamEvent(
               conversationId,
+              controller,
               createRuntimeEvent('chat:tool-call-start', event),
             ),
           onToolCallArgsDelta: (event) =>
-            this.emitConversationEvent(
+            this.emitStreamEvent(
               conversationId,
+              controller,
               createRuntimeEvent('chat:tool-call-args-delta', event),
             ),
           onToolCallResult: (event) =>
-            this.emitConversationEvent(
+            this.emitStreamEvent(
               conversationId,
+              controller,
               createRuntimeEvent('chat:tool-call-result', event),
             ),
           onImageBlock: (event) =>
-            this.emitConversationEvent(
+            this.emitStreamEvent(
               conversationId,
+              controller,
               createRuntimeEvent('chat:image-block', event),
             ),
           onDone: async (event) => {
+            if (!this.acceptsStreamEvents(conversationId, controller)) return
             const persisted = await this.persistAndAnnounce(conversationId, event.message)
-            if (!persisted) return
+            if (!persisted || !this.acceptsStreamEvents(conversationId, controller)) return
             this.emit(createRuntimeEvent('chat:done', event))
             if (event.usage) {
               try {
@@ -675,8 +726,9 @@ export class AgentRuntime {
             }
           },
           onError: async (event) => {
+            if (!this.acceptsStreamEvents(conversationId, controller)) return
             const persisted = await this.persistAndAnnounce(conversationId, event.message)
-            if (!persisted) return
+            if (!persisted || !this.acceptsStreamEvents(conversationId, controller)) return
             this.emit(createRuntimeEvent('chat:error', event))
           },
         },
@@ -685,34 +737,36 @@ export class AgentRuntime {
       const isAbort = controller.signal.aborted
       const message = isAbort ? 'Aborted' : err instanceof Error ? err.message : String(err)
       if (!isAbort) this.logger.error('[runtime] unexpected stream error:', message)
-      const errored: PersistedMessage = {
-        schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
-        id: assistantMessageId,
-        role: 'assistant',
-        blocks: [],
-        status: 'error',
-        error: message,
-        model: selection,
-      }
-      const persisted = await this.persistAndAnnounce(conversationId, errored).catch(() => false)
-      if (persisted) {
-        this.emit(
-          createRuntimeEvent('chat:error', {
+      if (this.acceptsStreamEvents(conversationId, controller)) {
+        const errored: PersistedMessage = {
+          schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+          id: assistantMessageId,
+          role: 'assistant',
+          blocks: [],
+          status: 'error',
+          error: message,
+          model: selection,
+        }
+        const persisted = await this.persistAndAnnounce(conversationId, errored).catch(() => false)
+        if (persisted && this.acceptsStreamEvents(conversationId, controller)) {
+          this.emit(
+            createRuntimeEvent('chat:error', {
+              conversationId,
+              messageId: assistantMessageId,
+              error: message,
+              message: errored,
+            }),
+          )
+        }
+        if (!terminalAgentEventQueued) {
+          queueAgentEvent({
+            timestamp: Date.now(),
             conversationId,
             messageId: assistantMessageId,
-            error: message,
-            message: errored,
-          }),
-        )
-      }
-      if (!terminalAgentEventQueued) {
-        queueAgentEvent({
-          timestamp: Date.now(),
-          conversationId,
-          messageId: assistantMessageId,
-          type: isAbort ? 'turn.cancelled' : 'turn.failed',
-          data: isAbort ? { phase: 'completed', reason: 'abort_signal' } : { error: message },
-        })
+            type: isAbort ? 'turn.cancelled' : 'turn.failed',
+            data: isAbort ? { phase: 'completed', reason: 'abort_signal' } : { error: message },
+          })
+        }
       }
     } finally {
       if (this.activeStreams.get(conversationId)?.controller === controller) {

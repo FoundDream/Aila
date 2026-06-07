@@ -871,6 +871,147 @@ async function testRuntimeDeleteTimesOutStuckStreamAndSuppressesLateEvents(): Pr
   })
 }
 
+async function testRuntimeSendRecoversAbortedStuckPreviousStream(): Promise<void> {
+  await withTempDataDir(async () => {
+    const conversation = await createConversation()
+    const events: AgentRuntimeEvent[] = []
+    let resolveFirstStarted: () => void = () => {}
+    let resolveFirstLateStream: () => void = () => {}
+    const firstStarted = new Promise<void>((resolve) => {
+      resolveFirstStarted = resolve
+    })
+    const firstLateRelease = new Promise<void>((resolve) => {
+      resolveFirstLateStream = resolve
+    })
+    let streamCount = 0
+    let firstLateStreamFinished = false
+
+    const runtime = new AgentRuntime({
+      abortAllCleanupTimeoutMs: 10,
+      onEvent: (event) => events.push(event),
+      logger: { warn() {}, error() {} },
+      streamChat: async (req, handlers) => {
+        streamCount += 1
+        const callIndex = streamCount
+        req.onAgentEvent?.({
+          timestamp: Date.now(),
+          conversationId: req.conversationId,
+          messageId: req.assistantMessageId,
+          type: 'turn.started',
+          data: { providerId: req.selection.providerId, modelId: req.selection.modelId },
+        })
+
+        if (callIndex === 1) {
+          resolveFirstStarted()
+          await firstLateRelease
+          req.onAgentEvent?.({
+            timestamp: Date.now(),
+            conversationId: req.conversationId,
+            messageId: req.assistantMessageId,
+            type: 'turn.completed',
+          })
+          await handlers.onDone({
+            conversationId: req.conversationId,
+            messageId: req.assistantMessageId,
+            message: {
+              schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+              id: req.assistantMessageId,
+              role: 'assistant',
+              blocks: [{ type: 'text', content: 'late abandoned answer' }],
+              status: 'done',
+              model: req.selection,
+            },
+          })
+          firstLateStreamFinished = true
+          return
+        }
+
+        req.onAgentEvent?.({
+          timestamp: Date.now(),
+          conversationId: req.conversationId,
+          messageId: req.assistantMessageId,
+          type: 'turn.completed',
+        })
+        await handlers.onDone({
+          conversationId: req.conversationId,
+          messageId: req.assistantMessageId,
+          message: {
+            schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+            id: req.assistantMessageId,
+            role: 'assistant',
+            blocks: [{ type: 'text', content: 'second answer after recovery' }],
+            status: 'done',
+            model: req.selection,
+          },
+        })
+      },
+    })
+
+    const first = await runtime.send({
+      conversationId: conversation.id,
+      userText: 'first turn will ignore abort',
+      selection: { providerId: 'openrouter', modelId: 'contract/mock' },
+      requestedProfileId: 'coding',
+    })
+    await firstStarted
+    await runtime.abort(conversation.id)
+
+    const second = await withTimeout(
+      runtime.send({
+        conversationId: conversation.id,
+        userText: 'second turn should recover',
+        selection: { providerId: 'openrouter', modelId: 'contract/mock' },
+        requestedProfileId: 'coding',
+      }),
+      'send should recover an aborted stuck previous stream',
+      500,
+    )
+    assertEqual(streamCount, 2, 'send should start a replacement stream after recovery')
+    await waitFor(
+      () => runtime.listActiveStreams().length === 0,
+      'replacement stream should finish',
+    )
+
+    const agentEvents = await listAgentEvents(conversation.id)
+    assert(
+      agentEvents.some(
+        (event) =>
+          event.messageId === first.assistantMessageId &&
+          event.type === 'turn.interrupted' &&
+          event.data?.reason === 'aborted cleanup timed out',
+      ),
+      'recovery should mark the abandoned first turn interrupted',
+    )
+    assert(
+      agentEvents.some(
+        (event) => event.messageId === second.assistantMessageId && event.type === 'turn.completed',
+      ),
+      'replacement turn should complete',
+    )
+
+    resolveFirstLateStream()
+    await waitFor(() => firstLateStreamFinished, 'abandoned stream should be allowed to unwind')
+
+    const record = await getConversation(conversation.id)
+    assert(
+      !record.messages.some((message) => message.id === first.assistantMessageId),
+      'late abandoned stream must not persist its assistant message',
+    )
+    assert(
+      !record.messages.some((message) =>
+        JSON.stringify(message.blocks).includes('late abandoned answer'),
+      ),
+      'late abandoned stream must not write stale assistant content',
+    )
+    assert(
+      !events.some(
+        (event) => event.type === 'chat:done' && event.data.messageId === first.assistantMessageId,
+      ),
+      'late abandoned stream must not emit chat:done',
+    )
+  })
+}
+
 async function testRuntimeAbortAllWaitsForShutdownCleanup(): Promise<void> {
   await withTempDataDir(async () => {
     const conversation = await createConversation()
@@ -1798,6 +1939,7 @@ async function main(): Promise<void> {
   await testRuntimeListsActiveAssistantTurns()
   await testRuntimeDeleteRunsAbortCleanupBeforeWaitingForStream()
   await testRuntimeDeleteTimesOutStuckStreamAndSuppressesLateEvents()
+  await testRuntimeSendRecoversAbortedStuckPreviousStream()
   await testRuntimeAbortAllWaitsForShutdownCleanup()
   await testRuntimeAbortAllTimesOutStuckStreamCleanup()
   await testPersistenceContract()
