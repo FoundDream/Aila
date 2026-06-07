@@ -5,7 +5,7 @@ import {
   type ConversationSummary,
   type PersistedAgentEvent,
 } from './conversations'
-import type { ToolApprovalRequest } from './tools'
+import { summarizeToolTarget, type ToolApprovalRequest } from './tools'
 
 export type ToolApprovalResolutionReason = 'user' | 'timeout' | 'shutdown' | 'cancelled'
 
@@ -68,6 +68,7 @@ async function recordToolApprovalActivity(
   reason?: ToolApprovalResolutionReason,
 ): Promise<void> {
   if (!req.conversationId || !req.messageId) return
+  const target = summarizeToolTarget(req.name, req.args)
 
   const event: AgentEvent = {
     timestamp: Date.now(),
@@ -82,6 +83,7 @@ async function recordToolApprovalActivity(
         ? {
             risk: toolRisk(req),
             args: previewActivityValue(req.args),
+            ...(target && { target }),
             destructive: req.metadata.destructive,
             access: req.metadata.access,
             scope: req.metadata.scope,

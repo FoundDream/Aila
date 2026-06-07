@@ -193,7 +193,7 @@ async function testActivityUpdatesConversationSummary(): Promise<void> {
       conversationId: conversation.id,
       messageId: 'assistant-message',
       type: 'tool.execution.started',
-      data: { toolName: 'read' },
+      data: { toolName: 'read', target: { kind: 'file', preview: '/workspace/app.ts', size: 17 } },
     })
 
     assertEqual(event.schemaVersion, 1, 'activity event should be versioned')
@@ -204,6 +204,7 @@ async function testActivityUpdatesConversationSummary(): Promise<void> {
     )
     assertEqual(summary.activity?.state, 'running', 'activity summary state')
     assertEqual(summary.activity?.title, 'Running: read', 'activity summary title')
+    assertEqual(summary.activity?.detail, '/workspace/app.ts', 'activity summary target detail')
     assertEqual(summary.activity?.toolName, 'read', 'activity summary tool')
     assertEqual(
       summary.activity?.eventType,
@@ -856,6 +857,11 @@ async function testToolApprovalsCanHydrateAndResolvePendingRequests(): Promise<v
     await store.flushActivity()
     const events = await listAgentEvents(conversation.id)
     assertEqual(events[0]?.type, 'tool.approval.requested', 'approval requested event')
+    assertEqual(
+      (events[0]?.data?.target as { preview?: unknown } | undefined)?.preview,
+      '/workspace/note.md',
+      'approval requested event should include target preview',
+    )
     assertEqual(events[1]?.type, 'tool.approval.resolved', 'approval resolved event')
     assertEqual(events[1]?.data?.approved, true, 'approval resolved event approved flag')
 

@@ -24,6 +24,8 @@ import {
   executeTool,
   getToolDefinitionsForProfile,
   type ImageSideChannelBlock,
+  summarizeToolTarget,
+  type ToolActivityTarget,
   type ToolContext,
   type ToolRegistry,
 } from './tools'
@@ -164,6 +166,7 @@ function buildTools(
   ctx: Parameters<typeof executeTool>[2],
   emitAgentEvent: (type: AgentEventType, data?: Record<string, unknown>) => void,
   toolRegistry?: ToolRegistry,
+  toolTargets = new Map<string, ToolActivityTarget>(),
 ) {
   return Object.fromEntries(
     getToolDefinitionsForProfile(ctx.profileId, toolRegistry).map((td) => [
@@ -173,29 +176,31 @@ function buildTools(
         inputSchema: jsonSchema(td.function.parameters as Parameters<typeof jsonSchema>[0]),
         execute: async (args, options) => {
           const toolCallId = options.toolCallId
+          const toolName = td.function.name
+          const input = args as Record<string, unknown>
+          const target = summarizeToolTarget(toolName, input)
+          if (target) toolTargets.set(toolCallId, target)
           emitAgentEvent('tool.execution.started', {
             toolCallId,
-            toolName: td.function.name,
+            toolName,
             input: previewEventValue(args),
+            ...(target && { target }),
           })
           try {
-            const result = await executeTool(
-              td.function.name,
-              args as Record<string, unknown>,
-              { ...ctx, toolCallId },
-              toolRegistry,
-            )
+            const result = await executeTool(toolName, input, { ...ctx, toolCallId }, toolRegistry)
             emitAgentEvent('tool.execution.completed', {
               toolCallId,
-              toolName: td.function.name,
+              toolName,
               result: previewEventValue(result),
+              ...(toolTargets.get(toolCallId) && { target: toolTargets.get(toolCallId) }),
             })
             return result
           } catch (error) {
             emitAgentEvent('tool.execution.failed', {
               toolCallId,
-              toolName: td.function.name,
+              toolName,
               error: error instanceof Error ? error.message : String(error),
+              ...(toolTargets.get(toolCallId) && { target: toolTargets.get(toolCallId) }),
             })
             throw error
           }
@@ -379,6 +384,7 @@ export async function streamChat(req: StreamRequest, handlers: StreamHandlers): 
 
   const builder = new AssistantBuilder()
   let lastUsage: UsageInfo | null = null
+  const toolTargets = new Map<string, ToolActivityTarget>()
 
   const emitAgentEvent = (type: AgentEventType, data?: Record<string, unknown>): void => {
     onAgentEvent?.({
@@ -445,6 +451,7 @@ export async function streamChat(req: StreamRequest, handlers: StreamHandlers): 
         },
         emitAgentEvent,
         toolRegistry,
+        toolTargets,
       ),
       stopWhen: stepCountIs(MAX_STEPS),
       abortSignal: signal,
@@ -508,12 +515,19 @@ export async function streamChat(req: StreamRequest, handlers: StreamHandlers): 
           // Args are complete here. Overwrite the running block with the
           // canonical JSON in case delta accumulation drifted (it shouldn't,
           // but the SDK guarantees this is the source of truth).
-          const args = JSON.stringify(part.input ?? {})
+          const input = part.input ?? {}
+          const args = JSON.stringify(input)
+          const target =
+            input && typeof input === 'object' && !Array.isArray(input)
+              ? summarizeToolTarget(part.toolName, input as Record<string, unknown>)
+              : null
+          if (target) toolTargets.set(part.toolCallId, target)
           builder.startToolCall(part.toolCallId, part.toolName, args)
           emitAgentEvent('tool.input.completed', {
             toolCallId: part.toolCallId,
             toolName: part.toolName,
             input: previewEventValue(part.input ?? {}),
+            ...(target && { target }),
           })
           handlers.onToolCallStart({
             conversationId,
@@ -533,6 +547,7 @@ export async function streamChat(req: StreamRequest, handlers: StreamHandlers): 
             toolName: part.toolName,
             result: previewEventValue(result),
             isError: false,
+            ...(toolTargets.get(part.toolCallId) && { target: toolTargets.get(part.toolCallId) }),
           })
           handlers.onToolCallResult({
             conversationId,
@@ -552,6 +567,7 @@ export async function streamChat(req: StreamRequest, handlers: StreamHandlers): 
             toolName: part.toolName,
             result: previewEventValue(message),
             isError: true,
+            ...(toolTargets.get(part.toolCallId) && { target: toolTargets.get(part.toolCallId) }),
           })
           handlers.onToolCallResult({
             conversationId,

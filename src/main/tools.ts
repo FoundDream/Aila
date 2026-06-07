@@ -40,6 +40,12 @@ export interface ToolMetadata {
   maxResultBytes?: number
 }
 
+export interface ToolActivityTarget {
+  kind: 'file' | 'command' | 'query' | 'prompt'
+  preview: string
+  size: number
+}
+
 export interface ToolSpec extends ToolDefinition {
   metadata: ToolMetadata
 }
@@ -391,6 +397,7 @@ export function getToolDefinitionsForProfile(
 const MAX_OUTPUT_BYTES = 64 * 1024
 const BASH_TIMEOUT_MS = 30_000
 const WORKSPACE_ROOT = resolve(process.cwd())
+const TOOL_TARGET_PREVIEW_CHARS = 300
 
 const SENSITIVE_BASENAMES = new Set([
   '.env',
@@ -436,6 +443,52 @@ function truncate(text: string): string {
   if (Buffer.byteLength(text, 'utf-8') <= MAX_OUTPUT_BYTES) return text
   const buf = Buffer.from(text, 'utf-8').subarray(0, MAX_OUTPUT_BYTES)
   return `${buf.toString('utf-8')}\n…[truncated]`
+}
+
+function stringArg(args: Record<string, unknown>, key: string): string | null {
+  const value = args[key]
+  return typeof value === 'string' && value.trim().length > 0 ? value : null
+}
+
+function target(kind: ToolActivityTarget['kind'], value: string): ToolActivityTarget {
+  return {
+    kind,
+    preview:
+      value.length > TOOL_TARGET_PREVIEW_CHARS
+        ? `${value.slice(0, TOOL_TARGET_PREVIEW_CHARS)}...`
+        : value,
+    size: value.length,
+  }
+}
+
+export function summarizeToolTarget(
+  name: string,
+  args: Record<string, unknown>,
+): ToolActivityTarget | null {
+  if (
+    name === 'read' ||
+    name === 'write' ||
+    name === 'edit' ||
+    name === 'read_file' ||
+    name === 'write_file' ||
+    name === 'edit_file'
+  ) {
+    const path = stringArg(args, 'path')
+    return path ? target('file', path) : null
+  }
+  if (name === 'bash' || name === 'run_shell') {
+    const command = stringArg(args, 'command')
+    return command ? target('command', command) : null
+  }
+  if (name === 'web_search') {
+    const query = stringArg(args, 'query')
+    return query ? target('query', query) : null
+  }
+  if (name === 'generate_image') {
+    const prompt = stringArg(args, 'prompt')
+    return prompt ? target('prompt', prompt) : null
+  }
+  return null
 }
 
 function assertToolAllowed(

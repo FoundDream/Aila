@@ -30,6 +30,17 @@ function previewData(data: Record<string, unknown> | undefined, key: string): st
   return typeof preview === 'string' && preview.length > 0 ? preview : null
 }
 
+function detailData(
+  data: Record<string, unknown> | undefined,
+  fallbackPreviewKey?: string,
+): string | undefined {
+  return (
+    previewData(data, 'target') ??
+    (fallbackPreviewKey ? previewData(data, fallbackPreviewKey) : null) ??
+    undefined
+  )
+}
+
 function eventItem(event: PersistedAgentEvent): ActivityItem | null {
   const data = event.data
   const toolName = stringData(data, 'toolName')
@@ -54,25 +65,33 @@ function eventItem(event: PersistedAgentEvent): ActivityItem | null {
         tone: 'warning',
       }
     case 'tool.requested':
-      return { title: `Tool requested: ${toolName ?? 'tool'}`, tone: 'running' }
+      return {
+        title: `Tool requested: ${toolName ?? 'tool'}`,
+        detail: detailData(data),
+        tone: 'running',
+      }
     case 'tool.input.completed':
       return {
         title: `Args ready: ${toolName ?? 'tool'}`,
-        detail: previewData(data, 'input') ?? undefined,
+        detail: detailData(data, 'input'),
         tone: 'neutral',
       }
     case 'tool.execution.started':
-      return { title: `Running: ${toolName ?? 'tool'}`, tone: 'running' }
+      return {
+        title: `Running: ${toolName ?? 'tool'}`,
+        detail: detailData(data, 'input'),
+        tone: 'running',
+      }
     case 'tool.execution.completed':
       return {
         title: `Tool completed: ${toolName ?? 'tool'}`,
-        detail: previewData(data, 'result') ?? undefined,
+        detail: detailData(data, 'result'),
         tone: 'success',
       }
     case 'tool.execution.failed':
       return {
         title: `Tool failed: ${toolName ?? 'tool'}`,
-        detail: stringData(data, 'error') ?? undefined,
+        detail: detailData(data) ?? stringData(data, 'error') ?? undefined,
         tone: 'error',
       }
     case 'tool.result.returned':
@@ -80,12 +99,12 @@ function eventItem(event: PersistedAgentEvent): ActivityItem | null {
         title: `${boolData(data, 'isError') ? 'Tool result failed' : 'Tool result returned'}: ${
           toolName ?? 'tool'
         }`,
-        detail: previewData(data, 'result') ?? undefined,
+        detail: detailData(data, 'result'),
         tone: boolData(data, 'isError') ? 'error' : 'success',
       }
     case 'tool.approval.requested': {
       const risk = stringData(data, 'risk')
-      const args = previewData(data, 'args')
+      const args = previewData(data, 'target') ?? previewData(data, 'args')
       const detail = [risk, args].filter((value): value is string => Boolean(value)).join(' · ')
       return {
         title: `Approval pending: ${toolName ?? 'tool'}`,

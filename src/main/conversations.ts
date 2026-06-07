@@ -337,10 +337,23 @@ function dataBool(data: Record<string, unknown> | undefined, key: string): boole
   return typeof value === 'boolean' ? value : undefined
 }
 
+function dataPreview(data: Record<string, unknown> | undefined, key: string): string | undefined {
+  const value = data?.[key]
+  if (!value || typeof value !== 'object') return undefined
+  const preview = (value as { preview?: unknown }).preview
+  return typeof preview === 'string' && preview.length > 0 ? preview : undefined
+}
+
+function joinDetail(...values: Array<string | undefined>): string | undefined {
+  const detail = values.filter((value): value is string => Boolean(value)).join(' · ')
+  return detail.length > 0 ? detail : undefined
+}
+
 function activityFromAgentEvent(event: PersistedAgentEvent): ConversationActivity | null {
   const data = event.data
   const toolName = dataString(data, 'toolName')
   const toolLabel = toolName ?? 'tool'
+  const target = dataPreview(data, 'target')
   const base = {
     updatedAt: event.timestamp,
     eventType: event.type,
@@ -380,21 +393,31 @@ function activityFromAgentEvent(event: PersistedAgentEvent): ConversationActivit
         detail: dataString(data, 'reason'),
       }
     case 'tool.requested':
-      return { ...base, state: 'running', title: `Tool requested: ${toolLabel}` }
+      return { ...base, state: 'running', title: `Tool requested: ${toolLabel}`, detail: target }
     case 'tool.input.delta':
       return null
     case 'tool.input.completed':
-      return { ...base, state: 'running', title: `Args ready: ${toolLabel}` }
+      return {
+        ...base,
+        state: 'running',
+        title: `Args ready: ${toolLabel}`,
+        detail: target ?? dataPreview(data, 'input'),
+      }
     case 'tool.execution.started':
-      return { ...base, state: 'running', title: `Running: ${toolLabel}` }
+      return { ...base, state: 'running', title: `Running: ${toolLabel}`, detail: target }
     case 'tool.execution.completed':
-      return { ...base, state: 'running', title: `Tool completed: ${toolLabel}` }
+      return {
+        ...base,
+        state: 'running',
+        title: `Tool completed: ${toolLabel}`,
+        detail: target ?? dataPreview(data, 'result'),
+      }
     case 'tool.execution.failed':
       return {
         ...base,
         state: 'failed',
         title: `Tool failed: ${toolLabel}`,
-        detail: dataString(data, 'error'),
+        detail: joinDetail(target, dataString(data, 'error')),
       }
     case 'tool.result.returned':
       return {
@@ -403,13 +426,14 @@ function activityFromAgentEvent(event: PersistedAgentEvent): ConversationActivit
         title: dataBool(data, 'isError')
           ? `Tool result failed: ${toolLabel}`
           : `Tool result returned: ${toolLabel}`,
+        detail: target ?? dataPreview(data, 'result'),
       }
     case 'tool.approval.requested':
       return {
         ...base,
         state: 'approval',
         title: `Approval pending: ${toolLabel}`,
-        detail: dataString(data, 'risk'),
+        detail: joinDetail(dataString(data, 'risk'), target),
       }
     case 'tool.approval.resolved': {
       const approved = dataBool(data, 'approved') === true

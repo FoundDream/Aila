@@ -32,6 +32,7 @@ import {
   loadAgentProfilesFromDir,
   loadToolPacksFromDir,
   type Settings,
+  summarizeToolTarget,
   type ToolPack,
   upsertMessage,
 } from '../src/runtime'
@@ -1481,6 +1482,45 @@ async function testToolRegistryContract(): Promise<void> {
   }
 }
 
+function testToolActivityTargetContract(): void {
+  assertEqual(
+    summarizeToolTarget('read', { path: '/workspace/src/app.ts' })?.preview,
+    '/workspace/src/app.ts',
+    'read target path',
+  )
+  assertEqual(
+    summarizeToolTarget('write', { path: '/workspace/src/app.ts', content: 'next' })?.kind,
+    'file',
+    'write target kind',
+  )
+  assertEqual(
+    summarizeToolTarget('edit', { path: '/workspace/src/app.ts', oldText: 'a', newText: 'b' })
+      ?.preview,
+    '/workspace/src/app.ts',
+    'edit target path',
+  )
+  assertEqual(
+    summarizeToolTarget('bash', { command: 'bun run test' })?.preview,
+    'bun run test',
+    'bash target command',
+  )
+  assertEqual(
+    summarizeToolTarget('web_search', { query: 'Aila runtime' })?.kind,
+    'query',
+    'web search target kind',
+  )
+  assertEqual(
+    summarizeToolTarget('generate_image', { prompt: 'quiet desktop workbench' })?.kind,
+    'prompt',
+    'image target kind',
+  )
+  assertEqual(
+    summarizeToolTarget('contract_echo', { value: 'hello' }),
+    null,
+    'unknown custom tool should not invent target metadata',
+  )
+}
+
 async function testFilesystemToolWorkspaceRootsContract(): Promise<void> {
   const settings: Settings = { apiKeys: {}, defaultModel: null }
   const dir = await mkdtemp(join(tmpdir(), 'aila-tool-workspace-'))
@@ -1947,6 +1987,7 @@ async function main(): Promise<void> {
   await testAgentEventReplayDeduplicatesExactDuplicates()
   await testLegacyPersistenceNormalization()
   await testToolRegistryContract()
+  testToolActivityTargetContract()
   await testFilesystemToolWorkspaceRootsContract()
   await testRuntimeCoreHasNoDocToolContract()
   await testRuntimeSdkDoesNotExportDocsContract()
