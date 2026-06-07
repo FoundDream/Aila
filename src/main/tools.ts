@@ -720,6 +720,26 @@ export type ToolPolicyEvaluator = (
   request: ToolPolicyRequest,
 ) => ToolPolicyDecision | Promise<ToolPolicyDecision>
 
+const TOOL_POLICY_ACTIONS = new Set<ToolPolicyAction>(['allow', 'ask', 'deny'])
+
+function normalizeToolPolicyDecision(
+  request: ToolPolicyRequest,
+  decision: unknown,
+): ToolPolicyDecision {
+  if (!decision || typeof decision !== 'object') {
+    throw new Error(`invalid tool policy decision for "${request.name}"`)
+  }
+  const action = (decision as { action?: unknown }).action
+  if (typeof action !== 'string' || !TOOL_POLICY_ACTIONS.has(action as ToolPolicyAction)) {
+    throw new Error(`invalid tool policy decision for "${request.name}"`)
+  }
+  const reason = (decision as { reason?: unknown }).reason
+  if (reason !== undefined && typeof reason !== 'string') {
+    throw new Error(`invalid tool policy reason for "${request.name}"`)
+  }
+  return { action: action as ToolPolicyAction, ...(reason ? { reason } : {}) }
+}
+
 export type ToolWorkspaceRoot = string | { path: string; label?: string }
 
 export interface ToolContext {
@@ -827,7 +847,7 @@ export async function executeTool(
       throw new Error(`tool "${name}" requires approval but no approval host is available`)
     }
     const approved = await ctx.onToolApproval(request)
-    if (!approved) throw new Error(`tool "${name}" was rejected by user`)
+    if (approved !== true) throw new Error(`tool "${name}" was rejected by user`)
   }
   const runner = registry.runnersByName.get(name)
   if (!runner) throw new Error(`unknown tool: ${name}`)
@@ -839,7 +859,7 @@ export async function evaluateToolPolicy(
   ctx: Pick<ToolContext, 'onToolPolicy' | 'onToolApproval'>,
 ): Promise<ToolPolicyDecision> {
   const decision = await ctx.onToolPolicy?.(request)
-  if (decision) return decision
+  if (decision !== undefined) return normalizeToolPolicyDecision(request, decision)
   if (request.metadata.requiresApproval && ctx.onToolApproval) return { action: 'ask' }
   return { action: 'allow' }
 }

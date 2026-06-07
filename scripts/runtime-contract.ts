@@ -3616,6 +3616,50 @@ async function testToolRegistryContract(): Promise<void> {
       'deny policy should expose reason',
     )
   }
+
+  policyAllowedRunnerCalled = false
+  try {
+    await executeTool(
+      'contract_policy_tool',
+      { mode: 'invalid-policy' },
+      {
+        settings,
+        profileId: 'coding',
+        onToolPolicy: () => ({ action: 'bypass' }) as never,
+        onToolApproval: async () => true,
+      },
+      policyRegistry,
+    )
+    throw new Error('invalid policy unexpectedly succeeded')
+  } catch (error) {
+    assertEqual(policyAllowedRunnerCalled, false, 'invalid policy should not run handler')
+    assert(
+      error instanceof Error && error.message.includes('invalid tool policy decision'),
+      'invalid policy should fail closed',
+    )
+  }
+
+  policyAllowedRunnerCalled = false
+  try {
+    await executeTool(
+      'contract_policy_tool',
+      { mode: 'non-boolean-approval' },
+      {
+        settings,
+        profileId: 'coding',
+        onToolPolicy: () => ({ action: 'ask' }),
+        onToolApproval: async () => 'yes' as never,
+      },
+      policyRegistry,
+    )
+    throw new Error('non-boolean approval unexpectedly succeeded')
+  } catch (error) {
+    assertEqual(policyAllowedRunnerCalled, false, 'non-boolean approval should not run handler')
+    assert(
+      error instanceof Error && error.message.includes('rejected by user'),
+      'non-boolean approval should fail closed',
+    )
+  }
 }
 
 async function testRuntimeExecuteToolUsesHostBoundary(): Promise<void> {
