@@ -10,7 +10,13 @@ import { useConversations } from '@/pages/chat/useConversations'
 import { DocList } from '@/pages/docs/DocList'
 import { DocsPage } from '@/pages/docs/DocsPage'
 import { useDocs } from '@/pages/docs/useDocs'
-import type { ProviderId, Settings, SettingsState, ToolApprovalRequestEvent } from './types'
+import type {
+  ProviderId,
+  Settings,
+  SettingsState,
+  ToolApprovalRequestEvent,
+  ToolApprovalResolvedEvent,
+} from './types'
 
 type Tab = 'chat' | 'docs'
 
@@ -64,6 +70,15 @@ const navItems: NavItem[] = [
   },
 ]
 
+function mergeToolApprovals(
+  current: ToolApprovalRequestEvent[],
+  incoming: ToolApprovalRequestEvent[],
+): ToolApprovalRequestEvent[] {
+  const byId = new Map(current.map((request) => [request.requestId, request]))
+  for (const request of incoming) byId.set(request.requestId, request)
+  return Array.from(byId.values()).sort((a, b) => a.requestedAt - b.requestedAt)
+}
+
 export default function App(): ReactElement {
   const [tab, setTab] = useState<Tab>('chat')
   const [collapsed, setCollapsed] = useState(false)
@@ -103,9 +118,34 @@ export default function App(): ReactElement {
   const openSettings = useCallback(() => setSettingsOpen(true), [])
 
   useEffect(() => {
-    return window.api.tools.onApprovalRequest((request) => {
-      setToolApprovals((current) => [...current, request])
-    })
+    let cancelled = false
+    void window.api.tools
+      .listPendingApprovals()
+      .then((requests) => {
+        if (!cancelled) setToolApprovals((current) => mergeToolApprovals(current, requests))
+      })
+      .catch((error) => {
+        console.warn('[approvals] pending hydration failed:', error)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    const cleanups = [
+      window.api.tools.onApprovalRequest((request: ToolApprovalRequestEvent) => {
+        setToolApprovals((current) => mergeToolApprovals(current, [request]))
+      }),
+      window.api.tools.onApprovalResolved((event: ToolApprovalResolvedEvent) => {
+        setToolApprovals((current) =>
+          current.filter((request) => request.requestId !== event.requestId),
+        )
+      }),
+    ]
+    return () => {
+      for (const cleanup of cleanups) cleanup()
+    }
   }, [])
 
   const resolveToolApproval = useCallback((requestId: string, approved: boolean): void => {

@@ -67,6 +67,8 @@ export interface ToolApprovalRequestEvent {
   conversationId?: string
   messageId?: string
   toolCallId?: string
+  requestedAt: number
+  expiresAt: number
   metadata: {
     name: string
     readOnly: boolean
@@ -82,6 +84,12 @@ export interface ToolApprovalRequestEvent {
 export interface ToolApprovalResponse {
   requestId: string
   approved: boolean
+}
+
+export interface ToolApprovalResolvedEvent {
+  requestId: string
+  approved: boolean
+  reason: 'user' | 'timeout' | 'shutdown'
 }
 
 export type AgentEventType =
@@ -315,8 +323,12 @@ const api = {
     list: (): Promise<AgentProfile[]> => ipcRenderer.invoke('profiles:list'),
   },
   tools: {
+    listPendingApprovals: (): Promise<ToolApprovalRequestEvent[]> =>
+      ipcRenderer.invoke('tools:list-pending-approvals'),
     onApprovalRequest: (cb: (event: ToolApprovalRequestEvent) => void) =>
       on<ToolApprovalRequestEvent>('tools:approval-request', cb),
+    onApprovalResolved: (cb: (event: ToolApprovalResolvedEvent) => void) =>
+      on<ToolApprovalResolvedEvent>('tools:approval-resolved', cb),
     sendApprovalResponse: (response: ToolApprovalResponse): void => {
       ipcRenderer.send('tools:approval-response', response)
     },

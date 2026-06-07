@@ -36,6 +36,7 @@ export type {
   SettingsState,
   TextDeltaEvent,
   ToolApprovalRequestEvent,
+  ToolApprovalResolvedEvent,
   ToolApprovalResponse,
   ToolCallArgsDeltaEvent,
   ToolCallPayload,

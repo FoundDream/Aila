@@ -16,6 +16,11 @@ import {
 import { createDoc, getDocFilePath, updateDoc } from '../src/main/docs'
 import { configureDataDir, getDocumentsDir } from '../src/main/paths'
 import {
+  type ToolApprovalRequestPayload,
+  type ToolApprovalResolvedPayload,
+  ToolApprovalStore,
+} from '../src/main/tool-approvals'
+import {
   buildDesktopWorkspaceContext,
   getDesktopWorkspaceRoots,
 } from '../src/main/workspace-context'
@@ -38,6 +43,15 @@ async function withTempDataDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
+}
+
+async function waitFor(predicate: () => boolean, message: string, timeoutMs = 1500): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (predicate()) return
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+  throw new Error(message)
 }
 
 async function testDocConversationWorkspaceContext(): Promise<void> {
@@ -230,6 +244,96 @@ async function testActivityDeltaDoesNotTouchConversationSummary(): Promise<void>
   })
 }
 
+async function testToolApprovalsCanHydrateAndResolvePendingRequests(): Promise<void> {
+  await withTempDataDir(async () => {
+    const conversation = await createConversation()
+    const requested: ToolApprovalRequestPayload[] = []
+    const resolved: ToolApprovalResolvedPayload[] = []
+    const store = new ToolApprovalStore({
+      timeoutMs: 1000,
+      onRequest: (payload) => requested.push(payload),
+      onResolved: (payload) => resolved.push(payload),
+    })
+
+    const approval = store.request({
+      name: 'write_file',
+      args: { path: '/workspace/note.md', content: 'approved write' },
+      metadata: {
+        name: 'write_file',
+        readOnly: false,
+        destructive: true,
+        requiresApproval: true,
+        access: ['write'],
+        scope: ['workspace'],
+        allowedProfiles: ['coding'],
+      },
+      conversationId: conversation.id,
+      messageId: 'assistant-message',
+      toolCallId: 'tool-call',
+    })
+
+    assertEqual(requested.length, 1, 'approval store should emit request payload')
+    const pending = store.list()
+    assertEqual(pending.length, 1, 'approval store should list pending request')
+    assertEqual(
+      pending[0]?.requestId,
+      requested[0]?.requestId,
+      'listed approval should match emitted request',
+    )
+    assertEqual(pending[0]?.name, 'write_file', 'listed approval tool name')
+    assert(
+      typeof pending[0]?.requestedAt === 'number' && pending[0].requestedAt <= pending[0].expiresAt,
+      'listed approval should include timing metadata',
+    )
+
+    store.resolve(requested[0]?.requestId ?? '', true, 'user')
+    assertEqual(await approval, true, 'resolved approval promise')
+    assertEqual(store.list().length, 0, 'resolved approval should leave pending list')
+    await waitFor(() => resolved.length === 1, 'approval store should emit resolved payload')
+    assertEqual(resolved[0]?.approved, true, 'resolved approval approved flag')
+    assertEqual(resolved[0]?.reason, 'user', 'resolved approval reason')
+
+    await store.flushActivity()
+    const events = await listAgentEvents(conversation.id)
+    assertEqual(events[0]?.type, 'tool.approval.requested', 'approval requested event')
+    assertEqual(events[1]?.type, 'tool.approval.resolved', 'approval resolved event')
+    assertEqual(events[1]?.data?.approved, true, 'approval resolved event approved flag')
+
+    const record = await getConversation(conversation.id)
+    assertEqual(record.meta.activity?.state, 'running', 'approved activity state')
+    assertEqual(record.meta.activity?.title, 'Approved: write_file', 'approved activity title')
+  })
+}
+
+async function testToolApprovalTimeoutClearsPendingRequests(): Promise<void> {
+  const resolved: ToolApprovalResolvedPayload[] = []
+  const store = new ToolApprovalStore({
+    timeoutMs: 10,
+    onResolved: (payload) => resolved.push(payload),
+  })
+
+  const approval = store.request({
+    name: 'run_shell',
+    args: { command: 'echo timeout' },
+    metadata: {
+      name: 'run_shell',
+      readOnly: false,
+      destructive: false,
+      requiresApproval: true,
+      access: ['shell'],
+      scope: ['workspace'],
+      allowedProfiles: ['coding'],
+    },
+  })
+
+  assertEqual(store.list().length, 1, 'timed approval should start pending')
+  assertEqual(await approval, false, 'timed approval should resolve denied')
+  assertEqual(store.list().length, 0, 'timed approval should clear pending list')
+  await waitFor(() => resolved.length === 1, 'timed approval should emit resolved payload')
+  assertEqual(resolved[0]?.approved, false, 'timed approval resolved approved flag')
+  assertEqual(resolved[0]?.reason, 'timeout', 'timed approval resolved reason')
+}
+
 async function main(): Promise<void> {
   await testDocConversationWorkspaceContext()
   await testDesktopWorkspaceRoots()
@@ -238,6 +342,8 @@ async function main(): Promise<void> {
   await testConversationDeleteCleansActivity()
   await testActivityUpdatesConversationSummary()
   await testActivityDeltaDoesNotTouchConversationSummary()
+  await testToolApprovalsCanHydrateAndResolvePendingRequests()
+  await testToolApprovalTimeoutClearsPendingRequests()
   console.log('desktop workbench contract: ok')
 }
 
