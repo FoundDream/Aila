@@ -225,9 +225,15 @@ export default function App(): ReactElement {
                 void conversationsState.rename(id, title)
               }}
               onDelete={(id) => {
-                clearConversationApprovals(id)
-                chatStreams.drop(id)
-                void conversationsState.remove(id)
+                void (async () => {
+                  try {
+                    await conversationsState.remove(id)
+                    clearConversationApprovals(id)
+                    chatStreams.drop(id)
+                  } catch (error) {
+                    console.warn('[conversations] delete failed:', error)
+                  }
+                })()
               }}
             />
           </div>

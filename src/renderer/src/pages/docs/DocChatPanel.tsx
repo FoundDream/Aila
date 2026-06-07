@@ -113,9 +113,15 @@ export function DocChatPanel({
 
   const handleDeleteSession = useCallback(
     (id: string) => {
-      onClearConversationApprovals(id)
-      streams.drop(id)
-      void deleteSession(id)
+      void (async () => {
+        try {
+          await deleteSession(id)
+          onClearConversationApprovals(id)
+          streams.drop(id)
+        } catch (error) {
+          console.warn('[doc chat] delete session failed:', error)
+        }
+      })()
     },
     [deleteSession, onClearConversationApprovals, streams],
   )

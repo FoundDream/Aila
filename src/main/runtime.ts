@@ -406,36 +406,42 @@ export class AgentRuntime {
 
   async deleteConversation(conversationId: string): Promise<void> {
     this.deletedConversations.add(conversationId)
-    const slot = this.activeStreams.get(conversationId)
-    if (slot) {
-      slot.controller.abort()
-      await this.notifyConversationAbort(conversationId, 'delete')
-      const cleanedUp = await this.waitForStreamCleanup(
-        slot,
-        this.options.abortAllCleanupTimeoutMs ?? DEFAULT_ABORT_ALL_CLEANUP_TIMEOUT_MS,
-      )
-      if (!cleanedUp && this.activeStreams.get(conversationId)?.controller === slot.controller) {
-        this.activeStreams.delete(conversationId)
-      }
-    } else {
-      await this.notifyConversationAbort(conversationId, 'delete')
-    }
-
+    let removed = false
     try {
-      const record = await getConversation(conversationId)
-      const imagesDir = getImagesDir()
-      const filenames = record.messages.flatMap((message) =>
-        message.blocks
-          .filter((block): block is PersistedImageBlock => block.type === 'image')
-          .map((block) => imageNameFromUrl(block.url))
-          .filter((name): name is string => name !== null),
-      )
-      await Promise.all(filenames.map((name) => unlink(join(imagesDir, name)).catch(() => {})))
-    } catch (err) {
-      this.logger.warn('[runtime] conversation image cleanup failed:', err)
-    }
+      const slot = this.activeStreams.get(conversationId)
+      if (slot) {
+        slot.controller.abort()
+        await this.notifyConversationAbort(conversationId, 'delete')
+        const cleanedUp = await this.waitForStreamCleanup(
+          slot,
+          this.options.abortAllCleanupTimeoutMs ?? DEFAULT_ABORT_ALL_CLEANUP_TIMEOUT_MS,
+        )
+        if (!cleanedUp && this.activeStreams.get(conversationId)?.controller === slot.controller) {
+          this.activeStreams.delete(conversationId)
+        }
+      } else {
+        await this.notifyConversationAbort(conversationId, 'delete')
+      }
 
-    await removeConversation(conversationId)
+      try {
+        const record = await getConversation(conversationId)
+        const imagesDir = getImagesDir()
+        const filenames = record.messages.flatMap((message) =>
+          message.blocks
+            .filter((block): block is PersistedImageBlock => block.type === 'image')
+            .map((block) => imageNameFromUrl(block.url))
+            .filter((name): name is string => name !== null),
+        )
+        await Promise.all(filenames.map((name) => unlink(join(imagesDir, name)).catch(() => {})))
+      } catch (err) {
+        this.logger.warn('[runtime] conversation image cleanup failed:', err)
+      }
+
+      await removeConversation(conversationId)
+      removed = true
+    } finally {
+      if (!removed) this.deletedConversations.delete(conversationId)
+    }
   }
 
   private async persistAndAnnounce(

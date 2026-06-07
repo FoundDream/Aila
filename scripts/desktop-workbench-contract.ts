@@ -842,6 +842,84 @@ function testRendererDropTombstonesLateStreamEvents(): void {
   )
 }
 
+function testRendererDropClearsQueueAndBlocksFutureActions(): void {
+  let state = createChatStreamsStateForTest()
+  state = reduceChatStreamsForTest(state, {
+    type: 'ENQUEUE',
+    conversationId: 'conversation-dropped-queue',
+    queued: {
+      kind: 'send',
+      text: 'queued before delete',
+      selection: { providerId: 'openrouter', modelId: 'contract/mock' },
+    },
+  })
+  state = reduceChatStreamsForTest(state, {
+    type: 'ENQUEUE',
+    conversationId: 'conversation-dropped-queue',
+    queued: {
+      kind: 'retryLast',
+      selection: { providerId: 'openrouter', modelId: 'contract/mock' },
+    },
+  })
+
+  const beforeDrop = state.streams.get('conversation-dropped-queue')
+  assert(beforeDrop, 'queued conversation should have a stream before drop')
+  assertEqual(beforeDrop.queue.length, 2, 'queued conversation should start busy')
+
+  state = reduceChatStreamsForTest(state, {
+    type: 'DROP',
+    conversationId: 'conversation-dropped-queue',
+  })
+  state = reduceChatStreamsForTest(state, {
+    type: 'HYDRATE',
+    conversationId: 'conversation-dropped-queue',
+    messages: [
+      {
+        id: 'user-dropped-queue',
+        role: 'user',
+        blocks: [{ type: 'text', content: 'late hydrate' }],
+        status: 'done',
+      },
+    ],
+    usage: null,
+    events: [],
+    activeTurn: {
+      conversationId: 'conversation-dropped-queue',
+      assistantMessageId: 'assistant-dropped-queue',
+      selection: { providerId: 'openrouter', modelId: 'contract/mock' },
+    },
+  })
+  state = reduceChatStreamsForTest(state, {
+    type: 'ENQUEUE',
+    conversationId: 'conversation-dropped-queue',
+    queued: {
+      kind: 'send',
+      text: 'queued after delete',
+      selection: { providerId: 'openrouter', modelId: 'contract/mock' },
+    },
+  })
+  state = reduceChatStreamsForTest(state, {
+    type: 'RETRY_STARTED',
+    conversationId: 'conversation-dropped-queue',
+    assistantMessage: {
+      id: 'assistant-dropped-queue-retry',
+      role: 'assistant',
+      blocks: [],
+      status: 'streaming',
+      model: { providerId: 'openrouter', modelId: 'contract/mock' },
+    },
+  })
+
+  assert(
+    !state.streams.has('conversation-dropped-queue'),
+    'dropped stream should clear queued work and reject future actions',
+  )
+  assert(
+    state.droppedConversationIds.has('conversation-dropped-queue'),
+    'dropped queued stream should keep a renderer tombstone',
+  )
+}
+
 function conversationSummary(id: string, title: string, updatedAt: number): ConversationSummary {
   return {
     schemaVersion: AILA_CONVERSATION_META_SCHEMA_VERSION,
@@ -1435,6 +1513,7 @@ async function main(): Promise<void> {
   testRendererLateStartedEventDoesNotReviveFinishedMessage()
   testRendererLateStreamingPatchDoesNotMutateFinishedMessage()
   testRendererDropTombstonesLateStreamEvents()
+  testRendererDropClearsQueueAndBlocksFutureActions()
   testRendererConversationListIgnoresRemovedSummaryUpdates()
   testRendererDocConversationListIgnoresRemovedSummaryUpdates()
   testRendererFinishAppendsMissingAssistantMessage()

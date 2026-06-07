@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as runtimeSdk from '../src/runtime'
@@ -1149,6 +1149,80 @@ async function testRuntimeRejectsNewTurnsAfterDeleteStarts(): Promise<void> {
   })
 }
 
+async function testRuntimeDeleteFailureReopensConversation(): Promise<void> {
+  await withTempDataDir(async () => {
+    const conversation = await createConversation()
+    const conversationsDir = getConversationsDir()
+    let streamCount = 0
+    const runtime = new AgentRuntime({
+      logger: { warn() {}, error() {} },
+      streamChat: async (req, handlers) => {
+        streamCount += 1
+        req.onAgentEvent?.({
+          timestamp: Date.now(),
+          conversationId: req.conversationId,
+          messageId: req.assistantMessageId,
+          type: 'turn.started',
+          data: { providerId: req.selection.providerId, modelId: req.selection.modelId },
+        })
+        req.onAgentEvent?.({
+          timestamp: Date.now(),
+          conversationId: req.conversationId,
+          messageId: req.assistantMessageId,
+          type: 'turn.completed',
+        })
+        await handlers.onDone({
+          conversationId: req.conversationId,
+          messageId: req.assistantMessageId,
+          message: {
+            schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+            id: req.assistantMessageId,
+            role: 'assistant',
+            blocks: [{ type: 'text', content: 'send after failed delete works' }],
+            status: 'done',
+            model: req.selection,
+          },
+        })
+      },
+    })
+
+    let deleteFailed = false
+    await chmod(conversationsDir, 0o500)
+    try {
+      await runtime.deleteConversation(conversation.id)
+    } catch {
+      deleteFailed = true
+    } finally {
+      await chmod(conversationsDir, 0o700)
+    }
+    assert(deleteFailed, 'delete should fail while conversations dir is not writable')
+
+    await runtime.send({
+      conversationId: conversation.id,
+      userText: 'continue after failed delete',
+      selection: { providerId: 'openrouter', modelId: 'contract/mock' },
+      requestedProfileId: 'coding',
+    })
+    await waitFor(
+      () => runtime.listActiveStreams().length === 0,
+      'send after failed delete should finish',
+    )
+
+    const record = await getConversation(conversation.id)
+    assertEqual(streamCount, 1, 'failed delete should not permanently tombstone conversation')
+    assert(
+      record.messages.some(
+        (message) =>
+          message.role === 'assistant' &&
+          message.blocks.some(
+            (block) => block.type === 'text' && block.content === 'send after failed delete works',
+          ),
+      ),
+      'failed delete should allow later assistant persistence',
+    )
+  })
+}
+
 async function testRuntimeSendRecoversAbortedStuckPreviousStream(): Promise<void> {
   await withTempDataDir(async () => {
     const conversation = await createConversation()
@@ -2265,6 +2339,7 @@ async function main(): Promise<void> {
   await testRuntimeDeleteRunsAbortCleanupBeforeWaitingForStream()
   await testRuntimeDeleteTimesOutStuckStreamAndSuppressesLateEvents()
   await testRuntimeRejectsNewTurnsAfterDeleteStarts()
+  await testRuntimeDeleteFailureReopensConversation()
   await testRuntimeSendRecoversAbortedStuckPreviousStream()
   await testRuntimeAbortAllWaitsForShutdownCleanup()
   await testRuntimeAbortAllTimesOutStuckStreamCleanup()
