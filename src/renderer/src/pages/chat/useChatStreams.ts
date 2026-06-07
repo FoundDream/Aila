@@ -57,6 +57,7 @@ export interface ConversationStream {
 
 interface State {
   streams: Map<string, ConversationStream>
+  droppedConversationIds: Set<string>
 }
 
 const EMPTY_STREAM: ConversationStream = {
@@ -149,7 +150,11 @@ function withStream(
 ): State {
   const next = new Map(state.streams)
   next.set(id, updater(getStream(state, id)))
-  return { streams: next }
+  return { ...state, streams: next }
+}
+
+function conversationIdForAction(action: Action): string {
+  return action.type === 'AGENT_EVENT' ? action.event.conversationId : action.conversationId
 }
 
 function appendDelta(blocks: Block[], kind: 'text' | 'reasoning', delta: string): Block[] {
@@ -356,6 +361,10 @@ function mergeAgentEvents(
 }
 
 function reducer(state: State, action: Action): State {
+  if (action.type !== 'DROP' && state.droppedConversationIds.has(conversationIdForAction(action))) {
+    return state
+  }
+
   switch (action.type) {
     case 'HYDRATE':
       return withStream(state, action.conversationId, (current) => {
@@ -576,10 +585,11 @@ function reducer(state: State, action: Action): State {
       })
 
     case 'DROP': {
-      if (!state.streams.has(action.conversationId)) return state
+      const droppedConversationIds = new Set(state.droppedConversationIds)
+      droppedConversationIds.add(action.conversationId)
       const next = new Map(state.streams)
       next.delete(action.conversationId)
-      return { streams: next }
+      return { ...state, streams: next, droppedConversationIds }
     }
   }
 }
@@ -612,7 +622,10 @@ export type ChatStreamsStateForTest = State
 export type ChatStreamsActionForTest = Action
 
 export function createChatStreamsStateForTest(): ChatStreamsStateForTest {
-  return { streams: new Map() }
+  return {
+    streams: new Map<string, ConversationStream>(),
+    droppedConversationIds: new Set<string>(),
+  }
 }
 
 export function reduceChatStreamsForTest(
@@ -623,7 +636,10 @@ export function reduceChatStreamsForTest(
 }
 
 export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreamsApi {
-  const [state, dispatch] = useReducer(reducer, { streams: new Map() })
+  const [state, dispatch] = useReducer(reducer, {
+    streams: new Map<string, ConversationStream>(),
+    droppedConversationIds: new Set<string>(),
+  })
   const stateRef = useRef(state)
   stateRef.current = state
 

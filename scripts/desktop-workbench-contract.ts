@@ -697,6 +697,70 @@ function testRendererLateStreamingPatchDoesNotMutateFinishedMessage(): void {
   assertEqual(stream.messages[0]?.blocks.length, 1, 'late tool result should not append tool block')
 }
 
+function testRendererDropTombstonesLateStreamEvents(): void {
+  let state = createChatStreamsStateForTest()
+  state = reduceChatStreamsForTest(state, {
+    type: 'RUN_STARTED',
+    conversationId: 'conversation-dropped',
+    userMessage: {
+      id: 'user-dropped',
+      role: 'user',
+      blocks: [{ type: 'text', content: 'delete while streaming' }],
+      status: 'done',
+    },
+    assistantMessage: {
+      id: 'assistant-dropped',
+      role: 'assistant',
+      blocks: [],
+      status: 'streaming',
+      model: { providerId: 'openrouter', modelId: 'contract/mock' },
+    },
+  })
+  state = reduceChatStreamsForTest(state, {
+    type: 'DROP',
+    conversationId: 'conversation-dropped',
+  })
+  state = reduceChatStreamsForTest(state, {
+    type: 'TEXT_DELTA',
+    conversationId: 'conversation-dropped',
+    messageId: 'assistant-dropped',
+    kind: 'text',
+    delta: 'late text',
+  })
+  state = reduceChatStreamsForTest(state, {
+    type: 'AGENT_EVENT',
+    event: {
+      schemaVersion: 1,
+      timestamp: 1,
+      conversationId: 'conversation-dropped',
+      messageId: 'assistant-dropped',
+      type: 'turn.interrupted',
+      data: { reason: 'delete cleanup timed out' },
+    },
+  })
+  state = reduceChatStreamsForTest(state, {
+    type: 'FINISH',
+    conversationId: 'conversation-dropped',
+    messageId: 'assistant-dropped',
+    message: {
+      id: 'assistant-dropped',
+      role: 'assistant',
+      blocks: [{ type: 'text', content: 'late final' }],
+      status: 'done',
+      model: { providerId: 'openrouter', modelId: 'contract/mock' },
+    },
+  })
+
+  assert(
+    !state.streams.has('conversation-dropped'),
+    'dropped stream should not be recreated by late stream events',
+  )
+  assert(
+    state.droppedConversationIds.has('conversation-dropped'),
+    'dropped stream should keep a renderer tombstone',
+  )
+}
+
 function testRendererFinishAppendsMissingAssistantMessage(): void {
   let state = createChatStreamsStateForTest()
   state = reduceChatStreamsForTest(state, {
@@ -1152,6 +1216,7 @@ async function main(): Promise<void> {
   testRendererStaleFailureDoesNotDowngradeFinishedMessage()
   testRendererLateStartedEventDoesNotReviveFinishedMessage()
   testRendererLateStreamingPatchDoesNotMutateFinishedMessage()
+  testRendererDropTombstonesLateStreamEvents()
   testRendererFinishAppendsMissingAssistantMessage()
   testRendererRunStartedDoesNotDuplicateFinishedAssistant()
   testRendererToolResultAppendsMissingAssistantMessage()
