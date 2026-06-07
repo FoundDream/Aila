@@ -280,11 +280,6 @@ export default function App(): ReactElement {
                   icon={item.icon}
                 />
               ))}
-              <SidebarButton
-                onClick={openSettings}
-                label="Settings"
-                icon={<SettingsIcon className="size-4" />}
-              />
             </nav>
             <div
               className={tab === 'chat' ? 'mt-5 flex min-h-0 flex-1 flex-col' : 'hidden'}
@@ -331,6 +326,13 @@ export default function App(): ReactElement {
                 onRenameFolder={docsState.renameFolder}
                 onMoveFolder={docsState.moveFolder}
                 onDeleteFolder={docsState.deleteFolder}
+              />
+            </div>
+            <div className="flex shrink-0 flex-col px-2 pb-3 pt-1">
+              <SidebarButton
+                onClick={openSettings}
+                label="Settings"
+                icon={<SettingsIcon className="size-4" />}
               />
             </div>
           </div>
