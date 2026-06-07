@@ -700,6 +700,77 @@ async function testRuntimeAppendUserMessageUsesInjectedStore(): Promise<void> {
   )
 }
 
+async function testRuntimeRecordAgentEventUsesInjectedStore(): Promise<void> {
+  const conversationId = 'record-agent-event-contract'
+  const calls: string[] = []
+  const emitted: AgentRuntimeEvent[] = []
+  const store: AgentRuntimeStore = {
+    getConversation: async () => {
+      throw new Error('record agent event should not read conversation')
+    },
+    upsertMessage: async () => {
+      throw new Error('record agent event should not upsert messages')
+    },
+    appendAgentEventAndTouchConversation: async (id, event) => {
+      calls.push(`event:${id}:${event.type}`)
+      return {
+        event: {
+          ...event,
+          schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+        },
+        summary: {
+          schemaVersion: AILA_CONVERSATION_META_SCHEMA_VERSION,
+          id,
+          title: 'record agent event',
+          createdAt: 1,
+          updatedAt: 3,
+        },
+      }
+    },
+    setConversationUsage: async () => {
+      throw new Error('record agent event should not persist usage')
+    },
+    deleteConversation: async () => {
+      throw new Error('record agent event should not delete conversation')
+    },
+  }
+
+  const runtime = new AgentRuntime({
+    store,
+    onEvent: (event) => emitted.push(event),
+    logger: { warn() {}, error() {} },
+  })
+  const recorded = await runtime.recordAgentEvent({
+    timestamp: 2,
+    conversationId,
+    messageId: 'assistant-message',
+    type: 'tool.approval.requested',
+    data: { requestId: 'approval-request', toolName: 'write_file' },
+  })
+
+  assertEqual(recorded, true, 'runtime record agent event result')
+  assertEqual(
+    calls.join(','),
+    `event:${conversationId}:tool.approval.requested`,
+    'runtime record agent event should use injected store',
+  )
+  assert(
+    emitted.some(
+      (event) =>
+        event.type === 'agent:event' &&
+        event.data.conversationId === conversationId &&
+        event.data.type === 'tool.approval.requested',
+    ),
+    'runtime record agent event should emit persisted agent event',
+  )
+  assert(
+    emitted.some(
+      (event) => event.type === 'conversations:updated' && event.data.id === conversationId,
+    ),
+    'runtime record agent event should emit conversation update',
+  )
+}
+
 async function testRuntimeRecoveryDelegatesToInjectedStore(): Promise<void> {
   const summary: ConversationSummary = {
     schemaVersion: AILA_CONVERSATION_META_SCHEMA_VERSION,
@@ -3855,6 +3926,7 @@ async function main(): Promise<void> {
   await testRuntimeInjectableStoreContract()
   await testRuntimeConversationStoreFacadeContract()
   await testRuntimeAppendUserMessageUsesInjectedStore()
+  await testRuntimeRecordAgentEventUsesInjectedStore()
   await testRuntimeRecoveryDelegatesToInjectedStore()
   await testRuntimeRecoveryUsesInjectedStoreReplay()
   await testRuntimeDeleteAssetCleanupHostBoundary()

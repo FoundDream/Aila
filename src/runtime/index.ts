@@ -107,6 +107,7 @@ export {
   type RuntimeAppendUserMessageInput,
   type RuntimeCreateConversationInput,
   type RuntimeListConversationsInput,
+  type RuntimeRecordAgentEventInput,
   type RuntimeRetryLastInput,
   type RuntimeSendInput,
   type RuntimeSendResult,

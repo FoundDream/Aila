@@ -81,10 +81,12 @@ function send(channel: string, data?: unknown): void {
 
 const toolApprovals = new ToolApprovalStore({
   timeoutMs: TOOL_APPROVAL_TIMEOUT_MS,
+  recordAgentEvent: async (_conversationId, event) => {
+    await agentRuntime.recordAgentEvent(event)
+    return undefined
+  },
   onRequest: (payload) => send('tools:approval-request', payload),
   onResolved: (payload) => send('tools:approval-resolved', payload),
-  onAgentEvent: (event) => send('agent:event', event),
-  onConversationUpdated: (summary) => send('conversations:updated', summary),
   logger: console,
 })
 

@@ -54,7 +54,10 @@ interface StreamSlot {
 }
 
 type MaybePromise<T> = T | Promise<T>
-type AgentEventInput = Parameters<typeof appendAgentEventAndTouchConversation>[1]
+export type RuntimeRecordAgentEventInput = Parameters<
+  typeof appendAgentEventAndTouchConversation
+>[1]
+type AgentEventInput = RuntimeRecordAgentEventInput
 
 export type ConversationAbortReason = 'user' | 'delete' | 'shutdown'
 
@@ -743,7 +746,7 @@ export class AgentRuntime {
     this.emit(event)
   }
 
-  private async recordAgentEvent(event: AgentEventInput): Promise<boolean> {
+  async recordAgentEvent(event: RuntimeRecordAgentEventInput): Promise<boolean> {
     if (this.deletedConversations.has(event.conversationId)) return false
     const { event: persisted, summary } = await this.store.appendAgentEventAndTouchConversation(
       event.conversationId,
