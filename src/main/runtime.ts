@@ -411,6 +411,23 @@ export class AgentRuntime {
       toolRegistry,
     } = input
     let eventLogChain = Promise.resolve()
+    let terminalAgentEventQueued = false
+    const queueAgentEvent = (
+      event: Parameters<typeof appendAgentEventAndTouchConversation>[1],
+    ): void => {
+      if (
+        event.type === 'turn.completed' ||
+        event.type === 'turn.failed' ||
+        (event.type === 'turn.cancelled' && event.data?.phase === 'completed')
+      ) {
+        terminalAgentEventQueued = true
+      }
+      eventLogChain = eventLogChain
+        .then(() => this.recordAgentEvent(event))
+        .catch((err) => {
+          this.logger.warn('[runtime] agent-event append failed:', err)
+        })
+    }
 
     try {
       const streamChat = this.options.streamChat ?? defaultStreamChat
@@ -424,13 +441,7 @@ export class AgentRuntime {
           profileId,
           workspaceRoots,
           onToolApproval: this.options.onToolApproval,
-          onAgentEvent: (event) => {
-            eventLogChain = eventLogChain
-              .then(() => this.recordAgentEvent(event))
-              .catch((err) => {
-                this.logger.warn('[runtime] agent-event append failed:', err)
-              })
-          },
+          onAgentEvent: queueAgentEvent,
           toolRegistry,
         },
         {
@@ -457,8 +468,9 @@ export class AgentRuntime {
         },
       )
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
-      this.logger.error('[runtime] unexpected stream error:', message)
+      const isAbort = controller.signal.aborted
+      const message = isAbort ? 'Aborted' : err instanceof Error ? err.message : String(err)
+      if (!isAbort) this.logger.error('[runtime] unexpected stream error:', message)
       const errored: PersistedMessage = {
         schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
         id: assistantMessageId,
@@ -477,6 +489,15 @@ export class AgentRuntime {
           message: errored,
         }),
       )
+      if (!terminalAgentEventQueued) {
+        queueAgentEvent({
+          timestamp: Date.now(),
+          conversationId,
+          messageId: assistantMessageId,
+          type: isAbort ? 'turn.cancelled' : 'turn.failed',
+          data: isAbort ? { phase: 'completed', reason: 'abort_signal' } : { error: message },
+        })
+      }
     } finally {
       if (this.activeStreams.get(conversationId)?.controller === controller) {
         this.activeStreams.delete(conversationId)

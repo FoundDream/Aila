@@ -389,6 +389,77 @@ async function testRuntimeAbortPersistsCancellationActivity(): Promise<void> {
   })
 }
 
+async function testRuntimeUnexpectedStreamErrorPersistsFailureActivity(): Promise<void> {
+  await withTempDataDir(async () => {
+    const conversation = await createConversation()
+    const events: AgentRuntimeEvent[] = []
+    const runtime = new AgentRuntime({
+      onEvent: (event) => events.push(event),
+      logger: { warn() {}, error() {} },
+      streamChat: async (req) => {
+        req.onAgentEvent?.({
+          timestamp: Date.now(),
+          conversationId: req.conversationId,
+          messageId: req.assistantMessageId,
+          type: 'turn.started',
+          data: { providerId: req.selection.providerId, modelId: req.selection.modelId },
+        })
+        throw new Error('provider socket closed')
+      },
+    })
+
+    const result = await runtime.send({
+      conversationId: conversation.id,
+      userText: 'surface provider crash',
+      selection: { providerId: 'openrouter', modelId: 'contract/mock' },
+      requestedProfileId: 'coding',
+    })
+
+    await waitFor(
+      () =>
+        events.some(
+          (event) =>
+            event.type === 'chat:error' && event.data.messageId === result.assistantMessageId,
+        ),
+      'unexpected stream error should emit chat:error',
+    )
+    await waitFor(
+      () =>
+        events.some(
+          (event) =>
+            event.type === 'agent:event' &&
+            event.data.type === 'turn.failed' &&
+            event.data.messageId === result.assistantMessageId,
+        ),
+      'unexpected stream error should persist failed activity',
+    )
+
+    const agentEvents = await listAgentEvents(conversation.id)
+    assertEqual(agentEvents.at(-1)?.type, 'turn.failed', 'unexpected error final activity event')
+    assertEqual(
+      agentEvents.at(-1)?.data?.error,
+      'provider socket closed',
+      'unexpected error activity detail',
+    )
+
+    const record = await getConversation(conversation.id)
+    assertEqual(record.meta.activity?.state, 'failed', 'unexpected error activity state')
+    assertEqual(record.meta.activity?.title, 'Error', 'unexpected error activity title')
+    assertEqual(
+      record.meta.activity?.messageId,
+      result.assistantMessageId,
+      'unexpected error activity message id',
+    )
+    assertEqual(record.messages.length, 2, 'unexpected error should persist user and assistant')
+    assertEqual(record.messages[1]?.status, 'error', 'unexpected error assistant status')
+    assertEqual(
+      record.messages[1]?.error,
+      'provider socket closed',
+      'unexpected error assistant detail',
+    )
+  })
+}
+
 async function testPersistenceContract(): Promise<void> {
   await withTempDataDir(async () => {
     const conversation = await createConversation('docs/runtime-contract')
@@ -1075,6 +1146,7 @@ async function main(): Promise<void> {
   await testRuntimeRetriesDanglingUserTurn()
   await testRuntimeRetriesFailedAssistantTurn()
   await testRuntimeAbortPersistsCancellationActivity()
+  await testRuntimeUnexpectedStreamErrorPersistsFailureActivity()
   await testPersistenceContract()
   await testLegacyPersistenceNormalization()
   await testToolRegistryContract()
