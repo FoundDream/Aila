@@ -10,13 +10,12 @@ import { useConversations } from '@/pages/chat/useConversations'
 import { DocList } from '@/pages/docs/DocList'
 import { DocsPage } from '@/pages/docs/DocsPage'
 import { useDocs } from '@/pages/docs/useDocs'
-import type {
-  ProviderId,
-  Settings,
-  SettingsState,
-  ToolApprovalRequestEvent,
-  ToolApprovalResolvedEvent,
-} from './types'
+import {
+  createToolApprovalsState,
+  mergeToolApprovals,
+  resolveToolApproval as resolveToolApprovalState,
+} from '@/toolApprovalsState'
+import type { ProviderId, Settings, SettingsState, ToolApprovalRequestEvent } from './types'
 
 type Tab = 'chat' | 'docs'
 
@@ -70,15 +69,6 @@ const navItems: NavItem[] = [
   },
 ]
 
-function mergeToolApprovals(
-  current: ToolApprovalRequestEvent[],
-  incoming: ToolApprovalRequestEvent[],
-): ToolApprovalRequestEvent[] {
-  const byId = new Map(current.map((request) => [request.requestId, request]))
-  for (const request of incoming) byId.set(request.requestId, request)
-  return Array.from(byId.values()).sort((a, b) => a.requestedAt - b.requestedAt)
-}
-
 export default function App(): ReactElement {
   const [tab, setTab] = useState<Tab>('chat')
   const [collapsed, setCollapsed] = useState(false)
@@ -92,7 +82,8 @@ export default function App(): ReactElement {
   )
   const [settingsState, setSettingsState] = useState<SettingsState | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const [toolApprovals, setToolApprovals] = useState<ToolApprovalRequestEvent[]>([])
+  const [toolApprovalsState, setToolApprovalsState] = useState(createToolApprovalsState)
+  const toolApprovals = toolApprovalsState.pending
   const pendingApprovalConversationIds = useMemo(
     () =>
       new Set(
@@ -122,7 +113,9 @@ export default function App(): ReactElement {
     void window.api.tools
       .listPendingApprovals()
       .then((requests) => {
-        if (!cancelled) setToolApprovals((current) => mergeToolApprovals(current, requests))
+        if (!cancelled) {
+          setToolApprovalsState((current) => mergeToolApprovals(current, requests))
+        }
       })
       .catch((error) => {
         console.warn('[approvals] pending hydration failed:', error)
@@ -135,12 +128,10 @@ export default function App(): ReactElement {
   useEffect(() => {
     const cleanups = [
       window.api.tools.onApprovalRequest((request: ToolApprovalRequestEvent) => {
-        setToolApprovals((current) => mergeToolApprovals(current, [request]))
+        setToolApprovalsState((current) => mergeToolApprovals(current, [request]))
       }),
-      window.api.tools.onApprovalResolved((event: ToolApprovalResolvedEvent) => {
-        setToolApprovals((current) =>
-          current.filter((request) => request.requestId !== event.requestId),
-        )
+      window.api.tools.onApprovalResolved((event) => {
+        setToolApprovalsState((current) => resolveToolApprovalState(current, event.requestId))
       }),
     ]
     return () => {
@@ -150,7 +141,7 @@ export default function App(): ReactElement {
 
   const resolveToolApproval = useCallback((requestId: string, approved: boolean): void => {
     window.api.tools.sendApprovalResponse({ requestId, approved })
-    setToolApprovals((current) => current.filter((request) => request.requestId !== requestId))
+    setToolApprovalsState((current) => resolveToolApprovalState(current, requestId))
   }, [])
 
   // ⌘\ toggles the sidebar. preventDefault so a stray backslash doesn't reach

@@ -29,6 +29,11 @@ import {
   createChatStreamsStateForTest,
   reduceChatStreamsForTest,
 } from '../src/renderer/src/pages/chat/useChatStreams'
+import {
+  createToolApprovalsState,
+  mergeToolApprovals,
+  resolveToolApproval,
+} from '../src/renderer/src/toolApprovalsState'
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message)
@@ -962,6 +967,74 @@ async function testToolApprovalCancellationClearsConversationRequests(): Promise
   })
 }
 
+function toolApprovalRequest(
+  requestId: string,
+  requestedAt: number,
+  conversationId = 'conversation-approval-state',
+): ToolApprovalRequestPayload {
+  return {
+    requestId,
+    name: 'write_file',
+    args: { path: '/workspace/state.md', content: 'pending write' },
+    metadata: {
+      name: 'write_file',
+      readOnly: false,
+      destructive: true,
+      requiresApproval: true,
+      access: ['write'],
+      scope: ['workspace'],
+      allowedProfiles: ['coding'],
+    },
+    conversationId,
+    messageId: 'assistant-approval-state',
+    toolCallId: 'tool-call-approval-state',
+    requestedAt,
+    expiresAt: requestedAt + 60_000,
+  }
+}
+
+function testRendererApprovalHydrationDoesNotResurrectResolvedRequest(): void {
+  const request = toolApprovalRequest('approval-stale-hydrate', 1)
+  let state = createToolApprovalsState()
+  state = mergeToolApprovals(state, [request])
+  assertEqual(state.pending.length, 1, 'approval state should hydrate pending request')
+
+  state = resolveToolApproval(state, request.requestId)
+  assertEqual(state.pending.length, 0, 'approval state should clear resolved request')
+  assertEqual(
+    state.resolvedIds.has(request.requestId),
+    true,
+    'approval state should keep resolved tombstone',
+  )
+
+  state = mergeToolApprovals(state, [request])
+  assertEqual(
+    state.pending.length,
+    0,
+    'late approval hydration should not resurrect resolved request',
+  )
+}
+
+function testRendererApprovalHydrationSortsPendingRequests(): void {
+  let state = createToolApprovalsState()
+  state = mergeToolApprovals(state, [
+    toolApprovalRequest('approval-late', 20),
+    toolApprovalRequest('approval-early', 10),
+  ])
+
+  assertEqual(state.pending.length, 2, 'approval state should keep pending requests')
+  assertEqual(
+    state.pending[0]?.requestId,
+    'approval-early',
+    'approval state should sort oldest first',
+  )
+  assertEqual(
+    state.pending[1]?.requestId,
+    'approval-late',
+    'approval state should sort newest last',
+  )
+}
+
 async function main(): Promise<void> {
   await testDocConversationWorkspaceContext()
   await testDesktopWorkspaceRoots()
@@ -986,6 +1059,8 @@ async function main(): Promise<void> {
   await testToolApprovalsCanHydrateAndResolvePendingRequests()
   await testToolApprovalTimeoutClearsPendingRequests()
   await testToolApprovalCancellationClearsConversationRequests()
+  testRendererApprovalHydrationDoesNotResurrectResolvedRequest()
+  testRendererApprovalHydrationSortsPendingRequests()
   console.log('desktop workbench contract: ok')
 }
 
