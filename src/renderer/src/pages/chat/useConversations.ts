@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ConversationRecord, ConversationSummary } from '../../../../preload/index'
 
 export interface ConversationsState {
@@ -13,14 +13,42 @@ export interface ConversationsState {
   applyUpdate: (summary: ConversationSummary) => void
 }
 
+function visibleConversationSummaries(
+  conversations: ConversationSummary[],
+  removedIds: ReadonlySet<string>,
+): ConversationSummary[] {
+  if (removedIds.size === 0) return conversations
+  return conversations.filter((conversation) => !removedIds.has(conversation.id))
+}
+
+export function mergeConversationSummaryUpdate(
+  conversations: ConversationSummary[],
+  summary: ConversationSummary,
+  removedIds: ReadonlySet<string>,
+): ConversationSummary[] {
+  if (removedIds.has(summary.id) || summary.docId) {
+    return conversations.filter((conversation) => conversation.id !== summary.id)
+  }
+  const found = conversations.some((conversation) => conversation.id === summary.id)
+  const next = found
+    ? conversations.map((conversation) => (conversation.id === summary.id ? summary : conversation))
+    : [...conversations, summary]
+  next.sort((a, b) => b.updatedAt - a.updatedAt)
+  return next
+}
+
 export function useConversations(): ConversationsState {
   const [conversations, setConversations] = useState<ConversationSummary[]>([])
   const [activeId, setActiveId] = useState<string | null>(null)
   const [activeRecord, setActiveRecord] = useState<ConversationRecord | null>(null)
   const [isReady, setIsReady] = useState(false)
+  const removedConversationIdsRef = useRef<Set<string>>(new Set())
 
   const refreshList = useCallback(async (): Promise<ConversationSummary[]> => {
-    const list = await window.api.conversations.list()
+    const list = visibleConversationSummaries(
+      await window.api.conversations.list(),
+      removedConversationIdsRef.current,
+    )
     setConversations(list)
     return list
   }, [])
@@ -73,14 +101,21 @@ export function useConversations(): ConversationsState {
 
   const remove = useCallback(
     async (id: string) => {
-      await window.api.conversations.delete(id)
-      const list = await refreshList()
-      if (activeId === id) {
-        setActiveId(list.length > 0 ? list[0].id : null)
-        setActiveRecord(null)
+      removedConversationIdsRef.current.add(id)
+      setConversations((prev) => prev.filter((conversation) => conversation.id !== id))
+      setActiveId((current) => (current === id ? null : current))
+      setActiveRecord((current) => (current?.meta.id === id ? null : current))
+
+      try {
+        await window.api.conversations.delete(id)
+        await refreshList()
+      } catch (error) {
+        removedConversationIdsRef.current.delete(id)
+        await refreshList()
+        throw error
       }
     },
-    [activeId, refreshList],
+    [refreshList],
   )
 
   const rename = useCallback(async (id: string, title: string) => {
@@ -99,18 +134,14 @@ export function useConversations(): ConversationsState {
   // appendMessage / setUsage). Keeps the sidebar in sync without a full refetch.
   // Doc-bound conversations are filtered out — they belong to the docs sidebar.
   const applyUpdate = useCallback((summary: ConversationSummary) => {
-    if (summary.docId) {
-      setConversations((prev) => prev.filter((conversation) => conversation.id !== summary.id))
+    const removed = removedConversationIdsRef.current
+    if (removed.has(summary.id) || summary.docId) {
+      setConversations((prev) => mergeConversationSummaryUpdate(prev, summary, removed))
       setActiveRecord((current) => (current?.meta.id === summary.id ? null : current))
       setActiveId((current) => (current === summary.id ? null : current))
       return
     }
-    setConversations((prev) => {
-      const found = prev.some((c) => c.id === summary.id)
-      const next = found ? prev.map((c) => (c.id === summary.id ? summary : c)) : [...prev, summary]
-      next.sort((a, b) => b.updatedAt - a.updatedAt)
-      return next
-    })
+    setConversations((prev) => mergeConversationSummaryUpdate(prev, summary, removed))
     setActiveRecord((current) =>
       current?.meta.id === summary.id ? { ...current, meta: summary } : current,
     )

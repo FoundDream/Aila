@@ -2,6 +2,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
+  AILA_CONVERSATION_META_SCHEMA_VERSION,
   AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
   appendAgentEvent,
   appendAgentEventAndTouchConversation,
@@ -25,10 +26,12 @@ import {
   buildDesktopWorkspaceContext,
   getDesktopWorkspaceRoots,
 } from '../src/main/workspace-context'
+import type { ConversationSummary } from '../src/preload'
 import {
   createChatStreamsStateForTest,
   reduceChatStreamsForTest,
 } from '../src/renderer/src/pages/chat/useChatStreams'
+import { mergeConversationSummaryUpdate } from '../src/renderer/src/pages/chat/useConversations'
 import {
   createToolApprovalsState,
   mergeToolApprovals,
@@ -761,6 +764,55 @@ function testRendererDropTombstonesLateStreamEvents(): void {
   )
 }
 
+function conversationSummary(id: string, title: string, updatedAt: number): ConversationSummary {
+  return {
+    schemaVersion: AILA_CONVERSATION_META_SCHEMA_VERSION,
+    id,
+    title,
+    createdAt: 1,
+    updatedAt,
+  }
+}
+
+function testRendererConversationListIgnoresRemovedSummaryUpdates(): void {
+  const removedIds = new Set<string>(['conversation-deleted'])
+  const deletedSummary = conversationSummary('conversation-deleted', 'Deleted', 10)
+  const visibleSummary = conversationSummary('conversation-visible', 'Visible', 5)
+
+  let conversations = mergeConversationSummaryUpdate(
+    [deletedSummary, visibleSummary],
+    deletedSummary,
+    removedIds,
+  )
+  assert(
+    !conversations.some((conversation) => conversation.id === 'conversation-deleted'),
+    'removed conversation should be filtered immediately',
+  )
+
+  conversations = mergeConversationSummaryUpdate(
+    conversations,
+    {
+      ...deletedSummary,
+      updatedAt: 20,
+      activity: {
+        state: 'interrupted',
+        title: 'Interrupted',
+        updatedAt: 20,
+        eventType: 'turn.interrupted',
+        messageId: 'assistant-deleted',
+      },
+    },
+    removedIds,
+  )
+
+  assertEqual(conversations.length, 1, 'late summary should not reinsert removed conversation')
+  assertEqual(
+    conversations[0]?.id,
+    'conversation-visible',
+    'visible conversation should remain after late removed update',
+  )
+}
+
 function testRendererFinishAppendsMissingAssistantMessage(): void {
   let state = createChatStreamsStateForTest()
   state = reduceChatStreamsForTest(state, {
@@ -1217,6 +1269,7 @@ async function main(): Promise<void> {
   testRendererLateStartedEventDoesNotReviveFinishedMessage()
   testRendererLateStreamingPatchDoesNotMutateFinishedMessage()
   testRendererDropTombstonesLateStreamEvents()
+  testRendererConversationListIgnoresRemovedSummaryUpdates()
   testRendererFinishAppendsMissingAssistantMessage()
   testRendererRunStartedDoesNotDuplicateFinishedAssistant()
   testRendererToolResultAppendsMissingAssistantMessage()
