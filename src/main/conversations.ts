@@ -335,7 +335,12 @@ export function orderedUniqueAgentEvents(
 ): PersistedAgentEvent[] {
   const seen = new Set<string>()
   const ordered: PersistedAgentEvent[] = []
-  for (const event of [...events].sort((a, b) => a.timestamp - b.timestamp)) {
+  const indexed = events.map((event, index) => ({ event, index }))
+  indexed.sort((left, right) => {
+    const timestampOrder = left.event.timestamp - right.event.timestamp
+    return timestampOrder === 0 ? left.index - right.index : timestampOrder
+  })
+  for (const { event } of indexed) {
     const key = agentEventReplayKey(event)
     if (seen.has(key)) continue
     seen.add(key)
@@ -943,22 +948,18 @@ export async function listAgentEvents(id: string): Promise<PersistedAgentEvent[]
   }
 
   const events: PersistedAgentEvent[] = []
-  const seen = new Set<string>()
   for (const line of raw.split('\n')) {
     const trimmed = line.trim()
     if (!trimmed) continue
     try {
       const event = normalizeAgentEvent(JSON.parse(trimmed) as Partial<PersistedAgentEvent>, id)
       if (!event) continue
-      const key = agentEventReplayKey(event)
-      if (seen.has(key)) continue
-      seen.add(key)
       events.push(event)
     } catch {
       // skip malformed line
     }
   }
-  return events.sort((a, b) => a.timestamp - b.timestamp)
+  return orderedUniqueAgentEvents(events)
 }
 
 export async function renameConversation(id: string, title: string): Promise<ConversationSummary> {

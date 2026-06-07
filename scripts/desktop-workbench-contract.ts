@@ -1275,6 +1275,47 @@ async function testInterruptedActivityRecovery(): Promise<void> {
   })
 }
 
+async function testInterruptedActivityRecoveryRespectsSameTimestampAppendOrder(): Promise<void> {
+  await withTempDataDir(async () => {
+    const completed = await createConversation()
+    const timestamp = Date.now()
+    await appendAgentEvent(completed.id, {
+      timestamp,
+      conversationId: completed.id,
+      messageId: 'same-timestamp-assistant',
+      type: 'turn.started',
+    })
+    await appendAgentEvent(completed.id, {
+      timestamp,
+      conversationId: completed.id,
+      messageId: 'same-timestamp-assistant',
+      type: 'turn.completed',
+    })
+
+    const recovered = await recoverInterruptedConversationActivities('same timestamp restart')
+    assert(
+      !recovered.some((summary) => summary.id === completed.id),
+      'same-timestamp completed turn should not recover as interrupted',
+    )
+
+    const events = await listAgentEvents(completed.id)
+    assertEqual(
+      events.map((event) => event.type).join(','),
+      'turn.started,turn.completed',
+      'Desktop recovery should preserve same-timestamp append order',
+    )
+    assert(
+      !events.some((event) => event.type === 'turn.interrupted'),
+      'Desktop recovery should not append interrupted after same-timestamp completion',
+    )
+    assertEqual(
+      (await getConversation(completed.id)).meta.activity?.state,
+      'completed',
+      'Desktop recovery should repair activity to completed from same-timestamp replay',
+    )
+  })
+}
+
 async function testToolApprovalsCanHydrateAndResolvePendingRequests(): Promise<void> {
   await withTempDataDir(async () => {
     const conversation = await createConversation()
@@ -1793,6 +1834,7 @@ async function main(): Promise<void> {
   testRendererRunStartedDoesNotDuplicateFinishedAssistant()
   testRendererToolResultAppendsMissingAssistantMessage()
   await testInterruptedActivityRecovery()
+  await testInterruptedActivityRecoveryRespectsSameTimestampAppendOrder()
   await testToolApprovalsCanHydrateAndResolvePendingRequests()
   await testToolApprovalStoreSnapshotsMutableBoundaries()
   await testToolApprovalStoreRequiresInjectedActivityRecorder()

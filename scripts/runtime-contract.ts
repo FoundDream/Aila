@@ -22,6 +22,7 @@ import {
 } from '../src/main/conversations'
 import * as runtimeSdk from '../src/runtime'
 import {
+  type AgentEvent,
   type AgentProfile,
   AgentRuntime,
   type AgentRuntimeEvent,
@@ -3703,6 +3704,92 @@ async function testAgentEventReplayDeduplicatesExactDuplicates(): Promise<void> 
   })
 }
 
+async function testAgentEventReplayPreservesAppendOrderForSameTimestamp(): Promise<void> {
+  await withTempDataDir(async () => {
+    const conversation = await createConversation()
+    const timestamp = 100
+    const events: AgentEvent[] = [
+      {
+        timestamp,
+        conversationId: conversation.id,
+        messageId: 'assistant-same-timestamp',
+        type: 'turn.started',
+        data: { providerId: 'openrouter', modelId: 'contract/mock' },
+      },
+      {
+        timestamp,
+        conversationId: conversation.id,
+        messageId: 'assistant-same-timestamp',
+        type: 'tool.approval.requested',
+        data: {
+          requestId: 'approval-same-timestamp',
+          toolCallId: 'tool-call',
+          toolName: 'write',
+        },
+      },
+      {
+        timestamp,
+        conversationId: conversation.id,
+        messageId: 'assistant-same-timestamp',
+        type: 'tool.approval.requested',
+        data: {
+          requestId: 'approval-same-timestamp',
+          toolCallId: 'tool-call',
+          toolName: 'write',
+        },
+      },
+      {
+        timestamp,
+        conversationId: conversation.id,
+        messageId: 'assistant-same-timestamp',
+        type: 'tool.approval.resolved',
+        data: { requestId: 'approval-same-timestamp', approved: true, reason: 'user' },
+      },
+      {
+        timestamp,
+        conversationId: conversation.id,
+        messageId: 'assistant-same-timestamp',
+        type: 'turn.completed',
+        data: { outputBlockCount: 1 },
+      },
+    ]
+
+    for (const event of events) await appendAgentEvent(conversation.id, event)
+
+    const listed = await listAgentEvents(conversation.id)
+    assertEqual(listed.length, 4, 'same-timestamp replay should deduplicate exact duplicates')
+    assertEqual(
+      listed.map((event) => event.type).join(','),
+      'turn.started,tool.approval.requested,tool.approval.resolved,turn.completed',
+      'same-timestamp replay should preserve append order after sorting',
+    )
+
+    const runtimeState = replayConversationRuntimeState(listed)
+    assertEqual(runtimeState.phase, 'completed', 'same-timestamp replay terminal phase')
+    assertEqual(runtimeState.active, false, 'same-timestamp terminal replay should be inactive')
+    assertEqual(
+      runtimeState.turn?.pendingApproval,
+      undefined,
+      'same-timestamp approval resolution should clear pending approval before terminal replay',
+    )
+    assertEqual(
+      replayConversationActivity(listed)?.eventType,
+      'turn.completed',
+      'same-timestamp activity should use the last replay event',
+    )
+
+    const recovered = await recoverInterruptedConversationActivities('same timestamp restart')
+    assert(
+      !recovered.some((summary) => summary.id === conversation.id),
+      'same-timestamp completed replay should not recover as interrupted',
+    )
+    assert(
+      !(await listAgentEvents(conversation.id)).some((event) => event.type === 'turn.interrupted'),
+      'same-timestamp completed replay should not append interrupted recovery',
+    )
+  })
+}
+
 function testAgentEventReplayDerivesLatestActivity(): void {
   const events: PersistedAgentEvent[] = [
     {
@@ -5366,6 +5453,7 @@ async function main(): Promise<void> {
   await testPersistenceContract()
   await testMessageUpsertPreventsDuplicatePersistedMessages()
   await testAgentEventReplayDeduplicatesExactDuplicates()
+  await testAgentEventReplayPreservesAppendOrderForSameTimestamp()
   testAgentEventReplayDerivesLatestActivity()
   testAgentEventReplayDerivesRuntimeState()
   testAgentEventReplayKeepsToolFailureActive()
