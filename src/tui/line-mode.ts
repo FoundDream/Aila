@@ -16,16 +16,13 @@ import {
   type ConversationSummary,
   configureDataDir,
   configuredProviders,
-  createConversation,
   type ExtensionReport,
   executeTool,
   findModel,
-  getConversation,
   getDataDir,
   getExtensionReport,
   getProfilesDir,
   getToolPacksDir,
-  listConversations,
   loadAgentProfilesFromDir,
   loadSettings,
   loadToolPacksFromDir,
@@ -219,11 +216,12 @@ export function displayPreview(text: string, max = 8000): string {
 }
 
 export async function resolveConversation(input: {
+  runtime: AgentRuntime
   conversationId?: string
   resumeLatest?: boolean
 }): Promise<{ conversationId: string; isExisting: boolean }> {
   if (input.resumeLatest) {
-    const [summary] = await listConversations()
+    const [summary] = await input.runtime.listConversations()
     if (!summary) throw new Error('no conversations found to resume')
     return {
       conversationId: summary.id,
@@ -232,11 +230,11 @@ export async function resolveConversation(input: {
   }
 
   if (input.conversationId) {
-    await getConversation(input.conversationId)
+    await input.runtime.getConversation(input.conversationId)
     return { conversationId: input.conversationId, isExisting: true }
   }
 
-  const summary = await createConversation()
+  const summary = await input.runtime.createConversation()
   return { conversationId: summary.id, isExisting: false }
 }
 
@@ -294,8 +292,11 @@ export function conversationScope(summary: ConversationSummary): string {
   return summary.docId ? `doc:${summary.docId}` : 'chat'
 }
 
-export async function printConversationList(input: { limit: number }): Promise<void> {
-  const conversations = await listConversations()
+export async function printConversationList(
+  runtime: AgentRuntime,
+  input: { limit: number },
+): Promise<void> {
+  const conversations = await runtime.listConversations()
   const shown = conversations.slice(0, input.limit)
 
   writeLine('Aila conversations')
@@ -558,7 +559,7 @@ export async function handleSlashCommand(input: {
       }
       case 'session':
       case 'sessions':
-        await printConversationList({ limit: 20 })
+        await printConversationList(runtime, { limit: 20 })
         return 'handled'
       case 'profile': {
         const words = splitShellWords(rest)
@@ -670,8 +671,12 @@ export async function handleSlashCommand(input: {
   }
 }
 
-export async function printRecentHistory(conversationId: string, maxMessages = 6): Promise<void> {
-  const record = await getConversation(conversationId)
+export async function printRecentHistory(
+  runtime: AgentRuntime,
+  conversationId: string,
+  maxMessages = 6,
+): Promise<void> {
+  const record = await runtime.getConversation(conversationId)
   if (record.messages.length === 0) return
 
   writeLine('')
@@ -691,8 +696,13 @@ export async function runLineMode(argv: string[] = process.argv.slice(2)): Promi
   const options = parseArgs(argv)
   configureDataDir(options.dataDir ?? defaultDataDir())
 
+  const metadataRuntime = new AgentRuntime({
+    loadProfiles: async () => (await loadAgentProfilesFromDir()).map((profile) => profile.profile),
+    loadToolPacks: async () => (await loadToolPacksFromDir()).map((pack) => pack.toolPack),
+  })
+
   if (options.list) {
-    await printConversationList({ limit: options.limit })
+    await printConversationList(metadataRuntime, { limit: options.limit })
     return
   }
 
@@ -701,6 +711,7 @@ export async function runLineMode(argv: string[] = process.argv.slice(2)): Promi
     profileId: options.profileId,
   }
   const { conversationId, isExisting } = await resolveConversation({
+    runtime: metadataRuntime,
     conversationId: options.conversationId,
     resumeLatest: options.resumeLatest,
   })
@@ -710,7 +721,6 @@ export async function runLineMode(argv: string[] = process.argv.slice(2)): Promi
   const toolNames = new Map<string, string>()
   let startedAssistantText = false
   const prompt = createPromptReader()
-
   const runtime = new AgentRuntime({
     onEvent: (event) => {
       handleRuntimeEvent(event, {
@@ -749,7 +759,7 @@ export async function runLineMode(argv: string[] = process.argv.slice(2)): Promi
   writeLine(`Model: ${modelLabel(session.selection)}`)
   writeLine(`Profile: ${session.profileId}`)
   writeLine('Type /exit to quit. Ctrl+C aborts an active response.')
-  if (isExisting && options.showHistory) await printRecentHistory(conversationId)
+  if (isExisting && options.showHistory) await printRecentHistory(runtime, conversationId)
 
   async function retryLastTurn(): Promise<void> {
     startedAssistantText = false

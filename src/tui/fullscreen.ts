@@ -4,14 +4,13 @@ import {
   type AgentProfileId,
   AgentRuntime,
   type AgentRuntimeEvent,
+  type ConversationSummary,
   configureDataDir,
   executeTool,
-  getConversation,
   getDataDir,
   getExtensionReport,
   getProfilesDir,
   getToolPacksDir,
-  listConversations,
   loadAgentProfilesFromDir,
   loadSettings,
   loadToolPacksFromDir,
@@ -101,7 +100,7 @@ function extensionReportText(report: Awaited<ReturnType<typeof getExtensionRepor
   return lines.join('\n')
 }
 
-function conversationText(summary: Awaited<ReturnType<typeof listConversations>>[number]): string {
+function conversationText(summary: ConversationSummary): string {
   const usage = summary.usage ? `, ${summary.usage.totalTokens} tokens` : ''
   const scope = summary.docId ? `doc:${summary.docId}` : 'chat'
   return `${formatDate(summary.updatedAt)}  ${summary.id}  ${scope}  ${summary.title}${usage}`
@@ -114,9 +113,13 @@ function localToolProfile(): AgentProfileId {
 export async function runFullScreenTui(argv: string[] = process.argv.slice(2)): Promise<void> {
   const options = parseArgs(argv)
   configureDataDir(options.dataDir ?? defaultDataDir())
+  const metadataRuntime = new AgentRuntime({
+    loadProfiles: async () => (await loadAgentProfilesFromDir()).map((profile) => profile.profile),
+    loadToolPacks: async () => (await loadToolPacksFromDir()).map((pack) => pack.toolPack),
+  })
 
   if (options.list) {
-    await printConversationList({ limit: options.limit })
+    await printConversationList(metadataRuntime, { limit: options.limit })
     return
   }
 
@@ -125,6 +128,7 @@ export async function runFullScreenTui(argv: string[] = process.argv.slice(2)): 
     selection: resolveSelection(options.model),
   }
   const resolved = await resolveConversation({
+    runtime: metadataRuntime,
     conversationId: options.conversationId,
     resumeLatest: options.resumeLatest,
   })
@@ -556,7 +560,7 @@ class AilaFullScreenApp {
   }
 
   private async showSessionPicker(): Promise<void> {
-    const conversations = await listConversations()
+    const conversations = await this.runtime.listConversations()
     if (conversations.length === 0) {
       this.addEntry('system', 'sessions', 'No conversations found.')
       return
@@ -588,7 +592,7 @@ class AilaFullScreenApp {
   }
 
   private async switchConversation(conversationId: string): Promise<void> {
-    await getConversation(conversationId)
+    await this.runtime.getConversation(conversationId)
     this.conversationId = conversationId
     this.entries.length = 0
     this.addEntry('system', 'conversation switched', conversationId)
@@ -805,7 +809,7 @@ class AilaFullScreenApp {
   }
 
   private async loadHistory(maxMessages = 8): Promise<void> {
-    const record = await getConversation(this.conversationId)
+    const record = await this.runtime.getConversation(this.conversationId)
     if (record.messages.length === 0) return
     for (const message of record.messages.slice(-maxMessages)) {
       const status = message.status === 'done' ? '' : ` (${message.status})`
