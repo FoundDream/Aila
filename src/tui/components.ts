@@ -1,3 +1,5 @@
+import chalk from 'chalk'
+import type { ModelSelection, ToolApprovalRequest, UsageInfo } from '../runtime'
 import {
   type Component,
   type Editor,
@@ -11,9 +13,7 @@ import {
   type TUI,
   truncateToWidth,
   visibleWidth,
-} from '@earendil-works/pi-tui'
-import chalk from 'chalk'
-import type { ModelSelection, ToolApprovalRequest, UsageInfo } from '../runtime'
+} from './aila-tui'
 import { modelLabel, preview } from './line-mode'
 import { AILA_TUI_COLORS, createMarkdownTheme, createSelectListTheme } from './theme'
 

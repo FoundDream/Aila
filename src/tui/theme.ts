@@ -1,6 +1,6 @@
-import type { EditorTheme, MarkdownTheme, SelectListTheme } from '@earendil-works/pi-tui'
 import chalk from 'chalk'
 import { highlight } from 'cli-highlight'
+import type { EditorTheme, MarkdownTheme, SelectListTheme } from './aila-tui'
 
 export interface AilaTuiColors {
   accent: string

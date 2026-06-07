@@ -22,11 +22,14 @@ Desktop shows a `resume last turn` action when a conversation ends with a
 persisted user message and no assistant response. TUI and CLI expose the same
 runtime path through `--retry-last`.
 
-The TUI is a full-screen pi-tui adapter over the shared `AgentRuntime`. It
-streams assistant output into a transcript, shows tool calls, opens approval and
-selection overlays, persists conversations, queues prompts while a turn is
-running, and supports abort with Ctrl+C / exit with Ctrl+D. In non-TTY
-environments it falls back to a line-mode contract for automation and tests.
+The TUI is a full-screen Aila-tui adapter over the shared `AgentRuntime`.
+Aila-tui is implemented in this repository under `src/tui/aila-tui`: it owns the
+terminal abstraction, component tree, overlays, editor, picker, markdown text
+rendering, and key handling. It streams assistant output into a transcript,
+shows tool calls, opens approval and selection overlays, persists conversations,
+queues prompts while a turn is running, and supports abort with Ctrl+C / exit
+with Ctrl+D. In non-TTY environments it falls back to a line-mode contract for
+automation and tests.
 
 Useful TUI options:
 

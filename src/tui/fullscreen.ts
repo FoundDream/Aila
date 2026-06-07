@@ -1,14 +1,4 @@
 import { randomUUID } from 'node:crypto'
-import {
-  CombinedAutocompleteProvider,
-  Editor,
-  Key,
-  matchesKey,
-  type OverlayHandle,
-  ProcessTerminal,
-  type SelectItem,
-  TUI,
-} from '@earendil-works/pi-tui'
 import * as dotenv from 'dotenv'
 import {
   type AgentProfileId,
@@ -32,6 +22,16 @@ import {
   type Settings,
   type ToolApprovalRequest,
 } from '../runtime'
+import {
+  CombinedAutocompleteProvider,
+  Editor,
+  Key,
+  matchesKey,
+  type OverlayHandle,
+  ProcessTerminal,
+  type SelectItem,
+  TUI,
+} from './aila-tui'
 import {
   AilaFrameComponent,
   type AilaFrameState,
