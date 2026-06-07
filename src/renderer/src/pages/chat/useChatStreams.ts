@@ -224,6 +224,20 @@ function appendMissingMessage(messages: Message[], message: Message): Message[] 
     : [...messages, message]
 }
 
+function finalizeAssistantMessageAsError(
+  messages: Message[],
+  messageId: string,
+  error: string,
+): Message[] {
+  const current = messages.find((message) => message.id === messageId)
+  if (current && current.status !== 'streaming') return messages
+  return patchOrAppendAssistantMessage(messages, messageId, (message) => ({
+    ...message,
+    status: 'error',
+    error,
+  }))
+}
+
 function insertMissingMessageBefore(
   messages: Message[],
   message: Message,
@@ -525,14 +539,10 @@ function reducer(state: State, action: Action): State {
                   selectionFromAgentEventData(action.event.data),
                 )
               : terminalError
-                ? patchOrAppendAssistantMessage(
+                ? finalizeAssistantMessageAsError(
                     current.messages,
                     action.event.messageId,
-                    (message) => ({
-                      ...message,
-                      status: 'error',
-                      error: terminalError,
-                    }),
+                    terminalError,
                   )
                 : current.messages,
           runningMessageId:

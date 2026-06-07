@@ -576,6 +576,44 @@ function testRendererInterruptedEventFinalizesStreamingPlaceholder(): void {
   assertEqual(stream.events.length, 1, 'interrupted event should append timeline event')
 }
 
+function testRendererStaleFailureDoesNotDowngradeFinishedMessage(): void {
+  let state = createChatStreamsStateForTest()
+  state = reduceChatStreamsForTest(state, {
+    type: 'FINISH',
+    conversationId: 'conversation-stale-failure',
+    messageId: 'assistant-stale-failure',
+    message: {
+      id: 'assistant-stale-failure',
+      role: 'assistant',
+      blocks: [{ type: 'text', content: 'already done' }],
+      status: 'done',
+      model: { providerId: 'openrouter', modelId: 'contract/mock' },
+    },
+  })
+  state = reduceChatStreamsForTest(state, {
+    type: 'AGENT_EVENT',
+    event: {
+      schemaVersion: 1,
+      timestamp: 1,
+      conversationId: 'conversation-stale-failure',
+      messageId: 'assistant-stale-failure',
+      type: 'turn.failed',
+      data: { error: 'late stale failure' },
+    },
+  })
+
+  const stream = state.streams.get('conversation-stale-failure')
+  assert(stream, 'stale failure should keep stream')
+  assertEqual(stream.messages.length, 1, 'stale failure should not append duplicate message')
+  assertEqual(
+    stream.messages[0]?.status,
+    'done',
+    'stale failure should not downgrade finished assistant',
+  )
+  assertEqual(stream.messages[0]?.error, undefined, 'stale failure should not add error')
+  assertEqual(stream.events.length, 1, 'stale failure should still append timeline event')
+}
+
 function testRendererFinishAppendsMissingAssistantMessage(): void {
   let state = createChatStreamsStateForTest()
   state = reduceChatStreamsForTest(state, {
@@ -940,6 +978,7 @@ async function main(): Promise<void> {
   testRendererCompletedEventWaitsForFinishMessage()
   testRendererFailedEventFinalizesStreamingPlaceholder()
   testRendererInterruptedEventFinalizesStreamingPlaceholder()
+  testRendererStaleFailureDoesNotDowngradeFinishedMessage()
   testRendererFinishAppendsMissingAssistantMessage()
   testRendererRunStartedDoesNotDuplicateFinishedAssistant()
   testRendererToolResultAppendsMissingAssistantMessage()
