@@ -22,6 +22,10 @@ export {
   type ConversationActivity,
   type ConversationActivityState,
   type ConversationRecord,
+  type ConversationRuntimePendingApproval,
+  type ConversationRuntimeReplayState,
+  type ConversationRuntimeReplayTurn,
+  type ConversationRuntimeStatePhase,
   type ConversationSummary,
   type ConversationUsage,
   createConversation,
@@ -39,6 +43,7 @@ export {
   recoverInterruptedConversationActivities,
   renameConversation,
   replayConversationActivity,
+  replayConversationRuntimeState,
   setConversationUsage,
   upsertMessage,
 } from '../main/conversations'

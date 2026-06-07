@@ -67,6 +67,39 @@ export interface ConversationActivity {
   toolName?: string
 }
 
+export type ConversationRuntimeStatePhase =
+  | 'idle'
+  | 'running'
+  | 'approval'
+  | 'cancelling'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  | 'interrupted'
+
+export interface ConversationRuntimePendingApproval {
+  requestedAt: number
+  requestId?: string
+  toolCallId?: string
+  toolName?: string
+}
+
+export interface ConversationRuntimeReplayTurn {
+  conversationId: string
+  assistantMessageId: string
+  updatedAt: number
+  eventType: AgentEvent['type']
+  startedAt?: number
+  selection?: PersistedMessage['model']
+  pendingApproval?: ConversationRuntimePendingApproval
+}
+
+export interface ConversationRuntimeReplayState {
+  phase: ConversationRuntimeStatePhase
+  active: boolean
+  turn?: ConversationRuntimeReplayTurn
+}
+
 export interface ConversationMeta {
   schemaVersion: typeof AILA_CONVERSATION_META_SCHEMA_VERSION
   id: string
@@ -291,6 +324,18 @@ function agentEventReplayKey(event: PersistedAgentEvent): string {
   ].join(':')
 }
 
+function orderedUniqueAgentEvents(events: readonly PersistedAgentEvent[]): PersistedAgentEvent[] {
+  const seen = new Set<string>()
+  const ordered: PersistedAgentEvent[] = []
+  for (const event of [...events].sort((a, b) => a.timestamp - b.timestamp)) {
+    const key = agentEventReplayKey(event)
+    if (seen.has(key)) continue
+    seen.add(key)
+    ordered.push(event)
+  }
+  return ordered
+}
+
 function normalizeAgentEvent(
   value: Partial<PersistedAgentEvent>,
   fallbackConversationId?: string,
@@ -330,6 +375,13 @@ function deriveTitle(message: PersistedMessage): string | null {
 function dataString(data: Record<string, unknown> | undefined, key: string): string | undefined {
   const value = data?.[key]
   return typeof value === 'string' && value.length > 0 ? value : undefined
+}
+
+function dataSelection(data: Record<string, unknown> | undefined): PersistedMessage['model'] {
+  const providerId = dataString(data, 'providerId')
+  const modelId = dataString(data, 'modelId')
+  if (!providerId || !modelId) return undefined
+  return { providerId: providerId as ProviderId, modelId }
 }
 
 function dataBool(data: Record<string, unknown> | undefined, key: string): boolean | undefined {
@@ -450,18 +502,153 @@ function activityFromAgentEvent(event: PersistedAgentEvent): ConversationActivit
 export function replayConversationActivity(
   events: readonly PersistedAgentEvent[],
 ): ConversationActivity | undefined {
-  const seen = new Set<string>()
   let activity: ConversationActivity | undefined
-  for (const event of [...events].sort((a, b) => a.timestamp - b.timestamp)) {
-    const key = agentEventReplayKey(event)
-    if (seen.has(key)) continue
-    seen.add(key)
+  for (const event of orderedUniqueAgentEvents(events)) {
     const next = activityFromAgentEvent(event)
     if (!next) continue
     if (activity && activity.updatedAt > next.updatedAt) continue
     activity = next
   }
   return activity
+}
+
+function isActiveRuntimePhase(phase: ConversationRuntimeStatePhase): boolean {
+  return phase === 'running' || phase === 'approval' || phase === 'cancelling'
+}
+
+function runtimeReplayState(
+  phase: ConversationRuntimeStatePhase,
+  turn?: ConversationRuntimeReplayTurn,
+): ConversationRuntimeReplayState {
+  return {
+    phase,
+    active: isActiveRuntimePhase(phase),
+    ...(turn ? { turn } : {}),
+  }
+}
+
+function pendingApprovalFromEvent(event: PersistedAgentEvent): ConversationRuntimePendingApproval {
+  const requestId = dataString(event.data, 'requestId')
+  const toolCallId = dataString(event.data, 'toolCallId')
+  const toolName = dataString(event.data, 'toolName')
+  return {
+    requestedAt: event.timestamp,
+    ...(requestId ? { requestId } : {}),
+    ...(toolCallId ? { toolCallId } : {}),
+    ...(toolName ? { toolName } : {}),
+  }
+}
+
+function runtimeTurnFromEvent(
+  state: ConversationRuntimeReplayState,
+  event: PersistedAgentEvent,
+  options: {
+    startedAt?: number
+    selection?: PersistedMessage['model']
+    pendingApproval?: ConversationRuntimePendingApproval
+    clearPendingApproval?: boolean
+  } = {},
+): ConversationRuntimeReplayTurn {
+  const previous = state.turn?.assistantMessageId === event.messageId ? state.turn : undefined
+  const startedAt = options.startedAt ?? previous?.startedAt
+  const selection = options.selection ?? dataSelection(event.data) ?? previous?.selection
+  const turn: ConversationRuntimeReplayTurn = {
+    conversationId: event.conversationId,
+    assistantMessageId: event.messageId,
+    updatedAt: event.timestamp,
+    eventType: event.type,
+  }
+  if (startedAt !== undefined) turn.startedAt = startedAt
+  if (selection) turn.selection = selection
+  if (options.pendingApproval) {
+    turn.pendingApproval = options.pendingApproval
+  } else if (!options.clearPendingApproval && previous?.pendingApproval) {
+    turn.pendingApproval = previous.pendingApproval
+  }
+  return turn
+}
+
+function nonTerminalToolPhase(
+  state: ConversationRuntimeReplayState,
+): ConversationRuntimeStatePhase {
+  return state.phase === 'cancelling' ? 'cancelling' : 'running'
+}
+
+export function replayConversationRuntimeState(
+  events: readonly PersistedAgentEvent[],
+): ConversationRuntimeReplayState {
+  let state = runtimeReplayState('idle')
+
+  for (const event of orderedUniqueAgentEvents(events)) {
+    switch (event.type) {
+      case 'turn.started':
+        state = runtimeReplayState(
+          'running',
+          runtimeTurnFromEvent(state, event, {
+            startedAt: event.timestamp,
+            selection: dataSelection(event.data),
+            clearPendingApproval: true,
+          }),
+        )
+        break
+      case 'turn.completed':
+        state = runtimeReplayState(
+          'completed',
+          runtimeTurnFromEvent(state, event, { clearPendingApproval: true }),
+        )
+        break
+      case 'turn.failed':
+        state = runtimeReplayState(
+          'failed',
+          runtimeTurnFromEvent(state, event, { clearPendingApproval: true }),
+        )
+        break
+      case 'turn.cancelled': {
+        const phase = dataString(event.data, 'phase') === 'completed' ? 'cancelled' : 'cancelling'
+        state = runtimeReplayState(
+          phase,
+          runtimeTurnFromEvent(state, event, { clearPendingApproval: true }),
+        )
+        break
+      }
+      case 'turn.interrupted':
+        state = runtimeReplayState(
+          'interrupted',
+          runtimeTurnFromEvent(state, event, { clearPendingApproval: true }),
+        )
+        break
+      case 'tool.approval.requested':
+        state = runtimeReplayState(
+          'approval',
+          runtimeTurnFromEvent(state, event, {
+            pendingApproval: pendingApprovalFromEvent(event),
+          }),
+        )
+        break
+      case 'tool.approval.resolved':
+        state = runtimeReplayState(
+          nonTerminalToolPhase(state),
+          runtimeTurnFromEvent(state, event, { clearPendingApproval: true }),
+        )
+        break
+      case 'tool.execution.started':
+      case 'tool.execution.completed':
+      case 'tool.execution.failed':
+      case 'tool.result.returned':
+        state = runtimeReplayState(
+          nonTerminalToolPhase(state),
+          runtimeTurnFromEvent(state, event, { clearPendingApproval: true }),
+        )
+        break
+      case 'tool.requested':
+      case 'tool.input.delta':
+      case 'tool.input.completed':
+        state = runtimeReplayState(nonTerminalToolPhase(state), runtimeTurnFromEvent(state, event))
+        break
+    }
+  }
+
+  return state
 }
 
 function activityEquals(
@@ -511,7 +698,9 @@ export async function recoverInterruptedConversationActivities(
   const recovered: ConversationSummary[] = []
   await Promise.all(
     list.map(async (meta) => {
-      const replayedActivity = replayConversationActivity(await listAgentEvents(meta.id))
+      const events = await listAgentEvents(meta.id)
+      const replayedActivity = replayConversationActivity(events)
+      const runtimeState = replayConversationRuntimeState(events)
       const activity = replayedActivity ?? meta.activity
       if (!activity) return
       if (replayedActivity && !activityEquals(meta.activity, replayedActivity)) {
@@ -525,17 +714,19 @@ export async function recoverInterruptedConversationActivities(
               },
         )
       }
-      if (activity.state !== 'running' && activity.state !== 'approval') return
+      if (!runtimeState.active || !runtimeState.turn) return
+      const runtimeActivity =
+        activity.messageId === runtimeState.turn.assistantMessageId ? activity : undefined
       const { summary } = await appendAgentEventAndTouchConversation(meta.id, {
         timestamp: Date.now(),
         conversationId: meta.id,
-        messageId: activity.messageId,
+        messageId: runtimeState.turn.assistantMessageId,
         type: 'turn.interrupted',
         data: {
           reason,
-          previousState: activity.state,
-          previousEventType: activity.eventType,
-          previousTitle: activity.title,
+          previousState: runtimeState.phase,
+          previousEventType: runtimeState.turn.eventType,
+          previousTitle: runtimeActivity?.title ?? runtimeState.turn.eventType,
         },
       })
       if (summary) recovered.push(summary)

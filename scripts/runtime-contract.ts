@@ -38,6 +38,7 @@ import {
   type PersistedAgentEvent,
   recoverInterruptedConversationActivities,
   replayConversationActivity,
+  replayConversationRuntimeState,
   type Settings,
   setConversationUsage,
   summarizeToolTarget,
@@ -2072,6 +2073,160 @@ function testAgentEventReplayDerivesLatestActivity(): void {
   assertEqual(activity.updatedAt, 30, 'event replay activity timestamp')
 }
 
+function testAgentEventReplayDerivesRuntimeState(): void {
+  const baseEvents: PersistedAgentEvent[] = [
+    {
+      schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+      timestamp: 10,
+      conversationId: 'conversation-runtime-replay',
+      messageId: 'assistant-runtime-replay',
+      type: 'turn.started',
+      data: {
+        providerId: 'openrouter',
+        modelId: 'contract/mock',
+        inputMessageCount: 2,
+      },
+    },
+    {
+      schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+      timestamp: 20,
+      conversationId: 'conversation-runtime-replay',
+      messageId: 'assistant-runtime-replay',
+      type: 'tool.approval.requested',
+      data: {
+        requestId: 'approval-request',
+        toolCallId: 'tool-call',
+        toolName: 'write',
+      },
+    },
+    {
+      schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+      timestamp: 20,
+      conversationId: 'conversation-runtime-replay',
+      messageId: 'assistant-runtime-replay',
+      type: 'tool.approval.requested',
+      data: {
+        requestId: 'approval-request',
+        toolCallId: 'tool-call',
+        toolName: 'write',
+      },
+    },
+  ]
+
+  const approvalState = replayConversationRuntimeState(baseEvents)
+  assertEqual(approvalState.phase, 'approval', 'approval request should be active runtime state')
+  assertEqual(approvalState.active, true, 'approval request should be active')
+  assertEqual(
+    approvalState.turn?.assistantMessageId,
+    'assistant-runtime-replay',
+    'runtime replay assistant message id',
+  )
+  assertEqual(
+    approvalState.turn?.selection?.modelId,
+    'contract/mock',
+    'runtime replay should preserve model selection',
+  )
+  assertEqual(
+    approvalState.turn?.pendingApproval?.requestId,
+    'approval-request',
+    'runtime replay should preserve pending approval',
+  )
+
+  const resolvedState = replayConversationRuntimeState([
+    ...baseEvents,
+    {
+      schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+      timestamp: 30,
+      conversationId: 'conversation-runtime-replay',
+      messageId: 'assistant-runtime-replay',
+      type: 'tool.approval.resolved',
+      data: { requestId: 'approval-request', approved: false, reason: 'user' },
+    },
+  ])
+  assertEqual(
+    resolvedState.phase,
+    'running',
+    'approval resolution should not be treated as a turn terminal',
+  )
+  assertEqual(resolvedState.active, true, 'resolved approval should remain active')
+  assertEqual(
+    resolvedState.turn?.pendingApproval,
+    undefined,
+    'resolved approval should clear pending approval',
+  )
+
+  const cancellingState = replayConversationRuntimeState([
+    ...baseEvents,
+    {
+      schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+      timestamp: 40,
+      conversationId: 'conversation-runtime-replay',
+      messageId: 'assistant-runtime-replay',
+      type: 'turn.cancelled',
+      data: { phase: 'requested', reason: 'user' },
+    },
+  ])
+  assertEqual(cancellingState.phase, 'cancelling', 'requested cancellation should not be terminal')
+  assertEqual(cancellingState.active, true, 'requested cancellation should remain active')
+
+  const cancelledState = replayConversationRuntimeState([
+    ...baseEvents,
+    {
+      schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+      timestamp: 40,
+      conversationId: 'conversation-runtime-replay',
+      messageId: 'assistant-runtime-replay',
+      type: 'turn.cancelled',
+      data: { phase: 'requested', reason: 'user' },
+    },
+    {
+      schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+      timestamp: 50,
+      conversationId: 'conversation-runtime-replay',
+      messageId: 'assistant-runtime-replay',
+      type: 'turn.cancelled',
+      data: { phase: 'completed', reason: 'abort_signal' },
+    },
+  ])
+  assertEqual(cancelledState.phase, 'cancelled', 'completed cancellation should be terminal')
+  assertEqual(cancelledState.active, false, 'completed cancellation should not be active')
+}
+
+function testAgentEventReplayKeepsToolFailureActive(): void {
+  const events: PersistedAgentEvent[] = [
+    {
+      schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+      timestamp: 10,
+      conversationId: 'conversation-tool-failure-replay',
+      messageId: 'assistant-tool-failure-replay',
+      type: 'turn.started',
+      data: { providerId: 'openrouter', modelId: 'contract/mock' },
+    },
+    {
+      schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+      timestamp: 20,
+      conversationId: 'conversation-tool-failure-replay',
+      messageId: 'assistant-tool-failure-replay',
+      type: 'tool.execution.failed',
+      data: {
+        toolCallId: 'tool-call',
+        toolName: 'write',
+        error: 'contract tool failure',
+      },
+    },
+  ]
+
+  const activity = replayConversationActivity(events)
+  const runtimeState = replayConversationRuntimeState(events)
+  assertEqual(activity?.state, 'failed', 'tool failure should remain visible in activity')
+  assertEqual(
+    runtimeState.phase,
+    'running',
+    'tool failure should not be treated as a turn terminal',
+  )
+  assertEqual(runtimeState.active, true, 'tool failure should remain active until a turn terminal')
+}
+
 async function testInterruptedRecoveryUsesEventReplayOverStaleMeta(): Promise<void> {
   await withTempDataDir(async () => {
     const conversation = await createConversation()
@@ -2110,6 +2265,53 @@ async function testInterruptedRecoveryUsesEventReplayOverStaleMeta(): Promise<vo
       after.meta.activity?.eventType,
       'turn.completed',
       'recovery should repair activity event type from replay',
+    )
+  })
+}
+
+async function testInterruptedRecoveryUsesRuntimeReplayForNonTerminalToolFailure(): Promise<void> {
+  await withTempDataDir(async () => {
+    const conversation = await createConversation()
+    await appendAgentEventAndTouchConversation(conversation.id, {
+      timestamp: 10,
+      conversationId: conversation.id,
+      messageId: 'assistant-tool-failure-recovery',
+      type: 'turn.started',
+      data: { providerId: 'openrouter', modelId: 'contract/mock' },
+    })
+    await appendAgentEventAndTouchConversation(conversation.id, {
+      timestamp: 20,
+      conversationId: conversation.id,
+      messageId: 'assistant-tool-failure-recovery',
+      type: 'tool.execution.failed',
+      data: {
+        toolCallId: 'tool-call',
+        toolName: 'write',
+        error: 'contract tool failure',
+      },
+    })
+
+    const before = await getConversation(conversation.id)
+    assertEqual(before.meta.activity?.state, 'failed', 'fixture should have failed activity')
+
+    const recovered = await recoverInterruptedConversationActivities('contract restart')
+    assert(
+      recovered.some((summary) => summary.id === conversation.id),
+      'non-terminal tool failure should be recovered as interrupted',
+    )
+
+    const events = await listAgentEvents(conversation.id)
+    const interrupted = events.find((event) => event.type === 'turn.interrupted')
+    assert(interrupted, 'runtime replay recovery should append interrupted event')
+    assertEqual(
+      interrupted.data?.previousEventType,
+      'tool.execution.failed',
+      'interrupted event should preserve previous runtime event',
+    )
+    assertEqual(
+      interrupted.data?.previousState,
+      'running',
+      'interrupted event should use runtime lifecycle state',
     )
   })
 }
@@ -2894,7 +3096,10 @@ async function main(): Promise<void> {
   await testMessageUpsertPreventsDuplicatePersistedMessages()
   await testAgentEventReplayDeduplicatesExactDuplicates()
   testAgentEventReplayDerivesLatestActivity()
+  testAgentEventReplayDerivesRuntimeState()
+  testAgentEventReplayKeepsToolFailureActive()
   await testInterruptedRecoveryUsesEventReplayOverStaleMeta()
+  await testInterruptedRecoveryUsesRuntimeReplayForNonTerminalToolFailure()
   await testLegacyPersistenceNormalization()
   await testToolRegistryContract()
   testToolActivityTargetContract()
