@@ -46,6 +46,10 @@ interface StreamSlot {
   abortRecorded: boolean
 }
 
+type MaybePromise<T> = T | Promise<T>
+
+export type ConversationAbortReason = 'user' | 'delete' | 'shutdown'
+
 function messageText(message: PersistedMessage): string {
   return message.blocks
     .filter((block): block is PersistedTextBlock => block.type === 'text')
@@ -124,6 +128,10 @@ export {
 export interface AgentRuntimeOptions {
   onEvent?: (event: AgentRuntimeEvent) => void
   onToolApproval?: ToolContext['onToolApproval']
+  onConversationAbort?: (
+    conversationId: string,
+    reason: ConversationAbortReason,
+  ) => MaybePromise<void>
   profiles?: readonly AgentProfile[]
   loadProfiles?: () => Promise<readonly AgentProfile[]>
   toolPacks?: readonly ToolPack[]
@@ -276,7 +284,11 @@ export class AgentRuntime {
     const slot = this.activeStreams.get(conversationId)
     if (!slot) return
     slot.controller.abort()
-    if (slot.abortRecorded) return
+    const abortCleanup = this.notifyConversationAbort(conversationId, 'user')
+    if (slot.abortRecorded) {
+      await abortCleanup
+      return
+    }
     slot.abortRecorded = true
     try {
       await this.recordAgentEvent({
@@ -288,6 +300,8 @@ export class AgentRuntime {
       })
     } catch (err) {
       this.logger.warn('[runtime] cancellation activity append failed:', err)
+    } finally {
+      await abortCleanup
     }
   }
 
@@ -300,14 +314,20 @@ export class AgentRuntime {
   }
 
   abortAll(): void {
-    for (const slot of this.activeStreams.values()) slot.controller.abort()
+    for (const [conversationId, slot] of this.activeStreams.entries()) {
+      slot.controller.abort()
+      void this.notifyConversationAbort(conversationId, 'shutdown')
+    }
   }
 
   async deleteConversation(conversationId: string): Promise<void> {
     const slot = this.activeStreams.get(conversationId)
     if (slot) {
       slot.controller.abort()
+      await this.notifyConversationAbort(conversationId, 'delete')
       await slot.cleanup.catch(() => {})
+    } else {
+      await this.notifyConversationAbort(conversationId, 'delete')
     }
 
     try {
@@ -353,6 +373,17 @@ export class AgentRuntime {
   private resolveWorkspaceRoots(): ToolContext['workspaceRoots'] {
     const roots = this.options.workspaceRoots
     return typeof roots === 'function' ? roots() : roots
+  }
+
+  private async notifyConversationAbort(
+    conversationId: string,
+    reason: ConversationAbortReason,
+  ): Promise<void> {
+    try {
+      await this.options.onConversationAbort?.(conversationId, reason)
+    } catch (error) {
+      this.logger.warn('[runtime] conversation abort cleanup failed:', error)
+    }
   }
 
   private buildProfileMap(extraProfiles: readonly AgentProfile[]): Map<string, AgentProfile> {

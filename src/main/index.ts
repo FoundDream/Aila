@@ -98,9 +98,15 @@ function requestToolApproval(req: ToolApprovalRequest): Promise<boolean> {
   return toolApprovals.request(req)
 }
 
+async function cancelConversationApprovals(conversationId: string): Promise<void> {
+  const resolved = toolApprovals.resolveForConversation(conversationId, false, 'cancelled')
+  if (resolved > 0) await toolApprovals.flushActivity()
+}
+
 const agentRuntime = new AgentRuntime({
   onEvent: (event) => send(event.type, event.data),
   onToolApproval: requestToolApproval,
+  onConversationAbort: cancelConversationApprovals,
   loadProfiles: async () => (await loadAgentProfilesFromDir()).map((profile) => profile.profile),
   loadToolPacks: async () => (await loadToolPacksFromDir()).map((pack) => pack.toolPack),
   workspaceRoots: getDesktopWorkspaceRoots,
@@ -154,11 +160,9 @@ function registerIpcHandlers(): void {
     },
   )
 
-  ipcMain.handle('chat:abort', async (_event, conversationId: string) => {
-    const abort = agentRuntime.abort(conversationId)
-    toolApprovals.resolveForConversation(conversationId, false, 'cancelled')
-    await abort
-  })
+  ipcMain.handle('chat:abort', (_event, conversationId: string) =>
+    agentRuntime.abort(conversationId),
+  )
   ipcMain.handle('chat:list-active-streams', () => agentRuntime.listActiveStreams())
 
   ipcMain.handle('docs:list', () => listAll())

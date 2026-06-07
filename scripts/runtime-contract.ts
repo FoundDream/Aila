@@ -64,6 +64,18 @@ async function waitFor(predicate: () => boolean, message: string, timeoutMs = 15
   throw new Error(message)
 }
 
+async function withTimeout<T>(promise: Promise<T>, message: string, timeoutMs = 1500): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | null = null
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), timeoutMs)
+  })
+  try {
+    return await Promise.race([promise, timeout])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
 async function testRuntimeEventContract(): Promise<void> {
   assertEqual(AILA_RUNTIME_EVENT_SCHEMA_VERSION, 1, 'runtime event schema version changed')
   assertEqual(
@@ -526,6 +538,83 @@ async function testRuntimeListsActiveAssistantTurns(): Promise<void> {
     await waitFor(
       () => runtime.listActiveStreams().length === 0,
       'completed stream should leave active turn list',
+    )
+  })
+}
+
+async function testRuntimeDeleteRunsAbortCleanupBeforeWaitingForStream(): Promise<void> {
+  await withTempDataDir(async () => {
+    const conversation = await createConversation()
+    let resolveStarted: () => void = () => {}
+    let resolveStream: () => void = () => {}
+    const started = new Promise<void>((resolve) => {
+      resolveStarted = resolve
+    })
+    const released = new Promise<void>((resolve) => {
+      resolveStream = resolve
+    })
+    let cleanupConversationId: string | null = null
+    let cleanupReason: string | null = null
+
+    const runtime = new AgentRuntime({
+      logger: { warn() {}, error() {} },
+      onConversationAbort: (conversationId, reason) => {
+        cleanupConversationId = conversationId
+        cleanupReason = reason
+        resolveStream()
+      },
+      streamChat: async (req, handlers) => {
+        req.onAgentEvent?.({
+          timestamp: Date.now(),
+          conversationId: req.conversationId,
+          messageId: req.assistantMessageId,
+          type: 'turn.started',
+          data: { providerId: req.selection.providerId, modelId: req.selection.modelId },
+        })
+        resolveStarted()
+        await released
+        req.onAgentEvent?.({
+          timestamp: Date.now(),
+          conversationId: req.conversationId,
+          messageId: req.assistantMessageId,
+          type: 'turn.cancelled',
+          data: { phase: 'completed', reason: 'abort_signal' },
+        })
+        await handlers.onError({
+          conversationId: req.conversationId,
+          messageId: req.assistantMessageId,
+          error: 'Aborted',
+          message: {
+            schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+            id: req.assistantMessageId,
+            role: 'assistant',
+            blocks: [],
+            status: 'error',
+            error: 'Aborted',
+            model: req.selection,
+          },
+        })
+      },
+    })
+
+    await runtime.send({
+      conversationId: conversation.id,
+      userText: 'delete while host approval is pending',
+      selection: { providerId: 'openrouter', modelId: 'contract/mock' },
+      requestedProfileId: 'coding',
+    })
+    await started
+
+    await withTimeout(
+      runtime.deleteConversation(conversation.id),
+      'delete should run abort cleanup before waiting for stream cleanup',
+    )
+    assertEqual(cleanupConversationId, conversation.id, 'delete abort cleanup conversation id')
+    assertEqual(cleanupReason, 'delete', 'delete abort cleanup reason')
+    assertEqual(runtime.listActiveStreams().length, 0, 'delete should clear active stream')
+    assert(
+      !(await listConversations()).some((record) => record.id === conversation.id),
+      'delete should remove conversation after cleanup',
     )
   })
 }
@@ -1218,6 +1307,7 @@ async function main(): Promise<void> {
   await testRuntimeAbortPersistsCancellationActivity()
   await testRuntimeUnexpectedStreamErrorPersistsFailureActivity()
   await testRuntimeListsActiveAssistantTurns()
+  await testRuntimeDeleteRunsAbortCleanupBeforeWaitingForStream()
   await testPersistenceContract()
   await testLegacyPersistenceNormalization()
   await testToolRegistryContract()

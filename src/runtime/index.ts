@@ -83,6 +83,7 @@ export {
   AILA_RUNTIME_EVENT_SCHEMA_VERSION,
   AILA_RUNTIME_EVENT_TYPES,
   type AilaRuntimeEventType,
+  type ConversationAbortReason,
   createRuntimeEvent,
   isRuntimeEventType,
   type RuntimeRetryLastInput,
