@@ -826,6 +826,53 @@ async function testRuntimeConversationStoreFacadeContract(): Promise<void> {
   )
 }
 
+async function testInMemoryRuntimeStoreEventListContract(): Promise<void> {
+  const store = createInMemoryRuntimeStore()
+  const summary = await store.createConversation?.()
+  assert(summary, 'in-memory runtime store should create conversations')
+
+  const laterEvent: PersistedAgentEvent = {
+    schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+    timestamp: 20,
+    conversationId: summary.id,
+    messageId: 'assistant-memory-events',
+    type: 'tool.requested',
+    data: { toolName: 'read' },
+  }
+  const earlierEvent: PersistedAgentEvent = {
+    schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+    timestamp: 10,
+    conversationId: summary.id,
+    messageId: 'assistant-memory-events',
+    type: 'turn.started',
+    data: { providerId: 'openrouter', modelId: 'contract/mock' },
+  }
+
+  await store.appendAgentEventAndTouchConversation(summary.id, laterEvent)
+  await store.appendAgentEventAndTouchConversation(summary.id, earlierEvent)
+  await store.appendAgentEventAndTouchConversation(summary.id, earlierEvent)
+
+  const listed = [...((await store.listAgentEvents?.(summary.id)) ?? [])]
+  assertEqual(listed.length, 2, 'in-memory event list should deduplicate replay events')
+  assertEqual(listed[0]?.timestamp, 10, 'in-memory event list should be replay ordered')
+  assertEqual(listed[1]?.timestamp, 20, 'in-memory event list should keep later events')
+
+  if (listed[0]?.data) listed[0].data.modelId = 'mutated'
+  const relisted = [...((await store.listAgentEvents?.(summary.id)) ?? [])]
+  assertEqual(
+    relisted[0]?.data?.modelId,
+    'contract/mock',
+    'in-memory event list should return snapshots',
+  )
+
+  await store.deleteConversation(summary.id)
+  assertEqual(
+    ((await store.listAgentEvents?.(summary.id)) ?? []).length,
+    0,
+    'in-memory event list should match persisted store after delete',
+  )
+}
+
 async function testRuntimeAppendUserMessageUsesInjectedStore(): Promise<void> {
   const conversationId = 'append-user-message-contract'
   const calls: string[] = []
@@ -4536,6 +4583,7 @@ async function main(): Promise<void> {
   await testRuntimeInjectableStoreContract()
   await testRuntimeHostTransientContextUsesInjectedRecord()
   await testRuntimeConversationStoreFacadeContract()
+  await testInMemoryRuntimeStoreEventListContract()
   await testRuntimeAppendUserMessageUsesInjectedStore()
   await testRuntimeRecordAgentEventUsesInjectedStore()
   await testRuntimeRewriteDocRefsUsesInjectedStore()

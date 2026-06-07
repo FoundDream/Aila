@@ -330,7 +330,9 @@ function agentEventReplayKey(event: PersistedAgentEvent): string {
   ].join(':')
 }
 
-function orderedUniqueAgentEvents(events: readonly PersistedAgentEvent[]): PersistedAgentEvent[] {
+export function orderedUniqueAgentEvents(
+  events: readonly PersistedAgentEvent[],
+): PersistedAgentEvent[] {
   const seen = new Set<string>()
   const ordered: PersistedAgentEvent[] = []
   for (const event of [...events].sort((a, b) => a.timestamp - b.timestamp)) {

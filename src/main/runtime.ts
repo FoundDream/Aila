@@ -24,6 +24,7 @@ import {
   type ConversationSummary,
   createInterruptedConversationRecoveryEvent,
   type DocRefRewrite,
+  orderedUniqueAgentEvents,
   type PersistedAgentEvent,
   type PersistedMessage,
   type PersistedTextBlock,
@@ -404,8 +405,7 @@ export function createInMemoryRuntimeStore(): AgentRuntimeStore {
         .sort((left, right) => right.updatedAt - left.updatedAt)
     },
     async listAgentEvents(conversationId): Promise<readonly PersistedAgentEvent[]> {
-      requireRecord(conversationId)
-      return cloneRuntimeValue(agentEvents.get(conversationId) ?? [])
+      return cloneRuntimeValue(orderedUniqueAgentEvents(agentEvents.get(conversationId) ?? []))
     },
     async recoverInterruptedConversationActivities(reason): Promise<ConversationSummary[]> {
       const recovered: ConversationSummary[] = []
