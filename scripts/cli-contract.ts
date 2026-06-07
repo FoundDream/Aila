@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { cp, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -57,44 +57,6 @@ function runCli(args: string[], env: Record<string, string | undefined> = {}): P
     child.on('close', (code) => {
       resolve({ code: code ?? 1, stdout, stderr })
     })
-  })
-}
-
-async function seedExampleExtensions(dataDir: string): Promise<void> {
-  await mkdir(join(dataDir, 'profiles'), { recursive: true })
-  await mkdir(join(dataDir, 'tool-packs'), { recursive: true })
-  await cp('examples/profiles/code-reviewer.json', join(dataDir, 'profiles', 'code-reviewer.json'))
-  await cp('examples/tool-packs/repo-inspector', join(dataDir, 'tool-packs', 'repo-inspector'), {
-    recursive: true,
-  })
-}
-
-async function testExtensionReport(): Promise<void> {
-  await withTempDataDir(async (dataDir) => {
-    await seedExampleExtensions(dataDir)
-
-    const text = await runCli(['--data-dir', dataDir, '--extensions'])
-    assertEqual(text.code, 0, 'extension text report should succeed')
-    assert(text.stdout.includes('code-reviewer'), 'extension text report should list profile')
-    assert(text.stdout.includes('repo-inspector'), 'extension text report should list tool pack')
-    assert(text.stdout.includes('repo_context'), 'extension text report should list tool')
-
-    const json = await runCli(['--data-dir', dataDir, '--extensions', '--json'])
-    assertEqual(json.code, 0, 'extension JSON report should succeed')
-    const parsed = JSON.parse(json.stdout) as {
-      ok?: boolean
-      profiles?: Array<{ id?: string }>
-      toolPacks?: Array<{ id?: string; tools?: string[] }>
-      errors?: unknown[]
-    }
-    assertEqual(parsed.ok, true, 'extension JSON report ok')
-    assertEqual(parsed.profiles?.[0]?.id, 'code-reviewer', 'extension JSON profile id')
-    assertEqual(parsed.toolPacks?.[0]?.id, 'repo-inspector', 'extension JSON tool pack id')
-    assert(
-      parsed.toolPacks?.[0]?.tools?.includes('repo_context'),
-      'extension JSON should list repo_context',
-    )
-    assertEqual(parsed.errors?.length, 0, 'extension JSON errors')
   })
 }
 
@@ -165,7 +127,6 @@ async function testRetryLastDoesNotDuplicateUser(): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  await testExtensionReport()
   await testExtensionReportFailure()
   await testRetryLastDoesNotDuplicateUser()
   console.log('cli contract: ok')

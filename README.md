@@ -10,7 +10,6 @@ adapters over the shared runtime, tools, storage, and event contract.
 The public runtime SDK entrypoint is `src/runtime`; see
 [`docs/runtime-sdk.md`](docs/runtime-sdk.md) before building new adapters or
 tooling on top of Aila.
-Copyable profile and tool-pack examples live in [`examples`](examples).
 
 ## Interfaces
 
@@ -51,7 +50,7 @@ Useful TUI commands:
 /sessions
 /extensions
 /extensions reload
-/profile code-reviewer
+/profile coding
 /model openai:gpt-5.4
 /read package.json
 /run git status --short

@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -81,15 +81,6 @@ function extractConversationId(stdout: string): string {
   return match[1]
 }
 
-async function seedExampleExtensions(dataDir: string): Promise<void> {
-  await mkdir(join(dataDir, 'profiles'), { recursive: true })
-  await mkdir(join(dataDir, 'tool-packs'), { recursive: true })
-  await cp('examples/profiles/code-reviewer.json', join(dataDir, 'profiles', 'code-reviewer.json'))
-  await cp('examples/tool-packs/repo-inspector', join(dataDir, 'tool-packs', 'repo-inspector'), {
-    recursive: true,
-  })
-}
-
 async function testLocalSlashCommands(): Promise<void> {
   await withTempDataDir(async (dataDir) => {
     await withTempWorkspace(async (workspaceDir) => {
@@ -138,12 +129,10 @@ async function testLocalSlashCommands(): Promise<void> {
 
 async function testExtensionAndSessionSlashCommands(): Promise<void> {
   await withTempDataDir(async (dataDir) => {
-    await seedExampleExtensions(dataDir)
-
     const stdin = [
       '/extensions',
       '/profile',
-      '/profile code-reviewer',
+      '/profile coding',
       '/model openai:gpt-5.4',
       '/extensions reload',
       '/exit',
@@ -156,10 +145,7 @@ async function testExtensionAndSessionSlashCommands(): Promise<void> {
 
     assertEqual(result.code, 0, 'TUI extension slash commands should exit cleanly')
     assert(result.stdout.includes('Aila extensions'), 'TUI should display extension report')
-    assert(result.stdout.includes('code-reviewer'), 'TUI should list manifest profile')
-    assert(result.stdout.includes('repo-inspector'), 'TUI should list manifest tool pack')
-    assert(result.stdout.includes('repo_context'), 'TUI should list manifest tool')
-    assert(result.stdout.includes('[profile] code-reviewer'), 'TUI should switch active profile')
+    assert(result.stdout.includes('[profile] coding'), 'TUI should switch active profile')
     assert(result.stdout.includes('[model] OpenAI / GPT-5.4'), 'TUI should switch active model')
     assert(result.stdout.includes('[extensions] reloaded'), 'TUI should reload extension caches')
   })

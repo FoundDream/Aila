@@ -1,4 +1,4 @@
-import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as runtimeSdk from '../src/runtime'
@@ -720,12 +720,12 @@ async function testProfileManifestLoader(): Promise<void> {
     const profilesDir = getProfilesDir()
     await mkdir(profilesDir, { recursive: true })
     await writeFile(
-      join(profilesDir, 'code-reviewer.json'),
+      join(profilesDir, 'manifest-reviewer.json'),
       `${JSON.stringify(
         {
           schemaVersion: AILA_PROFILE_MANIFEST_SCHEMA_VERSION,
-          id: 'code-reviewer',
-          label: 'Code Reviewer',
+          id: 'manifest-reviewer',
+          label: 'Manifest Reviewer',
           description: 'Review code with a conservative engineering stance.',
           baseProfileId: 'coding',
           instructions: 'Prioritize bugs, regressions, and missing tests.',
@@ -754,7 +754,7 @@ async function testProfileManifestLoader(): Promise<void> {
 
     const loaded = await loadAgentProfilesFromDir()
     assertEqual(loaded.length, 1, 'disabled profile manifest should be skipped')
-    assertEqual(loaded[0]?.manifest.id, 'code-reviewer', 'profile manifest id')
+    assertEqual(loaded[0]?.manifest.id, 'manifest-reviewer', 'profile manifest id')
     assertEqual(loaded[0]?.profile.baseProfileId, 'coding', 'profile base id')
     assertEqual(
       loaded[0]?.profile.instructions,
@@ -768,58 +768,93 @@ async function testProfileManifestLoader(): Promise<void> {
       logger: { warn() {}, error() {} },
     })
     const profiles = await runtime.getProfiles()
-    assert(profiles.has('code-reviewer'), 'AgentRuntime should load manifest profiles')
+    assert(profiles.has('manifest-reviewer'), 'AgentRuntime should load manifest profiles')
     await runtime.reloadProfiles()
   })
 }
 
-async function testExtensionExamplesLoad(): Promise<void> {
-  const examplesDir = join(process.cwd(), 'examples')
-
-  const profiles = await loadAgentProfilesFromDir(join(examplesDir, 'profiles'))
-  const codeReviewer = profiles.find((profile) => profile.manifest.id === 'code-reviewer')
-  assert(codeReviewer, 'example code-reviewer profile should load')
-  assertEqual(codeReviewer.profile.baseProfileId, 'coding', 'example profile base')
-
-  const toolPacks = await loadToolPacksFromDir(join(examplesDir, 'tool-packs'))
-  const repoInspector = toolPacks.find((pack) => pack.manifest.id === 'repo-inspector')
-  assert(repoInspector, 'example repo-inspector tool pack should load')
-
-  const registry = createDefaultToolRegistry(toolPacks.map((pack) => pack.toolPack))
-  assert(registry.specsByName.has('repo_context'), 'example repo_context tool should register')
-  const result = await executeTool(
-    'repo_context',
-    { focus: 'runtime sdk examples' },
-    { settings: { apiKeys: {}, defaultModel: null }, profileId: 'coding' },
-    registry,
-  )
-  const parsed = JSON.parse(result) as { focus?: string; message?: string }
-  assertEqual(parsed.focus, 'runtime sdk examples', 'example tool should receive args')
-  assert(
-    typeof parsed.message === 'string' && parsed.message.includes('manifest'),
-    'example tool should return contextual JSON',
-  )
-}
-
 async function testExtensionReportContract(): Promise<void> {
   await withTempDataDir(async (dataDir) => {
-    await mkdir(join(dataDir, 'profiles'), { recursive: true })
-    await mkdir(join(dataDir, 'tool-packs'), { recursive: true })
-    await cp(
-      'examples/profiles/code-reviewer.json',
-      join(dataDir, 'profiles', 'code-reviewer.json'),
+    const profilesDir = join(dataDir, 'profiles')
+    const toolPackDir = join(dataDir, 'tool-packs', 'contract-inspector')
+    await mkdir(profilesDir, { recursive: true })
+    await mkdir(toolPackDir, { recursive: true })
+    await writeFile(
+      join(profilesDir, 'contract-reviewer.json'),
+      `${JSON.stringify(
+        {
+          schemaVersion: AILA_PROFILE_MANIFEST_SCHEMA_VERSION,
+          id: 'contract-reviewer',
+          label: 'Contract Reviewer',
+          description: 'Contract fixture profile.',
+          baseProfileId: 'coding',
+          instructions: 'Review contract behavior.',
+        },
+        null,
+        2,
+      )}\n`,
+      'utf-8',
     )
-    await cp('examples/tool-packs/repo-inspector', join(dataDir, 'tool-packs', 'repo-inspector'), {
-      recursive: true,
-    })
+    await writeFile(
+      join(toolPackDir, AILA_TOOL_PACK_MANIFEST_FILE),
+      `${JSON.stringify(
+        {
+          schemaVersion: AILA_TOOL_PACK_MANIFEST_SCHEMA_VERSION,
+          id: 'contract-inspector',
+          name: 'Contract Inspector',
+          entry: 'index.mjs',
+        },
+        null,
+        2,
+      )}\n`,
+      'utf-8',
+    )
+    await writeFile(
+      join(toolPackDir, 'index.mjs'),
+      `
+export default {
+  id: 'contract-inspector',
+  name: 'Contract Inspector',
+  tools: [
+    {
+      spec: {
+        type: 'function',
+        function: {
+          name: 'contract_context',
+          description: 'Return contract fixture context.',
+          parameters: {
+            type: 'object',
+            properties: {},
+            additionalProperties: false,
+          },
+        },
+        metadata: {
+          name: 'contract_context',
+          readOnly: true,
+          destructive: false,
+          requiresApproval: false,
+          access: ['read'],
+          scope: ['workspace'],
+          allowedProfiles: ['coding'],
+        },
+      },
+      async run() {
+        return JSON.stringify({ ok: true })
+      },
+    },
+  ],
+}
+`.trimStart(),
+      'utf-8',
+    )
 
     const report = await getExtensionReport()
     assertEqual(report.ok, true, 'extension report should be ok')
     assertEqual(report.dataDir, dataDir, 'extension report data dir')
-    assertEqual(report.profiles[0]?.id, 'code-reviewer', 'extension report profile id')
-    assertEqual(report.toolPacks[0]?.id, 'repo-inspector', 'extension report tool pack id')
+    assertEqual(report.profiles[0]?.id, 'contract-reviewer', 'extension report profile id')
+    assertEqual(report.toolPacks[0]?.id, 'contract-inspector', 'extension report tool pack id')
     assert(
-      report.toolPacks[0]?.tools.includes('repo_context'),
+      report.toolPacks[0]?.tools.includes('contract_context'),
       'extension report should include tool names',
     )
     assertEqual(report.errors.length, 0, 'extension report should not include errors')
@@ -839,7 +874,6 @@ async function main(): Promise<void> {
   await testToolPackManifestLoader()
   await testToolPackReloadsChangedEntry()
   await testProfileManifestLoader()
-  await testExtensionExamplesLoad()
   await testExtensionReportContract()
   console.log('runtime contract: ok')
 }

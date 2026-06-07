@@ -1,1 +1,0 @@
-- [Electron binary mirror](electron-binary-mirror.md) — clean installs need ELECTRON_MIRROR=npmmirror; bun ignores .npmrc electron_mirror
