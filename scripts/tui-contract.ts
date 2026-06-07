@@ -3,12 +3,15 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
+  AILA_AGENT_EVENT_SCHEMA_VERSION,
   AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
   appendMessage,
   configureDataDir,
   createConversation,
+  createRuntimeEvent,
   getConversation,
 } from '../src/runtime'
+import { handleRuntimeEvent } from '../src/tui/line-mode'
 
 interface RunResult {
   code: number
@@ -235,12 +238,41 @@ async function testRetryLastDoesNotDuplicateUser(): Promise<void> {
   })
 }
 
+function testInterruptedAgentEventCompletesLineModeAdapter(): void {
+  let completed = false
+  handleRuntimeEvent(
+    createRuntimeEvent('agent:event', {
+      schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+      timestamp: 1,
+      conversationId: 'conversation-interrupted',
+      messageId: 'assistant-interrupted',
+      type: 'turn.interrupted',
+      data: { reason: 'user cleanup timed out' },
+    }),
+    {
+      completions: new Map([
+        [
+          'assistant-interrupted',
+          () => {
+            completed = true
+          },
+        ],
+      ]),
+      toolNames: new Map(),
+      onAssistantTextStart() {},
+    },
+  )
+
+  assert(completed, 'TUI line-mode interrupted event should complete the adapter')
+}
+
 async function main(): Promise<void> {
   await testLocalSlashCommands()
   await testExtensionAndSessionSlashCommands()
   await testDocCommandsAreNotRuntimeAdapterFeatures()
   await testDocFlagIsRemoved()
   await testRetryLastDoesNotDuplicateUser()
+  testInterruptedAgentEventCompletesLineModeAdapter()
   console.log('tui contract: ok')
 }
 

@@ -2,11 +2,14 @@ import { spawn } from 'node:child_process'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { handleRuntimeEvent } from '../src/cli/index'
 import {
+  AILA_AGENT_EVENT_SCHEMA_VERSION,
   AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
   appendMessage,
   configureDataDir,
   createConversation,
+  createRuntimeEvent,
   getConversation,
 } from '../src/runtime'
 
@@ -126,9 +129,47 @@ async function testRetryLastDoesNotDuplicateUser(): Promise<void> {
   })
 }
 
+function testInterruptedAgentEventCompletesCliAdapter(): void {
+  const completionRef: {
+    current: {
+      assistantText: string
+      error: string | null
+      status: 'done' | 'error'
+    } | null
+  } = { current: null }
+
+  handleRuntimeEvent(
+    createRuntimeEvent('agent:event', {
+      schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+      timestamp: 1,
+      conversationId: 'conversation-interrupted',
+      messageId: 'assistant-interrupted',
+      type: 'turn.interrupted',
+      data: { reason: 'user cleanup timed out' },
+    }),
+    {
+      assistantText: 'partial output',
+      events: false,
+      json: true,
+      toolNames: new Map(),
+      onAssistantText() {},
+      onCompletion(state) {
+        completionRef.current = state
+      },
+    },
+  )
+
+  const completed = completionRef.current
+  assert(completed, 'CLI interrupted event should complete the adapter')
+  assertEqual(completed.status, 'error', 'CLI interrupted completion status')
+  assertEqual(completed.error, 'user cleanup timed out', 'CLI interrupted completion error')
+  assertEqual(completed.assistantText, 'partial output', 'CLI interrupted partial text')
+}
+
 async function main(): Promise<void> {
   await testExtensionReportFailure()
   await testRetryLastDoesNotDuplicateUser()
+  testInterruptedAgentEventCompletesCliAdapter()
   console.log('cli contract: ok')
 }
 

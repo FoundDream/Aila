@@ -398,7 +398,12 @@ async function approveTool(request: ToolApprovalRequest, autoApprove: boolean, e
   return false
 }
 
-function handleRuntimeEvent(
+function interruptedReason(data: Record<string, unknown> | undefined): string {
+  const reason = data?.reason
+  return typeof reason === 'string' && reason.length > 0 ? reason : 'Interrupted'
+}
+
+export function handleRuntimeEvent(
   event: AgentRuntimeEvent,
   state: {
     assistantText: string
@@ -450,6 +455,19 @@ function handleRuntimeEvent(
         status: 'error',
         usage: null,
       })
+      break
+    case 'agent:event':
+      if (event.data.type === 'turn.interrupted') {
+        const reason = interruptedReason(event.data.data)
+        if (!state.events && !state.json) stderr.write(`[interrupted] ${reason}\n`)
+        state.onCompletion({
+          assistantText: state.assistantText,
+          error: reason,
+          message: null,
+          status: 'error',
+          usage: null,
+        })
+      }
       break
     case 'chat:reasoning-delta':
     case 'chat:tool-call-args-delta':
@@ -558,8 +576,10 @@ async function main(): Promise<void> {
   if (completed.status === 'error') process.exitCode = 1
 }
 
-main().catch((error) => {
-  const message = error instanceof Error ? error.message : String(error)
-  stderr.write(`Aila CLI failed: ${message}\n\n${usage()}\n`)
-  process.exitCode = 1
-})
+if (import.meta.main) {
+  main().catch((error) => {
+    const message = error instanceof Error ? error.message : String(error)
+    stderr.write(`Aila CLI failed: ${message}\n\n${usage()}\n`)
+    process.exitCode = 1
+  })
+}

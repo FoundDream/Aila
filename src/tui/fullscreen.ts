@@ -745,6 +745,17 @@ class AilaFullScreenApp {
         this.setState({ active: false, status: 'error' })
         this.completions.get(event.data.messageId)?.()
         break
+      case 'agent:event':
+        if (event.data.type === 'turn.interrupted') {
+          const reason =
+            typeof event.data.data?.reason === 'string' && event.data.data.reason.length > 0
+              ? event.data.data.reason
+              : 'Interrupted'
+          this.addEntry('error', 'interrupted', reason)
+          this.setState({ active: false, status: 'interrupted' })
+          this.completions.get(event.data.messageId)?.()
+        }
+        break
       case 'conversations:updated':
         break
     }

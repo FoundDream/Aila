@@ -881,6 +881,16 @@ export function handleRuntimeEvent(
       writeLine(`\n[error] ${event.data.error}`)
       state.completions.get(event.data.messageId)?.()
       break
+    case 'agent:event':
+      if (event.data.type === 'turn.interrupted') {
+        const reason =
+          typeof event.data.data?.reason === 'string' && event.data.data.reason.length > 0
+            ? event.data.data.reason
+            : 'Interrupted'
+        writeLine(`\n[interrupted] ${reason}`)
+        state.completions.get(event.data.messageId)?.()
+      }
+      break
     case 'conversations:updated':
     case 'chat:tool-call-args-delta':
       break
