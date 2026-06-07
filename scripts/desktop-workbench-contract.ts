@@ -430,6 +430,70 @@ function testRendererHydrateReplacesStreamingWithPersistedTerminal(): void {
   assertEqual(stream.runningMessageId, null, 'terminal hydrate should clear running id')
 }
 
+function testRendererCompletedEventWaitsForFinishMessage(): void {
+  let state = createChatStreamsStateForTest()
+  state = reduceChatStreamsForTest(state, {
+    type: 'RUN_STARTED',
+    conversationId: 'conversation-completed-order',
+    userMessage: {
+      id: 'user-completed-order',
+      role: 'user',
+      blocks: [{ type: 'text', content: 'complete after event' }],
+      status: 'done',
+    },
+    assistantMessage: {
+      id: 'assistant-completed-order',
+      role: 'assistant',
+      blocks: [{ type: 'text', content: 'streaming text' }],
+      status: 'streaming',
+      model: { providerId: 'openrouter', modelId: 'contract/mock' },
+    },
+  })
+  state = reduceChatStreamsForTest(state, {
+    type: 'AGENT_EVENT',
+    event: {
+      schemaVersion: 1,
+      timestamp: 1,
+      conversationId: 'conversation-completed-order',
+      messageId: 'assistant-completed-order',
+      type: 'turn.completed',
+      data: { outputBlockCount: 1 },
+    },
+  })
+
+  let stream = state.streams.get('conversation-completed-order')
+  assert(stream, 'completed event should keep stream')
+  assertEqual(
+    stream.runningMessageId,
+    'assistant-completed-order',
+    'completed event should not clear running before finish message',
+  )
+  assertEqual(
+    stream.messages[1]?.status,
+    'streaming',
+    'completed event should keep streaming message',
+  )
+  assertEqual(stream.events.length, 1, 'completed event should append timeline event')
+
+  state = reduceChatStreamsForTest(state, {
+    type: 'FINISH',
+    conversationId: 'conversation-completed-order',
+    messageId: 'assistant-completed-order',
+    message: {
+      id: 'assistant-completed-order',
+      role: 'assistant',
+      blocks: [{ type: 'text', content: 'final text' }],
+      status: 'done',
+      model: { providerId: 'openrouter', modelId: 'contract/mock' },
+    },
+  })
+
+  stream = state.streams.get('conversation-completed-order')
+  assert(stream, 'finish should keep stream')
+  assertEqual(stream.runningMessageId, null, 'finish should clear running message')
+  assertEqual(stream.messages[1]?.status, 'done', 'finish should replace streaming message')
+}
+
 function testRendererFinishAppendsMissingAssistantMessage(): void {
   let state = createChatStreamsStateForTest()
   state = reduceChatStreamsForTest(state, {
@@ -785,6 +849,7 @@ async function main(): Promise<void> {
   testRendererHydratesActiveAssistantTurn()
   testRendererHydratePreservesLocalStreamingMessages()
   testRendererHydrateReplacesStreamingWithPersistedTerminal()
+  testRendererCompletedEventWaitsForFinishMessage()
   testRendererFinishAppendsMissingAssistantMessage()
   testRendererRunStartedDoesNotDuplicateFinishedAssistant()
   testRendererToolResultAppendsMissingAssistantMessage()

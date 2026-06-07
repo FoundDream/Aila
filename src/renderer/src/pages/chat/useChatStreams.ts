@@ -275,9 +275,8 @@ function selectionFromAgentEventData(
     : undefined
 }
 
-function isTerminalAgentEvent(event: PersistedAgentEvent): boolean {
+function shouldClearRunningFromAgentEvent(event: PersistedAgentEvent): boolean {
   return (
-    event.type === 'turn.completed' ||
     event.type === 'turn.failed' ||
     (event.type === 'turn.cancelled' && event.data?.phase === 'completed')
   )
@@ -489,7 +488,7 @@ function reducer(state: State, action: Action): State {
         runningMessageId:
           action.event.type === 'turn.started'
             ? action.event.messageId
-            : isTerminalAgentEvent(action.event) &&
+            : shouldClearRunningFromAgentEvent(action.event) &&
                 current.runningMessageId === action.event.messageId
               ? null
               : current.runningMessageId,
