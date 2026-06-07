@@ -11,7 +11,6 @@ implementation itself.
 import {
   AgentRuntime,
   AILA_AGENT_EVENT_SCHEMA_VERSION,
-  AILA_PROFILE_MANIFEST_SCHEMA_VERSION,
   AILA_TOOL_PACK_MANIFEST_SCHEMA_VERSION,
   AILA_RUNTIME_EVENT_SCHEMA_VERSION,
   AILA_CONVERSATION_META_SCHEMA_VERSION,
@@ -19,7 +18,6 @@ import {
   configureDataDir,
   createConversation,
   getConversation,
-  loadAgentProfilesFromDir,
   loadToolPacksFromDir,
   getExtensionReport,
   isRuntimeEventType,
@@ -31,12 +29,10 @@ The SDK exposes:
 
 - `AgentRuntime`: send, abort, delete conversations, and receive runtime events.
 - Conversation storage: create, read, list, rename, delete, usage, event logs.
-- Tool system: built-in tool packs, custom tool packs, metadata, profile
-  filtering, execution, approval types.
-- Profiles: built-in profiles plus local manifest profiles with inherited tool
-  policy and custom instructions.
+- Tool system: built-in tool packs, custom tool packs, metadata, execution,
+  approval types.
 - Extension discovery: one SDK helper for validating and listing manifest
-  profiles and tool packs from the active data directory.
+  tool packs from the active data directory.
 - Settings and model catalog helpers.
 - Stable runtime constants: `AILA_RUNTIME_SDK_VERSION`,
   `AILA_RUNTIME_EVENT_SCHEMA_VERSION`, `AILA_RUNTIME_EVENT_TYPES`,
@@ -70,7 +66,6 @@ await runtime.send({
   conversationId: conversation.id,
   userText: 'Inspect this repository',
   selection: { providerId: 'openrouter', modelId: 'minimax/minimax-m3' },
-  requestedProfileId: 'coding',
 })
 ```
 
@@ -138,7 +133,6 @@ const projectToolPack: ToolPack = {
           requiresApproval: false,
           access: ['read'],
           scope: ['workspace'],
-          allowedProfiles: ['coding', 'research'],
         },
       },
       async run() {
@@ -200,7 +194,6 @@ export default {
           requiresApproval: false,
           access: ['read'],
           scope: ['workspace'],
-          allowedProfiles: ['coding'],
         },
       },
       async run() {
@@ -236,45 +229,15 @@ relative modules imported by the entry file.
 
 See `examples/tool-packs/repo-inspector` for a copyable manifest tool pack that
 is loaded by the runtime contract tests. Use `bun run cli -- --extensions` to
-validate the tool packs and profiles in the active data directory.
-
-## Manifest Profiles
-
-Adapters can load local profile manifests from `<data-dir>/profiles/*.json`.
-Profile manifests inherit tool policy from a built-in base profile and may add
-instructions that are injected as a system message.
-
-```json
-{
-  "schemaVersion": 1,
-  "id": "code-reviewer",
-  "label": "Code Reviewer",
-  "description": "Review code with a conservative engineering stance.",
-  "baseProfileId": "coding",
-  "instructions": "Prioritize bugs, regressions, and missing tests."
-}
-```
-
-```ts
-const runtime = new AgentRuntime({
-  loadProfiles: async () => (await loadAgentProfilesFromDir()).map((p) => p.profile),
-})
-```
-
-The profile manifest schema is versioned with
-`AILA_PROFILE_MANIFEST_SCHEMA_VERSION`. Disabled profile manifests
-(`"enabled": false`) are skipped.
-
-See `examples/profiles/code-reviewer.json` for a copyable profile manifest that
-is loaded by the runtime contract tests. `bun run cli -- --extensions --json`
-prints a machine-readable validation report.
+validate the tool packs in the active data directory.
+`bun run cli -- --extensions --json` prints a machine-readable validation
+report.
 
 ## Extension Reports
 
 Adapters that need an extension status view can call `getExtensionReport()`.
-It validates enabled manifest profiles and tool packs from the active data
-directory, returns structured paths and tool names, and keeps loader errors
-separate for profiles and tool packs.
+It validates enabled manifest tool packs from the active data directory and
+returns structured paths, tool names, and loader errors.
 
 ```ts
 const report = await getExtensionReport()
@@ -284,5 +247,5 @@ if (!report.ok) {
 ```
 
 The CLI uses this for `bun run cli -- --extensions --json`, and the TUI uses it
-for `/extensions`. In an interactive adapter, call `runtime.reloadProfiles()`
-and `runtime.reloadToolPacks()` after installing or editing extension files.
+for `/extensions`. In an interactive adapter, call `runtime.reloadToolPacks()`
+after installing or editing extension files.

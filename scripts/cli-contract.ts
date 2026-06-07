@@ -63,8 +63,12 @@ function runCli(args: string[], env: Record<string, string | undefined> = {}): P
 
 async function testExtensionReportFailure(): Promise<void> {
   await withTempDataDir(async (dataDir) => {
-    await mkdir(join(dataDir, 'profiles'), { recursive: true })
-    await writeFile(join(dataDir, 'profiles', 'bad.json'), '{"schemaVersion":999}\n', 'utf-8')
+    await mkdir(join(dataDir, 'tool-packs', 'bad'), { recursive: true })
+    await writeFile(
+      join(dataDir, 'tool-packs', 'bad', 'aila-tool-pack.json'),
+      '{"schemaVersion":999}\n',
+      'utf-8',
+    )
 
     const result = await runCli(['--data-dir', dataDir, '--extensions', '--json'])
     assertEqual(result.code, 1, 'bad extension report should fail')
@@ -73,9 +77,9 @@ async function testExtensionReportFailure(): Promise<void> {
       errors?: Array<{ kind?: string; message?: string }>
     }
     assertEqual(parsed.ok, false, 'bad extension JSON report ok=false')
-    assertEqual(parsed.errors?.[0]?.kind, 'profiles', 'bad extension error kind')
+    assertEqual(parsed.errors?.[0]?.kind, 'toolPacks', 'bad extension error kind')
     assert(
-      parsed.errors?.[0]?.message?.includes('unsupported profile manifest schemaVersion'),
+      parsed.errors?.[0]?.message?.includes('unsupported tool pack manifest schemaVersion'),
       'bad extension error should include loader message',
     )
   })
@@ -173,10 +177,6 @@ async function testCliUsesSharedRuntimeFactory(): Promise<void> {
   assert(
     !source.includes('createPersistedRuntimeStore'),
     'CLI adapter should not wire the persisted store directly',
-  )
-  assert(
-    !source.includes('loadAgentProfilesFromDir'),
-    'CLI adapter should not wire profile loaders directly',
   )
   assert(
     !source.includes('loadToolPacksFromDir'),

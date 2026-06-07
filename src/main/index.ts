@@ -4,7 +4,6 @@ import * as dotenv from 'dotenv'
 import { app, BrowserWindow, ipcMain, nativeTheme } from 'electron'
 import type { ProviderId } from '../shared/models'
 import { getModelInfo, type ModelSelection } from './agent'
-import type { AgentProfileId } from './agent-profile'
 import { sweepOrphanedDocConversations } from './doc-conversation-cleanup'
 import type { DocPatch } from './docs'
 import {
@@ -129,34 +128,21 @@ async function shutdownRuntimeWorkbench(): Promise<void> {
 function registerIpcHandlers(): void {
   ipcMain.handle(
     'chat:send',
-    async (
-      _event,
-      conversationId: string,
-      userText: string,
-      selection: ModelSelection,
-      requestedProfileId?: AgentProfileId,
-    ) => {
+    async (_event, conversationId: string, userText: string, selection: ModelSelection) => {
       return agentRuntime.send({
         conversationId,
         userText,
         selection,
-        requestedProfileId,
       })
     },
   )
 
   ipcMain.handle(
     'chat:retry-last',
-    async (
-      _event,
-      conversationId: string,
-      selection: ModelSelection,
-      requestedProfileId?: AgentProfileId,
-    ) => {
+    async (_event, conversationId: string, selection: ModelSelection) => {
       return agentRuntime.retryLastUserMessage({
         conversationId,
         selection,
-        requestedProfileId,
       })
     },
   )
@@ -225,18 +211,13 @@ function registerIpcHandlers(): void {
   ipcMain.handle('settings:get', () => packSettings(loadSettings()))
   ipcMain.handle('settings:set', (_event, next: Settings) => packSettings(saveSettings(next)))
   ipcMain.handle('openrouter:list-models', () => getOpenRouterCatalog())
-  ipcMain.handle('profiles:list', async () =>
-    Array.from((await agentRuntime.getProfiles()).values()),
-  )
   ipcMain.handle('extensions:report', () => getExtensionReport())
   ipcMain.handle('extensions:reload', async () => {
-    const [profiles, registry, report] = await Promise.all([
-      agentRuntime.reloadProfiles(),
+    const [registry, report] = await Promise.all([
       agentRuntime.reloadToolPacks(),
       getExtensionReport(),
     ])
     return {
-      profileCount: profiles.size,
       toolPackCount: registry.toolPacks.length,
       toolCount: registry.specs.length,
       report,

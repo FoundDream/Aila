@@ -18,7 +18,6 @@ interface ContextRound {
 export interface BuildAgentContextInput {
   messages: PersistedMessage[]
   modelInfo: ModelInfo
-  profileInstructions?: string
   transientContext?: ChatMessage[]
 }
 
@@ -160,12 +159,6 @@ export function buildAgentContext(input: BuildAgentContextInput): AgentContextRe
   const omittedCount = Math.max(0, rounds.length - selected.length)
   const summaryMessage = summarizeOmittedRounds(rounds.slice(0, omittedCount))
   const output: ChatMessage[] = []
-  if (input.profileInstructions?.trim()) {
-    output.push({
-      role: 'system',
-      content: `Agent profile instructions:\n${input.profileInstructions.trim()}`,
-    })
-  }
   if (input.transientContext) output.push(...input.transientContext)
   if (summaryMessage) output.push(summaryMessage)
   output.push(...selected.flatMap((round) => round.messages))

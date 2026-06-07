@@ -8,17 +8,6 @@ export type { ProviderId }
 export const AILA_CONVERSATION_META_SCHEMA_VERSION = 1
 export const AILA_PERSISTED_MESSAGE_SCHEMA_VERSION = 1
 
-export type BuiltinAgentProfileId = 'chat' | 'coding' | 'research'
-export type AgentProfileId = BuiltinAgentProfileId | (string & {})
-
-export interface AgentProfile {
-  id: AgentProfileId
-  label: string
-  description: string
-  baseProfileId?: BuiltinAgentProfileId
-  instructions?: string
-}
-
 export interface ToolCallPayload {
   id: string
   type: 'function'
@@ -77,7 +66,6 @@ export interface ToolApprovalRequestEvent {
     requiresApproval: boolean
     access: string[]
     scope: string[]
-    allowedProfiles: AgentProfileId[]
     maxResultBytes?: number
   }
 }
@@ -292,15 +280,9 @@ const api = {
     conversationId: string,
     userText: string,
     selection: ModelSelection,
-    profileId?: AgentProfileId,
-  ): Promise<SendResult> =>
-    ipcRenderer.invoke('chat:send', conversationId, userText, selection, profileId),
-  retryLast: (
-    conversationId: string,
-    selection: ModelSelection,
-    profileId?: AgentProfileId,
-  ): Promise<SendResult> =>
-    ipcRenderer.invoke('chat:retry-last', conversationId, selection, profileId),
+  ): Promise<SendResult> => ipcRenderer.invoke('chat:send', conversationId, userText, selection),
+  retryLast: (conversationId: string, selection: ModelSelection): Promise<SendResult> =>
+    ipcRenderer.invoke('chat:retry-last', conversationId, selection),
   abort: (conversationId: string): Promise<void> =>
     ipcRenderer.invoke('chat:abort', conversationId),
   listActiveStreams: (): Promise<ActiveAssistantTurn[]> =>
@@ -329,9 +311,6 @@ const api = {
   },
   openrouter: {
     listModels: (): Promise<OrCatalog> => ipcRenderer.invoke('openrouter:list-models'),
-  },
-  profiles: {
-    list: (): Promise<AgentProfile[]> => ipcRenderer.invoke('profiles:list'),
   },
   tools: {
     listPendingApprovals: (): Promise<ToolApprovalRequestEvent[]> =>

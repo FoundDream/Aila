@@ -23,12 +23,10 @@ import {
 import * as runtimeSdk from '../src/runtime'
 import {
   type AgentEvent,
-  type AgentProfile,
   AgentRuntime,
   type AgentRuntimeEvent,
   type AgentRuntimeHost,
   type AgentRuntimeStore,
-  AILA_PROFILE_MANIFEST_SCHEMA_VERSION,
   AILA_RUNTIME_EVENT_SCHEMA_VERSION,
   AILA_RUNTIME_EVENT_TYPES,
   AILA_TOOL_PACK_MANIFEST_FILE,
@@ -42,11 +40,9 @@ import {
   executeTool,
   getConversationsDir,
   getExtensionReport,
-  getProfilesDir,
-  getToolDefinitionsForProfile,
+  getToolDefinitions,
   getToolPacksDir,
   isRuntimeEventType,
-  loadAgentProfilesFromDir,
   loadToolPacksFromDir,
   type RuntimeRecordAgentEventInput,
   replayConversationActivity,
@@ -135,7 +131,6 @@ async function testRuntimeEmitsVersionedEvents(): Promise<void> {
         conversationId: conversation.id,
         userText: 'runtime contract smoke',
         selection: { providerId: 'openrouter', modelId: 'minimax/minimax-m3' },
-        requestedProfileId: 'coding',
       })
 
       await waitFor(
@@ -169,7 +164,6 @@ async function testRuntimeHostBoundaryContract(): Promise<void> {
     let approvalResult = false
     let abortConversationId: string | null = null
     let abortReason: string | null = null
-    let profileId: string | null = null
     let workspaceRootPath: string | null = null
     let workspaceRootLabel: string | null = null
     let shellCwdPath: string | null = null
@@ -192,15 +186,6 @@ async function testRuntimeHostBoundaryContract(): Promise<void> {
         abortConversationId = conversationId
         abortReason = reason
       },
-      loadProfiles: async () => [
-        {
-          id: 'host-coding',
-          label: 'Host Coding',
-          description: 'Runtime host boundary fixture.',
-          baseProfileId: 'coding',
-          instructions: 'Use host-provided profile instructions.',
-        },
-      ],
       loadSettings: () => {
         settingsLoaded = true
         return { apiKeys: { openrouter: 'host-openrouter-key' }, defaultModel: null }
@@ -208,7 +193,6 @@ async function testRuntimeHostBoundaryContract(): Promise<void> {
       workspaceRoots: () => [{ path: '/host/workspace', label: 'host-root' }],
       shellCwd: () => '/host/shell',
       streamChat: async (req, handlers) => {
-        profileId = req.profileId
         shellCwdPath = req.shellCwd ?? null
         streamSettingsKey = req.settings?.apiKeys.openrouter ?? null
         req.selection.modelId = 'host-mutated-model'
@@ -229,7 +213,6 @@ async function testRuntimeHostBoundaryContract(): Promise<void> {
             requiresApproval: true,
             access: ['write'],
             scope: ['workspace'],
-            allowedProfiles: ['coding'],
           },
           conversationId: req.conversationId,
           messageId: req.assistantMessageId,
@@ -247,7 +230,6 @@ async function testRuntimeHostBoundaryContract(): Promise<void> {
               requiresApproval: true,
               access: ['write'],
               scope: ['workspace'],
-              allowedProfiles: ['coding'],
             },
             conversationId: req.conversationId,
             messageId: req.assistantMessageId,
@@ -298,12 +280,10 @@ async function testRuntimeHostBoundaryContract(): Promise<void> {
       conversationId: conversation.id,
       userText: 'exercise host boundary',
       selection: { providerId: 'openrouter', modelId: 'contract/mock' },
-      requestedProfileId: 'host-coding',
     })
     await waitFor(() => streamStarted, 'host streamChat should start')
     await runtime.abort(conversation.id)
 
-    assertEqual(profileId, 'coding', 'host-loaded profile should resolve to base profile')
     assertEqual(settingsLoaded, true, 'host settings loader should be called')
     assertEqual(
       streamSettingsKey,
@@ -377,7 +357,6 @@ async function testRuntimeSettingsFallbackIsHostAgnostic(): Promise<void> {
         conversationId: conversation.id,
         userText: 'exercise runtime settings fallback',
         selection: { providerId: 'openrouter', modelId: 'contract/mock' },
-        requestedProfileId: 'coding',
       })
       await waitFor(() => streamStarted, 'runtime settings fallback stream should start')
 
@@ -417,7 +396,6 @@ async function testRuntimeHostStaticExtensionContract(): Promise<void> {
             requiresApproval: false,
             access: ['read'],
             scope: ['workspace'],
-            allowedProfiles: ['coding'],
           },
         },
         async run() {
@@ -445,7 +423,6 @@ async function testRuntimeHostStaticExtensionContract(): Promise<void> {
             requiresApproval: false,
             access: ['read'],
             scope: ['workspace'],
-            allowedProfiles: ['coding'],
           },
         },
         async run() {
@@ -454,70 +431,25 @@ async function testRuntimeHostStaticExtensionContract(): Promise<void> {
       },
     ],
   }
-  const topLevelProfiles: AgentProfile[] = [
-    {
-      id: 'static-host-profile',
-      label: 'Top Level Profile',
-      description: 'Top-level compatibility profile.',
-      baseProfileId: 'chat',
-    },
-  ]
-  const hostProfiles: AgentProfile[] = [
-    {
-      id: 'static-host-profile',
-      label: 'Host Profile',
-      description: 'Host static profile.',
-      baseProfileId: 'coding',
-    },
-  ]
   const topLevelToolPacks = [topLevelPack]
   const hostToolPacks = [hostPack]
 
   const runtime = new AgentRuntime({
-    profiles: topLevelProfiles,
     toolPacks: topLevelToolPacks,
     host: {
-      profiles: hostProfiles,
       toolPacks: hostToolPacks,
     },
   })
-  hostProfiles[0] = {
-    ...hostProfiles[0],
-    label: 'Mutated Host Profile',
-    baseProfileId: 'chat',
-  }
   hostPack.tools[0] = {
     ...hostPack.tools[0],
     spec: {
       ...hostPack.tools[0].spec,
       metadata: {
         ...hostPack.tools[0].spec.metadata,
-        allowedProfiles: [],
       },
     },
   }
   hostToolPacks.push(topLevelPack)
-
-  const profiles = await runtime.getProfiles()
-  assertEqual(
-    profiles.get('static-host-profile')?.label,
-    'Host Profile',
-    'host static profiles should be part of the runtime host boundary',
-  )
-  assertEqual(
-    profiles.get('static-host-profile')?.baseProfileId,
-    'coding',
-    'host static profiles should take precedence over top-level compatibility profiles',
-  )
-  const staticReturnedProfile = profiles.get('static-host-profile')
-  if (staticReturnedProfile) staticReturnedProfile.label = 'Caller Mutated Static Profile'
-  profiles.delete('static-host-profile')
-  const profilesAgain = await runtime.getProfiles()
-  assertEqual(
-    profilesAgain.get('static-host-profile')?.label,
-    'Host Profile',
-    'runtime should return profile map snapshots to callers',
-  )
 
   const registry = await runtime.getToolRegistry()
   assert(
@@ -525,7 +457,7 @@ async function testRuntimeHostStaticExtensionContract(): Promise<void> {
     'host static tool packs should be part of the runtime host boundary',
   )
   assert(
-    getToolDefinitionsForProfile('coding', registry).some(
+    getToolDefinitions(registry).some(
       (definition) => definition.function.name === 'host_static_tool',
     ),
     'host static tool packs should be snapped at runtime construction',
@@ -534,13 +466,11 @@ async function testRuntimeHostStaticExtensionContract(): Promise<void> {
     !registry.specsByName.has('top_level_static_tool'),
     'host static tool packs should take precedence over top-level compatibility tool packs',
   )
-  const returnedSpec = registry.specsByName.get('host_static_tool')
-  if (returnedSpec) returnedSpec.metadata.allowedProfiles = []
   registry.specsByName.delete('host_static_tool')
   registry.specs.length = 0
   const registryAgain = await runtime.getToolRegistry()
   assert(
-    getToolDefinitionsForProfile('coding', registryAgain).some(
+    getToolDefinitions(registryAgain).some(
       (definition) => definition.function.name === 'host_static_tool',
     ),
     'runtime should return tool registry snapshots to callers',
@@ -548,14 +478,6 @@ async function testRuntimeHostStaticExtensionContract(): Promise<void> {
 }
 
 async function testRuntimeDynamicExtensionLoaderSnapshots(): Promise<void> {
-  const loadedProfiles: AgentProfile[] = [
-    {
-      id: 'dynamic-snapshot-profile',
-      label: 'Dynamic Snapshot Profile',
-      description: 'Loaded profile snapshot fixture.',
-      baseProfileId: 'coding',
-    },
-  ]
   const loadedPack: ToolPack = {
     id: 'dynamic-snapshot-pack',
     name: 'Dynamic Snapshot Pack',
@@ -575,7 +497,6 @@ async function testRuntimeDynamicExtensionLoaderSnapshots(): Promise<void> {
             requiresApproval: false,
             access: ['read'],
             scope: ['workspace'],
-            allowedProfiles: ['coding'],
           },
         },
         async run() {
@@ -585,44 +506,26 @@ async function testRuntimeDynamicExtensionLoaderSnapshots(): Promise<void> {
     ],
   }
   const runtime = new AgentRuntime({
-    loadProfiles: async () => loadedProfiles,
     loadToolPacks: async () => [loadedPack],
     logger: { warn() {}, error() {} },
   })
 
-  const profiles = await runtime.getProfiles()
   const registry = await runtime.getToolRegistry()
-  const returnedDynamicProfile = profiles.get('dynamic-snapshot-profile')
-  if (returnedDynamicProfile) returnedDynamicProfile.label = 'Caller Mutated Dynamic Profile'
-  profiles.delete('dynamic-snapshot-profile')
-  const returnedDynamicSpec = registry.specsByName.get('dynamic_snapshot_tool')
-  if (returnedDynamicSpec) returnedDynamicSpec.metadata.allowedProfiles = []
   registry.specsByName.delete('dynamic_snapshot_tool')
   registry.specs.length = 0
 
-  loadedProfiles[0] = {
-    ...loadedProfiles[0],
-    label: 'Mutated Dynamic Profile',
-    baseProfileId: 'chat',
-  }
   loadedPack.tools[0] = {
     ...loadedPack.tools[0],
     spec: {
       ...loadedPack.tools[0].spec,
       metadata: {
         ...loadedPack.tools[0].spec.metadata,
-        allowedProfiles: [],
       },
     },
   }
 
-  assertEqual(
-    (await runtime.getProfiles()).get('dynamic-snapshot-profile')?.label,
-    'Dynamic Snapshot Profile',
-    'dynamic loaded profiles should be snapped when loaded and returned as caller snapshots',
-  )
   assert(
-    getToolDefinitionsForProfile('coding', await runtime.getToolRegistry()).some(
+    getToolDefinitions(await runtime.getToolRegistry()).some(
       (definition) => definition.function.name === 'dynamic_snapshot_tool',
     ),
     'dynamic loaded tool packs should be snapped when loaded and returned as caller snapshots',
@@ -693,7 +596,6 @@ async function testRuntimeInjectableStoreContract(): Promise<void> {
       conversationId: conversation.id,
       userText: 'use injectable store',
       selection: { providerId: 'openrouter', modelId: 'contract/mock' },
-      requestedProfileId: 'coding',
     })
     await waitFor(
       () => runtime.listActiveStreams().length === 0,
@@ -821,7 +723,6 @@ async function testRuntimeHostTransientContextUsesInjectedRecord(): Promise<void
     conversationId,
     userText: 'use host transient context',
     selection: { providerId: 'openrouter', modelId: 'contract/mock' },
-    requestedProfileId: 'coding',
   })
   await waitFor(
     () => runtime.listActiveStreams().length === 0,
@@ -929,7 +830,6 @@ async function testRuntimeStreamHandlerSnapshots(): Promise<void> {
     conversationId,
     userText: 'snapshot stream handler event',
     selection: { providerId: 'openrouter', modelId: 'contract/mock' },
-    requestedProfileId: 'coding',
   })
   await waitFor(
     () => runtime.listActiveStreams().length === 0,
@@ -1745,7 +1645,6 @@ async function testRuntimeRetriesDanglingUserTurn(): Promise<void> {
       const result = await runtime.retryLastUserMessage({
         conversationId: conversation.id,
         selection: { providerId: 'openrouter', modelId: 'minimax/minimax-m3' },
-        requestedProfileId: 'coding',
       })
 
       assertEqual(
@@ -1837,7 +1736,6 @@ async function testRuntimeRetriesFailedAssistantTurn(): Promise<void> {
     const result = await runtime.retryLastUserMessage({
       conversationId: conversation.id,
       selection: { providerId: 'openrouter', modelId: 'contract/mock' },
-      requestedProfileId: 'coding',
     })
 
     assertEqual(
@@ -1946,7 +1844,6 @@ async function testRuntimeContextSkipsNonDoneAssistantHistory(): Promise<void> {
       conversationId: conversation.id,
       userText: 'continue after failed assistant',
       selection: { providerId: 'openrouter', modelId: 'contract/mock' },
-      requestedProfileId: 'coding',
     })
 
     assert(
@@ -2042,7 +1939,6 @@ async function testRuntimeSerializesConcurrentTurnStarts(): Promise<void> {
       conversationId: conversation.id,
       userText: 'first concurrent turn',
       selection: { providerId: 'openrouter', modelId: 'contract/mock' },
-      requestedProfileId: 'coding',
     })
     await firstSetupStarted
 
@@ -2050,7 +1946,6 @@ async function testRuntimeSerializesConcurrentTurnStarts(): Promise<void> {
       conversationId: conversation.id,
       userText: 'second concurrent turn',
       selection: { providerId: 'openrouter', modelId: 'contract/mock' },
-      requestedProfileId: 'coding',
     })
 
     const setupRace = await Promise.race([
@@ -2133,7 +2028,6 @@ async function testRuntimeAbortCancelsTurnSetupBeforeStreamStarts(): Promise<voi
       conversationId: conversation.id,
       userText: 'abort while setup is loading',
       selection: { providerId: 'openrouter', modelId: 'contract/mock' },
-      requestedProfileId: 'coding',
     })
     await setupStarted
 
@@ -2260,7 +2154,6 @@ async function testRuntimeSendRecoversTimedOutTurnSetupLock(): Promise<void> {
         conversationId: conversation.id,
         userText: 'setup will not finish',
         selection: { providerId: 'openrouter', modelId: 'contract/mock' },
-        requestedProfileId: 'coding',
       })
       .then(
         () => {
@@ -2285,7 +2178,6 @@ async function testRuntimeSendRecoversTimedOutTurnSetupLock(): Promise<void> {
         conversationId: conversation.id,
         userText: 'replacement should start',
         selection: { providerId: 'openrouter', modelId: 'contract/mock' },
-        requestedProfileId: 'coding',
       }),
       'send should recover after a timed-out setup turn',
       500,
@@ -2400,7 +2292,6 @@ async function testRuntimeAbortPersistsCancellationActivity(): Promise<void> {
       conversationId: conversation.id,
       userText: 'cancel this turn',
       selection: { providerId: 'openrouter', modelId: 'contract/mock' },
-      requestedProfileId: 'coding',
     })
     await started
     await runtime.abort(conversation.id)
@@ -2487,7 +2378,6 @@ async function testRuntimeAbortTimesOutStuckStreamCleanup(): Promise<void> {
       conversationId: conversation.id,
       userText: 'abort a stuck stream',
       selection: { providerId: 'openrouter', modelId: 'contract/mock' },
-      requestedProfileId: 'coding',
     })
     await started
 
@@ -2567,7 +2457,6 @@ async function testRuntimeUnexpectedStreamErrorPersistsFailureActivity(): Promis
       conversationId: conversation.id,
       userText: 'surface provider crash',
       selection: { providerId: 'openrouter', modelId: 'contract/mock' },
-      requestedProfileId: 'coding',
     })
 
     await waitFor(
@@ -2635,7 +2524,6 @@ async function testRuntimeSetupFailurePersistsAssistantError(): Promise<void> {
       conversationId: conversation.id,
       userText: 'fail before stream starts',
       selection: { providerId: 'openrouter', modelId: 'contract/mock' },
-      requestedProfileId: 'coding',
     })
 
     assertEqual(runtime.listActiveStreams().length, 0, 'setup failure should not stay active')
@@ -2726,7 +2614,6 @@ async function testRuntimeSetupFailureRejectsWhenConversationDeleted(): Promise<
         conversationId: conversation.id,
         userText: 'delete during setup failure',
         selection: { providerId: 'openrouter', modelId: 'contract/mock' },
-        requestedProfileId: 'coding',
       })
     } catch (error) {
       rejected = error instanceof Error && error.message.includes('deleted')
@@ -2787,7 +2674,6 @@ async function testRuntimeSetupFailureSuppressesChatErrorAfterDelete(): Promise<
         conversationId: conversation.id,
         userText: 'delete after setup activity',
         selection: { providerId: 'openrouter', modelId: 'contract/mock' },
-        requestedProfileId: 'coding',
       })
     } catch (error) {
       rejected = error instanceof Error && error.message.includes('deleted')
@@ -2865,7 +2751,6 @@ async function testRuntimeListsActiveAssistantTurns(): Promise<void> {
       conversationId: conversation.id,
       userText: 'list active turn',
       selection: { providerId: 'openrouter', modelId: 'contract/mock' },
-      requestedProfileId: 'coding',
     })
     await started
 
@@ -2947,7 +2832,6 @@ async function testRuntimeDeleteRunsAbortCleanupBeforeWaitingForStream(): Promis
       conversationId: conversation.id,
       userText: 'delete while host approval is pending',
       selection: { providerId: 'openrouter', modelId: 'contract/mock' },
-      requestedProfileId: 'coding',
     })
     await started
 
@@ -3029,7 +2913,6 @@ async function testRuntimeDeleteTimesOutStuckStreamAndSuppressesLateEvents(): Pr
       conversationId: conversation.id,
       userText: 'delete stuck stream',
       selection: { providerId: 'openrouter', modelId: 'contract/mock' },
-      requestedProfileId: 'coding',
     })
     await started
 
@@ -3105,7 +2988,6 @@ async function testRuntimeRejectsNewTurnsAfterDeleteStarts(): Promise<void> {
       conversationId: conversation.id,
       userText: 'first turn before delete',
       selection: { providerId: 'openrouter', modelId: 'contract/mock' },
-      requestedProfileId: 'coding',
     })
     await started
 
@@ -3120,13 +3002,11 @@ async function testRuntimeRejectsNewTurnsAfterDeleteStarts(): Promise<void> {
             conversationId: conversation.id,
             userText: 'send after delete starts',
             selection: { providerId: 'openrouter', modelId: 'contract/mock' },
-            requestedProfileId: 'coding',
           })
         } else {
           await runtime.retryLastUserMessage({
             conversationId: conversation.id,
             selection: { providerId: 'openrouter', modelId: 'contract/mock' },
-            requestedProfileId: 'coding',
           })
         }
       } catch (error) {
@@ -3199,7 +3079,6 @@ async function testRuntimeDeleteFailureReopensConversation(): Promise<void> {
       conversationId: conversation.id,
       userText: 'continue after failed delete',
       selection: { providerId: 'openrouter', modelId: 'contract/mock' },
-      requestedProfileId: 'coding',
     })
     await waitFor(
       () => runtime.listActiveStreams().length === 0,
@@ -3306,7 +3185,6 @@ async function testRuntimeDeleteFailureRecordsCancellationForReopenedTurn(): Pro
     conversationId: conversation.id,
     userText: 'delete active stream but fail',
     selection: { providerId: 'openrouter', modelId: 'contract/mock' },
-    requestedProfileId: 'coding',
   })
   await started
 
@@ -3334,7 +3212,6 @@ async function testRuntimeDeleteFailureRecordsCancellationForReopenedTurn(): Pro
     conversationId: conversation.id,
     userText: 'continue after failed active delete',
     selection: { providerId: 'openrouter', modelId: 'contract/mock' },
-    requestedProfileId: 'coding',
   })
   await waitFor(
     () => runtime.listActiveStreams().length === 0,
@@ -3435,7 +3312,6 @@ async function testRuntimeSendRecoversAbortedStuckPreviousStream(): Promise<void
       conversationId: conversation.id,
       userText: 'first turn will ignore abort',
       selection: { providerId: 'openrouter', modelId: 'contract/mock' },
-      requestedProfileId: 'coding',
     })
     await firstStarted
     await runtime.abort(conversation.id)
@@ -3450,7 +3326,6 @@ async function testRuntimeSendRecoversAbortedStuckPreviousStream(): Promise<void
         conversationId: conversation.id,
         userText: 'second turn should recover',
         selection: { providerId: 'openrouter', modelId: 'contract/mock' },
-        requestedProfileId: 'coding',
       }),
       'send should recover an aborted stuck previous stream',
       500,
@@ -3564,7 +3439,6 @@ async function testRuntimeAbortAllWaitsForShutdownCleanup(): Promise<void> {
       conversationId: conversation.id,
       userText: 'shutdown while streaming',
       selection: { providerId: 'openrouter', modelId: 'contract/mock' },
-      requestedProfileId: 'coding',
     })
     await started
 
@@ -3626,7 +3500,6 @@ async function testRuntimeAbortAllTimesOutStuckStreamCleanup(): Promise<void> {
       conversationId: conversation.id,
       userText: 'shutdown stuck stream',
       selection: { providerId: 'openrouter', modelId: 'contract/mock' },
-      requestedProfileId: 'coding',
     })
     await started
 
@@ -3720,7 +3593,6 @@ async function testRuntimeShutdownRejectsNewTurns(): Promise<void> {
       conversationId: conversation.id,
       userText: 'start before shutdown',
       selection: { providerId: 'openrouter', modelId: 'contract/mock' },
-      requestedProfileId: 'coding',
     })
     await started
 
@@ -3736,13 +3608,11 @@ async function testRuntimeShutdownRejectsNewTurns(): Promise<void> {
             conversationId: conversation.id,
             userText: 'send after shutdown starts',
             selection: { providerId: 'openrouter', modelId: 'contract/mock' },
-            requestedProfileId: 'coding',
           })
         } else {
           await runtime.retryLastUserMessage({
             conversationId: conversation.id,
             selection: { providerId: 'openrouter', modelId: 'contract/mock' },
-            requestedProfileId: 'coding',
           })
         }
       } catch (error) {
@@ -3762,7 +3632,6 @@ async function testRuntimeShutdownRejectsNewTurns(): Promise<void> {
         conversationId: conversation.id,
         userText: 'send after shutdown finishes',
         selection: { providerId: 'openrouter', modelId: 'contract/mock' },
-        requestedProfileId: 'coding',
       })
     } catch (error) {
       rejectedAfterShutdown = error instanceof Error && error.message.includes('shut down')
@@ -4480,7 +4349,6 @@ async function testToolRegistryContract(): Promise<void> {
             requiresApproval: false,
             access: ['read'],
             scope: ['workspace'],
-            allowedProfiles: ['coding'],
           },
         },
         async run(args) {
@@ -4494,17 +4362,10 @@ async function testToolRegistryContract(): Promise<void> {
   const registry = createDefaultToolRegistry([projectToolPack])
   assert(registry.specsByName.has('contract_echo'), 'custom tool should be registered')
   assert(
-    getToolDefinitionsForProfile('coding', registry).some(
-      (definition) => definition.function.name === 'contract_echo',
-    ),
-    'custom tool should be exposed to allowed profile',
+    getToolDefinitions(registry).some((definition) => definition.function.name === 'contract_echo'),
+    'custom tool should be exposed in tool definitions',
   )
-  const result = await executeTool(
-    'contract_echo',
-    { value: 'hello' },
-    { settings, profileId: 'coding' },
-    registry,
-  )
+  const result = await executeTool('contract_echo', { value: 'hello' }, { settings }, registry)
   assert(ran, 'custom tool runner should execute')
   assertEqual(JSON.parse(result).value, 'hello', 'custom tool result')
 
@@ -4527,7 +4388,6 @@ async function testToolRegistryContract(): Promise<void> {
             requiresApproval: true,
             access: ['write'],
             scope: ['workspace'],
-            allowedProfiles: ['coding'],
           },
         },
         async run() {
@@ -4544,7 +4404,6 @@ async function testToolRegistryContract(): Promise<void> {
       {},
       {
         settings,
-        profileId: 'coding',
         conversationId: 'conversation-approval',
         messageId: 'assistant-approval',
         toolCallId: 'tool-call-approval',
@@ -4598,7 +4457,6 @@ async function testToolRegistryContract(): Promise<void> {
             requiresApproval: true,
             access: ['write'],
             scope: ['workspace'],
-            allowedProfiles: ['coding'],
           },
         },
         async run(args, ctx) {
@@ -4623,7 +4481,6 @@ async function testToolRegistryContract(): Promise<void> {
     { mode: 'allow' },
     {
       settings,
-      profileId: 'coding',
       onToolPolicy: () => ({ action: 'allow' }),
       onToolApproval: async () => {
         throw new Error('allow policy should not ask approval')
@@ -4640,7 +4497,6 @@ async function testToolRegistryContract(): Promise<void> {
     { mode: 'ask' },
     {
       settings,
-      profileId: 'coding',
       onToolPolicy: (request) => {
         assertEqual(request.metadata.destructive, true, 'policy request metadata')
         return { action: 'ask', reason: 'contract asks' }
@@ -4665,7 +4521,6 @@ async function testToolRegistryContract(): Promise<void> {
   const immutableWorkspaceRoots = [{ path: '/contract/tool-root', label: 'contract-root' }]
   const immutableContext = {
     settings,
-    profileId: 'coding' as const,
     workspaceRoots: immutableWorkspaceRoots,
     onToolPolicy: (request) => {
       request.args.mode = 'policy-mutated'
@@ -4727,7 +4582,6 @@ async function testToolRegistryContract(): Promise<void> {
       { mode: 'deny' },
       {
         settings,
-        profileId: 'coding',
         onToolPolicy: () => ({ action: 'deny', reason: 'contract denied' }),
         onToolApproval: async () => {
           throw new Error('deny policy should not ask approval')
@@ -4751,7 +4605,6 @@ async function testToolRegistryContract(): Promise<void> {
       { mode: 'invalid-policy' },
       {
         settings,
-        profileId: 'coding',
         onToolPolicy: () => ({ action: 'bypass' }) as never,
         onToolApproval: async () => true,
       },
@@ -4773,7 +4626,6 @@ async function testToolRegistryContract(): Promise<void> {
       { mode: 'non-boolean-approval' },
       {
         settings,
-        profileId: 'coding',
         onToolPolicy: () => ({ action: 'ask' }),
         onToolApproval: async () => 'yes' as never,
       },
@@ -4821,7 +4673,6 @@ async function testRuntimeExecuteToolUsesHostBoundary(): Promise<void> {
             requiresApproval: true,
             access: ['write'],
             scope: ['workspace'],
-            allowedProfiles: ['coding'],
           },
         },
         async run(args, ctx) {
@@ -4893,7 +4744,6 @@ async function testRuntimeExecuteToolUsesHostBoundary(): Promise<void> {
   const result = await runtime.executeTool({
     name: 'contract_runtime_execute',
     args: runtimeArgs,
-    profileId: 'coding',
     conversationId: 'conversation-runtime-tool',
     messageId: 'assistant-runtime-tool',
     toolCallId: 'tool-call-runtime-tool',
@@ -4941,7 +4791,6 @@ async function testGenerateImageToolUsesInjectedImageDependencies(): Promise<voi
         defaultModel: null,
         defaultImageModel: { providerId: 'openrouter', modelId: 'openai/gpt-image-1' },
       },
-      profileId: 'chat',
       generateImage: async (request) => {
         generatedPrompt = request.prompt
         return { bytes: Buffer.from([1, 2, 3, 4]), mime: 'image/webp' }
@@ -5018,7 +4867,7 @@ async function testFilesystemToolWorkspaceRootsContract(): Promise<void> {
     await writeFile(sourcePath, 'hello workspace roots', 'utf-8')
 
     try {
-      await executeTool('read', { path: sourcePath }, { settings, profileId: 'coding' })
+      await executeTool('read', { path: sourcePath }, { settings })
       throw new Error('read outside default workspace unexpectedly succeeded')
     } catch (error) {
       assert(
@@ -5032,7 +4881,7 @@ async function testFilesystemToolWorkspaceRootsContract(): Promise<void> {
       process.chdir(dir)
       const cwdSourcePath = join(process.cwd(), 'source.md')
       assertEqual(
-        await executeTool('read', { path: cwdSourcePath }, { settings, profileId: 'coding' }),
+        await executeTool('read', { path: cwdSourcePath }, { settings }),
         'hello workspace roots',
         'default workspace root should resolve from current cwd at execution time',
       )
@@ -5043,7 +4892,7 @@ async function testFilesystemToolWorkspaceRootsContract(): Promise<void> {
     const readResult = await executeTool(
       'read',
       { path: sourcePath },
-      { settings, profileId: 'coding', workspaceRoots: [{ path: dir, label: 'contract' }] },
+      { settings, workspaceRoots: [{ path: dir, label: 'contract' }] },
     )
     assertEqual(readResult, 'hello workspace roots', 'read should allow configured workspace root')
 
@@ -5051,14 +4900,14 @@ async function testFilesystemToolWorkspaceRootsContract(): Promise<void> {
     await executeTool(
       'write',
       { path: writePath, content: 'draft' },
-      { settings, profileId: 'coding', workspaceRoots: [dir] },
+      { settings, workspaceRoots: [dir] },
     )
     assertEqual(await readFile(writePath, 'utf-8'), 'draft', 'write should target extra root')
 
     await executeTool(
       'edit',
       { path: writePath, oldText: 'draft', newText: 'final' },
-      { settings, profileId: 'coding', workspaceRoots: [dir] },
+      { settings, workspaceRoots: [dir] },
     )
     assertEqual(await readFile(writePath, 'utf-8'), 'final', 'edit should target extra root')
   } finally {
@@ -5073,7 +4922,7 @@ async function testBashToolShellCwdContract(): Promise<void> {
     const result = await executeTool(
       'bash',
       { command: 'printf shell-cwd > shell-cwd.txt' },
-      { settings, profileId: 'coding', shellCwd: dir },
+      { settings, shellCwd: dir },
     )
     const parsed = JSON.parse(result) as { exit_code?: unknown }
     assertEqual(parsed.exit_code, 0, 'bash shell cwd command should succeed')
@@ -5093,10 +4942,6 @@ async function testRuntimeCoreHasNoDocToolContract(): Promise<void> {
 
   for (const spec of registry.specs) {
     assert(
-      !(spec.metadata.allowedProfiles as readonly string[]).includes('doc'),
-      `tool ${spec.metadata.name} must not target a doc profile`,
-    )
-    assert(
       !(spec.metadata.access as readonly string[]).includes('doc'),
       `tool ${spec.metadata.name} must not use doc access`,
     )
@@ -5106,19 +4951,8 @@ async function testRuntimeCoreHasNoDocToolContract(): Promise<void> {
     )
   }
 
-  assert(
-    !Object.hasOwn(runtimeSdk.AGENT_PROFILES, 'doc'),
-    'runtime core must not expose a built-in doc profile',
-  )
-  assertEqual(runtimeSdk.isBuiltinAgentProfileId('doc'), false, 'doc is not a built-in profile')
-
   try {
-    await executeTool(
-      'edit_doc',
-      {},
-      { settings: { apiKeys: {}, defaultModel: null }, profileId: 'coding' },
-      registry,
-    )
+    await executeTool('edit_doc', {}, { settings: { apiKeys: {}, defaultModel: null } }, registry)
     throw new Error('edit_doc unexpectedly executed')
   } catch (error) {
     assert(
@@ -5205,27 +5039,10 @@ async function testRuntimeSdkDoesNotExportDocsContract(): Promise<void> {
 
 async function testPersistedAgentRuntimeFactoryContract(): Promise<void> {
   await withTempDataDir(async () => {
-    const profilesDir = getProfilesDir()
     const toolPacksDir = getToolPacksDir()
     const factoryToolPackDir = join(toolPacksDir, 'factory-pack')
-    await mkdir(profilesDir, { recursive: true })
     await mkdir(factoryToolPackDir, { recursive: true })
 
-    await writeFile(
-      join(profilesDir, 'factory-profile.json'),
-      `${JSON.stringify(
-        {
-          schemaVersion: AILA_PROFILE_MANIFEST_SCHEMA_VERSION,
-          id: 'factory-profile',
-          label: 'Factory Profile',
-          description: 'Factory host profile fixture.',
-          baseProfileId: 'coding',
-        },
-        null,
-        2,
-      )}\n`,
-      'utf-8',
-    )
     await writeFile(
       join(factoryToolPackDir, AILA_TOOL_PACK_MANIFEST_FILE),
       `${JSON.stringify(
@@ -5262,7 +5079,6 @@ export default {
           requiresApproval: false,
           access: ['read'],
           scope: ['workspace'],
-          allowedProfiles: ['coding'],
         },
       },
       async run() {
@@ -5282,10 +5098,6 @@ export default {
       },
     })
 
-    assert(
-      (await runtime.getProfiles()).has('factory-profile'),
-      'persisted runtime factory should load manifest profiles through the default host',
-    )
     assert(
       (await runtime.getToolRegistry()).specsByName.has('factory_tool'),
       'persisted runtime factory should load manifest tool packs through the default host',
@@ -5355,7 +5167,6 @@ export default {
           requiresApproval: false,
           access: ['read'],
           scope: ['workspace'],
-          allowedProfiles: ['coding'],
         },
       },
       async run(args) {
@@ -5392,7 +5203,7 @@ export default {
     const result = await executeTool(
       'manifest_echo',
       { value: 'from manifest' },
-      { settings: { apiKeys: {}, defaultModel: null }, profileId: 'coding' },
+      { settings: { apiKeys: {}, defaultModel: null } },
       registry,
     )
     assertEqual(JSON.parse(result).value, 'from manifest', 'manifest tool result')
@@ -5461,7 +5272,6 @@ export default {
           requiresApproval: false,
           access: ['read'],
           scope: ['workspace'],
-          allowedProfiles: ['coding'],
         },
       },
       async run() {
@@ -5482,7 +5292,6 @@ export default {
     })
     const context = {
       settings: { apiKeys: {}, defaultModel: null } satisfies Settings,
-      profileId: 'coding' as const,
     }
 
     await writeReloadableToolPack('one')
@@ -5503,86 +5312,10 @@ export default {
   })
 }
 
-async function testProfileManifestLoader(): Promise<void> {
-  await withTempDataDir(async () => {
-    const profilesDir = getProfilesDir()
-    await mkdir(profilesDir, { recursive: true })
-    await writeFile(
-      join(profilesDir, 'manifest-reviewer.json'),
-      `${JSON.stringify(
-        {
-          schemaVersion: AILA_PROFILE_MANIFEST_SCHEMA_VERSION,
-          id: 'manifest-reviewer',
-          label: 'Manifest Reviewer',
-          description: 'Review code with a conservative engineering stance.',
-          baseProfileId: 'coding',
-          instructions: 'Prioritize bugs, regressions, and missing tests.',
-        },
-        null,
-        2,
-      )}\n`,
-      'utf-8',
-    )
-    await writeFile(
-      join(profilesDir, 'disabled.json'),
-      `${JSON.stringify(
-        {
-          schemaVersion: AILA_PROFILE_MANIFEST_SCHEMA_VERSION,
-          id: 'disabled-profile',
-          label: 'Disabled',
-          description: 'Should not load.',
-          baseProfileId: 'chat',
-          enabled: false,
-        },
-        null,
-        2,
-      )}\n`,
-      'utf-8',
-    )
-
-    const loaded = await loadAgentProfilesFromDir()
-    assertEqual(loaded.length, 1, 'disabled profile manifest should be skipped')
-    assertEqual(loaded[0]?.manifest.id, 'manifest-reviewer', 'profile manifest id')
-    assertEqual(loaded[0]?.profile.baseProfileId, 'coding', 'profile base id')
-    assertEqual(
-      loaded[0]?.profile.instructions,
-      'Prioritize bugs, regressions, and missing tests.',
-      'profile instructions',
-    )
-
-    const runtime = new AgentRuntime({
-      loadProfiles: async () =>
-        (await loadAgentProfilesFromDir()).map((profile) => profile.profile),
-      logger: { warn() {}, error() {} },
-    })
-    const profiles = await runtime.getProfiles()
-    assert(profiles.has('manifest-reviewer'), 'AgentRuntime should load manifest profiles')
-    await runtime.reloadProfiles()
-  })
-}
-
 async function testExtensionReportContract(): Promise<void> {
   await withTempDataDir(async (dataDir) => {
-    const profilesDir = join(dataDir, 'profiles')
     const toolPackDir = join(dataDir, 'tool-packs', 'contract-inspector')
-    await mkdir(profilesDir, { recursive: true })
     await mkdir(toolPackDir, { recursive: true })
-    await writeFile(
-      join(profilesDir, 'contract-reviewer.json'),
-      `${JSON.stringify(
-        {
-          schemaVersion: AILA_PROFILE_MANIFEST_SCHEMA_VERSION,
-          id: 'contract-reviewer',
-          label: 'Contract Reviewer',
-          description: 'Contract fixture profile.',
-          baseProfileId: 'coding',
-          instructions: 'Review contract behavior.',
-        },
-        null,
-        2,
-      )}\n`,
-      'utf-8',
-    )
     await writeFile(
       join(toolPackDir, AILA_TOOL_PACK_MANIFEST_FILE),
       `${JSON.stringify(
@@ -5623,7 +5356,6 @@ export default {
           requiresApproval: false,
           access: ['read'],
           scope: ['workspace'],
-          allowedProfiles: ['coding'],
         },
       },
       async run() {
@@ -5639,7 +5371,6 @@ export default {
     const report = await getExtensionReport()
     assertEqual(report.ok, true, 'extension report should be ok')
     assertEqual(report.dataDir, dataDir, 'extension report data dir')
-    assertEqual(report.profiles[0]?.id, 'contract-reviewer', 'extension report profile id')
     assertEqual(report.toolPacks[0]?.id, 'contract-inspector', 'extension report tool pack id')
     assert(
       report.toolPacks[0]?.tools.includes('contract_context'),
@@ -5712,7 +5443,6 @@ async function main(): Promise<void> {
   await testPersistedAgentRuntimeFactoryContract()
   await testToolPackManifestLoader()
   await testToolPackReloadsChangedEntry()
-  await testProfileManifestLoader()
   await testExtensionReportContract()
   console.log('runtime contract: ok')
 }

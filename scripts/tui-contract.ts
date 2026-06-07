@@ -130,15 +130,9 @@ async function testLocalSlashCommands(): Promise<void> {
 
 async function testExtensionAndSessionSlashCommands(): Promise<void> {
   await withTempDataDir(async (dataDir) => {
-    const stdin = [
-      '/extensions',
-      '/profile',
-      '/profile coding',
-      '/model openai:gpt-5.4',
-      '/extensions reload',
-      '/exit',
-      '',
-    ].join('\n')
+    const stdin = ['/extensions', '/model openai:gpt-5.4', '/extensions reload', '/exit', ''].join(
+      '\n',
+    )
     const result = await runTui(
       ['--data-dir', dataDir, '--model', 'openrouter:minimax/minimax-m3', '--no-history'],
       stdin,
@@ -146,7 +140,6 @@ async function testExtensionAndSessionSlashCommands(): Promise<void> {
 
     assertEqual(result.code, 0, 'TUI extension slash commands should exit cleanly')
     assert(result.stdout.includes('Aila extensions'), 'TUI should display extension report')
-    assert(result.stdout.includes('[profile] coding'), 'TUI should switch active profile')
     assert(result.stdout.includes('[model] OpenAI / GPT-5.4'), 'TUI should switch active model')
     assert(result.stdout.includes('[extensions] reloaded'), 'TUI should reload extension caches')
   })
@@ -273,10 +266,6 @@ async function testTuiUsesSharedRuntimeFactory(): Promise<void> {
   assert(
     !source.includes('createPersistedRuntimeStore'),
     'TUI adapter should not wire the persisted store directly',
-  )
-  assert(
-    !source.includes('loadAgentProfilesFromDir'),
-    'TUI adapter should not wire profile loaders directly',
   )
   assert(
     !source.includes('loadToolPacksFromDir'),

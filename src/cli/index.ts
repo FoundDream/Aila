@@ -7,7 +7,6 @@ import { join, resolve } from 'node:path'
 import { stdin as input, stdout as output, stderr } from 'node:process'
 import * as dotenv from 'dotenv'
 import {
-  type AgentProfileId,
   type AgentRuntime,
   type AgentRuntimeEvent,
   type ConversationSummary,
@@ -17,7 +16,6 @@ import {
   findModel,
   getDataDir,
   getExtensionReport,
-  getProfilesDir,
   getToolPacksDir,
   loadSettings,
   MODEL_CATALOG,
@@ -40,7 +38,6 @@ interface CliOptions {
   list: boolean
   limit: number
   model?: ModelSelection
-  profileId: AgentProfileId
   prompt?: string
   retryLast: boolean
   resumeLatest: boolean
@@ -60,18 +57,17 @@ function usage(): string {
     '',
     'Examples:',
     '  bun run cli -- "summarize this repo"',
-    '  cat task.txt | bun run cli -- --profile coding',
+    '  cat task.txt | bun run cli',
     '  bun run cli -- --resume --json "continue"',
     '',
     'Options:',
     '  --prompt <text>         Prompt text; positional prompt and stdin are also supported',
     '  --conversation <id>     Continue an existing conversation',
     '  --data-dir <path>       Data directory (default: $AILA_DATA_DIR, ./.dev-data, or ~/.aila)',
-    '  --extensions            Validate and list manifest profiles/tool packs, then exit',
+    '  --extensions            Validate and list manifest tool packs, then exit',
     '  --list                  List saved conversations and exit',
     '  --limit <n>             Limit rows for --list (default: 20)',
     '  --model <provider:id>   Override model, e.g. openai:gpt-5.4',
-    '  --profile <name>        chat | coding | research or a manifest profile (default: coding)',
     '  --resume                Continue the most recently updated conversation',
     '  --retry-last            Retry the last failed or dangling user turn without duplicating it',
     '  --json                  Print a final JSON result instead of streaming text',
@@ -89,7 +85,6 @@ function parseArgs(argv: string[]): CliOptions {
     json: false,
     list: false,
     limit: 20,
-    profileId: 'coding',
     retryLast: false,
     resumeLatest: false,
   }
@@ -130,9 +125,6 @@ function parseArgs(argv: string[]): CliOptions {
         break
       case '--model':
         options.model = parseModel(requireValue(argv, ++i, arg))
-        break
-      case '--profile':
-        options.profileId = requireValue(argv, ++i, arg) as AgentProfileId
         break
       case '--prompt':
         options.prompt = requireValue(argv, ++i, arg)
@@ -287,18 +279,6 @@ async function printExtensionReport(json: boolean): Promise<boolean> {
 
   output.write('Aila extensions\n')
   output.write(`Data: ${report.dataDir}\n`)
-  output.write(`Profiles: ${report.profilesDir}\n`)
-  const profileError = report.errors.find((error) => error.kind === 'profiles')
-  if (profileError) {
-    output.write(`  [error] ${profileError.message}\n`)
-  } else if (report.profiles.length === 0) {
-    output.write('  (none)\n')
-  } else {
-    for (const profile of report.profiles) {
-      output.write(`  ${profile.id} (${profile.baseProfileId}) - ${profile.label}\n`)
-    }
-  }
-
   output.write(`Tool packs: ${report.toolPacksDir}\n`)
   const toolPackError = report.errors.find((error) => error.kind === 'toolPacks')
   if (toolPackError) {
@@ -498,11 +478,9 @@ async function main(): Promise<void> {
 
   if (!options.events && !options.json) {
     stderr.write(`Data: ${getDataDir()}\n`)
-    stderr.write(`Profiles: ${getProfilesDir()}\n`)
     stderr.write(`Tool packs: ${getToolPacksDir()}\n`)
     stderr.write(`Conversation: ${conversationId}${isExisting ? ' (resumed)' : ''}\n`)
     stderr.write(`Model: ${modelLabel(selection)}\n`)
-    stderr.write(`Profile: ${options.profileId}\n`)
   }
 
   try {
@@ -510,13 +488,11 @@ async function main(): Promise<void> {
       ? await runtime.retryLastUserMessage({
           conversationId,
           selection,
-          requestedProfileId: options.profileId,
         })
       : await runtime.send({
           conversationId,
           userText: prompt ?? '',
           selection,
-          requestedProfileId: options.profileId,
         })
     const { assistantMessageId } = result
     process.on('SIGINT', () => {
@@ -540,7 +516,6 @@ async function main(): Promise<void> {
           id: randomUUID(),
           conversationId,
           dataDir: getDataDir(),
-          profileId: options.profileId,
           model: selection,
           status: completed.status,
           text: completed.assistantText,

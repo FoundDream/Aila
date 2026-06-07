@@ -1,4 +1,3 @@
-import { loadAgentProfilesFromDir } from './profile-loader'
 import {
   AgentRuntime,
   type AgentRuntimeHost,
@@ -18,7 +17,6 @@ export interface CreatePersistedAgentRuntimeInput {
 export function createDefaultRuntimeHost(overrides: AgentRuntimeHost = {}): AgentRuntimeHost {
   return {
     loadSettings,
-    loadProfiles: async () => (await loadAgentProfilesFromDir()).map((profile) => profile.profile),
     loadToolPacks: async () => (await loadToolPacksFromDir()).map((pack) => pack.toolPack),
     ...overrides,
   }

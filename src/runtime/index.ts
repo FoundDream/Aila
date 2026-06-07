@@ -9,16 +9,6 @@ export {
   type UsageInfo,
 } from '../main/agent'
 export {
-  AGENT_PROFILES,
-  type AgentProfile,
-  type AgentProfileId,
-  type BuiltinAgentProfileId,
-  getAgentProfile,
-  isBuiltinAgentProfileId,
-  normalizeBuiltinAgentProfileId,
-  normalizeChatAgentProfileId,
-} from '../main/agent-profile'
-export {
   type AgentEventAppendResult,
   AILA_AGENT_EVENT_SCHEMA_VERSION,
   AILA_CONVERSATION_META_SCHEMA_VERSION,
@@ -45,7 +35,6 @@ export {
   replayConversationRuntimeState,
 } from '../main/conversations'
 export {
-  type ExtensionProfileReport,
   type ExtensionReport,
   type ExtensionReportError,
   type ExtensionReportErrorKind,
@@ -65,19 +54,9 @@ export {
   getConversationsDir,
   getDataDir,
   getImagesDir,
-  getProfilesDir,
   getSettingsPath,
   getToolPacksDir,
 } from '../main/paths'
-export {
-  type AgentProfileManifest,
-  AILA_PROFILE_MANIFEST_SCHEMA_VERSION,
-  type LoadedAgentProfile,
-  loadAgentProfileFromManifest,
-  loadAgentProfileManifest,
-  loadAgentProfilesFromDir,
-  parseAgentProfileManifest,
-} from '../main/profile-loader'
 export {
   type ActiveAssistantTurn,
   AgentRuntime,
@@ -134,7 +113,7 @@ export {
   createToolRegistry,
   evaluateToolPolicy,
   executeTool,
-  getToolDefinitionsForProfile,
+  getToolDefinitions,
   type ImageSideChannelBlock,
   summarizeToolTarget,
   TOOL_DEFINITIONS,

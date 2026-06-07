@@ -5,7 +5,7 @@ import { type ConversationStatusTone, getConversationStatus } from '@/pages/chat
 import { Transcript } from '@/pages/chat/Transcript'
 import type { ChatStreamsApi } from '@/pages/chat/useChatStreams'
 import { useModelSelection } from '@/pages/chat/useModelSelection'
-import type { AgentProfileId, ConversationSummary } from '../../../../preload/index'
+import type { ConversationSummary } from '../../../../preload/index'
 import type { ProviderId, Settings } from '../../types'
 import { useDocConversation } from './useDocConversation'
 
@@ -20,8 +20,6 @@ interface DocChatPanelProps {
   onOpenSettings: () => void
   onClose: () => void
 }
-
-const DOC_WORKBENCH_PROFILE_ID: AgentProfileId = 'coding'
 
 export function DocChatPanel({
   docPath,
@@ -84,7 +82,7 @@ export function DocChatPanel({
       }
       const id = await ensureActiveSession()
       if (!id) return
-      streams.enqueueSend(id, trimmed, currentSelection, DOC_WORKBENCH_PROFILE_ID)
+      streams.enqueueSend(id, trimmed, currentSelection)
     },
     [streams, onOpenSettings, selectionRef, ensureActiveSession],
   )
@@ -101,7 +99,7 @@ export function DocChatPanel({
       onOpenSettings()
       return
     }
-    streams.enqueueRetryLast(activeId, currentSelection, DOC_WORKBENCH_PROFILE_ID)
+    streams.enqueueRetryLast(activeId, currentSelection)
   }, [activeId, streams, onOpenSettings, selectionRef])
 
   const handleRenameSession = useCallback(

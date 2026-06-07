@@ -10,7 +10,6 @@ import { exec } from 'node:child_process'
 import { readFile, writeFile } from 'node:fs/promises'
 import { basename, isAbsolute, relative, resolve, sep } from 'node:path'
 import { promisify } from 'node:util'
-import type { AgentProfileId } from './agent-profile'
 import { generateImage as defaultGenerateImage } from './image'
 import { saveImage as defaultSaveImage } from './image-store'
 import type { Settings } from './settings'
@@ -36,7 +35,6 @@ export interface ToolMetadata {
   requiresApproval: boolean
   access: ToolAccess[]
   scope: ToolScope[]
-  allowedProfiles: AgentProfileId[]
   maxResultBytes?: number
 }
 
@@ -98,7 +96,6 @@ const BUILTIN_TOOL_SPECS: ToolSpec[] = [
       requiresApproval: false,
       access: ['read'],
       scope: ['workspace'],
-      allowedProfiles: ['coding', 'research'],
       maxResultBytes: 64 * 1024,
     },
   },
@@ -131,7 +128,6 @@ const BUILTIN_TOOL_SPECS: ToolSpec[] = [
       requiresApproval: true,
       access: ['write'],
       scope: ['workspace'],
-      allowedProfiles: ['coding'],
     },
   },
   {
@@ -172,7 +168,6 @@ const BUILTIN_TOOL_SPECS: ToolSpec[] = [
       requiresApproval: true,
       access: ['read', 'write'],
       scope: ['workspace'],
-      allowedProfiles: ['coding'],
     },
   },
   {
@@ -221,7 +216,6 @@ const BUILTIN_TOOL_SPECS: ToolSpec[] = [
       requiresApproval: false,
       access: ['network'],
       scope: ['external'],
-      allowedProfiles: ['chat', 'coding', 'research'],
     },
   },
   {
@@ -250,7 +244,6 @@ const BUILTIN_TOOL_SPECS: ToolSpec[] = [
       requiresApproval: false,
       access: ['image'],
       scope: ['image_library'],
-      allowedProfiles: ['chat'],
     },
   },
   {
@@ -278,7 +271,6 @@ const BUILTIN_TOOL_SPECS: ToolSpec[] = [
       requiresApproval: true,
       access: ['shell'],
       scope: ['workspace', 'external'],
-      allowedProfiles: ['coding'],
       maxResultBytes: 64 * 1024,
     },
   },
@@ -385,13 +377,10 @@ export const TOOL_SPECS: ToolSpec[] = DEFAULT_TOOL_REGISTRY.specs
 
 export const TOOL_DEFINITIONS: ToolDefinition[] = DEFAULT_TOOL_REGISTRY.definitions
 
-export function getToolDefinitionsForProfile(
-  profileId: AgentProfileId,
+export function getToolDefinitions(
   registry: ToolRegistry = DEFAULT_TOOL_REGISTRY,
 ): ToolDefinition[] {
-  return registry.specs
-    .filter((spec) => spec.metadata.allowedProfiles.includes(profileId))
-    .map(({ type, function: fn }) => ({ type, function: fn }))
+  return registry.specs.map(({ type, function: fn }) => ({ type, function: fn }))
 }
 
 const MAX_OUTPUT_BYTES = 64 * 1024
@@ -490,16 +479,9 @@ export function summarizeToolTarget(
   return null
 }
 
-function assertToolAllowed(
-  name: string,
-  profileId: AgentProfileId,
-  registry: ToolRegistry = DEFAULT_TOOL_REGISTRY,
-): ToolSpec {
+function resolveToolSpec(name: string, registry: ToolRegistry = DEFAULT_TOOL_REGISTRY): ToolSpec {
   const spec = registry.specsByName.get(name)
   if (!spec) throw new Error(`unknown tool: ${name}`)
-  if (!spec.metadata.allowedProfiles.includes(profileId)) {
-    throw new Error(`tool "${name}" is not available in the ${profileId} agent profile`)
-  }
   return spec
 }
 
@@ -774,7 +756,6 @@ export type ToolWorkspaceRoot = string | { path: string; label?: string }
 
 export interface ToolContext {
   settings: Settings
-  profileId: AgentProfileId
   conversationId?: string
   messageId?: string
   toolCallId?: string
@@ -858,7 +839,7 @@ export async function executeTool(
   ctx: ToolContext,
   registry: ToolRegistry = DEFAULT_TOOL_REGISTRY,
 ): Promise<string> {
-  const spec = assertToolAllowed(name, ctx.profileId, registry)
+  const spec = resolveToolSpec(name, registry)
   const toolArgs = cloneToolArgs(args)
   const toolContext = cloneToolContext(ctx)
   const request: ToolPolicyRequest = {

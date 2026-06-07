@@ -16,7 +16,6 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef } from 'react'
 import type {
   ActiveAssistantTurn,
-  AgentProfileId,
   ChatDoneEvent,
   ChatErrorEvent,
   ConversationSummary,
@@ -38,12 +37,10 @@ type QueuedRun =
       kind: 'send'
       text: string
       selection: ModelSelection
-      profileId?: AgentProfileId
     }
   | {
       kind: 'retryLast'
       selection: ModelSelection
-      profileId?: AgentProfileId
     }
 
 export interface ConversationStream {
@@ -603,13 +600,8 @@ export interface ChatStreamsApi {
   busyIds: Set<string>
   hydrate: (id: string) => Promise<void>
   markHydrated: (id: string) => void
-  enqueueSend: (
-    id: string,
-    text: string,
-    selection: ModelSelection,
-    profileId?: AgentProfileId,
-  ) => void
-  enqueueRetryLast: (id: string, selection: ModelSelection, profileId?: AgentProfileId) => void
+  enqueueSend: (id: string, text: string, selection: ModelSelection) => void
+  enqueueRetryLast: (id: string, selection: ModelSelection) => void
   abort: (id: string) => void
   drop: (id: string) => void
 }
@@ -658,8 +650,8 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
     try {
       result =
         queued.kind === 'send'
-          ? await window.api.send(id, queued.text, queued.selection, queued.profileId)
-          : await window.api.retryLast(id, queued.selection, queued.profileId)
+          ? await window.api.send(id, queued.text, queued.selection)
+          : await window.api.retryLast(id, queued.selection)
     } catch (err) {
       const errorText = err instanceof Error ? err.message : String(err)
       // Surface as a synthetic error message in the conversation so it isn't lost.
@@ -744,32 +736,26 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
     }
   }, [state, startRun])
 
-  const enqueueSend = useCallback(
-    (id: string, text: string, selection: ModelSelection, profileId?: AgentProfileId): void => {
-      const trimmed = text.trim()
-      if (!trimmed) return
-      // Just enqueue — the drain effect above picks up the head once React
-      // commits, regardless of whether the conversation is idle, mid-stream,
-      // or has other prompts already queued ahead.
-      dispatch({
-        type: 'ENQUEUE',
-        conversationId: id,
-        queued: { kind: 'send', text: trimmed, selection, profileId },
-      })
-    },
-    [],
-  )
+  const enqueueSend = useCallback((id: string, text: string, selection: ModelSelection): void => {
+    const trimmed = text.trim()
+    if (!trimmed) return
+    // Just enqueue — the drain effect above picks up the head once React
+    // commits, regardless of whether the conversation is idle, mid-stream,
+    // or has other prompts already queued ahead.
+    dispatch({
+      type: 'ENQUEUE',
+      conversationId: id,
+      queued: { kind: 'send', text: trimmed, selection },
+    })
+  }, [])
 
-  const enqueueRetryLast = useCallback(
-    (id: string, selection: ModelSelection, profileId?: AgentProfileId): void => {
-      dispatch({
-        type: 'ENQUEUE',
-        conversationId: id,
-        queued: { kind: 'retryLast', selection, profileId },
-      })
-    },
-    [],
-  )
+  const enqueueRetryLast = useCallback((id: string, selection: ModelSelection): void => {
+    dispatch({
+      type: 'ENQUEUE',
+      conversationId: id,
+      queued: { kind: 'retryLast', selection },
+    })
+  }, [])
 
   const hydrate = useCallback(async (id: string): Promise<void> => {
     if (stateRef.current.streams.get(id)?.isHydrated) return

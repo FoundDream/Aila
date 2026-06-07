@@ -6,14 +6,6 @@ import {
   getModelInfo,
   type ModelSelection,
 } from './agent'
-import {
-  AGENT_PROFILES,
-  type AgentProfile,
-  type AgentProfileId,
-  type BuiltinAgentProfileId,
-  isBuiltinAgentProfileId,
-  normalizeChatAgentProfileId,
-} from './agent-profile'
 import { buildAgentContext } from './context'
 import {
   type AgentEventAppendResult,
@@ -57,7 +49,6 @@ interface TurnStartLockSlot {
 }
 
 interface RuntimeToolContextInput {
-  profileId: AgentProfileId
   conversationId?: string
   messageId?: string
   toolCallId?: string
@@ -143,14 +134,12 @@ export interface RuntimeSendInput {
   conversationId: string
   userText: string
   selection: ModelSelection
-  requestedProfileId?: AgentProfileId
   transientContext?: ChatMessage[]
 }
 
 export interface RuntimeRetryLastInput {
   conversationId: string
   selection: ModelSelection
-  requestedProfileId?: AgentProfileId
   transientContext?: ChatMessage[]
 }
 
@@ -158,7 +147,6 @@ export interface RuntimeTransientContextInput {
   conversationId: string
   record: ConversationRecord
   selection: ModelSelection
-  requestedProfileId?: AgentProfileId
   source: 'send' | 'retry'
 }
 
@@ -201,7 +189,6 @@ export interface RuntimeAppendUserMessageInput {
 export interface RuntimeExecuteToolInput {
   name: string
   args: Record<string, unknown>
-  profileId: AgentProfileId
   conversationId?: string
   messageId?: string
   toolCallId?: string
@@ -227,8 +214,6 @@ export interface AgentRuntimeHost {
     reason: ConversationAbortReason,
   ) => MaybePromise<void>
   cleanupConversationAssets?: (record: ConversationRecord) => MaybePromise<void>
-  profiles?: readonly AgentProfile[]
-  loadProfiles?: () => Promise<readonly AgentProfile[]>
   toolPacks?: readonly ToolPack[]
   loadToolPacks?: () => Promise<readonly ToolPack[]>
   loadSettings?: () => MaybePromise<Settings>
@@ -246,7 +231,6 @@ export interface AgentRuntimeHost {
 export interface AgentRuntimeOptions extends AgentRuntimeHost {
   host?: AgentRuntimeHost
   store?: AgentRuntimeStore
-  profiles?: readonly AgentProfile[]
   toolPacks?: readonly ToolPack[]
   abortAllCleanupTimeoutMs?: number
 }
@@ -488,7 +472,6 @@ function normalizeRuntimeHost(options: AgentRuntimeOptions): AgentRuntimeHost {
   if (options.cleanupConversationAssets) {
     host.cleanupConversationAssets = options.cleanupConversationAssets
   }
-  if (options.loadProfiles) host.loadProfiles = options.loadProfiles
   if (options.loadToolPacks) host.loadToolPacks = options.loadToolPacks
   if (options.loadSettings) host.loadSettings = options.loadSettings
   if (options.loadTransientContext) host.loadTransientContext = options.loadTransientContext
@@ -507,7 +490,6 @@ function normalizeRuntimeHost(options: AgentRuntimeOptions): AgentRuntimeHost {
   if (options.host.cleanupConversationAssets) {
     host.cleanupConversationAssets = options.host.cleanupConversationAssets
   }
-  if (options.host.loadProfiles) host.loadProfiles = options.host.loadProfiles
   if (options.host.loadToolPacks) host.loadToolPacks = options.host.loadToolPacks
   if (options.host.loadSettings) host.loadSettings = options.host.loadSettings
   if (options.host.loadTransientContext) {
@@ -522,10 +504,6 @@ function normalizeRuntimeHost(options: AgentRuntimeOptions): AgentRuntimeHost {
   return host
 }
 
-function cloneRuntimeProfile(profile: AgentProfile): AgentProfile {
-  return cloneRuntimeValue(profile)
-}
-
 function cloneRuntimeToolPack(toolPack: ToolPack): ToolPack {
   return {
     ...toolPack,
@@ -534,14 +512,6 @@ function cloneRuntimeToolPack(toolPack: ToolPack): ToolPack {
       spec: cloneRuntimeValue(entry.spec),
     })),
   }
-}
-
-function cloneRuntimeProfileMap(
-  profiles: ReadonlyMap<string, AgentProfile>,
-): Map<string, AgentProfile> {
-  return new Map(
-    Array.from(profiles.entries(), ([id, profile]) => [id, cloneRuntimeProfile(profile)]),
-  )
 }
 
 function cloneRuntimeToolRegistry(registry: ToolRegistry): ToolRegistry {
@@ -612,10 +582,6 @@ function cloneRuntimeAgentEventAppendResult(
   return { event, summary: cloneRuntimeConversationSummary(result.summary) }
 }
 
-function resolveStaticProfiles(options: AgentRuntimeOptions): readonly AgentProfile[] {
-  return (options.host?.profiles ?? options.profiles ?? []).map(cloneRuntimeProfile)
-}
-
 function resolveStaticToolPacks(options: AgentRuntimeOptions): readonly ToolPack[] {
   return (options.host?.toolPacks ?? options.toolPacks ?? []).map(cloneRuntimeToolPack)
 }
@@ -627,34 +593,18 @@ export class AgentRuntime {
   private readonly host: AgentRuntimeHost
   private readonly store: AgentRuntimeStore
   private readonly logger: Pick<Console, 'error' | 'warn'>
-  private readonly staticProfiles: readonly AgentProfile[]
   private readonly staticToolPacks: readonly ToolPack[]
   private readonly fallbackToolRegistry: ToolRegistry
   private shutdownPromise: Promise<void> | null = null
   private shutdownStarted = false
-  private profileLoad: Promise<Map<string, AgentProfile>> | null = null
   private toolRegistryLoad: Promise<ToolRegistry> | null = null
 
   constructor(private readonly options: AgentRuntimeOptions = {}) {
     this.host = normalizeRuntimeHost(options)
     this.store = options.store ?? createInMemoryRuntimeStore()
     this.logger = this.host.logger ?? console
-    this.staticProfiles = resolveStaticProfiles(options)
     this.staticToolPacks = resolveStaticToolPacks(options)
     this.fallbackToolRegistry = createDefaultToolRegistry(this.staticToolPacks)
-  }
-
-  async getProfiles(): Promise<Map<string, AgentProfile>> {
-    if (!this.host.loadProfiles) {
-      return cloneRuntimeProfileMap(this.buildProfileMap(this.staticProfiles))
-    }
-    if (!this.profileLoad) this.profileLoad = this.loadProfiles()
-    return cloneRuntimeProfileMap(await this.profileLoad)
-  }
-
-  async reloadProfiles(): Promise<Map<string, AgentProfile>> {
-    this.profileLoad = null
-    return this.getProfiles()
   }
 
   async getToolRegistry(): Promise<ToolRegistry> {
@@ -771,7 +721,6 @@ export class AgentRuntime {
       input.name,
       input.args,
       await this.buildToolContext({
-        profileId: input.profileId,
         ...(input.conversationId && { conversationId: input.conversationId }),
         ...(input.messageId && { messageId: input.messageId }),
         ...(input.toolCallId && { toolCallId: input.toolCallId }),
@@ -783,7 +732,7 @@ export class AgentRuntime {
 
   async send(input: RuntimeSendInput): Promise<RuntimeSendResult> {
     return this.withTurnStartLock(input.conversationId, async (turnStartLock) => {
-      const { conversationId, userText, selection, requestedProfileId, transientContext } = input
+      const { conversationId, userText, selection, transientContext } = input
 
       this.assertCanStartTurn(conversationId)
 
@@ -813,7 +762,6 @@ export class AgentRuntime {
         userMessage,
         record,
         selection,
-        requestedProfileId,
         transientContext,
         source: 'send',
         turnStartLock,
@@ -823,7 +771,7 @@ export class AgentRuntime {
 
   async retryLastUserMessage(input: RuntimeRetryLastInput): Promise<RuntimeSendResult> {
     return this.withTurnStartLock(input.conversationId, async (turnStartLock) => {
-      const { conversationId, selection, requestedProfileId, transientContext } = input
+      const { conversationId, selection, transientContext } = input
 
       this.assertCanStartTurn(conversationId)
       const previous = this.activeStreams.get(conversationId)
@@ -843,7 +791,6 @@ export class AgentRuntime {
         userMessage: retry.userMessage,
         record: retry.record,
         selection,
-        requestedProfileId,
         transientContext,
         source: 'retry',
         turnStartLock,
@@ -902,20 +849,11 @@ export class AgentRuntime {
     userMessage: PersistedMessage
     record: ConversationRecord
     selection: ModelSelection
-    requestedProfileId?: AgentProfileId
     transientContext?: ChatMessage[]
     source: RuntimeTransientContextInput['source']
     turnStartLock: TurnStartLockSlot
   }): Promise<RuntimeSendResult> {
-    const {
-      conversationId,
-      userMessage,
-      record,
-      requestedProfileId,
-      transientContext,
-      source,
-      turnStartLock,
-    } = input
+    const { conversationId, userMessage, record, transientContext, source, turnStartLock } = input
     const selection = cloneRuntimeValue(input.selection)
     const assistantMessageId = randomUUID()
     this.assertCanStartTurn(conversationId)
@@ -935,33 +873,26 @@ export class AgentRuntime {
     })
 
     let streamStarted = false
-    let profileId: AgentProfileId
     let messages: Parameters<typeof defaultStreamChat>[0]['messages']
     let toolContext: ToolContext
     let toolRegistry: ToolRegistry
     try {
-      const profile = await this.resolveProfile(requestedProfileId)
-      profileId = profile.baseProfileId
-
       const resolvedTransientContext =
         cloneRuntimeChatMessages(transientContext) ??
         (await this.resolveTransientContext({
           conversationId,
           record,
           selection,
-          requestedProfileId,
           source,
         }))
       const context = buildAgentContext({
         messages: cloneRuntimeValue(record.messages),
         modelInfo: getModelInfo(selection.providerId, selection.modelId),
-        profileInstructions: profile.instructions,
         transientContext: resolvedTransientContext,
       })
       messages = context.messages
       toolRegistry = await this.getToolRegistry()
       toolContext = await this.buildToolContext({
-        profileId,
         conversationId,
         messageId: assistantMessageId,
       })
@@ -1309,7 +1240,6 @@ export class AgentRuntime {
   private async buildToolContext(input: RuntimeToolContextInput): Promise<ToolContext> {
     return {
       settings: await this.resolveSettingsOrDefault(),
-      profileId: input.profileId,
       ...(input.conversationId && { conversationId: input.conversationId }),
       ...(input.messageId && { messageId: input.messageId }),
       ...(input.toolCallId && { toolCallId: input.toolCallId }),
@@ -1457,45 +1387,6 @@ export class AgentRuntime {
     }
   }
 
-  private buildProfileMap(extraProfiles: readonly AgentProfile[]): Map<string, AgentProfile> {
-    const profiles = new Map<string, AgentProfile>(Object.entries(AGENT_PROFILES))
-    for (const profile of extraProfiles) profiles.set(profile.id, profile)
-    return profiles
-  }
-
-  private async loadProfiles(): Promise<Map<string, AgentProfile>> {
-    try {
-      const loaded = await this.host.loadProfiles?.()
-      return this.buildProfileMap([
-        ...this.staticProfiles,
-        ...(loaded ?? []).map(cloneRuntimeProfile),
-      ])
-    } catch (error) {
-      this.logger.warn(
-        '[runtime] profile load failed; continuing with built-in/static profiles:',
-        error,
-      )
-      return this.buildProfileMap(this.staticProfiles)
-    }
-  }
-
-  private async resolveProfile(
-    requestedProfileId: AgentProfileId | undefined,
-  ): Promise<{ baseProfileId: BuiltinAgentProfileId; instructions?: string }> {
-    const profiles = await this.getProfiles()
-    const requested = requestedProfileId ? profiles.get(requestedProfileId) : undefined
-
-    if (requested) {
-      const baseProfileId = requested.baseProfileId ?? normalizeChatAgentProfileId(requested.id)
-      return {
-        baseProfileId: isBuiltinAgentProfileId(baseProfileId) ? baseProfileId : 'chat',
-        ...(requested.instructions && { instructions: requested.instructions }),
-      }
-    }
-
-    return { baseProfileId: normalizeChatAgentProfileId(requestedProfileId) }
-  }
-
   private async loadToolRegistry(): Promise<ToolRegistry> {
     try {
       const loaded = await this.host.loadToolPacks?.()
@@ -1563,7 +1454,6 @@ export class AgentRuntime {
           messages: cloneRuntimeChatMessages(messages) ?? [],
           selection: cloneRuntimeValue(selection),
           signal: controller.signal,
-          profileId: toolContext.profileId,
           workspaceRoots: cloneRuntimeWorkspaceRoots(toolContext.workspaceRoots),
           shellCwd: toolContext.shellCwd,
           settings: cloneRuntimeSettings(toolContext.settings),

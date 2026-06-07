@@ -37,7 +37,6 @@ export interface AilaFrameState {
   active: boolean
   conversationId: string
   dataDir: string
-  profileId: string
   queueCount: number
   selection: ModelSelection
   status: string
@@ -108,9 +107,7 @@ export class AilaFrameComponent implements Component {
         : ''
     const left = chalk.bold.hex(AILA_TUI_COLORS.textStrong)('Aila')
     const model = chalk.hex(AILA_TUI_COLORS.text)(modelLabel(state.selection))
-    const header = `${left} ${status}${queued} | ${model} | profile:${state.profileId} | conv:${shortId(
-      state.conversationId,
-    )}`
+    const header = `${left} ${status}${queued} | ${model} | conv:${shortId(state.conversationId)}`
     return [
       fitLine(header, width),
       chalk.hex(AILA_TUI_COLORS.border)(fitLine('-'.repeat(width), width)),

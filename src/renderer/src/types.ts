@@ -3,9 +3,6 @@
 export type {
   ActiveAssistantTurn,
   AgentEventType,
-  AgentProfile,
-  AgentProfileId,
-  BuiltinAgentProfileId,
   ChatDoneEvent,
   ChatErrorEvent,
   ChatMessage,

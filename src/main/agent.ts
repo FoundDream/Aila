@@ -10,7 +10,6 @@
 
 import { jsonSchema, type ModelMessage, smoothStream, stepCountIs, streamText, tool } from 'ai'
 import { findModel, type ProviderId } from '../shared/models'
-import type { AgentProfileId } from './agent-profile'
 import {
   AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
   type PersistedBlock,
@@ -22,7 +21,7 @@ import { MissingApiKeyError, resolveModel } from './providers'
 import { loadSettings, type Settings } from './settings'
 import {
   executeTool,
-  getToolDefinitionsForProfile,
+  getToolDefinitions,
   type ImageSideChannelBlock,
   summarizeToolTarget,
   type ToolActivityTarget,
@@ -202,7 +201,7 @@ function buildTools(
   toolTargets = new Map<string, ToolActivityTarget>(),
 ) {
   return Object.fromEntries(
-    getToolDefinitionsForProfile(ctx.profileId, toolRegistry).map((td) => [
+    getToolDefinitions(toolRegistry).map((td) => [
       td.function.name,
       tool({
         description: td.function.description,
@@ -395,7 +394,6 @@ export interface StreamRequest {
   selection: ModelSelection
   signal: AbortSignal
   onAgentEvent?: AgentEventSink
-  profileId: AgentProfileId
   workspaceRoots?: ToolContext['workspaceRoots']
   shellCwd?: ToolContext['shellCwd']
   onToolPolicy?: ToolContext['onToolPolicy']
@@ -414,7 +412,6 @@ export async function streamChat(req: StreamRequest, handlers: StreamHandlers): 
     selection: requestSelection,
     signal,
     onAgentEvent,
-    profileId,
     workspaceRoots: requestWorkspaceRoots,
     shellCwd,
     onToolPolicy,
@@ -489,7 +486,6 @@ export async function streamChat(req: StreamRequest, handlers: StreamHandlers): 
       tools: buildTools(
         {
           settings,
-          profileId,
           conversationId,
           messageId: assistantMessageId,
           workspaceRoots,

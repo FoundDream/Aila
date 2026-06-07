@@ -1,13 +1,5 @@
-import { type ReactElement, useCallback, useEffect, useState } from 'react'
-import type {
-  AgentProfile,
-  AgentProfileId,
-  ConversationRecord,
-  ConversationSummary,
-  ProviderId,
-  Settings,
-} from '../../types'
-import { ActivityTimeline } from './ActivityTimeline'
+import { type ReactElement, useCallback, useEffect } from 'react'
+import type { ConversationRecord, ConversationSummary, ProviderId, Settings } from '../../types'
 import { Composer } from './Composer'
 import { Transcript } from './Transcript'
 import type { ChatStreamsApi } from './useChatStreams'
@@ -23,14 +15,6 @@ interface ChatPageProps {
   onOpenSettings: () => void
 }
 
-const CHAT_PROFILE_STORAGE_KEY = 'chat.agentProfile'
-
-function readStoredProfile(): AgentProfileId {
-  if (typeof window === 'undefined') return 'chat'
-  const stored = window.localStorage.getItem(CHAT_PROFILE_STORAGE_KEY)
-  return stored?.trim() ? stored : 'chat'
-}
-
 export function ChatPage({
   conversation,
   onCreateConversation,
@@ -40,8 +24,6 @@ export function ChatPage({
   onUpdateSettings,
   onOpenSettings,
 }: ChatPageProps): ReactElement {
-  const [profileId, setProfileId] = useState<AgentProfileId>(readStoredProfile)
-  const [agentProfiles, setAgentProfiles] = useState<AgentProfile[]>([])
   const { selection, selectionRef, contextLength, handleSelectionChange } = useModelSelection(
     settings,
     configuredProviders,
@@ -58,34 +40,10 @@ export function ChatPage({
     void streams.hydrate(conversationId)
   }, [conversationId, streams])
 
-  useEffect(() => {
-    window.localStorage.setItem(CHAT_PROFILE_STORAGE_KEY, profileId)
-  }, [profileId])
-
-  useEffect(() => {
-    let cancelled = false
-    window.api.profiles
-      .list()
-      .then((profiles) => {
-        if (cancelled) return
-        setAgentProfiles(profiles)
-        if (profiles.length > 0 && !profiles.some((profile) => profile.id === profileId)) {
-          setProfileId(profiles[0].id)
-        }
-      })
-      .catch((error) => {
-        console.warn('[profiles] list failed:', error)
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [profileId])
-
   const stream = conversationId ? streams.getStream(conversationId) : null
   const messages = stream?.messages ?? []
   const isStreaming = stream?.runningMessageId !== null && stream?.runningMessageId !== undefined
   const usage = stream?.usage ?? null
-  const events = stream?.events ?? []
   const queuedCount = stream?.queue.length ?? 0
   const lastMessage = messages.at(-1)
   const hasRetryableLastTurn =
@@ -114,16 +72,9 @@ export function ChatPage({
         streams.markHydrated(id)
       }
 
-      streams.enqueueSend(id, trimmed, currentSelection, profileId)
+      streams.enqueueSend(id, trimmed, currentSelection)
     },
-    [
-      conversationId,
-      onCreateConversation,
-      streams,
-      onOpenSettings,
-      profileId,
-      selectionRef.current,
-    ],
+    [conversationId, onCreateConversation, streams, onOpenSettings, selectionRef.current],
   )
 
   const handleAbort = useCallback(() => {
@@ -138,8 +89,8 @@ export function ChatPage({
       onOpenSettings()
       return
     }
-    streams.enqueueRetryLast(conversationId, currentSelection, profileId)
-  }, [conversationId, streams, onOpenSettings, profileId, selectionRef.current])
+    streams.enqueueRetryLast(conversationId, currentSelection)
+  }, [conversationId, streams, onOpenSettings, selectionRef.current])
 
   return (
     <div className="flex h-full flex-col text-[var(--text)]">
@@ -150,7 +101,6 @@ export function ChatPage({
       </header>
       <main className="flex min-h-0 flex-1 flex-col">
         <Transcript messages={messages} canRetryLast={canRetryLast} onRetryLast={handleRetryLast} />
-        <ActivityTimeline events={events} />
         <Composer
           isStreaming={isStreaming}
           queuedCount={queuedCount}
@@ -161,9 +111,6 @@ export function ChatPage({
           configuredProviders={configuredProviders}
           selection={selection}
           onSelectionChange={handleSelectionChange}
-          agentProfiles={agentProfiles}
-          agentProfileId={profileId}
-          onAgentProfileChange={setProfileId}
           onOpenSettings={onOpenSettings}
           recentOpenRouterModels={settings?.recentOpenRouterModels ?? []}
         />

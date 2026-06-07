@@ -1,14 +1,12 @@
 import { randomUUID } from 'node:crypto'
 import * as dotenv from 'dotenv'
 import {
-  type AgentProfileId,
   type AgentRuntime,
   type AgentRuntimeEvent,
   type ConversationSummary,
   configureDataDir,
   getDataDir,
   getExtensionReport,
-  getProfilesDir,
   getToolPacksDir,
   MODEL_CATALOG,
   type ModelSelection,
@@ -58,7 +56,6 @@ dotenv.config()
 type SlashResult = 'agent' | 'exit' | 'handled'
 
 interface SessionState {
-  profileId: AgentProfileId
   selection: ModelSelection
 }
 
@@ -67,18 +64,7 @@ function entry(kind: TranscriptEntry['kind'], title: string, body = ''): Transcr
 }
 
 function extensionReportText(report: Awaited<ReturnType<typeof getExtensionReport>>): string {
-  const lines = [`Data: ${report.dataDir}`, `Profiles: ${report.profilesDir}`]
-  const profileError = report.errors.find((error) => error.kind === 'profiles')
-  if (profileError) {
-    lines.push(`  [error] ${profileError.message}`)
-  } else if (report.profiles.length === 0) {
-    lines.push('  (none)')
-  } else {
-    for (const profile of report.profiles) {
-      lines.push(`  ${profile.id} (${profile.baseProfileId}) - ${profile.label}`)
-    }
-  }
-
+  const lines = [`Data: ${report.dataDir}`]
   lines.push('', `Tool packs: ${report.toolPacksDir}`)
   const toolPackError = report.errors.find((error) => error.kind === 'toolPacks')
   if (toolPackError) {
@@ -101,10 +87,6 @@ function conversationText(summary: ConversationSummary): string {
   return `${formatDate(summary.updatedAt)}  ${summary.id}  ${scope}  ${summary.title}${usage}`
 }
 
-function localToolProfile(): AgentProfileId {
-  return 'coding'
-}
-
 export async function runFullScreenTui(argv: string[] = process.argv.slice(2)): Promise<void> {
   const options = parseArgs(argv)
   configureDataDir(options.dataDir ?? defaultDataDir())
@@ -115,7 +97,6 @@ export async function runFullScreenTui(argv: string[] = process.argv.slice(2)): 
   }
 
   const session: SessionState = {
-    profileId: options.profileId,
     selection: resolveSelection(options.model),
   }
 
@@ -165,7 +146,6 @@ class AilaFullScreenApp {
       active: false,
       conversationId: '',
       dataDir: getDataDir(),
-      profileId: input.session.profileId,
       queueCount: 0,
       selection: input.session.selection,
       status: 'initializing conversation',
@@ -214,11 +194,9 @@ class AilaFullScreenApp {
       'runtime',
       [
         `Data: ${getDataDir()}`,
-        `Profiles: ${getProfilesDir()}`,
         `Tool packs: ${getToolPacksDir()}`,
         `Conversation: ${resolved.conversationId}${resolved.isExisting ? ' (resumed)' : ''}`,
         `Model: ${modelLabel(this.session.selection)}`,
-        `Profile: ${this.session.profileId}`,
       ].join('\n'),
     )
 
@@ -345,7 +323,6 @@ class AilaFullScreenApp {
     this.setState({ active: true, status: 'sending prompt' })
     const { assistantMessageId } = await this.runtime.send({
       conversationId: this.conversationId,
-      requestedProfileId: this.session.profileId,
       selection: this.session.selection,
       userText: text,
     })
@@ -365,7 +342,6 @@ class AilaFullScreenApp {
     try {
       const { assistantMessageId } = await this.runtime.retryLastUserMessage({
         conversationId: this.conversationId,
-        requestedProfileId: this.session.profileId,
         selection: this.session.selection,
       })
       this.activeConversationId = this.conversationId
@@ -406,9 +382,6 @@ class AilaFullScreenApp {
         case 'reload':
         case 'refresh':
           await this.reloadExtensions()
-          return 'handled'
-        case 'profile':
-          await this.handleProfile(rest)
           return 'handled'
         case 'model':
           await this.handleModel(rest)
@@ -456,63 +429,10 @@ class AilaFullScreenApp {
   }
 
   private async reloadExtensions(): Promise<void> {
-    const [profiles, registry] = await Promise.all([
-      this.runtime.reloadProfiles(),
-      this.runtime.reloadToolPacks(),
-    ])
-    const message = `reloaded ${profiles.size} profiles, ${registry.toolPacks.length} tool packs, ${registry.specs.length} tools`
+    const registry = await this.runtime.reloadToolPacks()
+    const message = `reloaded ${registry.toolPacks.length} tool packs, ${registry.specs.length} tools`
     this.addEntry('system', 'extensions reloaded', message)
     this.setState({ status: message })
-  }
-
-  private async handleProfile(rest: string): Promise<void> {
-    const words = splitShellWords(rest)
-    if (words.length === 0) {
-      await this.showProfilePicker()
-      return
-    }
-    if (words.length > 1) throw new Error('usage: /profile [name]')
-    await this.setProfile(words[0] as AgentProfileId)
-  }
-
-  private async showProfilePicker(): Promise<void> {
-    const profiles = [...(await this.runtime.getProfiles()).values()].sort((left, right) =>
-      left.id.localeCompare(right.id),
-    )
-    let handle: OverlayHandle | null = null
-    const picker = new PickerDialog(
-      'Profiles',
-      profiles.map((profile) => ({
-        description: `${profile.baseProfileId ?? profile.id} - ${profile.label}`,
-        label: profile.id,
-        value: profile.id,
-      })),
-      (item) => {
-        handle?.hide()
-        void this.setProfile(item.value as AgentProfileId)
-        this.ui.setFocus(this.editor)
-      },
-      () => {
-        handle?.hide()
-        this.ui.setFocus(this.editor)
-      },
-    )
-    handle = this.ui.showOverlay(picker, {
-      width: '72%',
-      minWidth: 50,
-      maxHeight: '80%',
-      margin: 1,
-    })
-  }
-
-  private async setProfile(profileId: AgentProfileId): Promise<void> {
-    const profile = (await this.runtime.getProfiles()).get(profileId)
-    if (!profile)
-      throw new Error(`unknown profile: ${profileId}; use /extensions reload if you just added it`)
-    this.session = { ...this.session, profileId }
-    const body = `${profile.id} (${profile.baseProfileId ?? profile.id}) - ${profile.label}`
-    this.addEntry('system', 'profile changed', body)
-    this.setState({ profileId, status: `profile: ${profileId}` })
   }
 
   private async handleModel(rest: string): Promise<void> {
@@ -673,7 +593,6 @@ class AilaFullScreenApp {
     return this.runtime.executeTool({
       name: toolName,
       args,
-      profileId: localToolProfile(),
     })
   }
 
@@ -841,7 +760,6 @@ function slashCommands() {
     { name: 'retry', description: 'Retry a dangling user turn' },
     { name: 'sessions', description: 'Open saved conversation picker' },
     { name: 'extensions', description: 'Show extension manifests', argumentHint: '[reload]' },
-    { name: 'profile', description: 'Show or switch profile', argumentHint: '[name]' },
     { name: 'model', description: 'Show or switch model', argumentHint: '[provider:model]' },
     { name: 'read', description: 'Read file into context', argumentHint: '<path>' },
     { name: 'run', description: 'Run shell command', argumentHint: '<command>' },

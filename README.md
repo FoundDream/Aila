@@ -33,7 +33,6 @@ automation and tests.
 Useful TUI options:
 
 ```sh
-bun run tui -- --profile coding
 bun run tui -- --model openai:gpt-5.4
 bun run tui -- --list
 bun run tui -- --resume
@@ -50,7 +49,6 @@ Useful TUI commands:
 /sessions
 /extensions
 /extensions reload
-/profile coding
 /model openai:gpt-5.4
 /read package.json
 /run git status --short
@@ -59,14 +57,14 @@ Useful TUI commands:
 ```
 
 The CLI is a non-interactive entrypoint for scripts and automation. It uses the
-same `AgentRuntime`, persistence, profiles, tool packs, approval contract, and
+same `AgentRuntime`, persistence, tool packs, approval contract, and
 event schema as Desktop and TUI.
 
 Useful CLI commands:
 
 ```sh
 bun run cli -- "summarize this repo"
-cat task.txt | bun run cli -- --profile coding
+cat task.txt | bun run cli
 bun run cli -- --resume --json "continue from the last conversation"
 bun run cli -- --resume --retry-last --json
 bun run cli -- --events "emit runtime events as NDJSON"
@@ -85,7 +83,6 @@ Desktop.
 
 Desktop, TUI, and CLI all load enabled manifest tool packs from
 `<data-dir>/tool-packs`.
-They also load enabled manifest profiles from `<data-dir>/profiles`.
 
 ## Checks
 

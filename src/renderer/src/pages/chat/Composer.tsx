@@ -1,11 +1,4 @@
-import {
-  ArrowUpIcon,
-  Code2Icon,
-  MessageCircleIcon,
-  PlusIcon,
-  SearchIcon,
-  SquareIcon,
-} from 'lucide-react'
+import { ArrowUpIcon, PlusIcon, SquareIcon } from 'lucide-react'
 import {
   type KeyboardEvent,
   type ReactElement,
@@ -16,13 +9,7 @@ import {
 } from 'react'
 import { ModelPicker } from '@/components/ModelPicker'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import type {
-  AgentProfile,
-  AgentProfileId,
-  ModelSelection,
-  ProviderId,
-  UsageInfo,
-} from '../../types'
+import type { ModelSelection, ProviderId, UsageInfo } from '../../types'
 
 interface ComposerProps {
   isStreaming: boolean
@@ -36,23 +23,8 @@ interface ComposerProps {
   configuredProviders: ProviderId[]
   selection: ModelSelection | null
   onSelectionChange: (selection: ModelSelection) => void
-  agentProfiles?: AgentProfile[]
-  agentProfileId?: AgentProfileId
-  onAgentProfileChange?: (profileId: AgentProfileId) => void
   onOpenSettings: () => void
   recentOpenRouterModels: string[]
-}
-
-function profileIcon(profile: AgentProfile): ReactElement {
-  const baseProfileId = profile.baseProfileId ?? profile.id
-  if (baseProfileId === 'coding') return <Code2Icon className="size-3.5" />
-  if (baseProfileId === 'research') return <SearchIcon className="size-3.5" />
-  return <MessageCircleIcon className="size-3.5" />
-}
-
-function profileLabel(profile: AgentProfile): string {
-  if (profile.id === 'coding') return 'Code'
-  return profile.label
 }
 
 function formatTokens(n: number): string {
@@ -60,6 +32,31 @@ function formatTokens(n: number): string {
   if (n < 10_000) return `${(n / 1000).toFixed(2)}k`
   if (n < 1_000_000) return `${(n / 1000).toFixed(1)}k`
   return `${(n / 1_000_000).toFixed(1)}M`
+}
+
+function ContextRing({ ratio }: { ratio: number }): ReactElement {
+  const r = 7
+  const circumference = 2 * Math.PI * r
+  // Keep a sliver visible once anything has been used so the indicator
+  // doesn't read as "empty" at the start of a conversation.
+  const shown = ratio > 0 ? Math.max(ratio, 0.04) : 0
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+      <circle cx="8" cy="8" r={r} fill="none" stroke="currentColor" strokeWidth="2" opacity="0.2" />
+      <circle
+        cx="8"
+        cy="8"
+        r={r}
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeDasharray={circumference}
+        strokeDashoffset={circumference * (1 - shown)}
+        transform="rotate(-90 8 8)"
+      />
+    </svg>
+  )
 }
 
 function ComposerToolButton({
@@ -91,45 +88,6 @@ function ComposerToolButton({
   )
 }
 
-function AgentProfileControl({
-  profiles,
-  value,
-  onChange,
-}: {
-  profiles: AgentProfile[]
-  value: AgentProfileId
-  onChange: (profileId: AgentProfileId) => void
-}): ReactElement {
-  return (
-    <div className="flex h-7 max-w-[min(54vw,420px)] shrink-0 items-center gap-0.5 overflow-x-auto rounded-full bg-[var(--bg-soft)] p-0.5">
-      {profiles.map((profile) => {
-        const active = profile.id === value
-        return (
-          <Tooltip key={profile.id}>
-            <TooltipTrigger asChild>
-              <button
-                type="button"
-                aria-label={profile.description}
-                aria-pressed={active}
-                onClick={() => onChange(profile.id)}
-                className={`flex h-6 items-center gap-1 rounded-full px-2 text-[11.5px] transition-colors ${
-                  active
-                    ? 'bg-[var(--surface)] text-[var(--text)] shadow-[0_1px_3px_rgba(0,0,0,0.08)]'
-                    : 'text-[var(--text-dim)] hover:text-[var(--text)]'
-                }`}
-              >
-                {profileIcon(profile)}
-                <span className="hidden whitespace-nowrap sm:inline">{profileLabel(profile)}</span>
-              </button>
-            </TooltipTrigger>
-            <TooltipContent>{profile.description}</TooltipContent>
-          </Tooltip>
-        )
-      })}
-    </div>
-  )
-}
-
 export function Composer({
   isStreaming,
   queuedCount = 0,
@@ -140,9 +98,6 @@ export function Composer({
   configuredProviders,
   selection,
   onSelectionChange,
-  agentProfiles = [],
-  agentProfileId,
-  onAgentProfileChange,
   onOpenSettings,
   recentOpenRouterModels,
 }: ComposerProps): ReactElement {
@@ -216,26 +171,35 @@ export function Composer({
               <ComposerToolButton label="Attach file">
                 <PlusIcon className="size-[18px]" />
               </ComposerToolButton>
-              {agentProfileId && onAgentProfileChange && agentProfiles.length > 0 ? (
-                <AgentProfileControl
-                  profiles={agentProfiles}
-                  value={agentProfileId}
-                  onChange={onAgentProfileChange}
-                />
-              ) : null}
             </div>
 
             <div className="flex shrink-0 items-center gap-2">
               {showMeter && (
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    <span className={`text-[11px] tabular-nums ${meterColor}`}>
-                      {contextLength
-                        ? `${formatTokens(used)} / ${formatTokens(contextLength)}`
-                        : formatTokens(used)}
+                    <span
+                      role="img"
+                      aria-label="Context used"
+                      className={`inline-flex ${meterColor}`}
+                    >
+                      <ContextRing ratio={ratio} />
                     </span>
                   </TooltipTrigger>
-                  <TooltipContent>Context used</TooltipContent>
+                  <TooltipContent>
+                    <div className="flex flex-col gap-0.5">
+                      <span>
+                        {contextLength
+                          ? `Context: ${formatTokens(used)} / ${formatTokens(contextLength)} (${Math.round(ratio * 100)}%)`
+                          : `Context: ${formatTokens(used)} tokens`}
+                      </span>
+                      {usage && (
+                        <span className="opacity-60">
+                          Prompt {formatTokens(usage.promptTokens)} · Completion{' '}
+                          {formatTokens(usage.completionTokens)}
+                        </span>
+                      )}
+                    </div>
+                  </TooltipContent>
                 </Tooltip>
               )}
               <ModelPicker

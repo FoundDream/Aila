@@ -7,7 +7,6 @@ import { stdin as input, stdout as output } from 'node:process'
 import { createInterface } from 'node:readline/promises'
 import * as dotenv from 'dotenv'
 import {
-  type AgentProfileId,
   type AgentRuntime,
   type AgentRuntimeEvent,
   type ConversationSummary,
@@ -18,7 +17,6 @@ import {
   findModel,
   getDataDir,
   getExtensionReport,
-  getProfilesDir,
   getToolPacksDir,
   loadSettings,
   MODEL_CATALOG,
@@ -37,7 +35,6 @@ export interface CliOptions {
   list: boolean
   limit: number
   model?: ModelSelection
-  profileId: AgentProfileId
   retryLast: boolean
   resumeLatest: boolean
   showHistory: boolean
@@ -50,7 +47,6 @@ export interface PromptReader {
 
 export interface TuiSessionState {
   selection: ModelSelection
-  profileId: AgentProfileId
 }
 
 export interface TuiRuntimeInput {
@@ -77,7 +73,6 @@ export function usage(): string {
     '  --list                  List saved conversations and exit',
     '  --limit <n>             Limit rows for --list (default: 20)',
     '  --model <provider:id>   Override model, e.g. openai:gpt-5.4',
-    '  --profile <name>        chat | coding | research or a manifest profile (default: coding)',
     '  --resume                Continue the most recently updated conversation',
     '  --retry-last            Retry the last failed or dangling user turn without duplicating it',
     '  --no-history            Do not print recent history when resuming',
@@ -90,7 +85,6 @@ export function usage(): string {
     '  /retry                  Retry the last failed or dangling user turn',
     '  /sessions               List saved conversations',
     '  /extensions [reload]    List extension manifests, optionally refresh runtime caches',
-    '  /profile [name]         Show or switch the active profile',
     '  /model [provider:id]    Show or switch the active model',
     '  /read <path>            Read a workspace file and attach it as context',
     '  /run <command>          Run an approved shell command and attach output',
@@ -118,7 +112,6 @@ export function parseArgs(argv: string[]): CliOptions {
   const options: CliOptions = {
     list: false,
     limit: 20,
-    profileId: 'coding',
     retryLast: false,
     resumeLatest: false,
     showHistory: true,
@@ -150,11 +143,6 @@ export function parseArgs(argv: string[]): CliOptions {
       case '--no-history':
         options.showHistory = false
         break
-      case '--profile': {
-        const profile = requireValue(argv, ++i, arg) as AgentProfileId
-        options.profileId = profile
-        break
-      }
       case '--resume':
         options.resumeLatest = true
         break
@@ -329,7 +317,6 @@ export function commandHelp(): string {
     '  /retry                  Retry a dangling last user turn',
     '  /sessions               List saved conversations',
     '  /extensions [reload]    List extension manifests, optionally refresh runtime caches',
-    '  /profile [name]         Show or switch the active profile',
     '  /model [provider:id]    Show or switch the active model',
     '  /read <path>            Read a workspace file and attach it as context',
     '  /run <command>          Run an approved shell command and attach output',
@@ -429,30 +416,16 @@ export async function runLocalTool(input: {
   runtime: AgentRuntime
   toolName: 'read' | 'bash' | 'write' | 'edit'
   args: Record<string, unknown>
-  profileId: AgentProfileId
 }): Promise<string> {
   return input.runtime.executeTool({
     name: input.toolName,
     args: input.args,
-    profileId: input.profileId,
   })
 }
 
 export function writeExtensionReport(report: ExtensionReport): void {
   writeLine('Aila extensions')
   writeLine(`Data: ${report.dataDir}`)
-  writeLine(`Profiles: ${report.profilesDir}`)
-  const profileError = report.errors.find((error) => error.kind === 'profiles')
-  if (profileError) {
-    writeLine(`  [error] ${profileError.message}`)
-  } else if (report.profiles.length === 0) {
-    writeLine('  (none)')
-  } else {
-    for (const profile of report.profiles) {
-      writeLine(`  ${profile.id} (${profile.baseProfileId}) - ${profile.label}`)
-    }
-  }
-
   writeLine(`Tool packs: ${report.toolPacksDir}`)
   const toolPackError = report.errors.find((error) => error.kind === 'toolPacks')
   if (toolPackError) {
@@ -464,17 +437,6 @@ export function writeExtensionReport(report: ExtensionReport): void {
       const toolNames = pack.tools.join(', ')
       writeLine(`  ${pack.id} - ${pack.tools.length} tools${toolNames ? `: ${toolNames}` : ''}`)
     }
-  }
-}
-
-export async function writeProfileList(runtime: AgentRuntime, currentProfileId: AgentProfileId) {
-  const profiles = await runtime.getProfiles()
-  writeLine(`Profile: ${currentProfileId}`)
-  writeLine('Available profiles:')
-  for (const profile of [...profiles.values()].sort((left, right) =>
-    left.id.localeCompare(right.id),
-  )) {
-    writeLine(`  ${profile.id} (${profile.baseProfileId ?? profile.id}) - ${profile.label}`)
   }
 }
 
@@ -491,7 +453,6 @@ export async function handleSlashCommand(input: {
   const command = readShellToken(commandText)
   const name = command?.token.toLowerCase() ?? ''
   const rest = command?.rest ?? ''
-  const localToolProfileId: AgentProfileId = 'coding'
 
   try {
     switch (name) {
@@ -510,12 +471,9 @@ export async function handleSlashCommand(input: {
           throw new Error('usage: /extensions [reload]')
         }
         if (action) {
-          const [profiles, registry] = await Promise.all([
-            runtime.reloadProfiles(),
-            runtime.reloadToolPacks(),
-          ])
+          const registry = await runtime.reloadToolPacks()
           writeLine(
-            `[extensions] reloaded ${profiles.size} profiles, ${registry.toolPacks.length} tool packs, ${registry.specs.length} tools`,
+            `[extensions] reloaded ${registry.toolPacks.length} tool packs, ${registry.specs.length} tools`,
           )
         }
         writeExtensionReport(await getExtensionReport())
@@ -523,12 +481,9 @@ export async function handleSlashCommand(input: {
       }
       case 'reload':
       case 'refresh': {
-        const [profiles, registry] = await Promise.all([
-          runtime.reloadProfiles(),
-          runtime.reloadToolPacks(),
-        ])
+        const registry = await runtime.reloadToolPacks()
         writeLine(
-          `[extensions] reloaded ${profiles.size} profiles, ${registry.toolPacks.length} tool packs, ${registry.specs.length} tools`,
+          `[extensions] reloaded ${registry.toolPacks.length} tool packs, ${registry.specs.length} tools`,
         )
         return 'handled'
       }
@@ -536,28 +491,6 @@ export async function handleSlashCommand(input: {
       case 'sessions':
         await printConversationList(runtime, { limit: 20 })
         return 'handled'
-      case 'profile': {
-        const words = splitShellWords(rest)
-        if (words.length === 0) {
-          await writeProfileList(runtime, session.profileId)
-          return 'handled'
-        }
-        if (words.length > 1) throw new Error('usage: /profile [name]')
-
-        const profiles = await runtime.getProfiles()
-        const nextProfileId = words[0] as AgentProfileId
-        const profile = profiles.get(nextProfileId)
-        if (!profile) {
-          throw new Error(
-            `unknown profile: ${nextProfileId}; use /extensions reload if you just added it`,
-          )
-        }
-        session.profileId = nextProfileId
-        writeLine(
-          `[profile] ${profile.id} (${profile.baseProfileId ?? profile.id}) - ${profile.label}`,
-        )
-        return 'handled'
-      }
       case 'model': {
         const words = splitShellWords(rest)
         if (words.length === 0) {
@@ -577,7 +510,6 @@ export async function handleSlashCommand(input: {
           runtime,
           toolName: 'read',
           args: { path },
-          profileId: localToolProfileId,
         })
         writeLine(`\n[read] ${path}\n${displayPreview(result)}`)
         await appendLocalContext({ runtime, conversationId, command: `/read ${path}`, result })
@@ -589,7 +521,6 @@ export async function handleSlashCommand(input: {
           runtime,
           toolName: 'bash',
           args: { command: rest },
-          profileId: localToolProfileId,
         })
         const display = formatToolResultForDisplay('bash', result)
         writeLine(`\n[run] ${rest}\n${displayPreview(display)}`)
@@ -609,7 +540,6 @@ export async function handleSlashCommand(input: {
           runtime,
           toolName: 'write',
           args: { path, content: parsed.rest },
-          profileId: localToolProfileId,
         })
         writeLine(`\n[write] ${path}\n${displayPreview(result)}`)
         await appendLocalContext({ runtime, conversationId, command: `/write ${path}`, result })
@@ -630,7 +560,6 @@ export async function handleSlashCommand(input: {
           runtime,
           toolName: 'edit',
           args: { path, oldText: oldText.trim(), newText: newText.trim() },
-          profileId: localToolProfileId,
         })
         writeLine(`\n[edit] ${path}\n${displayPreview(result)}`)
         await appendLocalContext({ runtime, conversationId, command: `/edit ${path}`, result })
@@ -679,7 +608,6 @@ export async function runLineMode(argv: string[] = process.argv.slice(2)): Promi
 
   const session: TuiSessionState = {
     selection: resolveSelection(options.model),
-    profileId: options.profileId,
   }
 
   let activeConversationId: string | null = null
@@ -721,11 +649,9 @@ export async function runLineMode(argv: string[] = process.argv.slice(2)): Promi
 
   writeLine('Aila TUI')
   writeLine(`Data: ${getDataDir()}`)
-  writeLine(`Profiles: ${getProfilesDir()}`)
   writeLine(`Tool packs: ${getToolPacksDir()}`)
   writeLine(`Conversation: ${conversationId}${isExisting ? ' (resumed)' : ''}`)
   writeLine(`Model: ${modelLabel(session.selection)}`)
-  writeLine(`Profile: ${session.profileId}`)
   writeLine('Type /exit to quit. Ctrl+C aborts an active response.')
   if (isExisting && options.showHistory) await printRecentHistory(runtime, conversationId)
 
@@ -734,7 +660,6 @@ export async function runLineMode(argv: string[] = process.argv.slice(2)): Promi
     const { assistantMessageId } = await runtime.retryLastUserMessage({
       conversationId,
       selection: session.selection,
-      requestedProfileId: session.profileId,
     })
     activeConversationId = conversationId
     try {
@@ -786,7 +711,6 @@ export async function runLineMode(argv: string[] = process.argv.slice(2)): Promi
         conversationId,
         userText: text,
         selection: session.selection,
-        requestedProfileId: session.profileId,
       })
       activeConversationId = conversationId
       await new Promise<void>((resolve) => completions.set(assistantMessageId, resolve))

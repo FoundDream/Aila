@@ -135,10 +135,6 @@ async function testDesktopUsesSharedRuntimeFactory(): Promise<void> {
     'Desktop main process should not wire the persisted store directly',
   )
   assert(
-    !source.includes('loadAgentProfilesFromDir'),
-    'Desktop main process should not wire profile loaders directly',
-  )
-  assert(
     !source.includes('loadToolPacksFromDir'),
     'Desktop main process should not wire tool-pack loaders directly',
   )
@@ -1338,7 +1334,6 @@ async function testToolApprovalsCanHydrateAndResolvePendingRequests(): Promise<v
         requiresApproval: true,
         access: ['write'],
         scope: ['workspace'],
-        allowedProfiles: ['coding'],
       },
       conversationId: conversation.id,
       messageId: 'assistant-message',
@@ -1414,7 +1409,6 @@ async function testToolApprovalStoreSnapshotsMutableBoundaries(): Promise<void> 
       requiresApproval: true,
       access: ['write'],
       scope: ['workspace'],
-      allowedProfiles: ['coding'],
     },
     conversationId: 'approval-snapshot-conversation',
     messageId: 'approval-snapshot-assistant',
@@ -1511,7 +1505,6 @@ async function testToolApprovalStoreRequiresInjectedActivityRecorder(): Promise<
         requiresApproval: true,
         access: ['write'],
         scope: ['workspace'],
-        allowedProfiles: ['coding'],
       },
       conversationId: conversation.id,
       messageId: 'assistant-message',
@@ -1553,7 +1546,6 @@ async function testToolApprovalStoreUsesInjectedActivityRecorder(): Promise<void
         requiresApproval: true,
         access: ['write'],
         scope: ['workspace'],
-        allowedProfiles: ['coding'],
       },
       conversationId: conversation.id,
       messageId: 'assistant-message',
@@ -1602,7 +1594,6 @@ async function testToolApprovalTimeoutClearsPendingRequests(): Promise<void> {
       requiresApproval: true,
       access: ['shell'],
       scope: ['workspace'],
-      allowedProfiles: ['coding'],
     },
   })
 
@@ -1635,7 +1626,6 @@ async function testToolApprovalCancellationClearsConversationRequests(): Promise
         requiresApproval: true,
         access: ['write'],
         scope: ['workspace'],
-        allowedProfiles: ['coding'],
       },
       conversationId: cancelledConversation.id,
       messageId: 'cancelled-assistant',
@@ -1651,7 +1641,6 @@ async function testToolApprovalCancellationClearsConversationRequests(): Promise
         requiresApproval: true,
         access: ['write'],
         scope: ['workspace'],
-        allowedProfiles: ['coding'],
       },
       conversationId: otherConversation.id,
       messageId: 'other-assistant',
@@ -1719,7 +1708,6 @@ function toolApprovalRequest(
       requiresApproval: true,
       access: ['write'],
       scope: ['workspace'],
-      allowedProfiles: ['coding'],
     },
     conversationId,
     messageId: 'assistant-approval-state',

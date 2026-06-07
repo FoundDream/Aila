@@ -29,7 +29,3 @@ export function getSettingsPath(): string {
 export function getToolPacksDir(): string {
   return join(getDataDir(), 'tool-packs')
 }
-
-export function getProfilesDir(): string {
-  return join(getDataDir(), 'profiles')
-}
