@@ -279,9 +279,9 @@ const BUILTIN_TOOL_SPECS: ToolSpec[] = [
 ]
 
 const BUILTIN_TOOL_HANDLERS: Record<string, ToolHandler> = {
-  read: (args) => runRead(args),
-  write: (args) => runWrite(args),
-  edit: (args) => runEdit(args),
+  read: (args, ctx) => runRead(args, ctx),
+  write: (args, ctx) => runWrite(args, ctx),
+  edit: (args, ctx) => runEdit(args, ctx),
   web_search: (args) => runWebSearch(args),
   generate_image: (args, ctx) => runGenerateImage(args, ctx),
   bash: (args) => runBash(args),
@@ -451,9 +451,18 @@ function assertToolAllowed(
   return spec
 }
 
-function isInsideWorkspace(path: string): boolean {
-  const rel = relative(WORKSPACE_ROOT, path)
+function isInsideRoot(path: string, root: string): boolean {
+  const rel = relative(root, path)
   return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
+}
+
+function normalizeWorkspaceRoots(ctx: ToolContext): string[] {
+  const roots = [WORKSPACE_ROOT]
+  for (const root of ctx.workspaceRoots ?? []) {
+    const raw = typeof root === 'string' ? root : root.path
+    if (raw.trim()) roots.push(resolve(raw))
+  }
+  return Array.from(new Set(roots))
 }
 
 function assertNotSensitivePath(path: string, operation: 'read' | 'write'): void {
@@ -471,12 +480,21 @@ function assertNotSensitivePath(path: string, operation: 'read' | 'write'): void
   }
 }
 
-function resolveWorkspacePath(path: unknown, operation: 'read' | 'write'): string {
+function resolveWorkspacePath(
+  path: unknown,
+  operation: 'read' | 'write',
+  ctx: ToolContext,
+): string {
   if (typeof path !== 'string') throw new Error('`path` must be a string')
   if (!isAbsolute(path)) throw new Error('`path` must be absolute')
   const normalized = resolve(path)
-  if (!isInsideWorkspace(normalized)) {
-    throw new Error(`${operation} denied outside workspace: ${normalized}`)
+  const roots = normalizeWorkspaceRoots(ctx)
+  if (!roots.some((root) => isInsideRoot(normalized, root))) {
+    throw new Error(
+      `${operation} denied outside workspace roots: ${normalized} (allowed roots: ${roots.join(
+        ', ',
+      )})`,
+    )
   }
   assertNotSensitivePath(normalized, operation)
   return normalized
@@ -492,27 +510,33 @@ function assertBashCommandAllowed(command: string): void {
   }
 }
 
-async function runRead(args: { path?: unknown }): Promise<string> {
-  const path = resolveWorkspacePath(args.path, 'read')
+async function runRead(args: { path?: unknown }, ctx: ToolContext): Promise<string> {
+  const path = resolveWorkspacePath(args.path, 'read', ctx)
   const content = await readFile(path, 'utf-8')
   return truncate(content)
 }
 
-async function runWrite(args: { path?: unknown; content?: unknown }): Promise<string> {
-  const path = resolveWorkspacePath(args.path, 'write')
+async function runWrite(
+  args: { path?: unknown; content?: unknown },
+  ctx: ToolContext,
+): Promise<string> {
+  const path = resolveWorkspacePath(args.path, 'write', ctx)
   const content = args.content
   if (typeof content !== 'string') throw new Error('`content` must be a string')
   await writeFile(path, content, 'utf-8')
   return `Wrote ${Buffer.byteLength(content, 'utf-8')} bytes to ${path}`
 }
 
-async function runEdit(args: {
-  path?: unknown
-  oldText?: unknown
-  newText?: unknown
-  replaceAll?: unknown
-}): Promise<string> {
-  const path = resolveWorkspacePath(args.path, 'write')
+async function runEdit(
+  args: {
+    path?: unknown
+    oldText?: unknown
+    newText?: unknown
+    replaceAll?: unknown
+  },
+  ctx: ToolContext,
+): Promise<string> {
+  const path = resolveWorkspacePath(args.path, 'write', ctx)
   const oldText = args.oldText
   const newText = args.newText
   const replaceAll = args.replaceAll === true
@@ -624,9 +648,12 @@ export interface ToolApprovalRequest {
   metadata: ToolMetadata
 }
 
+export type ToolWorkspaceRoot = string | { path: string; label?: string }
+
 export interface ToolContext {
   settings: Settings
   profileId: AgentProfileId
+  workspaceRoots?: readonly ToolWorkspaceRoot[]
   signal?: AbortSignal
   onToolApproval?: (request: ToolApprovalRequest) => Promise<boolean>
   onImage?: (block: ImageSideChannelBlock) => void

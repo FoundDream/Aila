@@ -394,6 +394,49 @@ async function testToolRegistryContract(): Promise<void> {
   }
 }
 
+async function testFilesystemToolWorkspaceRootsContract(): Promise<void> {
+  const settings: Settings = { apiKeys: {}, defaultModel: null }
+  const dir = await mkdtemp(join(tmpdir(), 'aila-tool-workspace-'))
+  try {
+    const sourcePath = join(dir, 'source.md')
+    await writeFile(sourcePath, 'hello workspace roots', 'utf-8')
+
+    try {
+      await executeTool('read', { path: sourcePath }, { settings, profileId: 'coding' })
+      throw new Error('read outside default workspace unexpectedly succeeded')
+    } catch (error) {
+      assert(
+        error instanceof Error && error.message.includes('outside workspace roots'),
+        'read outside configured roots should be denied',
+      )
+    }
+
+    const readResult = await executeTool(
+      'read',
+      { path: sourcePath },
+      { settings, profileId: 'coding', workspaceRoots: [{ path: dir, label: 'contract' }] },
+    )
+    assertEqual(readResult, 'hello workspace roots', 'read should allow configured workspace root')
+
+    const writePath = join(dir, 'created.md')
+    await executeTool(
+      'write',
+      { path: writePath, content: 'draft' },
+      { settings, profileId: 'coding', workspaceRoots: [dir] },
+    )
+    assertEqual(await readFile(writePath, 'utf-8'), 'draft', 'write should target extra root')
+
+    await executeTool(
+      'edit',
+      { path: writePath, oldText: 'draft', newText: 'final' },
+      { settings, profileId: 'coding', workspaceRoots: [dir] },
+    )
+    assertEqual(await readFile(writePath, 'utf-8'), 'final', 'edit should target extra root')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+}
+
 async function testRuntimeCoreHasNoDocToolContract(): Promise<void> {
   const registry = createDefaultToolRegistry()
   assert(!registry.specsByName.has('edit_doc'), 'runtime core must not register edit_doc')
@@ -769,6 +812,7 @@ async function main(): Promise<void> {
   await testPersistenceContract()
   await testLegacyPersistenceNormalization()
   await testToolRegistryContract()
+  await testFilesystemToolWorkspaceRootsContract()
   await testRuntimeCoreHasNoDocToolContract()
   await testRuntimeSdkDoesNotExportDocsContract()
   await testToolPackManifestLoader()

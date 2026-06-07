@@ -19,6 +19,7 @@ export interface BuildAgentContextInput {
   messages: PersistedMessage[]
   modelInfo: ModelInfo
   profileInstructions?: string
+  transientContext?: ChatMessage[]
 }
 
 export interface AgentContextResult {
@@ -163,6 +164,7 @@ export function buildAgentContext(input: BuildAgentContextInput): AgentContextRe
       content: `Agent profile instructions:\n${input.profileInstructions.trim()}`,
     })
   }
+  if (input.transientContext) output.push(...input.transientContext)
   if (summaryMessage) output.push(summaryMessage)
   output.push(...selected.flatMap((round) => round.messages))
 

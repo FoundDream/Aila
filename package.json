@@ -19,9 +19,10 @@
     "lint:fix": "biome check --fix .",
     "format": "biome format --write .",
     "test:runtime": "bun scripts/runtime-contract.ts",
+    "test:desktop": "bun scripts/desktop-workbench-contract.ts",
     "test:cli": "bun scripts/cli-contract.ts",
     "test:tui": "bun scripts/tui-contract.ts",
-    "test": "bun run test:runtime && bun run test:cli && bun run test:tui"
+    "test": "bun run test:runtime && bun run test:desktop && bun run test:cli && bun run test:tui"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.74",

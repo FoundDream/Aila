@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { unlink } from 'node:fs/promises'
 import { join } from 'node:path'
-import { getModelInfo, type ModelSelection, streamChat } from './agent'
+import { type ChatMessage, getModelInfo, type ModelSelection, streamChat } from './agent'
 import {
   AGENT_PROFILES,
   type AgentProfile,
@@ -50,12 +50,14 @@ export interface RuntimeSendInput {
   userText: string
   selection: ModelSelection
   requestedProfileId?: AgentProfileId
+  transientContext?: ChatMessage[]
 }
 
 export interface RuntimeRetryLastInput {
   conversationId: string
   selection: ModelSelection
   requestedProfileId?: AgentProfileId
+  transientContext?: ChatMessage[]
 }
 
 export interface RuntimeSendResult {
@@ -80,6 +82,7 @@ export interface AgentRuntimeOptions {
   loadProfiles?: () => Promise<readonly AgentProfile[]>
   toolPacks?: readonly ToolPack[]
   loadToolPacks?: () => Promise<readonly ToolPack[]>
+  workspaceRoots?: ToolContext['workspaceRoots'] | (() => ToolContext['workspaceRoots'])
   logger?: Pick<Console, 'error' | 'warn'>
 }
 
@@ -122,7 +125,7 @@ export class AgentRuntime {
   }
 
   async send(input: RuntimeSendInput): Promise<RuntimeSendResult> {
-    const { conversationId, userText, selection, requestedProfileId } = input
+    const { conversationId, userText, selection, requestedProfileId, transientContext } = input
 
     // Wait for any prior stream on this conversation to finish its persistence
     // side-effects before appending the next user message.
@@ -145,11 +148,12 @@ export class AgentRuntime {
       record,
       selection,
       requestedProfileId,
+      transientContext,
     })
   }
 
   async retryLastUserMessage(input: RuntimeRetryLastInput): Promise<RuntimeSendResult> {
-    const { conversationId, selection, requestedProfileId } = input
+    const { conversationId, selection, requestedProfileId, transientContext } = input
 
     const previous = this.activeStreams.get(conversationId)
     if (previous) await previous.cleanup.catch(() => {})
@@ -170,6 +174,7 @@ export class AgentRuntime {
       record,
       selection,
       requestedProfileId,
+      transientContext,
     })
   }
 
@@ -179,8 +184,10 @@ export class AgentRuntime {
     record: ConversationRecord
     selection: ModelSelection
     requestedProfileId?: AgentProfileId
+    transientContext?: ChatMessage[]
   }): Promise<RuntimeSendResult> {
-    const { conversationId, userMessage, record, selection, requestedProfileId } = input
+    const { conversationId, userMessage, record, selection, requestedProfileId, transientContext } =
+      input
     const assistantMessageId = randomUUID()
     const controller = new AbortController()
     let resolveCleanup: () => void = () => {}
@@ -196,6 +203,7 @@ export class AgentRuntime {
       messages: record.messages,
       modelInfo: getModelInfo(selection.providerId, selection.modelId),
       profileInstructions: profile.instructions,
+      transientContext,
     })
     const toolRegistry = await this.getToolRegistry()
 
@@ -207,6 +215,7 @@ export class AgentRuntime {
       resolveCleanup,
       profileId,
       messages: context.messages,
+      workspaceRoots: this.resolveWorkspaceRoots(),
       toolRegistry,
     })
 
@@ -255,6 +264,11 @@ export class AgentRuntime {
 
   private emit(event: AgentRuntimeEvent): void {
     this.options.onEvent?.(event)
+  }
+
+  private resolveWorkspaceRoots(): ToolContext['workspaceRoots'] {
+    const roots = this.options.workspaceRoots
+    return typeof roots === 'function' ? roots() : roots
   }
 
   private buildProfileMap(extraProfiles: readonly AgentProfile[]): Map<string, AgentProfile> {
@@ -314,6 +328,7 @@ export class AgentRuntime {
     resolveCleanup: () => void
     profileId: AgentProfileId
     messages: Parameters<typeof streamChat>[0]['messages']
+    workspaceRoots?: ToolContext['workspaceRoots']
     toolRegistry: ToolRegistry
   }): Promise<void> {
     const {
@@ -324,6 +339,7 @@ export class AgentRuntime {
       resolveCleanup,
       profileId,
       messages,
+      workspaceRoots,
       toolRegistry,
     } = input
     let eventLogChain = Promise.resolve()
@@ -337,6 +353,7 @@ export class AgentRuntime {
           selection,
           signal: controller.signal,
           profileId,
+          workspaceRoots,
           onToolApproval: this.options.onToolApproval,
           onAgentEvent: (event) => {
             eventLogChain = eventLogChain

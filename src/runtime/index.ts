@@ -117,6 +117,7 @@ export {
   type ToolRegistry,
   type ToolScope,
   type ToolSpec,
+  type ToolWorkspaceRoot,
 } from '../main/tools'
 export {
   findModel,

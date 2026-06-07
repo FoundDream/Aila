@@ -3,7 +3,7 @@ import { Composer } from '@/pages/chat/Composer'
 import { Transcript } from '@/pages/chat/Transcript'
 import type { ChatStreamsApi } from '@/pages/chat/useChatStreams'
 import { useModelSelection } from '@/pages/chat/useModelSelection'
-import type { ConversationSummary } from '../../../../preload/index'
+import type { AgentProfileId, ConversationSummary } from '../../../../preload/index'
 import type { ProviderId, Settings } from '../../types'
 import { useDocConversation } from './useDocConversation'
 
@@ -16,6 +16,8 @@ interface DocChatPanelProps {
   onOpenSettings: () => void
   onClose: () => void
 }
+
+const DOC_WORKBENCH_PROFILE_ID: AgentProfileId = 'coding'
 
 export function DocChatPanel({
   docPath,
@@ -48,6 +50,9 @@ export function DocChatPanel({
   const isStreaming = stream?.runningMessageId !== null && stream?.runningMessageId !== undefined
   const usage = stream?.usage ?? null
   const queuedCount = stream?.queue.length ?? 0
+  const lastMessage = messages.at(-1)
+  const canRetryLast =
+    Boolean(activeId) && !isStreaming && queuedCount === 0 && lastMessage?.role === 'user'
 
   const handleSubmit = useCallback(
     async (text: string) => {
@@ -61,7 +66,7 @@ export function DocChatPanel({
       }
       const id = await ensureActiveSession()
       if (!id) return
-      streams.enqueueSend(id, trimmed, currentSelection)
+      streams.enqueueSend(id, trimmed, currentSelection, DOC_WORKBENCH_PROFILE_ID)
     },
     [streams, onOpenSettings, selectionRef, ensureActiveSession],
   )
@@ -70,6 +75,16 @@ export function DocChatPanel({
     if (!activeId) return
     streams.abort(activeId)
   }, [activeId, streams])
+
+  const handleRetryLast = useCallback(() => {
+    if (!activeId) return
+    const currentSelection = selectionRef.current
+    if (!currentSelection) {
+      onOpenSettings()
+      return
+    }
+    streams.enqueueRetryLast(activeId, currentSelection, DOC_WORKBENCH_PROFILE_ID)
+  }, [activeId, streams, onOpenSettings, selectionRef])
 
   const activeSession = sessions.find((s) => s.id === activeId) ?? null
 
@@ -103,7 +118,11 @@ export function DocChatPanel({
       <main className="flex min-h-0 flex-1 flex-col">
         {isReady ? (
           <>
-            <Transcript messages={messages} />
+            <Transcript
+              messages={messages}
+              canRetryLast={canRetryLast}
+              onRetryLast={handleRetryLast}
+            />
             <Composer
               isStreaming={isStreaming}
               queuedCount={queuedCount}

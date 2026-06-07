@@ -124,6 +124,11 @@ function docAbsPath(docPath: string): string {
   return join(getDocumentsDir(), `${fromPosix(docPath)}.md`)
 }
 
+export function getDocFilePath(docPath: string): string {
+  parseDocPath(docPath)
+  return docAbsPath(docPath)
+}
+
 function joinDocPath(folderPath: string | null, title: string): string {
   return folderPath ? `${folderPath}/${title}` : title
 }

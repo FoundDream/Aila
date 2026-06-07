@@ -35,6 +35,7 @@ import { AgentRuntime } from './runtime'
 import { configuredProviders, loadSettings, type Settings, saveSettings } from './settings'
 import { loadToolPacksFromDir } from './tool-pack-loader'
 import type { ToolApprovalRequest } from './tools'
+import { buildDesktopWorkspaceContext, getDesktopWorkspaceRoots } from './workspace-context'
 
 dotenv.config()
 
@@ -109,6 +110,7 @@ const agentRuntime = new AgentRuntime({
   onToolApproval: requestToolApproval,
   loadProfiles: async () => (await loadAgentProfilesFromDir()).map((profile) => profile.profile),
   loadToolPacks: async () => (await loadToolPacksFromDir()).map((pack) => pack.toolPack),
+  workspaceRoots: getDesktopWorkspaceRoots,
 })
 
 async function sweepOrphanedDocConversations(): Promise<void> {
@@ -129,7 +131,16 @@ function registerIpcHandlers(): void {
       userText: string,
       selection: ModelSelection,
       requestedProfileId?: AgentProfileId,
-    ) => agentRuntime.send({ conversationId, userText, selection, requestedProfileId }),
+    ) => {
+      const transientContext = await buildDesktopWorkspaceContext(conversationId)
+      return agentRuntime.send({
+        conversationId,
+        userText,
+        selection,
+        requestedProfileId,
+        transientContext,
+      })
+    },
   )
 
   ipcMain.handle(
@@ -139,7 +150,15 @@ function registerIpcHandlers(): void {
       conversationId: string,
       selection: ModelSelection,
       requestedProfileId?: AgentProfileId,
-    ) => agentRuntime.retryLastUserMessage({ conversationId, selection, requestedProfileId }),
+    ) => {
+      const transientContext = await buildDesktopWorkspaceContext(conversationId)
+      return agentRuntime.retryLastUserMessage({
+        conversationId,
+        selection,
+        requestedProfileId,
+        transientContext,
+      })
+    },
   )
 
   ipcMain.handle('chat:abort', (_event, conversationId: string) => {
