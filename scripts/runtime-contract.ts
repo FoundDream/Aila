@@ -2954,6 +2954,19 @@ async function testFilesystemToolWorkspaceRootsContract(): Promise<void> {
       )
     }
 
+    const previousCwd = process.cwd()
+    try {
+      process.chdir(dir)
+      const cwdSourcePath = join(process.cwd(), 'source.md')
+      assertEqual(
+        await executeTool('read', { path: cwdSourcePath }, { settings, profileId: 'coding' }),
+        'hello workspace roots',
+        'default workspace root should resolve from current cwd at execution time',
+      )
+    } finally {
+      process.chdir(previousCwd)
+    }
+
     const readResult = await executeTool(
       'read',
       { path: sourcePath },

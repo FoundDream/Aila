@@ -396,7 +396,6 @@ export function getToolDefinitionsForProfile(
 
 const MAX_OUTPUT_BYTES = 64 * 1024
 const BASH_TIMEOUT_MS = 30_000
-const WORKSPACE_ROOT = resolve(process.cwd())
 const TOOL_TARGET_PREVIEW_CHARS = 300
 
 const SENSITIVE_BASENAMES = new Set([
@@ -510,7 +509,7 @@ function isInsideRoot(path: string, root: string): boolean {
 }
 
 function normalizeWorkspaceRoots(ctx: ToolContext): string[] {
-  const roots = [WORKSPACE_ROOT]
+  const roots = [resolve(process.cwd())]
   for (const root of ctx.workspaceRoots ?? []) {
     const raw = typeof root === 'string' ? root : root.path
     if (raw.trim()) roots.push(resolve(raw))
