@@ -3,9 +3,9 @@
 > This project is still in a very early stage. Expect frequent breaking changes, rough edges, and incomplete functionality. It is not recommended for long-term or production use yet.
 
 Aila is a fully open-source, local-first agent runtime and workbench for code,
-documents, and personal workflows. The runtime is the core; Desktop and TUI/CLI
-are separate interfaces on top of the same agent loop, tools, storage, and event
-contract.
+documents, and personal workflows. `AgentRuntime` is the core agent engine;
+Desktop owns workspace features such as docs, while TUI/CLI are lightweight
+adapters over the shared runtime, tools, storage, and event contract.
 
 The public runtime SDK entrypoint is `src/runtime`; see
 [`docs/runtime-sdk.md`](docs/runtime-sdk.md) before building new adapters or
@@ -40,8 +40,6 @@ bun run tui -- --list
 bun run tui -- --resume
 bun run tui -- --resume --retry-last
 bun run tui -- --conversation <conversation-id>
-bun run tui -- --doc <vault-relative-doc-path>
-bun run tui -- --resume --doc <vault-relative-doc-path>
 bun run tui -- --data-dir ~/.aila
 ```
 
@@ -55,8 +53,6 @@ Useful TUI commands:
 /extensions reload
 /profile code-reviewer
 /model openai:gpt-5.4
-/doc
-/doc-edit old text => new text
 /read package.json
 /run git status --short
 /write scratch.txt hello
@@ -102,4 +98,5 @@ bun run build
 ```
 
 `bun run test` runs the runtime contract suite plus CLI/TUI contract coverage
-for extension validation, local TUI commands, and retry-last recovery.
+for extension validation, local TUI commands, removed doc adapter commands, and
+retry-last recovery.

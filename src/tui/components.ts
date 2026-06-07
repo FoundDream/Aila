@@ -35,7 +35,6 @@ export interface TranscriptEntry {
 
 export interface AilaFrameState {
   active: boolean
-  boundDocPath: string | null
   conversationId: string
   dataDir: string
   profileId: string
@@ -54,12 +53,6 @@ function fitLine(line: string, width: number): string {
 
 function shortId(id: string): string {
   return id.length > 8 ? id.slice(0, 8) : id
-}
-
-function compactPath(path: string): string {
-  const home = process.env.HOME
-  if (home && path.startsWith(home)) return `~${path.slice(home.length)}`
-  return path
 }
 
 function renderBadge(label: string, color: (text: string) => string): string {
@@ -113,12 +106,11 @@ export class AilaFrameComponent implements Component {
       state.queueCount > 0
         ? ` ${renderBadge(`${state.queueCount} queued`, chalk.hex(AILA_TUI_COLORS.warning))}`
         : ''
-    const doc = state.boundDocPath ? ` doc:${compactPath(state.boundDocPath)}` : ''
     const left = chalk.bold.hex(AILA_TUI_COLORS.textStrong)('Aila')
     const model = chalk.hex(AILA_TUI_COLORS.text)(modelLabel(state.selection))
     const header = `${left} ${status}${queued} | ${model} | profile:${state.profileId} | conv:${shortId(
       state.conversationId,
-    )}${doc}`
+    )}`
     return [
       fitLine(header, width),
       chalk.hex(AILA_TUI_COLORS.border)(fitLine('-'.repeat(width), width)),

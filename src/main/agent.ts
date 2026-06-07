@@ -350,11 +350,6 @@ export interface StreamRequest {
   onAgentEvent?: AgentEventSink
   profileId: AgentProfileId
   onToolApproval?: ToolContext['onToolApproval']
-  // Optional doc-edit side-channel; only set for doc-bound conversations so
-  // edit_doc resolves through the active editor's CodeMirror view (or the
-  // disk path for inactive docs). See main/index.ts.
-  onDocEdit?: ToolContext['onDocEdit']
-  boundDocPath?: string
   toolRegistry?: ToolRegistry
 }
 
@@ -368,8 +363,6 @@ export async function streamChat(req: StreamRequest, handlers: StreamHandlers): 
     onAgentEvent,
     profileId,
     onToolApproval,
-    onDocEdit,
-    boundDocPath,
     toolRegistry,
   } = req
 
@@ -432,11 +425,9 @@ export async function streamChat(req: StreamRequest, handlers: StreamHandlers): 
         {
           settings,
           profileId,
-          boundDocPath,
           signal,
           onToolApproval,
           onImage: onImageFromTool,
-          onDocEdit,
         },
         emitAgentEvent,
         toolRegistry,
@@ -470,8 +461,7 @@ export async function streamChat(req: StreamRequest, handlers: StreamHandlers): 
         case 'tool-input-start': {
           // Fired when the model starts streaming a tool call. Args are still
           // empty here; we surface the running block immediately so a long
-          // arguments payload (e.g. edit_doc's new_string) doesn't look like
-          // the UI is frozen.
+          // arguments payload doesn't look like the UI is frozen.
           builder.startToolCall(part.id, part.toolName, '')
           emitAgentEvent('tool.requested', {
             toolCallId: part.id,

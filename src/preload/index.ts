@@ -8,7 +8,7 @@ export type { ProviderId }
 export const AILA_CONVERSATION_META_SCHEMA_VERSION = 1
 export const AILA_PERSISTED_MESSAGE_SCHEMA_VERSION = 1
 
-export type BuiltinAgentProfileId = 'chat' | 'doc' | 'coding' | 'research'
+export type BuiltinAgentProfileId = 'chat' | 'coding' | 'research'
 export type AgentProfileId = BuiltinAgentProfileId | (string & {})
 
 export interface AgentProfile {
@@ -110,35 +110,6 @@ export interface DocsListResult {
 
 export type DocPatch = Partial<Pick<DocRecord, 'folderPath' | 'title' | 'content'>>
 
-export interface DocEditFindReplace {
-  old_string: string
-  new_string: string
-}
-
-export interface DocEditPatch {
-  index: number
-  from: number
-  to: number
-  oldLength: number
-  newLength: number
-  oldPreview: string
-  newPreview: string
-  diffPreview: string
-}
-
-export interface DocEditRequestEvent {
-  requestId: string
-  docPath: string
-  edits: DocEditFindReplace[]
-  reason?: string
-}
-
-export type DocEditResult =
-  | { ok: true; title: string; appliedCount: number; patches: DocEditPatch[]; diffPreview: string }
-  | { ok: false; error: string; conflicts?: string[] }
-
-export type DocEditResponse = DocEditResult & { requestId: string }
-
 export interface PersistedTextBlock {
   type: 'text' | 'reasoning'
   content: string
@@ -212,8 +183,8 @@ export interface ConversationSummary {
   createdAt: number
   updatedAt: number
   usage?: ConversationUsage
-  // Set when this conversation is the AI sidebar of a specific doc. The chat
-  // tab filters these out; doc context is injected by main on each send.
+  // Set when Desktop owns this conversation as the AI sidebar of a specific
+  // doc. Runtime treats it as ordinary conversation metadata.
   docId?: string | null
 }
 
@@ -311,18 +282,6 @@ const api = {
     update: (docPath: string, patch: DocPatch): Promise<DocRecord> =>
       ipcRenderer.invoke('docs:update', docPath, patch),
     delete: (docPath: string): Promise<void> => ipcRenderer.invoke('docs:delete', docPath),
-    // Subscribed by the active DocEditor: each event represents an edit_doc
-    // tool call that needs to be applied via the live CodeMirror view.
-    onEditRequest: (cb: (event: DocEditRequestEvent) => void) =>
-      on<DocEditRequestEvent>('docs:edit-request', cb),
-    sendEditResponse: (response: DocEditResponse): void => {
-      ipcRenderer.send('docs:edit-response', response)
-    },
-    // Disk-only find/replace for docs that aren't currently mounted in the
-    // editor. The renderer falls back to this when an edit_doc tool call
-    // targets an inactive doc.
-    applyEditDirect: (docPath: string, edits: DocEditFindReplace[]): Promise<DocEditResult> =>
-      ipcRenderer.invoke('docs:apply-edit-direct', { docPath, edits }),
   },
   folders: {
     create: (parentPath: string | null, name: string): Promise<FolderSummary> =>

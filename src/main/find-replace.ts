@@ -1,6 +1,4 @@
-// Atomic find/replace across multiple edits, shared by the file-based `edit`
-// tool, the doc-aware `edit_doc` tool's offline path, and the renderer's
-// CodeMirror transaction path. Same uniqueness contract everywhere:
+// Atomic find/replace across multiple edits. Same uniqueness contract everywhere:
 //
 //   - `old_string` must occur EXACTLY ONCE in the source body.
 //   - If any edit fails uniqueness, NONE are applied (atomic).

@@ -58,7 +58,7 @@ export function parseAgentProfileManifest(value: unknown): AgentProfileManifest 
   assertNonEmptyString(value.description, 'manifest.description')
   assertNonEmptyString(value.baseProfileId, 'manifest.baseProfileId')
   if (!isBuiltinAgentProfileId(value.baseProfileId)) {
-    throw new Error('manifest.baseProfileId must be one of: chat, doc, coding, research')
+    throw new Error('manifest.baseProfileId must be one of: chat, coding, research')
   }
   if (value.instructions !== undefined && typeof value.instructions !== 'string') {
     throw new Error('manifest.instructions must be a string')

@@ -189,8 +189,8 @@ function BlockView({ block, isStreaming }: { block: Block; isStreaming: boolean 
 }
 
 function ToolCallView({ block }: { block: ToolCallBlock }): ReactElement {
-  // Auto-expand while running so streaming arguments are visible — long
-  // payloads (e.g. edit_doc's new_string) used to look like a frozen UI.
+  // Auto-expand while running so long streaming arguments do not look like a
+  // frozen UI.
   const [expanded, setExpanded] = useState(block.status === 'running')
   const statusLabel =
     block.status === 'running' ? 'running' : block.status === 'error' ? 'error' : 'done'

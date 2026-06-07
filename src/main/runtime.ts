@@ -17,21 +17,17 @@ import {
   appendMessage,
   type ConversationRecord,
   getConversation,
-  listConversations,
   type PersistedImageBlock,
   type PersistedMessage,
   type PersistedTextBlock,
   deleteConversation as removeConversation,
   setConversationUsage,
 } from './conversations'
-import { type DocRecord, getDoc, listAll } from './docs'
 import { imageNameFromUrl } from './image-store'
 import { getImagesDir } from './paths'
 import { type AgentRuntimeEvent, createRuntimeEvent } from './runtime-events'
 import {
   createDefaultToolRegistry,
-  type DocEditRequest,
-  type DocEditResult,
   type ToolContext,
   type ToolPack,
   type ToolRegistry,
@@ -80,7 +76,6 @@ export {
 export interface AgentRuntimeOptions {
   onEvent?: (event: AgentRuntimeEvent) => void
   onToolApproval?: ToolContext['onToolApproval']
-  onDocEdit?: (request: DocEditRequest) => Promise<DocEditResult>
   profiles?: readonly AgentProfile[]
   loadProfiles?: () => Promise<readonly AgentProfile[]>
   toolPacks?: readonly ToolPack[]
@@ -148,7 +143,6 @@ export class AgentRuntime {
       conversationId,
       userMessage,
       record,
-      userText,
       selection,
       requestedProfileId,
     })
@@ -166,8 +160,7 @@ export class AgentRuntime {
       throw new Error('cannot retry: last persisted message is not a dangling user message')
     }
 
-    const userText = messageText(lastMessage)
-    if (!userText.trim()) {
+    if (!messageText(lastMessage).trim()) {
       throw new Error('cannot retry: last persisted user message has no text content')
     }
 
@@ -175,7 +168,6 @@ export class AgentRuntime {
       conversationId,
       userMessage: lastMessage,
       record,
-      userText,
       selection,
       requestedProfileId,
     })
@@ -185,11 +177,10 @@ export class AgentRuntime {
     conversationId: string
     userMessage: PersistedMessage
     record: ConversationRecord
-    userText: string
     selection: ModelSelection
     requestedProfileId?: AgentProfileId
   }): Promise<RuntimeSendResult> {
-    const { conversationId, userMessage, record, userText, selection, requestedProfileId } = input
+    const { conversationId, userMessage, record, selection, requestedProfileId } = input
     const assistantMessageId = randomUUID()
     const controller = new AbortController()
     let resolveCleanup: () => void = () => {}
@@ -198,23 +189,11 @@ export class AgentRuntime {
     })
     this.activeStreams.set(conversationId, { controller, cleanup })
 
-    let boundDoc: DocRecord | null = null
-    const boundDocPath = record.meta.docId ?? null
-    const profile = await this.resolveProfile(requestedProfileId, Boolean(boundDocPath))
+    const profile = await this.resolveProfile(requestedProfileId)
     const profileId = profile.baseProfileId
-
-    if (boundDocPath) {
-      try {
-        boundDoc = await getDoc(boundDocPath)
-      } catch (err) {
-        this.logger.warn('[runtime] doc context fetch failed for', boundDocPath, err)
-      }
-    }
 
     const context = buildAgentContext({
       messages: record.messages,
-      doc: boundDoc,
-      latestUserText: userText,
       modelInfo: getModelInfo(selection.providerId, selection.modelId),
       profileInstructions: profile.instructions,
     })
@@ -227,7 +206,6 @@ export class AgentRuntime {
       controller,
       resolveCleanup,
       profileId,
-      boundDocPath,
       messages: context.messages,
       toolRegistry,
     })
@@ -267,15 +245,6 @@ export class AgentRuntime {
     await removeConversation(conversationId)
   }
 
-  async sweepOrphanedDocConversations(): Promise<void> {
-    const [{ docs }, conversations] = await Promise.all([listAll(), listConversations()])
-    const liveDocPaths = new Set(docs.map((doc) => doc.path))
-    const orphans = conversations.filter(
-      (conversation) => conversation.docId && !liveDocPaths.has(conversation.docId),
-    )
-    await Promise.all(orphans.map((orphan) => this.deleteConversation(orphan.id)))
-  }
-
   private async persistAndAnnounce(
     conversationId: string,
     message: PersistedMessage,
@@ -309,18 +278,9 @@ export class AgentRuntime {
 
   private async resolveProfile(
     requestedProfileId: AgentProfileId | undefined,
-    isDocBound: boolean,
   ): Promise<{ baseProfileId: BuiltinAgentProfileId; instructions?: string }> {
     const profiles = await this.getProfiles()
     const requested = requestedProfileId ? profiles.get(requestedProfileId) : undefined
-
-    if (isDocBound) {
-      return {
-        baseProfileId: 'doc',
-        ...(requested?.baseProfileId === 'doc' &&
-          requested.instructions && { instructions: requested.instructions }),
-      }
-    }
 
     if (requested) {
       const baseProfileId = requested.baseProfileId ?? normalizeChatAgentProfileId(requested.id)
@@ -353,7 +313,6 @@ export class AgentRuntime {
     controller: AbortController
     resolveCleanup: () => void
     profileId: AgentProfileId
-    boundDocPath: string | null
     messages: Parameters<typeof streamChat>[0]['messages']
     toolRegistry: ToolRegistry
   }): Promise<void> {
@@ -364,7 +323,6 @@ export class AgentRuntime {
       controller,
       resolveCleanup,
       profileId,
-      boundDocPath,
       messages,
       toolRegistry,
     } = input
@@ -387,8 +345,6 @@ export class AgentRuntime {
                 this.logger.warn('[runtime] agent-event append failed:', err)
               })
           },
-          onDocEdit: boundDocPath ? this.options.onDocEdit : undefined,
-          boundDocPath: boundDocPath ?? undefined,
           toolRegistry,
         },
         {

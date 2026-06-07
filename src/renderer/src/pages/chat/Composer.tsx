@@ -100,11 +100,9 @@ function AgentProfileControl({
   value: AgentProfileId
   onChange: (profileId: AgentProfileId) => void
 }): ReactElement {
-  const chatProfiles = profiles.filter((profile) => profile.id !== 'doc')
-
   return (
     <div className="flex h-6 max-w-[min(54vw,420px)] shrink-0 items-center overflow-x-auto rounded-md border border-[var(--border)] bg-[var(--surface)]">
-      {chatProfiles.map((profile) => {
+      {profiles.map((profile) => {
         const active = profile.id === value
         return (
           <Tooltip key={profile.id}>

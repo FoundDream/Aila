@@ -26,7 +26,6 @@ import {
   updateDoc,
 } from './docs'
 import { getExtensionReport } from './extensions'
-import { applyFindReplace, type FindReplaceEdit, formatFindReplaceErrors } from './find-replace'
 import { saveImage } from './image-store'
 import { handleImageProtocol, registerImageProtocolScheme } from './images'
 import { getOpenRouterCatalog } from './openrouter-catalog'
@@ -35,7 +34,7 @@ import { loadAgentProfilesFromDir } from './profile-loader'
 import { AgentRuntime } from './runtime'
 import { configuredProviders, loadSettings, type Settings, saveSettings } from './settings'
 import { loadToolPacksFromDir } from './tool-pack-loader'
-import type { DocEditRequest, DocEditResult, ToolApprovalRequest } from './tools'
+import type { ToolApprovalRequest } from './tools'
 
 dotenv.config()
 
@@ -49,24 +48,13 @@ const DEV_RENDERER_URL = process.env.ELECTRON_RENDERER_URL ?? 'http://localhost:
 
 let mainWindow: BrowserWindow | null = null
 
-// edit_doc tool round-trip: tool fires, main webContents.send's a request to
-// the renderer (which dispatches a CodeMirror transaction for the active
-// doc), renderer ipcRenderer.send's the response, main resolves the matching
-// promise. 5s timeout to avoid wedging the model on a missing/crashed view.
-const DOC_EDIT_TIMEOUT_MS = 5000
 const TOOL_APPROVAL_TIMEOUT_MS = 60_000
-
-interface PendingDocEdit {
-  resolve: (result: DocEditResult) => void
-  timer: ReturnType<typeof setTimeout>
-}
 
 interface PendingToolApproval {
   resolve: (approved: boolean) => void
   timer: ReturnType<typeof setTimeout>
 }
 
-const pendingDocEdits = new Map<string, PendingDocEdit>()
 const pendingToolApprovals = new Map<string, PendingToolApproval>()
 
 function createWindow(): void {
@@ -100,27 +88,6 @@ function send(channel: string, data?: unknown): void {
   }
 }
 
-function requestDocEdit(req: DocEditRequest): Promise<DocEditResult> {
-  return new Promise<DocEditResult>((resolve) => {
-    const requestId = randomUUID()
-    const timer = setTimeout(() => {
-      if (pendingDocEdits.delete(requestId)) {
-        resolve({
-          ok: false,
-          error: 'editor did not respond within 5s',
-        })
-      }
-    }, DOC_EDIT_TIMEOUT_MS)
-    pendingDocEdits.set(requestId, { resolve, timer })
-    send('docs:edit-request', {
-      requestId,
-      docPath: req.docPath,
-      edits: req.edits,
-      reason: req.reason,
-    })
-  })
-}
-
 function requestToolApproval(req: ToolApprovalRequest): Promise<boolean> {
   return new Promise<boolean>((resolve) => {
     const requestId = randomUUID()
@@ -140,10 +107,18 @@ function requestToolApproval(req: ToolApprovalRequest): Promise<boolean> {
 const agentRuntime = new AgentRuntime({
   onEvent: (event) => send(event.type, event.data),
   onToolApproval: requestToolApproval,
-  onDocEdit: requestDocEdit,
   loadProfiles: async () => (await loadAgentProfilesFromDir()).map((profile) => profile.profile),
   loadToolPacks: async () => (await loadToolPacksFromDir()).map((pack) => pack.toolPack),
 })
+
+async function sweepOrphanedDocConversations(): Promise<void> {
+  const [{ docs }, conversations] = await Promise.all([listAll(), listConversations()])
+  const liveDocPaths = new Set(docs.map((doc) => doc.path))
+  const orphans = conversations.filter(
+    (conversation) => conversation.docId && !liveDocPaths.has(conversation.docId),
+  )
+  await Promise.all(orphans.map((orphan) => agentRuntime.deleteConversation(orphan.id)))
+}
 
 function registerIpcHandlers(): void {
   ipcMain.handle(
@@ -189,18 +164,6 @@ function registerIpcHandlers(): void {
   ipcMain.handle('folders:move', (_event, path: string, newParentPath: string | null) =>
     moveFolder(path, newParentPath),
   )
-  // Renderer's reply to docs:edit-request fired during edit_doc tool execution.
-  // Resolves the pending promise so the tool can return a result string to the
-  // model. ipcMain.on (not handle) because the renderer uses ipcRenderer.send.
-  ipcMain.on('docs:edit-response', (_event, payload: { requestId: string } & DocEditResult) => {
-    const pending = pendingDocEdits.get(payload.requestId)
-    if (!pending) return
-    pendingDocEdits.delete(payload.requestId)
-    clearTimeout(pending.timer)
-    const { requestId: _id, ...result } = payload
-    pending.resolve(result)
-  })
-
   ipcMain.on(
     'tools:approval-response',
     (_event, payload: { requestId: string; approved: boolean }) => {
@@ -212,47 +175,14 @@ function registerIpcHandlers(): void {
     },
   )
 
-  // Direct disk-based find/replace for docs that aren't currently mounted in
-  // the editor. Used by the renderer when edit_doc targets an inactive doc.
-  ipcMain.handle(
-    'docs:apply-edit-direct',
-    async (
-      _event,
-      input: { docPath: string; edits: FindReplaceEdit[] },
-    ): Promise<DocEditResult> => {
-      let doc: Awaited<ReturnType<typeof getDoc>>
-      try {
-        doc = await getDoc(input.docPath)
-      } catch {
-        return { ok: false, error: `doc not found: ${input.docPath}` }
-      }
-      const result = applyFindReplace(doc.content, input.edits)
-      if (!result.ok) {
-        return {
-          ok: false,
-          error: formatFindReplaceErrors(result.errors),
-          conflicts: result.errors.map((e) => `edit #${e.index}: ${e.reason}`),
-        }
-      }
-      await updateDoc(input.docPath, { content: result.body })
-      return {
-        ok: true,
-        title: doc.title,
-        appliedCount: result.appliedCount,
-        patches: result.patches,
-        diffPreview: result.diffPreview,
-      }
-    },
-  )
-
   ipcMain.handle('docs:delete', async (_event, docPath: string) => {
     await deleteDoc(docPath)
-    await agentRuntime.sweepOrphanedDocConversations()
+    await sweepOrphanedDocConversations()
   })
 
   ipcMain.handle('folders:delete', async (_event, path: string) => {
     await deleteFolder(path)
-    await agentRuntime.sweepOrphanedDocConversations()
+    await sweepOrphanedDocConversations()
   })
 
   ipcMain.handle('images:save', (_event, bytes: ArrayBuffer, filename: string) =>

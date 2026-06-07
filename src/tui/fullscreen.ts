@@ -8,7 +8,6 @@ import {
   executeTool,
   getConversation,
   getDataDir,
-  getDoc,
   getExtensionReport,
   getProfilesDir,
   getToolPacksDir,
@@ -42,7 +41,6 @@ import {
 } from './components'
 import {
   appendLocalContext,
-  applyDocEdit,
   blockPreview,
   commandHelp,
   defaultDataDir,
@@ -118,7 +116,7 @@ export async function runFullScreenTui(argv: string[] = process.argv.slice(2)): 
   configureDataDir(options.dataDir ?? defaultDataDir())
 
   if (options.list) {
-    await printConversationList({ docPath: options.docPath, limit: options.limit })
+    await printConversationList({ limit: options.limit })
     return
   }
 
@@ -128,12 +126,10 @@ export async function runFullScreenTui(argv: string[] = process.argv.slice(2)): 
   }
   const resolved = await resolveConversation({
     conversationId: options.conversationId,
-    docPath: options.docPath,
     resumeLatest: options.resumeLatest,
   })
 
   const app = new AilaFullScreenApp({
-    boundDocPath: resolved.boundDocPath,
     conversationId: resolved.conversationId,
     isExisting: resolved.isExisting,
     retryLast: options.retryLast,
@@ -158,7 +154,6 @@ class AilaFullScreenApp {
   private readonly entries: TranscriptEntry[] = []
   private readonly queue: string[] = []
   private activeConversationId: string | null = null
-  private boundDocPath: string | null
   private conversationId: string
   private lastIdleCtrlC = 0
   private running = false
@@ -168,19 +163,16 @@ class AilaFullScreenApp {
   private state: AilaFrameState
 
   constructor(input: {
-    boundDocPath: string | null
     conversationId: string
     isExisting: boolean
     retryLast: boolean
     session: SessionState
     showHistory: boolean
   }) {
-    this.boundDocPath = input.boundDocPath
     this.conversationId = input.conversationId
     this.session = input.session
     this.state = {
       active: false,
-      boundDocPath: input.boundDocPath,
       conversationId: input.conversationId,
       dataDir: getDataDir(),
       profileId: input.session.profileId,
@@ -192,7 +184,6 @@ class AilaFullScreenApp {
     this.runtime = new AgentRuntime({
       onEvent: (event) => this.handleRuntimeEvent(event),
       onToolApproval: (request) => this.askToolApproval(request),
-      onDocEdit: applyDocEdit,
       loadProfiles: async () =>
         (await loadAgentProfilesFromDir()).map((profile) => profile.profile),
       loadToolPacks: async () => (await loadToolPacksFromDir()).map((pack) => pack.toolPack),
@@ -220,9 +211,8 @@ class AilaFullScreenApp {
         `Profiles: ${getProfilesDir()}`,
         `Tool packs: ${getToolPacksDir()}`,
         `Conversation: ${input.conversationId}${input.isExisting ? ' (resumed)' : ''}`,
-        input.boundDocPath ? `Doc: ${input.boundDocPath}` : '',
         `Model: ${modelLabel(input.session.selection)}`,
-        `Profile: ${input.boundDocPath ? `${input.session.profileId} (doc-bound)` : input.session.profileId}`,
+        `Profile: ${input.session.profileId}`,
       ]
         .filter(Boolean)
         .join('\n'),
@@ -423,13 +413,6 @@ class AilaFullScreenApp {
         case 'session':
           await this.showSessionPicker()
           return 'handled'
-        case 'doc':
-        case 'doc-read':
-          await this.readBoundDoc()
-          return 'handled'
-        case 'doc-edit':
-          await this.editBoundDoc(rest)
-          return 'handled'
         case 'read':
           await this.readFile(rest)
           return 'handled'
@@ -605,58 +588,14 @@ class AilaFullScreenApp {
   }
 
   private async switchConversation(conversationId: string): Promise<void> {
-    const record = await getConversation(conversationId)
+    await getConversation(conversationId)
     this.conversationId = conversationId
-    this.boundDocPath = record.meta.docId ?? null
     this.entries.length = 0
     this.addEntry('system', 'conversation switched', conversationId)
     await this.loadHistory(12)
     this.setState({
-      boundDocPath: this.boundDocPath,
       conversationId,
       status: `conversation: ${conversationId}`,
-    })
-  }
-
-  private async readBoundDoc(): Promise<void> {
-    if (!this.boundDocPath) throw new Error('no doc bound; start TUI with --doc <path>')
-    const doc = await getDoc(this.boundDocPath)
-    const result = `${doc.title}\n\n${doc.content}`
-    this.addEntry('local', `[doc] ${this.boundDocPath}`, displayPreview(result))
-    await appendLocalContext({
-      command: `/doc ${this.boundDocPath}`,
-      conversationId: this.conversationId,
-      result,
-    })
-  }
-
-  private async editBoundDoc(rest: string): Promise<void> {
-    if (!this.boundDocPath) throw new Error('no doc bound; start TUI with --doc <path>')
-    if (!rest.includes('=>')) throw new Error('usage: /doc-edit <old> => <new>')
-    const [oldText, ...newParts] = rest.split('=>')
-    const newText = newParts.join('=>')
-    if (!oldText || newParts.length === 0) throw new Error('usage: /doc-edit <old> => <new>')
-    const result = await applyDocEdit({
-      docPath: this.boundDocPath,
-      edits: [{ new_string: newText.trim(), old_string: oldText.trim() }],
-      reason: 'TUI /doc-edit command',
-    })
-    if (!result.ok) throw new Error(result.error)
-    const display = JSON.stringify(
-      {
-        appliedCount: result.appliedCount,
-        diffPreview: result.diffPreview,
-        ok: true,
-        title: result.title,
-      },
-      null,
-      2,
-    )
-    this.addEntry('local', `[doc-edit] ${this.boundDocPath}`, displayPreview(display))
-    await appendLocalContext({
-      command: `/doc-edit ${this.boundDocPath}`,
-      conversationId: this.conversationId,
-      result: display,
     })
   }
 
@@ -886,8 +825,6 @@ function slashCommands() {
     { name: 'extensions', description: 'Show extension manifests', argumentHint: '[reload]' },
     { name: 'profile', description: 'Show or switch profile', argumentHint: '[name]' },
     { name: 'model', description: 'Show or switch model', argumentHint: '[provider:model]' },
-    { name: 'doc', description: 'Read the bound markdown document' },
-    { name: 'doc-edit', description: 'Edit bound doc', argumentHint: '<old> => <new>' },
     { name: 'read', description: 'Read file into context', argumentHint: '<path>' },
     { name: 'run', description: 'Run shell command', argumentHint: '<command>' },
     { name: 'write', description: 'Write file', argumentHint: '<path> <content>' },

@@ -11,7 +11,6 @@ import { readFile, writeFile } from 'node:fs/promises'
 import { basename, isAbsolute, relative, resolve, sep } from 'node:path'
 import { promisify } from 'node:util'
 import type { AgentProfileId } from './agent-profile'
-import type { FindReplaceEdit } from './find-replace'
 import { generateImage } from './image'
 import { saveImage } from './image-store'
 import type { Settings } from './settings'
@@ -27,8 +26,8 @@ export interface ToolDefinition {
   }
 }
 
-export type ToolAccess = 'read' | 'write' | 'shell' | 'network' | 'image' | 'doc'
-export type ToolScope = 'workspace' | 'current_doc' | 'external' | 'image_library'
+export type ToolAccess = 'read' | 'write' | 'shell' | 'network' | 'image'
+export type ToolScope = 'workspace' | 'external' | 'image_library'
 
 export interface ToolMetadata {
   name: string
@@ -216,7 +215,7 @@ const BUILTIN_TOOL_SPECS: ToolSpec[] = [
       requiresApproval: false,
       access: ['network'],
       scope: ['external'],
-      allowedProfiles: ['chat', 'doc', 'coding', 'research'],
+      allowedProfiles: ['chat', 'coding', 'research'],
     },
   },
   {
@@ -245,7 +244,7 @@ const BUILTIN_TOOL_SPECS: ToolSpec[] = [
       requiresApproval: false,
       access: ['image'],
       scope: ['image_library'],
-      allowedProfiles: ['chat', 'doc'],
+      allowedProfiles: ['chat'],
     },
   },
   {
@@ -277,69 +276,6 @@ const BUILTIN_TOOL_SPECS: ToolSpec[] = [
       maxResultBytes: 64 * 1024,
     },
   },
-  {
-    type: 'function',
-    function: {
-      name: 'edit_doc',
-      description:
-        "Edit a markdown document by find-and-replace. Each edit's `old_string` " +
-        'must appear EXACTLY ONCE in the doc body — include enough surrounding ' +
-        'context to be unique. All edits in one call apply atomically (a single ' +
-        'undo step in the editor). If any edit fails, NONE are applied and you ' +
-        'will receive an error with details to retry. Use this to refine, ' +
-        "restructure, or extend a doc the user is working on. The target doc's " +
-        'path is given in the system message of doc-bound conversations.',
-      parameters: {
-        type: 'object',
-        properties: {
-          docPath: {
-            type: 'string',
-            description:
-              'Target document path (vault-relative, no .md extension). In ' +
-              'doc-bound conversations, default to the path mentioned in the ' +
-              'system message.',
-          },
-          edits: {
-            type: 'array',
-            minItems: 1,
-            description: 'Ordered list of find-and-replace edits to apply atomically.',
-            items: {
-              type: 'object',
-              properties: {
-                old_string: {
-                  type: 'string',
-                  description:
-                    'Exact text to find. Must match byte-for-byte (including whitespace) ' +
-                    'and occur exactly once in the doc body.',
-                },
-                new_string: {
-                  type: 'string',
-                  description: 'Replacement text.',
-                },
-              },
-              required: ['old_string', 'new_string'],
-              additionalProperties: false,
-            },
-          },
-          reason: {
-            type: 'string',
-            description: 'One short line explaining why these edits.',
-          },
-        },
-        required: ['docPath', 'edits'],
-        additionalProperties: false,
-      },
-    },
-    metadata: {
-      name: 'edit_doc',
-      readOnly: false,
-      destructive: true,
-      requiresApproval: false,
-      access: ['doc'],
-      scope: ['current_doc'],
-      allowedProfiles: ['doc'],
-    },
-  },
 ]
 
 const BUILTIN_TOOL_HANDLERS: Record<string, ToolHandler> = {
@@ -349,7 +285,6 @@ const BUILTIN_TOOL_HANDLERS: Record<string, ToolHandler> = {
   web_search: (args) => runWebSearch(args),
   generate_image: (args, ctx) => runGenerateImage(args, ctx),
   bash: (args) => runBash(args),
-  edit_doc: (args, ctx) => runEditDoc(args, ctx),
 }
 
 const BUILTIN_TOOL_PACK_DEFINITIONS = [
@@ -376,12 +311,6 @@ const BUILTIN_TOOL_PACK_DEFINITIONS = [
     name: 'Shell',
     description: 'Run approved shell commands in the workspace.',
     toolNames: ['bash'],
-  },
-  {
-    id: 'doc',
-    name: 'Document',
-    description: 'Apply structured edits to the active markdown document.',
-    toolNames: ['edit_doc'],
   },
 ]
 
@@ -689,27 +618,6 @@ export interface ImageSideChannelBlock {
   prompt: string
 }
 
-export interface DocEditRequest {
-  docPath: string
-  edits: FindReplaceEdit[]
-  reason?: string
-}
-
-export interface DocEditPatch {
-  index: number
-  from: number
-  to: number
-  oldLength: number
-  newLength: number
-  oldPreview: string
-  newPreview: string
-  diffPreview: string
-}
-
-export type DocEditResult =
-  | { ok: true; title: string; appliedCount: number; patches: DocEditPatch[]; diffPreview: string }
-  | { ok: false; error: string; conflicts?: string[] }
-
 export interface ToolApprovalRequest {
   name: string
   args: Record<string, unknown>
@@ -719,14 +627,9 @@ export interface ToolApprovalRequest {
 export interface ToolContext {
   settings: Settings
   profileId: AgentProfileId
-  boundDocPath?: string
   signal?: AbortSignal
   onToolApproval?: (request: ToolApprovalRequest) => Promise<boolean>
   onImage?: (block: ImageSideChannelBlock) => void
-  // Round-trips through the renderer (active doc → CodeMirror transaction)
-  // or main's disk path (inactive doc). Resolves with success or a structured
-  // error the model can use to retry. Wired in src/main/index.ts.
-  onDocEdit?: (req: DocEditRequest) => Promise<DocEditResult>
 }
 
 async function runGenerateImage(args: { prompt?: unknown }, ctx: ToolContext): Promise<string> {
@@ -759,57 +662,6 @@ async function runGenerateImage(args: { prompt?: unknown }, ctx: ToolContext): P
     ok: true,
     note: 'Image generated and shown to user. Do NOT embed it in your reply.',
     model: `${selection.providerId}:${selection.modelId}`,
-  })
-}
-
-async function runEditDoc(
-  args: { docPath?: unknown; edits?: unknown; reason?: unknown },
-  ctx: ToolContext,
-): Promise<string> {
-  const { docPath, edits, reason } = args
-  if (typeof docPath !== 'string' || docPath.length === 0) {
-    throw new Error('`docPath` must be a non-empty string')
-  }
-  if (ctx.boundDocPath && docPath !== ctx.boundDocPath) {
-    throw new Error(`document editing is only available for the active doc: ${ctx.boundDocPath}`)
-  }
-  if (!Array.isArray(edits) || edits.length === 0) {
-    throw new Error('`edits` must be a non-empty array')
-  }
-  const validatedEdits: FindReplaceEdit[] = edits.map((edit, i) => {
-    if (!edit || typeof edit !== 'object') {
-      throw new Error(`edit #${i} must be an object`)
-    }
-    const e = edit as { old_string?: unknown; new_string?: unknown }
-    if (typeof e.old_string !== 'string' || e.old_string.length === 0) {
-      throw new Error(`edit #${i}: \`old_string\` must be a non-empty string`)
-    }
-    if (typeof e.new_string !== 'string') {
-      throw new Error(`edit #${i}: \`new_string\` must be a string`)
-    }
-    return { old_string: e.old_string, new_string: e.new_string }
-  })
-
-  if (!ctx.onDocEdit) {
-    throw new Error('document editing is not available in this context')
-  }
-
-  const result = await ctx.onDocEdit({
-    docPath,
-    edits: validatedEdits,
-    reason: typeof reason === 'string' ? reason : undefined,
-  })
-
-  if (!result.ok) throw new Error(result.error)
-
-  const word = result.appliedCount === 1 ? 'edit' : 'edits'
-  return JSON.stringify({
-    ok: true,
-    title: result.title,
-    appliedCount: result.appliedCount,
-    summary: `Applied ${result.appliedCount} ${word} to "${result.title}"`,
-    patches: result.patches,
-    diffPreview: result.diffPreview,
   })
 }
 

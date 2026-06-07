@@ -1,4 +1,4 @@
-export type BuiltinAgentProfileId = 'chat' | 'doc' | 'coding' | 'research'
+export type BuiltinAgentProfileId = 'chat' | 'coding' | 'research'
 export type AgentProfileId = BuiltinAgentProfileId | (string & {})
 
 export interface AgentProfile {
@@ -15,11 +15,6 @@ export const AGENT_PROFILES: Record<BuiltinAgentProfileId, AgentProfile> = {
     label: 'Chat',
     description: 'General chat with lightweight non-destructive tools only.',
   },
-  doc: {
-    id: 'doc',
-    label: 'Document',
-    description: 'Doc-bound assistant that can edit the current markdown document.',
-  },
   coding: {
     id: 'coding',
     label: 'Coding',
@@ -33,7 +28,7 @@ export const AGENT_PROFILES: Record<BuiltinAgentProfileId, AgentProfile> = {
 }
 
 export function isBuiltinAgentProfileId(value: unknown): value is BuiltinAgentProfileId {
-  return value === 'chat' || value === 'doc' || value === 'coding' || value === 'research'
+  return value === 'chat' || value === 'coding' || value === 'research'
 }
 
 export function getAgentProfile(id: AgentProfileId): AgentProfile {

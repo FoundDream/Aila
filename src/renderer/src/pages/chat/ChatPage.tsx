@@ -67,10 +67,9 @@ export function ChatPage({
       .list()
       .then((profiles) => {
         if (cancelled) return
-        const chatProfiles = profiles.filter((profile) => profile.id !== 'doc')
         setAgentProfiles(profiles)
-        if (chatProfiles.length > 0 && !chatProfiles.some((profile) => profile.id === profileId)) {
-          setProfileId(chatProfiles[0].id)
+        if (profiles.length > 0 && !profiles.some((profile) => profile.id === profileId)) {
+          setProfileId(profiles[0].id)
         }
       })
       .catch((error) => {

@@ -31,7 +31,6 @@ The SDK exposes:
 
 - `AgentRuntime`: send, abort, delete conversations, and receive runtime events.
 - Conversation storage: create, read, list, rename, delete, usage, event logs.
-- Document storage: list, create, update, move, delete Markdown docs and folders.
 - Tool system: built-in tool packs, custom tool packs, metadata, profile
   filtering, execution, approval types.
 - Profiles: built-in profiles plus local manifest profiles with inherited tool
@@ -44,6 +43,11 @@ The SDK exposes:
   `AILA_CONVERSATION_META_SCHEMA_VERSION`, and
   `AILA_PERSISTED_MESSAGE_SCHEMA_VERSION`, and
   `AILA_AGENT_EVENT_SCHEMA_VERSION`.
+
+Desktop docs are intentionally outside this SDK boundary. Desktop can keep its
+workspace-specific docs storage and UI, but runtime adapters should treat docs
+as ordinary files or adapter-owned context instead of depending on doc-specific
+AgentRuntime hooks.
 
 ## Minimal Adapter
 
@@ -59,9 +63,6 @@ const runtime = new AgentRuntime({
   async onToolApproval(request) {
     // Return true to allow destructive tools such as bash/write/edit.
     return false
-  },
-  async onDocEdit(request) {
-    return { ok: false, error: 'doc editing is not supported by this adapter' }
   },
 })
 

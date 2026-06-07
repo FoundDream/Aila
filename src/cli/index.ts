@@ -10,23 +10,17 @@ import {
   type AgentProfileId,
   AgentRuntime,
   type AgentRuntimeEvent,
-  applyFindReplace,
   type ConversationSummary,
   configureDataDir,
   configuredProviders,
   createConversation,
-  type DocEditRequest,
-  type DocEditResult,
   findModel,
-  formatFindReplaceErrors,
   getConversation,
   getDataDir,
-  getDoc,
   getExtensionReport,
   getProfilesDir,
   getToolPacksDir,
   listConversations,
-  listDocConversations,
   loadAgentProfilesFromDir,
   loadSettings,
   loadToolPacksFromDir,
@@ -36,7 +30,6 @@ import {
   PROVIDER_LABELS,
   type ProviderId,
   type ToolApprovalRequest,
-  updateDoc,
 } from '../runtime'
 
 dotenv.config()
@@ -45,7 +38,6 @@ interface CliOptions {
   autoApprove: boolean
   conversationId?: string
   dataDir?: string
-  docPath?: string
   events: boolean
   extensions: boolean
   json: boolean
@@ -79,7 +71,6 @@ function usage(): string {
     '  --prompt <text>         Prompt text; positional prompt and stdin are also supported',
     '  --conversation <id>     Continue an existing conversation',
     '  --data-dir <path>       Data directory (default: $AILA_DATA_DIR, ./.dev-data, or ~/.aila)',
-    '  --doc <path>            Bind a new or existing doc conversation to a markdown doc path',
     '  --extensions            Validate and list manifest profiles/tool packs, then exit',
     '  --list                  List saved conversations and exit',
     '  --limit <n>             Limit rows for --list (default: 20)',
@@ -125,9 +116,6 @@ function parseArgs(argv: string[]): CliOptions {
         break
       case '--data-dir':
         options.dataDir = resolve(requireValue(argv, ++i, arg))
-        break
-      case '--doc':
-        options.docPath = requireValue(argv, ++i, arg)
         break
       case '--events':
         options.events = true
@@ -268,16 +256,12 @@ function preview(text: string, max = 600): string {
   return `${compact.slice(0, max)}...`
 }
 
-async function printConversationList(input: { docPath?: string; limit: number }): Promise<void> {
-  if (input.docPath) await assertDocExists(input.docPath)
-  const conversations = input.docPath
-    ? await listDocConversations(input.docPath)
-    : await listConversations()
+async function printConversationList(input: { limit: number }): Promise<void> {
+  const conversations = await listConversations()
   const shown = conversations.slice(0, input.limit)
 
   output.write('Aila conversations\n')
   output.write(`Data: ${getDataDir()}\n`)
-  if (input.docPath) output.write(`Doc: ${input.docPath}\n`)
   if (shown.length === 0) {
     output.write('No conversations found.\n')
     return
@@ -336,95 +320,30 @@ async function printExtensionReport(json: boolean): Promise<boolean> {
 
 async function resolveConversation(input: {
   conversationId?: string
-  docPath?: string
   resumeLatest?: boolean
-}): Promise<{ conversationId: string; boundDocPath: string | null; isExisting: boolean }> {
+}): Promise<{ conversationId: string; isExisting: boolean }> {
   if (input.resumeLatest) {
-    if (input.docPath) {
-      await assertDocExists(input.docPath)
-      const [summary] = await listDocConversations(input.docPath)
-      if (!summary) throw new Error(`no conversations found for doc: ${input.docPath}`)
-      return {
-        conversationId: summary.id,
-        boundDocPath: summary.docId ?? null,
-        isExisting: true,
-      }
-    }
-
     const [summary] = await listConversations()
     if (!summary) throw new Error('no conversations found to resume')
     return {
       conversationId: summary.id,
-      boundDocPath: summary.docId ?? null,
       isExisting: true,
     }
   }
 
   if (input.conversationId) {
-    const record = await getConversation(input.conversationId)
-    const boundDocPath = record.meta.docId ?? null
-    if (input.docPath) {
-      await assertDocExists(input.docPath)
-      if (boundDocPath !== input.docPath) {
-        throw new Error(
-          boundDocPath
-            ? `conversation is bound to doc "${boundDocPath}", not "${input.docPath}"`
-            : '--doc cannot bind an existing unbound conversation; omit --conversation to create a doc-bound conversation',
-        )
-      }
-    }
-    return { conversationId: input.conversationId, boundDocPath, isExisting: true }
-  }
-
-  if (input.docPath) {
-    await assertDocExists(input.docPath)
-    const summary = await createConversation(input.docPath)
-    return { conversationId: summary.id, boundDocPath: input.docPath, isExisting: false }
+    await getConversation(input.conversationId)
+    return { conversationId: input.conversationId, isExisting: true }
   }
 
   const summary = await createConversation()
-  return { conversationId: summary.id, boundDocPath: null, isExisting: false }
-}
-
-async function assertDocExists(docPath: string): Promise<void> {
-  try {
-    await getDoc(docPath)
-  } catch {
-    throw new Error(`doc not found: ${docPath}`)
-  }
+  return { conversationId: summary.id, isExisting: false }
 }
 
 function readPrompt(options: CliOptions): string {
   if (options.prompt !== undefined) return options.prompt
   if (!input.isTTY) return readFileSync(0, 'utf-8').trim()
   throw new Error('missing prompt; pass one as an argument, use --prompt, or pipe stdin')
-}
-
-async function applyDocEdit(req: DocEditRequest): Promise<DocEditResult> {
-  let doc: Awaited<ReturnType<typeof getDoc>>
-  try {
-    doc = await getDoc(req.docPath)
-  } catch {
-    return { ok: false, error: `doc not found: ${req.docPath}` }
-  }
-
-  const result = applyFindReplace(doc.content, req.edits)
-  if (!result.ok) {
-    return {
-      ok: false,
-      error: formatFindReplaceErrors(result.errors),
-      conflicts: result.errors.map((error) => `edit #${error.index}: ${error.reason}`),
-    }
-  }
-
-  await updateDoc(req.docPath, { content: result.body })
-  return {
-    ok: true,
-    title: doc.title,
-    appliedCount: result.appliedCount,
-    patches: result.patches,
-    diffPreview: result.diffPreview,
-  }
 }
 
 function messageToText(message: PersistedMessage | null): string {
@@ -461,7 +380,6 @@ function createRuntime(input: {
       })
     },
     onToolApproval: (request) => approveTool(request, input.autoApprove, input.events),
-    onDocEdit: applyDocEdit,
     loadProfiles: async () => (await loadAgentProfilesFromDir()).map((profile) => profile.profile),
     loadToolPacks: async () => (await loadToolPacksFromDir()).map((pack) => pack.toolPack),
   })
@@ -545,7 +463,7 @@ async function main(): Promise<void> {
   configureDataDir(options.dataDir ?? defaultDataDir())
 
   if (options.list) {
-    await printConversationList({ docPath: options.docPath, limit: options.limit })
+    await printConversationList({ limit: options.limit })
     return
   }
 
@@ -559,9 +477,8 @@ async function main(): Promise<void> {
   if (prompt !== null && !prompt.trim()) throw new Error('prompt is empty')
 
   const selection = resolveSelection(options.model)
-  const { conversationId, boundDocPath, isExisting } = await resolveConversation({
+  const { conversationId, isExisting } = await resolveConversation({
     conversationId: options.conversationId,
-    docPath: options.docPath,
     resumeLatest: options.resumeLatest,
   })
 
@@ -585,9 +502,8 @@ async function main(): Promise<void> {
     stderr.write(`Profiles: ${getProfilesDir()}\n`)
     stderr.write(`Tool packs: ${getToolPacksDir()}\n`)
     stderr.write(`Conversation: ${conversationId}${isExisting ? ' (resumed)' : ''}\n`)
-    if (boundDocPath) stderr.write(`Doc: ${boundDocPath}\n`)
     stderr.write(`Model: ${modelLabel(selection)}\n`)
-    stderr.write(`Profile: ${boundDocPath ? 'doc' : options.profileId}\n`)
+    stderr.write(`Profile: ${options.profileId}\n`)
   }
 
   try {
@@ -625,8 +541,7 @@ async function main(): Promise<void> {
           id: randomUUID(),
           conversationId,
           dataDir: getDataDir(),
-          docPath: boundDocPath,
-          profileId: boundDocPath ? 'doc' : options.profileId,
+          profileId: options.profileId,
           model: selection,
           status: completed.status,
           text: completed.assistantText,

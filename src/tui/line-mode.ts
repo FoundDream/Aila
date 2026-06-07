@@ -13,25 +13,19 @@ import {
   type AgentRuntimeEvent,
   AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
   appendMessage,
-  applyFindReplace,
   type ConversationSummary,
   configureDataDir,
   configuredProviders,
   createConversation,
-  type DocEditRequest,
-  type DocEditResult,
   type ExtensionReport,
   executeTool,
   findModel,
-  formatFindReplaceErrors,
   getConversation,
   getDataDir,
-  getDoc,
   getExtensionReport,
   getProfilesDir,
   getToolPacksDir,
   listConversations,
-  listDocConversations,
   loadAgentProfilesFromDir,
   loadSettings,
   loadToolPacksFromDir,
@@ -42,7 +36,6 @@ import {
   type ProviderId,
   type Settings,
   type ToolApprovalRequest,
-  updateDoc,
 } from '../runtime'
 
 dotenv.config()
@@ -50,7 +43,6 @@ dotenv.config()
 export interface CliOptions {
   conversationId?: string
   dataDir?: string
-  docPath?: string
   list: boolean
   limit: number
   model?: ModelSelection
@@ -77,7 +69,6 @@ export function usage(): string {
     'Options:',
     '  --conversation <id>     Continue an existing conversation',
     '  --data-dir <path>       Data directory (default: $AILA_DATA_DIR, ./.dev-data, or ~/.aila)',
-    '  --doc <path>            Bind a new or existing doc conversation to a markdown doc path',
     '  --list                  List saved conversations and exit',
     '  --limit <n>             Limit rows for --list (default: 20)',
     '  --model <provider:id>   Override model, e.g. openai:gpt-5.4',
@@ -93,8 +84,6 @@ export function usage(): string {
     '  /abort                  Abort the active response',
     '  /retry                  Retry a dangling last user turn',
     '  /sessions               List saved conversations',
-    '  /doc                    Read the bound markdown document',
-    '  /doc-edit <old> => <new> Edit the bound markdown document',
     '  /extensions [reload]    List extension manifests, optionally refresh runtime caches',
     '  /profile [name]         Show or switch the active profile',
     '  /model [provider:id]    Show or switch the active model',
@@ -143,9 +132,6 @@ export function parseArgs(argv: string[]): CliOptions {
         break
       case '--data-dir':
         options.dataDir = resolve(requireValue(argv, ++i, arg))
-        break
-      case '--doc':
-        options.docPath = requireValue(argv, ++i, arg)
         break
       case '--list':
         options.list = true
@@ -234,62 +220,24 @@ export function displayPreview(text: string, max = 8000): string {
 
 export async function resolveConversation(input: {
   conversationId?: string
-  docPath?: string
   resumeLatest?: boolean
-}): Promise<{ conversationId: string; boundDocPath: string | null; isExisting: boolean }> {
+}): Promise<{ conversationId: string; isExisting: boolean }> {
   if (input.resumeLatest) {
-    if (input.docPath) {
-      await assertDocExists(input.docPath)
-      const [summary] = await listDocConversations(input.docPath)
-      if (!summary) throw new Error(`no conversations found for doc: ${input.docPath}`)
-      return {
-        conversationId: summary.id,
-        boundDocPath: summary.docId ?? null,
-        isExisting: true,
-      }
-    }
-
     const [summary] = await listConversations()
     if (!summary) throw new Error('no conversations found to resume')
     return {
       conversationId: summary.id,
-      boundDocPath: summary.docId ?? null,
       isExisting: true,
     }
   }
 
   if (input.conversationId) {
-    const record = await getConversation(input.conversationId)
-    const boundDocPath = record.meta.docId ?? null
-    if (input.docPath) {
-      await assertDocExists(input.docPath)
-      if (boundDocPath !== input.docPath) {
-        throw new Error(
-          boundDocPath
-            ? `conversation is bound to doc "${boundDocPath}", not "${input.docPath}"`
-            : '--doc cannot bind an existing unbound conversation; omit --conversation to create a doc-bound conversation',
-        )
-      }
-    }
-    return { conversationId: input.conversationId, boundDocPath, isExisting: true }
-  }
-
-  if (input.docPath) {
-    await assertDocExists(input.docPath)
-    const summary = await createConversation(input.docPath)
-    return { conversationId: summary.id, boundDocPath: input.docPath, isExisting: false }
+    await getConversation(input.conversationId)
+    return { conversationId: input.conversationId, isExisting: true }
   }
 
   const summary = await createConversation()
-  return { conversationId: summary.id, boundDocPath: null, isExisting: false }
-}
-
-async function assertDocExists(docPath: string): Promise<void> {
-  try {
-    await getDoc(docPath)
-  } catch {
-    throw new Error(`doc not found: ${docPath}`)
-  }
+  return { conversationId: summary.id, isExisting: false }
 }
 
 function writeLine(line = ''): void {
@@ -346,19 +294,12 @@ export function conversationScope(summary: ConversationSummary): string {
   return summary.docId ? `doc:${summary.docId}` : 'chat'
 }
 
-export async function printConversationList(input: {
-  docPath?: string
-  limit: number
-}): Promise<void> {
-  if (input.docPath) await assertDocExists(input.docPath)
-  const conversations = input.docPath
-    ? await listDocConversations(input.docPath)
-    : await listConversations()
+export async function printConversationList(input: { limit: number }): Promise<void> {
+  const conversations = await listConversations()
   const shown = conversations.slice(0, input.limit)
 
   writeLine('Aila conversations')
   writeLine(`Data: ${getDataDir()}`)
-  if (input.docPath) writeLine(`Doc: ${input.docPath}`)
   if (shown.length === 0) {
     writeLine('No conversations found.')
     return
@@ -401,8 +342,6 @@ export function commandHelp(): string {
     '  /abort                  Abort the active response',
     '  /retry                  Retry a dangling last user turn',
     '  /sessions               List saved conversations',
-    '  /doc                    Read the bound markdown document',
-    '  /doc-edit <old> => <new> Edit the bound markdown document',
     '  /extensions [reload]    List extension manifests, optionally refresh runtime caches',
     '  /profile [name]         Show or switch the active profile',
     '  /model [provider:id]    Show or switch the active model',
@@ -564,12 +503,11 @@ export async function writeProfileList(runtime: AgentRuntime, currentProfileId: 
 export async function handleSlashCommand(input: {
   text: string
   conversationId: string
-  boundDocPath: string | null
   runtime: AgentRuntime
   session: TuiSessionState
   prompt: PromptReader
 }): Promise<'handled' | 'exit' | 'agent'> {
-  const { text, conversationId, boundDocPath, runtime, session, prompt } = input
+  const { text, conversationId, runtime, session, prompt } = input
   if (!text.startsWith('/')) return 'agent'
 
   const commandText = text.slice(1).trim()
@@ -620,7 +558,7 @@ export async function handleSlashCommand(input: {
       }
       case 'session':
       case 'sessions':
-        await printConversationList({ docPath: boundDocPath ?? undefined, limit: 20 })
+        await printConversationList({ limit: 20 })
         return 'handled'
       case 'profile': {
         const words = splitShellWords(rest)
@@ -642,9 +580,6 @@ export async function handleSlashCommand(input: {
         writeLine(
           `[profile] ${profile.id} (${profile.baseProfileId ?? profile.id}) - ${profile.label}`,
         )
-        if (boundDocPath && profile.baseProfileId !== 'doc') {
-          writeLine('[profile] doc-bound conversations keep doc tool policy')
-        }
         return 'handled'
       }
       case 'model': {
@@ -656,49 +591,6 @@ export async function handleSlashCommand(input: {
         if (words.length > 1) throw new Error('usage: /model [provider:modelId]')
         session.selection = parseModel(words[0])
         writeLine(`[model] ${modelLabel(session.selection)}`)
-        return 'handled'
-      }
-      case 'doc':
-      case 'doc-read': {
-        if (!boundDocPath) throw new Error('no doc bound; start TUI with --doc <path>')
-        const doc = await getDoc(boundDocPath)
-        const result = `${doc.title}\n\n${doc.content}`
-        writeLine(`\n[doc] ${boundDocPath}\n${displayPreview(result)}`)
-        await appendLocalContext({ conversationId, command: `/doc ${boundDocPath}`, result })
-        return 'handled'
-      }
-      case 'doc-edit': {
-        if (!boundDocPath) throw new Error('no doc bound; start TUI with --doc <path>')
-        if (!rest.includes('=>')) {
-          throw new Error('usage: /doc-edit <old> => <new>')
-        }
-        const [oldText, ...newParts] = rest.split('=>')
-        const newText = newParts.join('=>')
-        if (!oldText || newParts.length === 0) {
-          throw new Error('usage: /doc-edit <old> => <new>')
-        }
-        const result = await applyDocEdit({
-          docPath: boundDocPath,
-          edits: [{ old_string: oldText.trim(), new_string: newText.trim() }],
-          reason: 'TUI /doc-edit command',
-        })
-        if (!result.ok) throw new Error(result.error)
-        const display = JSON.stringify(
-          {
-            ok: true,
-            title: result.title,
-            appliedCount: result.appliedCount,
-            diffPreview: result.diffPreview,
-          },
-          null,
-          2,
-        )
-        writeLine(`\n[doc-edit] ${boundDocPath}\n${displayPreview(display)}`)
-        await appendLocalContext({
-          conversationId,
-          command: `/doc-edit ${boundDocPath}`,
-          result: display,
-        })
         return 'handled'
       }
       case 'read': {
@@ -800,7 +692,7 @@ export async function runLineMode(argv: string[] = process.argv.slice(2)): Promi
   configureDataDir(options.dataDir ?? defaultDataDir())
 
   if (options.list) {
-    await printConversationList({ docPath: options.docPath, limit: options.limit })
+    await printConversationList({ limit: options.limit })
     return
   }
 
@@ -808,9 +700,8 @@ export async function runLineMode(argv: string[] = process.argv.slice(2)): Promi
     selection: resolveSelection(options.model),
     profileId: options.profileId,
   }
-  const { conversationId, boundDocPath, isExisting } = await resolveConversation({
+  const { conversationId, isExisting } = await resolveConversation({
     conversationId: options.conversationId,
-    docPath: options.docPath,
     resumeLatest: options.resumeLatest,
   })
 
@@ -834,7 +725,6 @@ export async function runLineMode(argv: string[] = process.argv.slice(2)): Promi
       })
     },
     onToolApproval: (request) => askToolApproval(prompt, request),
-    onDocEdit: applyDocEdit,
     loadProfiles: async () => (await loadAgentProfilesFromDir()).map((profile) => profile.profile),
     loadToolPacks: async () => (await loadToolPacksFromDir()).map((pack) => pack.toolPack),
   })
@@ -854,9 +744,8 @@ export async function runLineMode(argv: string[] = process.argv.slice(2)): Promi
   writeLine(`Profiles: ${getProfilesDir()}`)
   writeLine(`Tool packs: ${getToolPacksDir()}`)
   writeLine(`Conversation: ${conversationId}${isExisting ? ' (resumed)' : ''}`)
-  if (boundDocPath) writeLine(`Doc: ${boundDocPath}`)
   writeLine(`Model: ${modelLabel(session.selection)}`)
-  writeLine(`Profile: ${boundDocPath ? `${session.profileId} (doc-bound)` : session.profileId}`)
+  writeLine(`Profile: ${session.profileId}`)
   writeLine('Type /exit to quit. Ctrl+C aborts an active response.')
   if (isExisting && options.showHistory) await printRecentHistory(conversationId)
 
@@ -904,7 +793,6 @@ export async function runLineMode(argv: string[] = process.argv.slice(2)): Promi
       const slashResult = await handleSlashCommand({
         text,
         conversationId,
-        boundDocPath,
         runtime,
         session,
         prompt,
@@ -929,33 +817,6 @@ export async function runLineMode(argv: string[] = process.argv.slice(2)): Promi
   } finally {
     prompt.close()
     runtime.abortAll()
-  }
-}
-
-export async function applyDocEdit(req: DocEditRequest): Promise<DocEditResult> {
-  let doc: Awaited<ReturnType<typeof getDoc>>
-  try {
-    doc = await getDoc(req.docPath)
-  } catch {
-    return { ok: false, error: `doc not found: ${req.docPath}` }
-  }
-
-  const result = applyFindReplace(doc.content, req.edits)
-  if (!result.ok) {
-    return {
-      ok: false,
-      error: formatFindReplaceErrors(result.errors),
-      conflicts: result.errors.map((error) => `edit #${error.index}: ${error.reason}`),
-    }
-  }
-
-  await updateDoc(req.docPath, { content: result.body })
-  return {
-    ok: true,
-    title: doc.title,
-    appliedCount: result.appliedCount,
-    patches: result.patches,
-    diffPreview: result.diffPreview,
   }
 }
 

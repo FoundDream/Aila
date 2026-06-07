@@ -1,6 +1,7 @@
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import * as runtimeSdk from '../src/runtime'
 import {
   AgentRuntime,
   type AgentRuntimeEvent,
@@ -14,17 +15,13 @@ import {
   AILA_TOOL_PACK_MANIFEST_SCHEMA_VERSION,
   appendAgentEvent,
   appendMessage,
-  applyFindReplace,
   configureDataDir,
   createConversation,
   createDefaultToolRegistry,
-  createDoc,
   createRuntimeEvent,
   executeTool,
-  formatFindReplaceErrors,
   getConversation,
   getConversationsDir,
-  getDoc,
   getExtensionReport,
   getProfilesDir,
   getToolDefinitionsForProfile,
@@ -35,7 +32,6 @@ import {
   loadToolPacksFromDir,
   type Settings,
   type ToolPack,
-  updateDoc,
 } from '../src/runtime'
 
 function assert(condition: unknown, message: string): asserts condition {
@@ -398,106 +394,64 @@ async function testToolRegistryContract(): Promise<void> {
   }
 }
 
-async function testEditDocToolContract(): Promise<void> {
-  await withTempDataDir(async () => {
-    const settings: Settings = { apiKeys: {}, defaultModel: null }
-    const created = await createDoc()
-    const doc = await updateDoc(created.path, {
-      title: 'Contract Doc',
-      content: 'alpha\nbeta\ngamma',
-    })
-    let docEditRequests = 0
+async function testRuntimeCoreHasNoDocToolContract(): Promise<void> {
+  const registry = createDefaultToolRegistry()
+  assert(!registry.specsByName.has('edit_doc'), 'runtime core must not register edit_doc')
 
-    const onDocEdit = async (request: {
-      docPath: string
-      edits: Array<{ old_string: string; new_string: string }>
-    }) => {
-      docEditRequests++
-      const current = await getDoc(request.docPath)
-      const result = applyFindReplace(current.content, request.edits)
-      if (!result.ok) {
-        return {
-          ok: false as const,
-          error: formatFindReplaceErrors(result.errors),
-          conflicts: result.errors.map((error) => `edit #${error.index}: ${error.reason}`),
-        }
-      }
-      await updateDoc(request.docPath, { content: result.body })
-      return {
-        ok: true as const,
-        title: current.title,
-        appliedCount: result.appliedCount,
-        patches: result.patches,
-        diffPreview: result.diffPreview,
-      }
-    }
+  for (const spec of registry.specs) {
+    assert(
+      !(spec.metadata.allowedProfiles as readonly string[]).includes('doc'),
+      `tool ${spec.metadata.name} must not target a doc profile`,
+    )
+    assert(
+      !(spec.metadata.access as readonly string[]).includes('doc'),
+      `tool ${spec.metadata.name} must not use doc access`,
+    )
+    assert(
+      !(spec.metadata.scope as readonly string[]).includes('current_doc'),
+      `tool ${spec.metadata.name} must not use current_doc scope`,
+    )
+  }
 
-    const output = await executeTool(
+  assert(
+    !Object.hasOwn(runtimeSdk.AGENT_PROFILES, 'doc'),
+    'runtime core must not expose a built-in doc profile',
+  )
+  assertEqual(runtimeSdk.isBuiltinAgentProfileId('doc'), false, 'doc is not a built-in profile')
+
+  try {
+    await executeTool(
       'edit_doc',
-      {
-        docPath: doc.path,
-        edits: [{ old_string: 'beta', new_string: 'delta' }],
-        reason: 'runtime contract',
-      },
-      { settings, profileId: 'doc', boundDocPath: doc.path, onDocEdit },
+      {},
+      { settings: { apiKeys: {}, defaultModel: null }, profileId: 'coding' },
+      registry,
     )
-    const parsed = JSON.parse(output) as { ok?: boolean; appliedCount?: number; title?: string }
-    assertEqual(parsed.ok, true, 'edit_doc tool result ok')
-    assertEqual(parsed.appliedCount, 1, 'edit_doc applied count')
-    assertEqual(parsed.title, 'Contract Doc', 'edit_doc title')
-    assertEqual(docEditRequests, 1, 'edit_doc should call adapter once')
-    assertEqual(
-      (await getDoc(doc.path)).content,
-      'alpha\ndelta\ngamma',
-      'edit_doc should update document content',
+    throw new Error('edit_doc unexpectedly executed')
+  } catch (error) {
+    assert(
+      error instanceof Error && error.message.includes('unknown tool'),
+      'edit_doc should be unknown in runtime core',
     )
+  }
+}
 
-    try {
-      await executeTool(
-        'edit_doc',
-        {
-          docPath: 'Other Doc',
-          edits: [{ old_string: 'x', new_string: 'y' }],
-        },
-        {
-          settings,
-          profileId: 'doc',
-          boundDocPath: doc.path,
-          async onDocEdit() {
-            throw new Error('cross-doc guard failed')
-          },
-        },
-      )
-      throw new Error('cross-doc edit unexpectedly succeeded')
-    } catch (error) {
-      assert(
-        error instanceof Error && error.message.includes('only available for the active doc'),
-        'edit_doc should reject edits outside the bound doc',
-      )
-    }
-
-    try {
-      await executeTool(
-        'edit_doc',
-        {
-          docPath: doc.path,
-          edits: [{ old_string: 'missing', new_string: 'replacement' }],
-        },
-        { settings, profileId: 'doc', boundDocPath: doc.path, onDocEdit },
-      )
-      throw new Error('failed edit_doc unexpectedly succeeded')
-    } catch (error) {
-      assert(
-        error instanceof Error && error.message.includes('not found'),
-        'edit_doc should surface adapter find/replace errors',
-      )
-    }
-    assertEqual(
-      (await getDoc(doc.path)).content,
-      'alpha\ndelta\ngamma',
-      'failed edit_doc should leave document unchanged',
-    )
-  })
+async function testRuntimeSdkDoesNotExportDocsContract(): Promise<void> {
+  const sdk = runtimeSdk as Record<string, unknown>
+  for (const name of [
+    'createDoc',
+    'getDoc',
+    'updateDoc',
+    'deleteDoc',
+    'listAll',
+    'createFolder',
+    'deleteFolder',
+    'moveFolder',
+    'renameFolder',
+    'listDocConversations',
+    'rewriteDocRefs',
+  ]) {
+    assert(!(name in sdk), `runtime SDK must not export Desktop docs API: ${name}`)
+  }
 }
 
 async function testToolPackManifestLoader(): Promise<void> {
@@ -815,7 +769,8 @@ async function main(): Promise<void> {
   await testPersistenceContract()
   await testLegacyPersistenceNormalization()
   await testToolRegistryContract()
-  await testEditDocToolContract()
+  await testRuntimeCoreHasNoDocToolContract()
+  await testRuntimeSdkDoesNotExportDocsContract()
   await testToolPackManifestLoader()
   await testToolPackReloadsChangedEntry()
   await testProfileManifestLoader()

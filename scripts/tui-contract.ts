@@ -7,10 +7,7 @@ import {
   appendMessage,
   configureDataDir,
   createConversation,
-  createDoc,
   getConversation,
-  getDoc,
-  updateDoc,
 } from '../src/runtime'
 
 interface RunResult {
@@ -168,38 +165,16 @@ async function testExtensionAndSessionSlashCommands(): Promise<void> {
   })
 }
 
-async function testDocSlashCommands(): Promise<void> {
+async function testDocCommandsAreNotRuntimeAdapterFeatures(): Promise<void> {
   await withTempDataDir(async (dataDir) => {
-    const created = await createDoc()
-    const doc = await updateDoc(created.path, {
-      title: 'TUI Contract Doc',
-      content: 'intro\nold doc text\noutro',
-    })
-
-    const stdin = ['/doc', '/doc-edit old doc text => new doc text', '/exit', ''].join('\n')
     const result = await runTui(
-      [
-        '--data-dir',
-        dataDir,
-        '--doc',
-        doc.path,
-        '--model',
-        'openrouter:minimax/minimax-m3',
-        '--no-history',
-      ],
-      stdin,
+      ['--data-dir', dataDir, '--model', 'openrouter:minimax/minimax-m3', '--no-history'],
+      ['/doc', '/doc-edit old doc text => new doc text', '/exit', ''].join('\n'),
     )
 
-    assertEqual(result.code, 0, 'TUI doc slash commands should exit cleanly')
-    assert(result.stdout.includes(`[doc] ${doc.path}`), 'TUI should display bound doc read')
-    assert(result.stdout.includes('old doc text'), 'TUI doc read should show original content')
-    assert(result.stdout.includes(`[doc-edit] ${doc.path}`), 'TUI should display doc edit')
-    assert(result.stdout.includes('new doc text'), 'TUI doc edit should show diff')
-    assertEqual(
-      (await getDoc(doc.path)).content,
-      'intro\nnew doc text\noutro',
-      'TUI doc edit should update bound markdown document',
-    )
+    assertEqual(result.code, 0, 'TUI removed doc slash commands should exit cleanly')
+    assert(result.stdout.includes('Unknown command: /doc'), 'TUI should reject /doc')
+    assert(result.stdout.includes('Unknown command: /doc-edit'), 'TUI should reject /doc-edit')
 
     const conversationId = extractConversationId(result.stdout)
     const record = await getConversation(conversationId)
@@ -210,7 +185,23 @@ async function testDocSlashCommands(): Promise<void> {
           (block) => block.type === 'text' && block.content.startsWith('[local command]'),
         ),
     )
-    assertEqual(localContexts.length, 2, 'TUI doc commands should persist local context messages')
+    assertEqual(
+      localContexts.length,
+      0,
+      'removed doc commands should not persist local context messages',
+    )
+  })
+}
+
+async function testDocFlagIsRemoved(): Promise<void> {
+  await withTempDataDir(async (dataDir) => {
+    const result = await runTui(
+      ['--data-dir', dataDir, '--doc', 'Old Doc', '--model', 'openrouter:minimax/minimax-m3'],
+      '',
+    )
+
+    assertEqual(result.code, 1, 'TUI --doc should be rejected')
+    assert(result.stdout.includes('unknown option: --doc'), 'TUI should report removed --doc flag')
   })
 }
 
@@ -261,7 +252,8 @@ async function testRetryLastDoesNotDuplicateUser(): Promise<void> {
 async function main(): Promise<void> {
   await testLocalSlashCommands()
   await testExtensionAndSessionSlashCommands()
-  await testDocSlashCommands()
+  await testDocCommandsAreNotRuntimeAdapterFeatures()
+  await testDocFlagIsRemoved()
   await testRetryLastDoesNotDuplicateUser()
   console.log('tui contract: ok')
 }

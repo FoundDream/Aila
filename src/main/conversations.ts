@@ -57,8 +57,7 @@ export interface ConversationMeta {
   updatedAt: number
   usage?: ConversationUsage
   // When set, this conversation is the AI sidebar attached to a specific doc.
-  // The chat tab filters these out; doc context is prepended to each request
-  // by the chat:send handler at send time (read fresh from disk, not cached).
+  // The chat tab filters these out; Desktop owns docs workspace behavior.
   docId?: string | null
 }
 

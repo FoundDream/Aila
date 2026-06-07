@@ -1,14 +1,6 @@
-import type { EditorView } from '@codemirror/view'
 import { type ReactElement, useCallback, useEffect, useRef, useState } from 'react'
 import type { ChatStreamsApi } from '@/pages/chat/useChatStreams'
-import type {
-  DocEditFindReplace,
-  DocEditPatch,
-  DocEditRequestEvent,
-  DocEditResult,
-} from '../../../../preload/index'
 import type { ProviderId, Settings } from '../../types'
-import { AiEditToast } from './AiEditToast'
 import { DocChatPanel } from './DocChatPanel'
 import { DocEditor } from './DocEditor'
 import { DocPreviewPanel } from './DocPreviewPanel'
@@ -33,9 +25,6 @@ interface DocsPageProps {
 const SIDE_PANEL_DEFAULT_WIDTH = 360
 const SIDE_PANEL_MIN_WIDTH = 280
 const SIDE_PANEL_STORAGE_KEY = 'docs.sidePanel.width'
-const PATCH_PREVIEW_CHARS = 500
-const DIFF_PREVIEW_CHARS = 2_000
-const AGGREGATE_DIFF_PREVIEW_CHARS = 6_000
 
 function EmptyState({ onCreate }: { onCreate: () => void }): ReactElement {
   return (
@@ -60,123 +49,6 @@ function EmptyState({ onCreate }: { onCreate: () => void }): ReactElement {
   )
 }
 
-function previewPatchText(text: string): string {
-  const compact = text.replace(/\s+/g, ' ').trim()
-  return compact.length <= PATCH_PREVIEW_CHARS
-    ? compact
-    : `${compact.slice(0, PATCH_PREVIEW_CHARS)}...`
-}
-
-function makeDiffPreview(oldText: string, newText: string): string {
-  const diff = `- ${previewPatchText(oldText)}\n+ ${previewPatchText(newText)}`
-  return diff.length <= DIFF_PREVIEW_CHARS ? diff : `${diff.slice(0, DIFF_PREVIEW_CHARS)}...`
-}
-
-function aggregateDiffPreview(patches: DocEditPatch[]): string {
-  const text = patches.map((patch) => `edit #${patch.index}\n${patch.diffPreview}`).join('\n\n')
-  return text.length <= AGGREGATE_DIFF_PREVIEW_CHARS
-    ? text
-    : `${text.slice(0, AGGREGATE_DIFF_PREVIEW_CHARS)}...`
-}
-
-// Validate every old_string against the live view content before dispatching any
-// change. Same uniqueness and non-overlap contract as src/main/find-replace.ts,
-// duplicated here because the live source is the EditorView, not the disk.
-function planChanges(
-  body: string,
-  edits: DocEditFindReplace[],
-):
-  | {
-      ok: true
-      changes: { from: number; to: number; insert: string }[]
-      patches: DocEditPatch[]
-      diffPreview: string
-    }
-  | { ok: false; error: string; conflicts: string[] } {
-  const planned: Array<{
-    index: number
-    from: number
-    to: number
-    old_string: string
-    new_string: string
-  }> = []
-  for (let i = 0; i < edits.length; i++) {
-    const { old_string, new_string } = edits[i]
-    if (typeof old_string !== 'string' || old_string.length === 0) {
-      const error = `edit #${i}: \`old_string\` must be a non-empty string`
-      return { ok: false, error, conflicts: [error] }
-    }
-    if (typeof new_string !== 'string') {
-      const error = `edit #${i}: \`new_string\` must be a string`
-      return { ok: false, error, conflicts: [error] }
-    }
-    let count = 0
-    let from = 0
-    let firstIdx = -1
-    while (true) {
-      const idx = body.indexOf(old_string, from)
-      if (idx === -1) break
-      if (firstIdx === -1) firstIdx = idx
-      count++
-      from = idx + old_string.length
-    }
-    if (count === 0) {
-      const error = `edit #${i}: \`old_string\` not found (must match byte-for-byte, including whitespace)`
-      return { ok: false, error, conflicts: [error] }
-    }
-    if (count > 1) {
-      const error = `edit #${i}: \`old_string\` matches ${count} times — include more surrounding context to be unique`
-      return { ok: false, error, conflicts: [error] }
-    }
-    planned.push({
-      index: i,
-      from: firstIdx,
-      to: firstIdx + old_string.length,
-      old_string,
-      new_string,
-    })
-  }
-
-  // Sort changes by `from` ascending — CodeMirror requires monotonically
-  // non-decreasing positions in a single transaction.
-  const plannedByPosition = [...planned].sort((a, b) => a.from - b.from)
-  for (let i = 1; i < plannedByPosition.length; i++) {
-    const prev = plannedByPosition[i - 1]
-    const current = plannedByPosition[i]
-    if (current.from < prev.to) {
-      const error = `edit #${current.index}: \`old_string\` overlaps edit #${prev.index}; split or combine the edits`
-      return { ok: false, error, conflicts: [error] }
-    }
-  }
-
-  const changes = plannedByPosition.map((item) => ({
-    from: item.from,
-    to: item.to,
-    insert: item.new_string,
-  }))
-  const patches: DocEditPatch[] = [...planned]
-    .sort((a, b) => a.index - b.index)
-    .map((item) => {
-      const patchDiff = makeDiffPreview(item.old_string, item.new_string)
-      return {
-        index: item.index,
-        from: item.from,
-        to: item.to,
-        oldLength: item.old_string.length,
-        newLength: item.new_string.length,
-        oldPreview: previewPatchText(item.old_string),
-        newPreview: previewPatchText(item.new_string),
-        diffPreview: patchDiff,
-      }
-    })
-  return {
-    ok: true,
-    changes,
-    patches,
-    diffPreview: aggregateDiffPreview(patches),
-  }
-}
-
 export function DocsPage({
   active,
   state,
@@ -192,7 +64,6 @@ export function DocsPage({
   const [panelMode, setPanelMode] = useState<PanelMode>(null)
   const [viewMode, setViewMode] = useState<ViewMode>('edit')
   const [tocCollapsed, setTocCollapsed] = useState(true)
-  const [toastMessage, setToastMessage] = useState<string | null>(null)
   // Live mirror of the editor's title + content, updated synchronously on
   // every keystroke so the preview panel stays in sync without waiting for
   // the autosave debounce. The patch is scoped by docPath so a stale entry
@@ -276,30 +147,16 @@ export function DocsPage({
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [active, activeDoc, toggleReadMode])
 
-  // Ref to the active doc's CodeMirror EditorView, captured from MarkdownEditor
-  // via onCreateView. Used to apply AI-driven edits as a single transaction
-  // (one undo step) without going through disk first.
-  const viewRef = useRef<EditorView | null>(null)
-  // Track which doc the captured view belongs to, since onCreateView fires
-  // independently of the activeDoc prop.
-  const viewDocPathRef = useRef<string | null>(null)
-  // Mirror activeDoc.path in a ref so the IPC handler closure sees the latest
-  // value without re-subscribing.
-  const activeDocPathRef = useRef<string | null>(null)
-  activeDocPathRef.current = activeDoc?.path ?? null
-
-  const handleCreateView = useCallback((view: EditorView, docPath: string) => {
-    viewRef.current = view
-    viewDocPathRef.current = docPath
-  }, [])
-
-  const handleLiveChange = useCallback((patch: { title?: string; content?: string }) => {
-    const docPath = activeDocPathRef.current
-    if (!docPath) return
-    setLiveState((prev) =>
-      prev.docPath === docPath ? { ...prev, ...patch } : { docPath, ...patch },
-    )
-  }, [])
+  const handleLiveChange = useCallback(
+    (patch: { title?: string; content?: string }) => {
+      const docPath = activeDoc?.path ?? null
+      if (!docPath) return
+      setLiveState((prev) =>
+        prev.docPath === docPath ? { ...prev, ...patch } : { docPath, ...patch },
+      )
+    },
+    [activeDoc?.path],
+  )
 
   useEffect(() => {
     if (!editorScrollEl || !previewScrollEl) return
@@ -330,51 +187,6 @@ export function DocsPage({
       previewScrollEl.removeEventListener('scroll', onPreview)
     }
   }, [editorScrollEl, previewScrollEl])
-
-  const applyEditRequest = useCallback(
-    async (req: DocEditRequestEvent): Promise<DocEditResult> => {
-      // Live path: target doc is currently mounted in the editor. Apply via
-      // CodeMirror transaction so the change participates in undo history and
-      // the existing autosave debounce naturally writes it to disk.
-      if (
-        req.docPath === activeDocPathRef.current &&
-        viewRef.current &&
-        viewDocPathRef.current === req.docPath
-      ) {
-        const view = viewRef.current
-        const body = view.state.doc.toString()
-        const planned = planChanges(body, req.edits)
-        if (!planned.ok) return { ok: false, error: planned.error, conflicts: planned.conflicts }
-        view.dispatch({
-          changes: planned.changes,
-          userEvent: 'input.ai-edit',
-        })
-        return {
-          ok: true,
-          title: activeDoc?.title ?? '',
-          appliedCount: planned.changes.length,
-          patches: planned.patches,
-          diffPreview: planned.diffPreview,
-        }
-      }
-      // Inactive doc: fall back to main's disk-only path.
-      return window.api.docs.applyEditDirect(req.docPath, req.edits)
-    },
-    [activeDoc?.title],
-  )
-
-  useEffect(() => {
-    const off = window.api.docs.onEditRequest(async (req: DocEditRequestEvent) => {
-      const result = await applyEditRequest(req)
-      window.api.docs.sendEditResponse({ requestId: req.requestId, ...result })
-      if (result.ok) {
-        const isLive =
-          req.docPath === activeDocPathRef.current && viewDocPathRef.current === req.docPath
-        setToastMessage(isLive ? 'Edited by AI' : `Edited "${result.title}"`)
-      }
-    })
-    return off
-  }, [applyEditRequest])
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -428,7 +240,6 @@ export function DocsPage({
                 doc={activeDoc}
                 onSave={save}
                 onLiveChange={handleLiveChange}
-                onCreateView={(view) => handleCreateView(view, activeDoc.path)}
                 onScrollContainer={handleMainScrollContainer}
                 tocCollapsed={tocCollapsed}
                 onToggleToc={toggleToc}
@@ -472,7 +283,6 @@ export function DocsPage({
           )}
         </SidePanel>
       </div>
-      <AiEditToast message={toastMessage} onDismiss={() => setToastMessage(null)} />
     </div>
   )
 }
@@ -481,7 +291,6 @@ function ActiveEditor({
   doc,
   onSave,
   onLiveChange,
-  onCreateView,
   onScrollContainer,
   tocCollapsed,
   onToggleToc,
@@ -489,7 +298,6 @@ function ActiveEditor({
   doc: DocRecord
   onSave: DocsState['save']
   onLiveChange: (patch: { title?: string; content?: string }) => void
-  onCreateView: (view: EditorView) => void
   onScrollContainer: (el: HTMLDivElement | null) => void
   tocCollapsed: boolean
   onToggleToc: () => void
@@ -501,7 +309,6 @@ function ActiveEditor({
       initialContent={doc.content}
       onChange={onSave}
       onLiveChange={onLiveChange}
-      onCreateView={onCreateView}
       onScrollContainer={onScrollContainer}
       tocCollapsed={tocCollapsed}
       onToggleToc={onToggleToc}
