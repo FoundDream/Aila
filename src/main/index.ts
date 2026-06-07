@@ -1,7 +1,7 @@
 import { join } from 'node:path'
 import { is } from '@electron-toolkit/utils'
 import * as dotenv from 'dotenv'
-import { app, BrowserWindow, ipcMain } from 'electron'
+import { app, BrowserWindow, ipcMain, nativeTheme } from 'electron'
 import type { ProviderId } from '../shared/models'
 import { getModelInfo, type ModelSelection } from './agent'
 import type { AgentProfileId } from './agent-profile'
@@ -50,6 +50,10 @@ let gracefulShutdownComplete = false
 const TOOL_APPROVAL_TIMEOUT_MS = 60_000
 
 function createWindow(): void {
+  // The renderer is light-only; pin the native appearance so the sidebar
+  // vibrancy material stays light when the OS switches to dark mode.
+  nativeTheme.themeSource = 'light'
+
   mainWindow = new BrowserWindow({
     width: 900,
     height: 700,
@@ -57,7 +61,12 @@ function createWindow(): void {
     minHeight: 400,
     show: false,
     titleBarStyle: 'hiddenInset',
-    backgroundColor: '#f7f7f7',
+    // macOS: the renderer leaves the window background transparent so the
+    // sidebar shows the native translucent material; the content pane paints
+    // its own opaque white. Elsewhere fall back to a solid background.
+    ...(process.platform === 'darwin'
+      ? { vibrancy: 'sidebar' as const }
+      : { backgroundColor: '#f7f7f7' }),
     trafficLightPosition: { x: 6, y: 10 },
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),

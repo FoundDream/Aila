@@ -142,7 +142,7 @@ export function ChatPage({
   }, [conversationId, streams, onOpenSettings, profileId, selectionRef.current])
 
   return (
-    <div className="flex h-full flex-col bg-[var(--bg)] text-[var(--text)]">
+    <div className="flex h-full flex-col text-[var(--text)]">
       <header className="flex h-10 shrink-0 items-center justify-center px-8 [-webkit-app-region:drag]">
         <span className="max-w-[60%] truncate text-[13px] font-medium text-[var(--text-soft)]">
           {conversation?.meta.title || 'Aila'}

@@ -164,105 +164,88 @@ export default function App(): ReactElement {
 
   return (
     <TooltipProvider delayDuration={300}>
-      <div className="flex h-full bg-[var(--bg-soft)] text-[var(--text)]">
+      <div className="flex h-full bg-transparent text-[var(--text)]">
         <aside
           className={`flex shrink-0 flex-col overflow-hidden transition-[width] duration-200 ease-out ${
-            collapsed ? 'w-[80px]' : 'w-[260px]'
+            collapsed ? 'w-0' : 'w-[260px]'
           }`}
         >
-          <div className="h-11 shrink-0 [-webkit-app-region:drag]" />
-          <nav className="flex shrink-0 flex-col gap-px px-2">
-            <SidebarButton
-              collapsed={collapsed}
-              onClick={() => setCollapsed((c) => !c)}
-              label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-              shortcut="⌘\\"
-              icon={
-                collapsed ? (
-                  <PanelLeftOpenIcon className="size-4" />
-                ) : (
-                  <PanelLeftCloseIcon className="size-4" />
-                )
-              }
-            />
-            {navItems.map((item) => (
+          {/* Fixed-width inner wrapper so the collapse animation clips the
+              sidebar instead of squashing its content. */}
+          <div className="flex h-full w-[260px] flex-col">
+            <div className="h-11 shrink-0 [-webkit-app-region:drag]" />
+            <nav className="flex shrink-0 flex-col gap-px px-2">
+              {navItems.map((item) => (
+                <SidebarButton
+                  key={item.id}
+                  active={tab === item.id}
+                  onClick={() => setTab(item.id)}
+                  label={item.label}
+                  icon={item.icon}
+                />
+              ))}
               <SidebarButton
-                key={item.id}
-                collapsed={collapsed}
-                active={tab === item.id}
-                onClick={() => setTab(item.id)}
-                label={item.label}
-                icon={item.icon}
+                onClick={openSettings}
+                label="Settings"
+                icon={<SettingsIcon className="size-4" />}
               />
-            ))}
-            <SidebarButton
-              collapsed={collapsed}
-              onClick={openSettings}
-              label="Settings"
-              icon={<SettingsIcon className="size-4" />}
-            />
-          </nav>
-          <div
-            className={
-              tab === 'chat'
-                ? `mt-5 flex min-h-0 flex-1 flex-col transition-opacity duration-150 ${
-                    collapsed ? 'pointer-events-none opacity-0' : 'opacity-100'
-                  }`
-                : 'hidden'
-            }
-            aria-hidden={collapsed || tab !== 'chat'}
-          >
-            <ConversationList
-              conversations={conversationsState.conversations}
-              activeId={conversationsState.activeId}
-              busyIds={chatStreams.busyIds}
-              pendingApprovalIds={pendingApprovalConversationIds}
-              onSelect={conversationsState.select}
-              onCreate={() => {
-                void conversationsState.create()
-              }}
-              onRename={(id, title) => {
-                void conversationsState.rename(id, title)
-              }}
-              onDelete={(id) => {
-                void (async () => {
-                  try {
-                    await conversationsState.remove(id)
-                    clearConversationApprovals(id)
-                    chatStreams.drop(id)
-                  } catch (error) {
-                    console.warn('[conversations] delete failed:', error)
-                  }
-                })()
-              }}
-            />
-          </div>
-          <div
-            className={
-              tab === 'docs'
-                ? `mt-5 flex min-h-0 flex-1 flex-col transition-opacity duration-150 ${
-                    collapsed ? 'pointer-events-none opacity-0' : 'opacity-100'
-                  }`
-                : 'hidden'
-            }
-            aria-hidden={collapsed || tab !== 'docs'}
-          >
-            <DocList
-              docs={docsState.docs}
-              folders={docsState.folders}
-              activePath={docsState.activePath}
-              onSelect={docsState.select}
-              onCreateDoc={docsState.create}
-              onDeleteDoc={docsState.remove}
-              onMoveDoc={docsState.move}
-              onCreateFolder={docsState.createFolder}
-              onRenameFolder={docsState.renameFolder}
-              onMoveFolder={docsState.moveFolder}
-              onDeleteFolder={docsState.deleteFolder}
-            />
+            </nav>
+            <div
+              className={tab === 'chat' ? 'mt-5 flex min-h-0 flex-1 flex-col' : 'hidden'}
+              aria-hidden={collapsed || tab !== 'chat'}
+            >
+              <ConversationList
+                conversations={conversationsState.conversations}
+                activeId={conversationsState.activeId}
+                busyIds={chatStreams.busyIds}
+                pendingApprovalIds={pendingApprovalConversationIds}
+                onSelect={conversationsState.select}
+                onCreate={() => {
+                  void conversationsState.create()
+                }}
+                onRename={(id, title) => {
+                  void conversationsState.rename(id, title)
+                }}
+                onDelete={(id) => {
+                  void (async () => {
+                    try {
+                      await conversationsState.remove(id)
+                      clearConversationApprovals(id)
+                      chatStreams.drop(id)
+                    } catch (error) {
+                      console.warn('[conversations] delete failed:', error)
+                    }
+                  })()
+                }}
+              />
+            </div>
+            <div
+              className={tab === 'docs' ? 'mt-5 flex min-h-0 flex-1 flex-col' : 'hidden'}
+              aria-hidden={collapsed || tab !== 'docs'}
+            >
+              <DocList
+                docs={docsState.docs}
+                folders={docsState.folders}
+                activePath={docsState.activePath}
+                onSelect={docsState.select}
+                onCreateDoc={docsState.create}
+                onDeleteDoc={docsState.remove}
+                onMoveDoc={docsState.move}
+                onCreateFolder={docsState.createFolder}
+                onRenameFolder={docsState.renameFolder}
+                onMoveFolder={docsState.moveFolder}
+                onDeleteFolder={docsState.deleteFolder}
+              />
+            </div>
           </div>
         </aside>
-        <main className="min-w-0 flex-1 rounded-tl-xl border-t border-l border-[var(--border)] bg-[var(--bg)] shadow-[0_1px_4px_rgba(0,0,0,0.03)]">
+        <main
+          className={`min-w-0 flex-1 bg-[var(--bg)] ${
+            collapsed
+              ? ''
+              : 'overflow-hidden rounded-tl-xl border-t border-l border-[var(--border)] shadow-[0_1px_4px_rgba(0,0,0,0.03)]'
+          }`}
+        >
           <div className={tab === 'chat' ? 'h-full' : 'hidden'}>
             <ChatPage
               conversation={conversationsState.activeRecord}
@@ -288,6 +271,30 @@ export default function App(): ReactElement {
             />
           </div>
         </main>
+        {/* Rendered last on purpose: Electron folds -webkit-app-region rects
+            into the draggable region in document order, so this button's
+            no-drag carve-out must come after the drag strips it overlaps —
+            otherwise clicks on it get treated as window drags. */}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              onClick={() => setCollapsed((c) => !c)}
+              aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+              className="fixed top-[6px] left-[88px] z-50 grid size-7 place-items-center rounded-lg text-[var(--text-dim)] transition-colors [-webkit-app-region:no-drag] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
+            >
+              {collapsed ? (
+                <PanelLeftOpenIcon className="size-4" />
+              ) : (
+                <PanelLeftCloseIcon className="size-4" />
+              )}
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom" sideOffset={6}>
+            <span>{collapsed ? 'Expand sidebar' : 'Collapse sidebar'}</span>
+            <span className="ml-2 opacity-60">{'⌘\\'}</span>
+          </TooltipContent>
+        </Tooltip>
         {settingsState && (
           <SettingsModal
             open={settingsOpen}
@@ -307,54 +314,28 @@ export default function App(): ReactElement {
 }
 
 interface SidebarButtonProps {
-  collapsed: boolean
   active?: boolean
   onClick: () => void
   label: string
-  shortcut?: string
   icon: ReactNode
 }
 
-function SidebarButton({
-  collapsed,
-  active = false,
-  onClick,
-  label,
-  shortcut,
-  icon,
-}: SidebarButtonProps): ReactElement {
-  const [open, setOpen] = useState(false)
+function SidebarButton({ active = false, onClick, label, icon }: SidebarButtonProps): ReactElement {
   return (
-    <Tooltip open={collapsed && open} onOpenChange={setOpen}>
-      <TooltipTrigger asChild>
-        <button
-          type="button"
-          onClick={onClick}
-          aria-label={label}
-          className={`flex h-7 cursor-pointer items-center rounded-lg text-[13px] transition-[padding,gap,background-color,color] duration-200 ease-out ${
-            collapsed ? 'gap-0 pr-6 pl-6' : 'gap-2 pr-2 pl-2'
-          } ${
-            active
-              ? 'bg-[var(--surface-hover)] text-[var(--text)]'
-              : 'text-[var(--text-soft)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]'
-          }`}
-        >
-          <span className="flex h-4 w-4 shrink-0 items-center justify-center text-[var(--text-dim)]">
-            {icon}
-          </span>
-          <span
-            className={`min-w-0 flex-1 truncate text-left transition-opacity duration-100 ${
-              collapsed ? 'opacity-0' : 'opacity-100'
-            }`}
-          >
-            {label}
-          </span>
-        </button>
-      </TooltipTrigger>
-      <TooltipContent side="right" sideOffset={6}>
-        <span>{label}</span>
-        {shortcut && <span className="ml-2 opacity-60">{shortcut}</span>}
-      </TooltipContent>
-    </Tooltip>
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={label}
+      className={`flex h-7 cursor-pointer items-center gap-2 rounded-lg px-2 text-[13px] transition-colors ${
+        active
+          ? 'bg-[var(--surface-hover)] text-[var(--text)]'
+          : 'text-[var(--text-soft)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]'
+      }`}
+    >
+      <span className="flex h-4 w-4 shrink-0 items-center justify-center text-[var(--text-dim)]">
+        {icon}
+      </span>
+      <span className="min-w-0 flex-1 truncate text-left">{label}</span>
+    </button>
   )
 }
