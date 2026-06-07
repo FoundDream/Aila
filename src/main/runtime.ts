@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import {
+  type AgentEvent,
   type ChatMessage,
   streamChat as defaultStreamChat,
   getModelInfo,
@@ -45,10 +46,18 @@ interface StreamSlot {
 }
 
 type MaybePromise<T> = T | Promise<T>
+type AgentEventInput = Parameters<typeof appendAgentEventAndTouchConversation>[1]
 
 export type ConversationAbortReason = 'user' | 'delete' | 'shutdown'
 
 const DEFAULT_ABORT_ALL_CLEANUP_TIMEOUT_MS = 5_000
+const TURN_LIFECYCLE_EVENTS = new Set<AgentEvent['type']>([
+  'turn.started',
+  'turn.completed',
+  'turn.failed',
+  'turn.cancelled',
+  'turn.interrupted',
+])
 
 function messageText(message: PersistedMessage): string {
   return message.blocks
@@ -59,6 +68,20 @@ function messageText(message: PersistedMessage): string {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+function withTurnSelection(event: AgentEventInput, selection: ModelSelection): AgentEventInput {
+  if (!TURN_LIFECYCLE_EVENTS.has(event.type)) return event
+  const data = event.data ?? {}
+  if (typeof data.providerId === 'string' && typeof data.modelId === 'string') return event
+  return {
+    ...event,
+    data: {
+      ...data,
+      ...(typeof data.providerId === 'string' ? {} : { providerId: selection.providerId }),
+      ...(typeof data.modelId === 'string' ? {} : { modelId: selection.modelId }),
+    },
+  }
 }
 
 function resolveRetryTurn(record: ConversationRecord): {
@@ -416,13 +439,18 @@ export class AgentRuntime {
     }
     slot.abortRecorded = true
     try {
-      await this.recordAgentEvent({
-        timestamp: Date.now(),
-        conversationId,
-        messageId: slot.assistantMessageId,
-        type: 'turn.cancelled',
-        data: { phase: 'requested', reason: 'user' },
-      })
+      await this.recordAgentEvent(
+        withTurnSelection(
+          {
+            timestamp: Date.now(),
+            conversationId,
+            messageId: slot.assistantMessageId,
+            type: 'turn.cancelled',
+            data: { phase: 'requested', reason: 'user' },
+          },
+          slot.selection,
+        ),
+      )
     } catch (err) {
       this.logger.warn('[runtime] cancellation activity append failed:', err)
     } finally {
@@ -459,13 +487,18 @@ export class AgentRuntime {
         if (!slot.abortRecorded) {
           slot.abortRecorded = true
           try {
-            await this.recordAgentEvent({
-              timestamp: Date.now(),
-              conversationId,
-              messageId: slot.assistantMessageId,
-              type: 'turn.cancelled',
-              data: { phase: 'requested', reason },
-            })
+            await this.recordAgentEvent(
+              withTurnSelection(
+                {
+                  timestamp: Date.now(),
+                  conversationId,
+                  messageId: slot.assistantMessageId,
+                  type: 'turn.cancelled',
+                  data: { phase: 'requested', reason },
+                },
+                slot.selection,
+              ),
+            )
           } catch (err) {
             this.logger.warn('[runtime] cancellation activity append failed:', err)
           }
@@ -553,13 +586,18 @@ export class AgentRuntime {
     const persisted = await this.persistAndAnnounce(conversationId, errored)
     if (!persisted) return
     try {
-      await this.recordAgentEvent({
-        timestamp: Date.now(),
-        conversationId,
-        messageId: assistantMessageId,
-        type: 'turn.failed',
-        data: { phase: 'setup', error: message },
-      })
+      await this.recordAgentEvent(
+        withTurnSelection(
+          {
+            timestamp: Date.now(),
+            conversationId,
+            messageId: assistantMessageId,
+            type: 'turn.failed',
+            data: { phase: 'setup', error: message },
+          },
+          selection,
+        ),
+      )
     } catch (error) {
       this.logger.warn('[runtime] setup failure activity append failed:', error)
     }
@@ -587,9 +625,7 @@ export class AgentRuntime {
     this.emit(event)
   }
 
-  private async recordAgentEvent(
-    event: Parameters<typeof appendAgentEventAndTouchConversation>[1],
-  ): Promise<boolean> {
+  private async recordAgentEvent(event: AgentEventInput): Promise<boolean> {
     if (this.deletedConversations.has(event.conversationId)) return false
     const { event: persisted, summary } = await this.store.appendAgentEventAndTouchConversation(
       event.conversationId,
@@ -653,18 +689,23 @@ export class AgentRuntime {
     slot: StreamSlot,
     reason: string,
   ): Promise<void> {
-    await this.recordAgentEvent({
-      timestamp: Date.now(),
-      conversationId,
-      messageId: slot.assistantMessageId,
-      type: 'turn.interrupted',
-      data: {
-        reason,
-        previousState: 'cancelled',
-        previousEventType: 'turn.cancelled',
-        previousTitle: 'Stop requested',
-      },
-    })
+    await this.recordAgentEvent(
+      withTurnSelection(
+        {
+          timestamp: Date.now(),
+          conversationId,
+          messageId: slot.assistantMessageId,
+          type: 'turn.interrupted',
+          data: {
+            reason,
+            previousState: 'cancelled',
+            previousEventType: 'turn.cancelled',
+            previousTitle: 'Stop requested',
+          },
+        },
+        slot.selection,
+      ),
+    )
   }
 
   private acceptsStreamEvents(conversationId: string, controller: AbortController): boolean {
@@ -782,20 +823,20 @@ export class AgentRuntime {
     const shellCwd = this.resolveShellCwd()
     let eventLogChain = Promise.resolve()
     let terminalAgentEventQueued = false
-    const queueAgentEvent = (
-      event: Parameters<typeof appendAgentEventAndTouchConversation>[1],
-    ): void => {
+    const queueAgentEvent = (event: AgentEventInput): void => {
+      const eventWithSelection = withTurnSelection(event, selection)
       if (
-        event.type === 'turn.completed' ||
-        event.type === 'turn.failed' ||
-        (event.type === 'turn.cancelled' && event.data?.phase === 'completed')
+        eventWithSelection.type === 'turn.completed' ||
+        eventWithSelection.type === 'turn.failed' ||
+        (eventWithSelection.type === 'turn.cancelled' &&
+          eventWithSelection.data?.phase === 'completed')
       ) {
         terminalAgentEventQueued = true
       }
       if (!this.acceptsStreamEvents(conversationId, controller)) return
       eventLogChain = eventLogChain
         .then(async () => {
-          await this.recordAgentEvent(event)
+          await this.recordAgentEvent(eventWithSelection)
         })
         .catch((err) => {
           this.logger.warn('[runtime] agent-event append failed:', err)

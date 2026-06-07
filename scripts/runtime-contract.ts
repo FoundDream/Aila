@@ -1028,6 +1028,16 @@ async function testRuntimeAbortTimesOutStuckStreamCleanup(): Promise<void> {
       'user cleanup timed out',
       'stuck abort interrupted reason',
     )
+    assertEqual(
+      agentEvents.at(-1)?.data?.modelId,
+      'contract/mock',
+      'stuck abort interrupted event should preserve model id',
+    )
+    assertEqual(
+      replayConversationRuntimeState(agentEvents).turn?.selection?.modelId,
+      'contract/mock',
+      'stuck abort replay should preserve model selection',
+    )
 
     const record = await getConversation(conversation.id)
     assertEqual(record.meta.activity?.state, 'interrupted', 'stuck abort activity state')
@@ -1160,9 +1170,26 @@ async function testRuntimeSetupFailurePersistsAssistantError(): Promise<void> {
     assertEqual(agentEvents.at(-1)?.type, 'turn.failed', 'setup failure final activity event')
     assertEqual(agentEvents.at(-1)?.data?.phase, 'setup', 'setup failure activity phase')
     assertEqual(
+      agentEvents.at(-1)?.data?.providerId,
+      'openrouter',
+      'setup failure event should preserve provider id',
+    )
+    assertEqual(
+      agentEvents.at(-1)?.data?.modelId,
+      'contract/mock',
+      'setup failure event should preserve model id',
+    )
+    assertEqual(
       agentEvents.at(-1)?.data?.error,
       'workspace roots unavailable',
       'setup failure activity detail',
+    )
+    const replayState = replayConversationRuntimeState(agentEvents)
+    assertEqual(replayState.phase, 'failed', 'setup failure replay state')
+    assertEqual(
+      replayState.turn?.selection?.modelId,
+      'contract/mock',
+      'setup failure replay should preserve model selection',
     )
 
     const record = await getConversation(conversation.id)
