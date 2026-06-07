@@ -828,25 +828,8 @@ export class AgentRuntime {
       await abortCleanup
       return
     }
-    slot.abortRecorded = true
-    try {
-      await this.recordAgentEvent(
-        withTurnSelection(
-          {
-            timestamp: Date.now(),
-            conversationId,
-            messageId: slot.assistantMessageId,
-            type: 'turn.cancelled',
-            data: { phase: 'requested', reason: 'user' },
-          },
-          slot.selection,
-        ),
-      )
-    } catch (err) {
-      this.logger.warn('[runtime] cancellation activity append failed:', err)
-    } finally {
-      await abortCleanup
-    }
+    await this.recordCancellationRequest(conversationId, slot, 'user')
+    await abortCleanup
     const cleanedUp = await this.waitForStreamCleanup(slot, this.cleanupTimeoutMs())
     if (!cleanedUp) {
       if (this.activeStreams.get(conversationId)?.controller === slot.controller) {
@@ -910,25 +893,7 @@ export class AgentRuntime {
       Array.from(this.activeStreams.entries()).map(async ([conversationId, slot]) => {
         slot.controller.abort()
         const abortCleanup = this.notifyConversationAbort(conversationId, reason)
-        if (!slot.abortRecorded) {
-          slot.abortRecorded = true
-          try {
-            await this.recordAgentEvent(
-              withTurnSelection(
-                {
-                  timestamp: Date.now(),
-                  conversationId,
-                  messageId: slot.assistantMessageId,
-                  type: 'turn.cancelled',
-                  data: { phase: 'requested', reason },
-                },
-                slot.selection,
-              ),
-            )
-          } catch (err) {
-            this.logger.warn('[runtime] cancellation activity append failed:', err)
-          }
-        }
+        await this.recordCancellationRequest(conversationId, slot, reason)
         await abortCleanup
         const cleanedUp = await this.waitForStreamCleanup(slot, cleanupTimeoutMs)
         if (!cleanedUp) {
@@ -958,8 +923,9 @@ export class AgentRuntime {
   async deleteConversation(conversationId: string): Promise<void> {
     this.deletedConversations.add(conversationId)
     let removed = false
+    const slot = this.activeStreams.get(conversationId)
+    let streamCleanupTimedOut = false
     try {
-      const slot = this.activeStreams.get(conversationId)
       if (slot) {
         slot.controller.abort()
         await this.notifyConversationAbort(conversationId, 'delete')
@@ -967,6 +933,7 @@ export class AgentRuntime {
           slot,
           this.options.abortAllCleanupTimeoutMs ?? DEFAULT_ABORT_ALL_CLEANUP_TIMEOUT_MS,
         )
+        streamCleanupTimedOut = !cleanedUp
         if (!cleanedUp && this.activeStreams.get(conversationId)?.controller === slot.controller) {
           this.activeStreams.delete(conversationId)
         }
@@ -978,6 +945,23 @@ export class AgentRuntime {
 
       await this.store.deleteConversation(conversationId)
       removed = true
+    } catch (error) {
+      this.deletedConversations.delete(conversationId)
+      if (slot) {
+        try {
+          await this.recordCancellationRequest(conversationId, slot, 'delete')
+          if (streamCleanupTimedOut) {
+            await this.recordInterruptedStreamCleanup(
+              conversationId,
+              slot,
+              'delete cleanup timed out',
+            )
+          }
+        } catch (err) {
+          this.logger.warn('[runtime] delete failure activity append failed:', err)
+        }
+      }
+      throw error
     } finally {
       if (!removed) this.deletedConversations.delete(conversationId)
     }
@@ -1135,6 +1119,31 @@ export class AgentRuntime {
       this.activeStreams.delete(conversationId)
     }
     await this.recordInterruptedStreamCleanup(conversationId, slot, 'aborted cleanup timed out')
+  }
+
+  private async recordCancellationRequest(
+    conversationId: string,
+    slot: StreamSlot,
+    reason: ConversationAbortReason,
+  ): Promise<void> {
+    if (slot.abortRecorded) return
+    slot.abortRecorded = true
+    try {
+      await this.recordAgentEvent(
+        withTurnSelection(
+          {
+            timestamp: Date.now(),
+            conversationId,
+            messageId: slot.assistantMessageId,
+            type: 'turn.cancelled',
+            data: { phase: 'requested', reason },
+          },
+          slot.selection,
+        ),
+      )
+    } catch (err) {
+      this.logger.warn('[runtime] cancellation activity append failed:', err)
+    }
   }
 
   private async recordInterruptedStreamCleanup(

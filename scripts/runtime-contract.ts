@@ -33,6 +33,7 @@ import {
   AILA_TOOL_PACK_MANIFEST_SCHEMA_VERSION,
   configureDataDir,
   createDefaultToolRegistry,
+  createInMemoryRuntimeStore,
   createInterruptedConversationRecoveryEvent,
   createPersistedRuntimeStore,
   createRuntimeEvent,
@@ -2389,6 +2390,139 @@ async function testRuntimeDeleteFailureReopensConversation(): Promise<void> {
   })
 }
 
+async function testRuntimeDeleteFailureRecordsCancellationForReopenedTurn(): Promise<void> {
+  const baseStore = createInMemoryRuntimeStore()
+  const conversation = await baseStore.createConversation?.()
+  assert(conversation, 'in-memory store should create conversation for delete failure contract')
+  const store: AgentRuntimeStore = {
+    ...baseStore,
+    deleteConversation: async () => {
+      throw new Error('contract delete failed')
+    },
+  }
+  let streamCount = 0
+  let resolveStarted: () => void = () => {}
+  const started = new Promise<void>((resolve) => {
+    resolveStarted = resolve
+  })
+  const runtime = new AgentRuntime({
+    store,
+    logger: { warn() {}, error() {} },
+    streamChat: async (req, handlers) => {
+      streamCount += 1
+      req.onAgentEvent?.({
+        timestamp: Date.now(),
+        conversationId: req.conversationId,
+        messageId: req.assistantMessageId,
+        type: 'turn.started',
+        data: { providerId: req.selection.providerId, modelId: req.selection.modelId },
+      })
+      if (streamCount === 1) {
+        resolveStarted()
+        await new Promise<void>((resolve) => {
+          if (req.signal.aborted) {
+            resolve()
+            return
+          }
+          req.signal.addEventListener('abort', () => resolve(), { once: true })
+        })
+        req.onAgentEvent?.({
+          timestamp: Date.now(),
+          conversationId: req.conversationId,
+          messageId: req.assistantMessageId,
+          type: 'turn.cancelled',
+          data: { phase: 'completed', reason: 'abort_signal' },
+        })
+        await handlers.onError({
+          conversationId: req.conversationId,
+          messageId: req.assistantMessageId,
+          error: 'Aborted',
+          message: {
+            schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+            id: req.assistantMessageId,
+            role: 'assistant',
+            blocks: [],
+            status: 'error',
+            error: 'Aborted',
+            model: req.selection,
+          },
+        })
+        return
+      }
+
+      req.onAgentEvent?.({
+        timestamp: Date.now(),
+        conversationId: req.conversationId,
+        messageId: req.assistantMessageId,
+        type: 'turn.completed',
+      })
+      await handlers.onDone({
+        conversationId: req.conversationId,
+        messageId: req.assistantMessageId,
+        message: {
+          schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+          id: req.assistantMessageId,
+          role: 'assistant',
+          blocks: [{ type: 'text', content: 'continued after failed active delete' }],
+          status: 'done',
+          model: req.selection,
+        },
+      })
+    },
+  })
+
+  await runtime.send({
+    conversationId: conversation.id,
+    userText: 'delete active stream but fail',
+    selection: { providerId: 'openrouter', modelId: 'contract/mock' },
+    requestedProfileId: 'coding',
+  })
+  await started
+
+  let deleteFailed = false
+  try {
+    await runtime.deleteConversation(conversation.id)
+  } catch (error) {
+    deleteFailed = error instanceof Error && error.message.includes('contract delete failed')
+  }
+  assert(deleteFailed, 'active delete failure should reject')
+  assertEqual(runtime.listActiveStreams().length, 0, 'failed active delete should clear stream')
+
+  const events = [...((await store.listAgentEvents?.(conversation.id)) ?? [])]
+  assert(
+    events.some(
+      (event) =>
+        event.type === 'turn.cancelled' &&
+        event.data?.phase === 'requested' &&
+        event.data.reason === 'delete',
+    ),
+    'failed active delete should persist delete cancellation before reopening conversation',
+  )
+
+  await runtime.send({
+    conversationId: conversation.id,
+    userText: 'continue after failed active delete',
+    selection: { providerId: 'openrouter', modelId: 'contract/mock' },
+    requestedProfileId: 'coding',
+  })
+  await waitFor(
+    () => runtime.listActiveStreams().length === 0,
+    'send after failed active delete should finish',
+  )
+  const record = await store.getConversation(conversation.id)
+  assert(
+    record.messages.some(
+      (message) =>
+        message.role === 'assistant' &&
+        message.blocks.some(
+          (block) =>
+            block.type === 'text' && block.content === 'continued after failed active delete',
+        ),
+    ),
+    'failed active delete should reopen conversation for later persistence',
+  )
+}
+
 async function testRuntimeSendRecoversAbortedStuckPreviousStream(): Promise<void> {
   await withTempDataDir(async () => {
     const conversation = await createConversation()
@@ -4386,6 +4520,7 @@ async function main(): Promise<void> {
   await testRuntimeDeleteTimesOutStuckStreamAndSuppressesLateEvents()
   await testRuntimeRejectsNewTurnsAfterDeleteStarts()
   await testRuntimeDeleteFailureReopensConversation()
+  await testRuntimeDeleteFailureRecordsCancellationForReopenedTurn()
   await testRuntimeSendRecoversAbortedStuckPreviousStream()
   await testRuntimeAbortAllWaitsForShutdownCleanup()
   await testRuntimeAbortAllTimesOutStuckStreamCleanup()
