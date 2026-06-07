@@ -181,6 +181,107 @@ async function testRuntimeRetriesDanglingUserTurn(): Promise<void> {
   })
 }
 
+async function testRuntimeRetriesFailedAssistantTurn(): Promise<void> {
+  await withTempDataDir(async () => {
+    const conversation = await createConversation()
+    await appendMessage(conversation.id, {
+      schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+      id: 'failed-turn-user',
+      role: 'user',
+      blocks: [{ type: 'text', content: 'retry the failed assistant turn' }],
+      status: 'done',
+    })
+    await appendMessage(conversation.id, {
+      schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+      id: 'failed-assistant',
+      role: 'assistant',
+      blocks: [{ type: 'text', content: 'partial failed output should not be retried' }],
+      status: 'error',
+      error: 'Aborted',
+      model: { providerId: 'openrouter', modelId: 'contract/mock' },
+    })
+
+    const events: AgentRuntimeEvent[] = []
+    let modelInput = ''
+    const runtime = new AgentRuntime({
+      onEvent: (event) => events.push(event),
+      logger: { warn() {}, error() {} },
+      streamChat: async (req, handlers) => {
+        modelInput = JSON.stringify(req.messages)
+        req.onAgentEvent?.({
+          timestamp: Date.now(),
+          conversationId: req.conversationId,
+          messageId: req.assistantMessageId,
+          type: 'turn.started',
+          data: { providerId: req.selection.providerId, modelId: req.selection.modelId },
+        })
+        req.onAgentEvent?.({
+          timestamp: Date.now(),
+          conversationId: req.conversationId,
+          messageId: req.assistantMessageId,
+          type: 'turn.completed',
+          data: { outputBlockCount: 1 },
+        })
+        await handlers.onDone({
+          conversationId: req.conversationId,
+          messageId: req.assistantMessageId,
+          message: {
+            schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+            id: req.assistantMessageId,
+            role: 'assistant',
+            blocks: [{ type: 'text', content: 'retried successfully' }],
+            status: 'done',
+            model: req.selection,
+          },
+        })
+      },
+    })
+
+    const result = await runtime.retryLastUserMessage({
+      conversationId: conversation.id,
+      selection: { providerId: 'openrouter', modelId: 'contract/mock' },
+      requestedProfileId: 'coding',
+    })
+
+    assertEqual(
+      result.userMessage.id,
+      'failed-turn-user',
+      'retry should reuse the user before the failed assistant turn',
+    )
+    await waitFor(
+      () => events.some((event) => event.type === 'chat:done'),
+      'retry should complete the replacement assistant turn',
+    )
+
+    assert(
+      modelInput.includes('retry the failed assistant turn'),
+      'retry context should include the original user request',
+    )
+    assert(
+      !modelInput.includes('partial failed output should not be retried'),
+      'retry context should exclude the failed assistant output',
+    )
+
+    const record = await getConversation(conversation.id)
+    assertEqual(
+      record.messages.filter((message) => message.role === 'user').length,
+      1,
+      'retrying failed assistant must not duplicate the user message',
+    )
+    assertEqual(
+      record.messages.filter((message) => message.role === 'assistant').length,
+      2,
+      'retrying failed assistant should append one replacement assistant message',
+    )
+    assertEqual(
+      record.messages[1]?.status,
+      'error',
+      'failed assistant should remain in persisted history',
+    )
+    assertEqual(record.messages[2]?.status, 'done', 'replacement assistant should be persisted')
+  })
+}
+
 async function testRuntimeAbortPersistsCancellationActivity(): Promise<void> {
   await withTempDataDir(async () => {
     const conversation = await createConversation()
@@ -972,6 +1073,7 @@ async function main(): Promise<void> {
   await testRuntimeEventContract()
   await testRuntimeEmitsVersionedEvents()
   await testRuntimeRetriesDanglingUserTurn()
+  await testRuntimeRetriesFailedAssistantTurn()
   await testRuntimeAbortPersistsCancellationActivity()
   await testPersistenceContract()
   await testLegacyPersistenceNormalization()

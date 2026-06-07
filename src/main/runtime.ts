@@ -52,6 +52,38 @@ function messageText(message: PersistedMessage): string {
     .join('')
 }
 
+function resolveRetryTurn(record: ConversationRecord): {
+  userMessage: PersistedMessage
+  record: ConversationRecord
+} {
+  const lastIndex = record.messages.length - 1
+  const lastMessage = record.messages[lastIndex]
+  if (!lastMessage) throw new Error('cannot retry: conversation has no messages')
+
+  if (lastMessage.role === 'user') {
+    return { userMessage: lastMessage, record }
+  }
+
+  if (lastMessage.role !== 'assistant' || lastMessage.status !== 'error') {
+    throw new Error('cannot retry: last persisted turn is not retryable')
+  }
+
+  for (let i = lastIndex - 1; i >= 0; i--) {
+    const candidate = record.messages[i]
+    if (candidate?.role === 'user') {
+      return {
+        userMessage: candidate,
+        record: {
+          ...record,
+          messages: record.messages.slice(0, lastIndex),
+        },
+      }
+    }
+  }
+
+  throw new Error('cannot retry: failed assistant turn has no preceding user message')
+}
+
 export interface RuntimeSendInput {
   conversationId: string
   userText: string
@@ -167,19 +199,16 @@ export class AgentRuntime {
     if (previous) await previous.cleanup.catch(() => {})
 
     const record = await getConversation(conversationId)
-    const lastMessage = record.messages.at(-1)
-    if (lastMessage?.role !== 'user') {
-      throw new Error('cannot retry: last persisted message is not a dangling user message')
-    }
+    const retry = resolveRetryTurn(record)
 
-    if (!messageText(lastMessage).trim()) {
+    if (!messageText(retry.userMessage).trim()) {
       throw new Error('cannot retry: last persisted user message has no text content')
     }
 
     return this.startAssistantTurn({
       conversationId,
-      userMessage: lastMessage,
-      record,
+      userMessage: retry.userMessage,
+      record: retry.record,
       selection,
       requestedProfileId,
       transientContext,

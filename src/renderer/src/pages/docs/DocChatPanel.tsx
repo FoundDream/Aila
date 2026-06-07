@@ -64,8 +64,11 @@ export function DocChatPanel({
   const events = stream?.events ?? []
   const queuedCount = stream?.queue.length ?? 0
   const lastMessage = messages.at(-1)
+  const hasRetryableLastTurn =
+    lastMessage?.role === 'user' ||
+    (lastMessage?.role === 'assistant' && lastMessage.status === 'error')
   const canRetryLast =
-    Boolean(activeId) && !isStreaming && queuedCount === 0 && lastMessage?.role === 'user'
+    Boolean(activeId) && !isStreaming && queuedCount === 0 && hasRetryableLastTurn
 
   const handleSubmit = useCallback(
     async (text: string) => {

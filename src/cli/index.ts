@@ -77,7 +77,7 @@ function usage(): string {
     '  --model <provider:id>   Override model, e.g. openai:gpt-5.4',
     '  --profile <name>        chat | coding | research or a manifest profile (default: coding)',
     '  --resume                Continue the most recently updated conversation',
-    '  --retry-last            Retry a dangling last user turn without appending a duplicate',
+    '  --retry-last            Retry the last failed or dangling user turn without duplicating it',
     '  --json                  Print a final JSON result instead of streaming text',
     '  --events                Print runtime events as NDJSON instead of streaming text',
     '  --yes                   Auto-approve tool executions that request approval',
