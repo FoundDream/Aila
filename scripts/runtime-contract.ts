@@ -2147,6 +2147,152 @@ async function testRuntimeAbortCancelsTurnSetupBeforeStreamStarts(): Promise<voi
   })
 }
 
+async function testRuntimeSendRecoversTimedOutTurnSetupLock(): Promise<void> {
+  await withTempDataDir(async () => {
+    const conversation = await createConversation()
+    let resolveFirstSetupStarted: () => void = () => {}
+    const firstSetupStarted = new Promise<void>((resolve) => {
+      resolveFirstSetupStarted = resolve
+    })
+    let cleanupReason: string | null = null
+    let transientContextCalls = 0
+    let streamCount = 0
+    let firstSendSettled = false
+
+    const runtime = new AgentRuntime({
+      store: createPersistedRuntimeStore(),
+      abortAllCleanupTimeoutMs: 10,
+      logger: { warn() {}, error() {} },
+      onConversationAbort: (_conversationId, reason) => {
+        cleanupReason = reason
+      },
+      loadTransientContext: async () => {
+        transientContextCalls += 1
+        if (transientContextCalls === 1) {
+          resolveFirstSetupStarted()
+          await new Promise<void>(() => {})
+        }
+        return undefined
+      },
+      streamChat: async (req, handlers) => {
+        streamCount += 1
+        req.onAgentEvent?.({
+          timestamp: Date.now(),
+          conversationId: req.conversationId,
+          messageId: req.assistantMessageId,
+          type: 'turn.started',
+          data: { providerId: req.selection.providerId, modelId: req.selection.modelId },
+        })
+        req.onAgentEvent?.({
+          timestamp: Date.now(),
+          conversationId: req.conversationId,
+          messageId: req.assistantMessageId,
+          type: 'turn.completed',
+        })
+        await handlers.onDone({
+          conversationId: req.conversationId,
+          messageId: req.assistantMessageId,
+          message: {
+            schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+            id: req.assistantMessageId,
+            role: 'assistant',
+            blocks: [{ type: 'text', content: 'replacement after setup timeout' }],
+            status: 'done',
+            model: req.selection,
+          },
+        })
+      },
+    })
+
+    void runtime
+      .send({
+        conversationId: conversation.id,
+        userText: 'setup will not finish',
+        selection: { providerId: 'openrouter', modelId: 'contract/mock' },
+        requestedProfileId: 'coding',
+      })
+      .then(
+        () => {
+          firstSendSettled = true
+        },
+        () => {
+          firstSendSettled = true
+        },
+      )
+    await firstSetupStarted
+
+    const [active] = runtime.listActiveStreams()
+    assert(active, 'stuck setup-stage turn should be visible as active')
+    assertEqual(active.conversationId, conversation.id, 'stuck setup active conversation id')
+
+    await withTimeout(runtime.abort(conversation.id), 'abort should time out setup cleanup', 500)
+    assertEqual(cleanupReason, 'user', 'stuck setup abort cleanup reason')
+    assertEqual(runtime.listActiveStreams().length, 0, 'stuck setup abort should clear active turn')
+
+    const replacement = await withTimeout(
+      runtime.send({
+        conversationId: conversation.id,
+        userText: 'replacement should start',
+        selection: { providerId: 'openrouter', modelId: 'contract/mock' },
+        requestedProfileId: 'coding',
+      }),
+      'send should recover after a timed-out setup turn',
+      500,
+    )
+    await waitFor(
+      () => runtime.listActiveStreams().length === 0,
+      'replacement after stuck setup should finish',
+    )
+
+    assertEqual(firstSendSettled, false, 'stuck setup send should remain abandoned')
+    assertEqual(transientContextCalls, 2, 'replacement should run a fresh setup phase')
+    assertEqual(streamCount, 1, 'only replacement turn should reach provider stream')
+
+    const agentEvents = await listAgentEvents(conversation.id)
+    assert(
+      agentEvents.some(
+        (event) =>
+          event.messageId === active.assistantMessageId &&
+          event.type === 'turn.cancelled' &&
+          event.data?.phase === 'requested' &&
+          event.data.reason === 'user',
+      ),
+      'stuck setup abort should persist cancellation request',
+    )
+    assert(
+      agentEvents.some(
+        (event) =>
+          event.messageId === active.assistantMessageId &&
+          event.type === 'turn.interrupted' &&
+          event.data?.reason === 'user cleanup timed out',
+      ),
+      'stuck setup abort should mark the abandoned turn interrupted',
+    )
+    assert(
+      agentEvents.some(
+        (event) =>
+          event.messageId === replacement.assistantMessageId && event.type === 'turn.completed',
+      ),
+      'replacement turn after stuck setup should complete',
+    )
+
+    const record = await getConversation(conversation.id)
+    assert(
+      !record.messages.some((message) => message.id === active.assistantMessageId),
+      'abandoned setup turn must not persist an assistant message',
+    )
+    assert(
+      record.messages.some(
+        (message) =>
+          message.id === replacement.assistantMessageId &&
+          message.role === 'assistant' &&
+          message.status === 'done',
+      ),
+      'replacement assistant message should be persisted',
+    )
+  })
+}
+
 async function testRuntimeAbortPersistsCancellationActivity(): Promise<void> {
   await withTempDataDir(async () => {
     const conversation = await createConversation()
@@ -5444,6 +5590,7 @@ async function main(): Promise<void> {
   await testRuntimeContextSkipsNonDoneAssistantHistory()
   await testRuntimeSerializesConcurrentTurnStarts()
   await testRuntimeAbortCancelsTurnSetupBeforeStreamStarts()
+  await testRuntimeSendRecoversTimedOutTurnSetupLock()
   await testRuntimeAbortPersistsCancellationActivity()
   await testRuntimeAbortTimesOutStuckStreamCleanup()
   await testRuntimeUnexpectedStreamErrorPersistsFailureActivity()

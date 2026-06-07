@@ -47,6 +47,13 @@ interface StreamSlot {
   assistantMessageId: string
   selection: ModelSelection
   abortRecorded: boolean
+  turnStartLock: TurnStartLockSlot
+}
+
+interface TurnStartLockSlot {
+  promise: Promise<void>
+  release: () => void
+  released: boolean
 }
 
 interface RuntimeToolContextInput {
@@ -615,7 +622,7 @@ function resolveStaticToolPacks(options: AgentRuntimeOptions): readonly ToolPack
 
 export class AgentRuntime {
   private readonly activeStreams = new Map<string, StreamSlot>()
-  private readonly turnStartLocks = new Map<string, Promise<void>>()
+  private readonly turnStartLocks = new Map<string, TurnStartLockSlot>()
   private readonly deletedConversations = new Set<string>()
   private readonly host: AgentRuntimeHost
   private readonly store: AgentRuntimeStore
@@ -773,7 +780,7 @@ export class AgentRuntime {
   }
 
   async send(input: RuntimeSendInput): Promise<RuntimeSendResult> {
-    return this.withTurnStartLock(input.conversationId, async () => {
+    return this.withTurnStartLock(input.conversationId, async (turnStartLock) => {
       const { conversationId, userText, selection, requestedProfileId, transientContext } = input
 
       this.assertCanStartTurn(conversationId)
@@ -807,12 +814,13 @@ export class AgentRuntime {
         requestedProfileId,
         transientContext,
         source: 'send',
+        turnStartLock,
       })
     })
   }
 
   async retryLastUserMessage(input: RuntimeRetryLastInput): Promise<RuntimeSendResult> {
-    return this.withTurnStartLock(input.conversationId, async () => {
+    return this.withTurnStartLock(input.conversationId, async (turnStartLock) => {
       const { conversationId, selection, requestedProfileId, transientContext } = input
 
       this.assertCanStartTurn(conversationId)
@@ -836,29 +844,54 @@ export class AgentRuntime {
         requestedProfileId,
         transientContext,
         source: 'retry',
+        turnStartLock,
       })
     })
   }
 
   private async withTurnStartLock<T>(
     conversationId: string,
-    operation: () => Promise<T>,
+    operation: (turnStartLock: TurnStartLockSlot) => Promise<T>,
   ): Promise<T> {
     const previous = this.turnStartLocks.get(conversationId)
     let release: () => void = () => {}
-    const current = new Promise<void>((resolve) => {
+    const promise = new Promise<void>((resolve) => {
       release = resolve
     })
+    const current: TurnStartLockSlot = {
+      promise,
+      released: false,
+      release: () => {},
+    }
+    current.release = () => {
+      if (current.released) return
+      current.released = true
+      release()
+    }
     this.turnStartLocks.set(conversationId, current)
 
-    if (previous) await previous
+    if (previous) await previous.promise
     try {
-      return await operation()
+      return await operation(current)
     } finally {
-      release()
+      this.releaseTurnStartLock(current)
       if (this.turnStartLocks.get(conversationId) === current) {
         this.turnStartLocks.delete(conversationId)
       }
+    }
+  }
+
+  private releaseTurnStartLock(lock: TurnStartLockSlot): void {
+    lock.release()
+  }
+
+  private clearTimedOutStreamSlot(conversationId: string, slot: StreamSlot): void {
+    if (this.activeStreams.get(conversationId)?.controller === slot.controller) {
+      this.activeStreams.delete(conversationId)
+    }
+    this.releaseTurnStartLock(slot.turnStartLock)
+    if (this.turnStartLocks.get(conversationId) === slot.turnStartLock) {
+      this.turnStartLocks.delete(conversationId)
     }
   }
 
@@ -870,9 +903,17 @@ export class AgentRuntime {
     requestedProfileId?: AgentProfileId
     transientContext?: ChatMessage[]
     source: RuntimeTransientContextInput['source']
+    turnStartLock: TurnStartLockSlot
   }): Promise<RuntimeSendResult> {
-    const { conversationId, userMessage, record, requestedProfileId, transientContext, source } =
-      input
+    const {
+      conversationId,
+      userMessage,
+      record,
+      requestedProfileId,
+      transientContext,
+      source,
+      turnStartLock,
+    } = input
     const selection = cloneRuntimeValue(input.selection)
     const assistantMessageId = randomUUID()
     this.assertCanStartTurn(conversationId)
@@ -888,6 +929,7 @@ export class AgentRuntime {
       assistantMessageId,
       selection,
       abortRecorded: false,
+      turnStartLock,
     })
 
     let streamStarted = false
@@ -979,9 +1021,7 @@ export class AgentRuntime {
     await abortCleanup
     const cleanedUp = await this.waitForStreamCleanup(slot, this.cleanupTimeoutMs())
     if (!cleanedUp) {
-      if (this.activeStreams.get(conversationId)?.controller === slot.controller) {
-        this.activeStreams.delete(conversationId)
-      }
+      this.clearTimedOutStreamSlot(conversationId, slot)
       try {
         await this.recordInterruptedStreamCleanup(conversationId, slot, 'user cleanup timed out')
       } catch (err) {
@@ -1051,9 +1091,7 @@ export class AgentRuntime {
         await abortCleanup
         const cleanedUp = await this.waitForStreamCleanup(slot, cleanupTimeoutMs)
         if (!cleanedUp) {
-          if (this.activeStreams.get(conversationId)?.controller === slot.controller) {
-            this.activeStreams.delete(conversationId)
-          }
+          this.clearTimedOutStreamSlot(conversationId, slot)
           try {
             await this.recordInterruptedStreamCleanup(
               conversationId,
@@ -1088,8 +1126,8 @@ export class AgentRuntime {
           this.options.abortAllCleanupTimeoutMs ?? DEFAULT_ABORT_ALL_CLEANUP_TIMEOUT_MS,
         )
         streamCleanupTimedOut = !cleanedUp
-        if (!cleanedUp && this.activeStreams.get(conversationId)?.controller === slot.controller) {
-          this.activeStreams.delete(conversationId)
+        if (!cleanedUp) {
+          this.clearTimedOutStreamSlot(conversationId, slot)
         }
       } else {
         await this.notifyConversationAbort(conversationId, 'delete')
@@ -1323,9 +1361,7 @@ export class AgentRuntime {
     const cleanedUp = await this.waitForStreamCleanup(slot, this.cleanupTimeoutMs())
     if (cleanedUp) return
 
-    if (this.activeStreams.get(conversationId)?.controller === slot.controller) {
-      this.activeStreams.delete(conversationId)
-    }
+    this.clearTimedOutStreamSlot(conversationId, slot)
     await this.recordInterruptedStreamCleanup(conversationId, slot, 'aborted cleanup timed out')
   }
 
