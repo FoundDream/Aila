@@ -56,6 +56,14 @@ interface StreamSlot {
   abortRecorded: boolean
 }
 
+interface RuntimeToolContextInput {
+  profileId: AgentProfileId
+  conversationId?: string
+  messageId?: string
+  toolCallId?: string
+  signal?: AbortSignal
+}
+
 type MaybePromise<T> = T | Promise<T>
 export type RuntimeRecordAgentEventInput = Parameters<
   typeof appendAgentEventAndTouchConversation
@@ -423,24 +431,16 @@ export class AgentRuntime {
 
   async executeTool(input: RuntimeExecuteToolInput): Promise<string> {
     const registry = await this.getToolRegistry()
-    const settings = (await this.resolveSettings()) ?? defaultLoadSettings()
     return executeRegisteredTool(
       input.name,
       input.args,
-      {
-        settings,
+      await this.buildToolContext({
         profileId: input.profileId,
         ...(input.conversationId && { conversationId: input.conversationId }),
         ...(input.messageId && { messageId: input.messageId }),
         ...(input.toolCallId && { toolCallId: input.toolCallId }),
         ...(input.signal && { signal: input.signal }),
-        workspaceRoots: this.resolveWorkspaceRoots(),
-        shellCwd: this.resolveShellCwd(),
-        onToolPolicy: this.host.onToolPolicy,
-        onToolApproval: this.host.onToolApproval,
-        generateImage: this.host.generateImage,
-        saveImage: this.host.saveImage,
-      },
+      }),
       registry,
     )
   }
@@ -532,7 +532,7 @@ export class AgentRuntime {
 
     let profileId: AgentProfileId
     let messages: Parameters<typeof defaultStreamChat>[0]['messages']
-    let workspaceRoots: ToolContext['workspaceRoots']
+    let toolContext: ToolContext
     let toolRegistry: ToolRegistry
     try {
       const profile = await this.resolveProfile(requestedProfileId)
@@ -554,7 +554,11 @@ export class AgentRuntime {
       })
       messages = context.messages
       toolRegistry = await this.getToolRegistry()
-      workspaceRoots = this.resolveWorkspaceRoots()
+      toolContext = await this.buildToolContext({
+        profileId,
+        conversationId,
+        messageId: assistantMessageId,
+      })
     } catch (error) {
       await this.persistSetupFailure(
         conversationId,
@@ -586,9 +590,8 @@ export class AgentRuntime {
       selection,
       controller,
       resolveCleanup,
-      profileId,
       messages,
-      workspaceRoots,
+      toolContext,
       toolRegistry,
     })
 
@@ -853,6 +856,27 @@ export class AgentRuntime {
     return this.host.loadSettings?.()
   }
 
+  private async resolveSettingsOrDefault(): Promise<Settings> {
+    return (await this.resolveSettings()) ?? defaultLoadSettings()
+  }
+
+  private async buildToolContext(input: RuntimeToolContextInput): Promise<ToolContext> {
+    return {
+      settings: await this.resolveSettingsOrDefault(),
+      profileId: input.profileId,
+      ...(input.conversationId && { conversationId: input.conversationId }),
+      ...(input.messageId && { messageId: input.messageId }),
+      ...(input.toolCallId && { toolCallId: input.toolCallId }),
+      ...(input.signal && { signal: input.signal }),
+      workspaceRoots: this.resolveWorkspaceRoots(),
+      shellCwd: this.resolveShellCwd(),
+      onToolPolicy: this.host.onToolPolicy,
+      onToolApproval: this.host.onToolApproval,
+      generateImage: this.host.generateImage,
+      saveImage: this.host.saveImage,
+    }
+  }
+
   private async resolveTransientContext(
     input: RuntimeTransientContextInput,
   ): Promise<ChatMessage[] | undefined> {
@@ -1012,9 +1036,8 @@ export class AgentRuntime {
     selection: ModelSelection
     controller: AbortController
     resolveCleanup: () => void
-    profileId: AgentProfileId
     messages: Parameters<typeof defaultStreamChat>[0]['messages']
-    workspaceRoots?: ToolContext['workspaceRoots']
+    toolContext: ToolContext
     toolRegistry: ToolRegistry
   }): Promise<void> {
     const {
@@ -1023,12 +1046,10 @@ export class AgentRuntime {
       selection,
       controller,
       resolveCleanup,
-      profileId,
       messages,
-      workspaceRoots,
+      toolContext,
       toolRegistry,
     } = input
-    const shellCwd = this.resolveShellCwd()
     let eventLogChain = Promise.resolve()
     let terminalAgentEventQueued = false
     const queueAgentEvent = (event: AgentEventInput): void => {
@@ -1053,7 +1074,6 @@ export class AgentRuntime {
 
     try {
       const streamChat = this.host.streamChat ?? defaultStreamChat
-      const settings = await this.resolveSettings()
       await streamChat(
         {
           conversationId,
@@ -1061,14 +1081,14 @@ export class AgentRuntime {
           messages,
           selection,
           signal: controller.signal,
-          profileId,
-          workspaceRoots,
-          shellCwd,
-          settings,
-          generateImage: this.host.generateImage,
-          saveImage: this.host.saveImage,
-          onToolPolicy: this.host.onToolPolicy,
-          onToolApproval: this.host.onToolApproval,
+          profileId: toolContext.profileId,
+          workspaceRoots: toolContext.workspaceRoots,
+          shellCwd: toolContext.shellCwd,
+          settings: toolContext.settings,
+          generateImage: toolContext.generateImage,
+          saveImage: toolContext.saveImage,
+          onToolPolicy: toolContext.onToolPolicy,
+          onToolApproval: toolContext.onToolApproval,
           onAgentEvent: queueAgentEvent,
           toolRegistry,
         },
