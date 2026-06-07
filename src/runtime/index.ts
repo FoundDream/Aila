@@ -38,6 +38,7 @@ export {
   type ConversationUsage,
   createConversation,
   createInterruptedConversationRecoveryEvent,
+  type DocRefRewrite,
   deleteConversation,
   getConversation,
   listAgentEvents,

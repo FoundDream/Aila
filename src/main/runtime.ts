@@ -23,6 +23,7 @@ import {
   type ConversationRecord,
   type ConversationSummary,
   createInterruptedConversationRecoveryEvent,
+  type DocRefRewrite,
   getConversation,
   listAgentEvents,
   listConversations,
@@ -33,6 +34,7 @@ import {
   deleteConversation as removeConversation,
   renameConversation,
   replayConversationActivity,
+  rewriteDocRefs as rewritePersistedDocRefs,
   setConversationUsage,
   upsertMessage,
 } from './conversations'
@@ -229,6 +231,7 @@ export interface AgentRuntimeStore {
   listAgentEvents?: (conversationId: string) => Promise<readonly PersistedAgentEvent[]>
   recoverInterruptedConversationActivities?: (reason?: string) => Promise<ConversationSummary[]>
   renameConversation?: (conversationId: string, title: string) => Promise<ConversationSummary>
+  rewriteDocRefs?: (rewrites: readonly DocRefRewrite[]) => Promise<readonly ConversationSummary[]>
   setConversationUsage: (
     conversationId: string,
     usage: { promptTokens: number; completionTokens: number; totalTokens: number },
@@ -245,6 +248,7 @@ const DEFAULT_RUNTIME_STORE: AgentRuntimeStore = {
   listAgentEvents,
   recoverInterruptedConversationActivities,
   renameConversation,
+  rewriteDocRefs: (rewrites) => rewritePersistedDocRefs([...rewrites]),
   setConversationUsage,
   deleteConversation: removeConversation,
 }
@@ -378,6 +382,15 @@ export class AgentRuntime {
     const summary = await this.store.renameConversation(conversationId, title)
     this.emit(createRuntimeEvent('conversations:updated', summary))
     return summary
+  }
+
+  async rewriteDocRefs(rewrites: readonly DocRefRewrite[]): Promise<ConversationSummary[]> {
+    if (!this.store.rewriteDocRefs) throw new Error('runtime store cannot rewrite doc refs')
+    const summaries = [...(await this.store.rewriteDocRefs(rewrites))]
+    for (const summary of summaries) {
+      this.emit(createRuntimeEvent('conversations:updated', summary))
+    }
+    return summaries
   }
 
   async appendUserMessage(input: RuntimeAppendUserMessageInput): Promise<PersistedMessage> {

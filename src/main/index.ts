@@ -8,6 +8,7 @@ import type { AgentProfileId } from './agent-profile'
 import { sweepOrphanedDocConversations } from './doc-conversation-cleanup'
 import type { DocPatch } from './docs'
 import {
+  configureDocConversationRefRewriter,
   createDoc,
   createFolder,
   deleteDoc,
@@ -113,6 +114,7 @@ const agentRuntime = new AgentRuntime({
     workspaceRoots: getDesktopWorkspaceRoots,
   },
 })
+configureDocConversationRefRewriter((rewrites) => agentRuntime.rewriteDocRefs(rewrites))
 
 async function shutdownRuntimeWorkbench(): Promise<void> {
   await agentRuntime.abortAll('shutdown')

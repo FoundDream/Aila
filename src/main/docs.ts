@@ -1,6 +1,10 @@
 import { mkdir, open, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, join, posix as pathPosix, relative, sep } from 'node:path'
-import { rewriteDocRefs } from './conversations'
+import {
+  type ConversationSummary,
+  type DocRefRewrite,
+  rewriteDocRefs as rewritePersistedDocRefs,
+} from './conversations'
 import { imageNameFromUrl } from './image-store'
 import { getDocumentsDir, getImagesDir } from './paths'
 
@@ -28,12 +32,29 @@ export interface FolderSummary {
   parentPath: string | null
 }
 
+export type DocConversationRefRewriter = (
+  rewrites: readonly DocRefRewrite[],
+) => Promise<readonly ConversationSummary[]>
+
 const DEFAULT_TITLE = '无标题文档'
 const EMPTY_CONTENT = ''
 const TITLE_MAX_LEN = 200
 const MAX_SUFFIX_TRIES = 10000
 
 const IMAGE_URL_RE = /aila-image:\/\/i\/[A-Za-z0-9._-]+/g
+const defaultDocConversationRefRewriter: DocConversationRefRewriter = (rewrites) =>
+  rewritePersistedDocRefs([...rewrites])
+let docConversationRefRewriter = defaultDocConversationRefRewriter
+
+export function configureDocConversationRefRewriter(rewriter?: DocConversationRefRewriter): void {
+  docConversationRefRewriter = rewriter ?? defaultDocConversationRefRewriter
+}
+
+function rewriteDocRefs(
+  rewrites: readonly DocRefRewrite[],
+): Promise<readonly ConversationSummary[]> {
+  return docConversationRefRewriter(rewrites)
+}
 
 // Forbids path/separator chars, shell-glob & filesystem-illegal chars (Windows
 // is the strict superset), and ASCII control chars. Used for both folder names

@@ -868,6 +868,68 @@ async function testRuntimeRecordAgentEventUsesInjectedStore(): Promise<void> {
   )
 }
 
+async function testRuntimeRewriteDocRefsUsesInjectedStore(): Promise<void> {
+  const emitted: AgentRuntimeEvent[] = []
+  const calls: string[] = []
+  const store: AgentRuntimeStore = {
+    getConversation: async () => {
+      throw new Error('rewrite doc refs should not read conversation')
+    },
+    upsertMessage: async () => {
+      throw new Error('rewrite doc refs should not upsert messages')
+    },
+    appendAgentEventAndTouchConversation: async () => {
+      throw new Error('rewrite doc refs should not append agent events')
+    },
+    rewriteDocRefs: async (rewrites) => {
+      calls.push(
+        rewrites
+          .map((rewrite) => `${rewrite.oldPath}->${rewrite.newPath}:${rewrite.isFolder === true}`)
+          .join(','),
+      )
+      return [
+        {
+          schemaVersion: AILA_CONVERSATION_META_SCHEMA_VERSION,
+          id: 'doc-bound-conversation',
+          title: 'doc-bound',
+          createdAt: 1,
+          updatedAt: 2,
+          docId: 'docs/new',
+        },
+      ]
+    },
+    setConversationUsage: async () => {
+      throw new Error('rewrite doc refs should not persist usage')
+    },
+    deleteConversation: async () => {
+      throw new Error('rewrite doc refs should not delete conversation')
+    },
+  }
+
+  const runtime = new AgentRuntime({
+    store,
+    onEvent: (event) => emitted.push(event),
+    logger: { warn() {}, error() {} },
+  })
+  const summaries = await runtime.rewriteDocRefs([
+    { oldPath: 'docs/old', newPath: 'docs/new', isFolder: true },
+  ])
+
+  assertEqual(
+    calls.join(','),
+    'docs/old->docs/new:true',
+    'runtime rewrite doc refs should use injected store',
+  )
+  assertEqual(summaries[0]?.docId, 'docs/new', 'runtime rewrite doc refs summary')
+  assert(
+    emitted.some(
+      (event) =>
+        event.type === 'conversations:updated' && event.data.id === 'doc-bound-conversation',
+    ),
+    'runtime rewrite doc refs should emit conversation updates',
+  )
+}
+
 async function testRuntimeRecoveryDelegatesToInjectedStore(): Promise<void> {
   const summary: ConversationSummary = {
     schemaVersion: AILA_CONVERSATION_META_SCHEMA_VERSION,
@@ -4025,6 +4087,7 @@ async function main(): Promise<void> {
   await testRuntimeConversationStoreFacadeContract()
   await testRuntimeAppendUserMessageUsesInjectedStore()
   await testRuntimeRecordAgentEventUsesInjectedStore()
+  await testRuntimeRewriteDocRefsUsesInjectedStore()
   await testRuntimeRecoveryDelegatesToInjectedStore()
   await testRuntimeRecoveryUsesInjectedStoreReplay()
   await testRuntimeDeleteAssetCleanupHostBoundary()

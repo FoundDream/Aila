@@ -19,6 +19,7 @@ import {
 } from '../src/main/conversations'
 import { sweepOrphanedDocConversations } from '../src/main/doc-conversation-cleanup'
 import {
+  configureDocConversationRefRewriter,
   createDoc,
   createFolder,
   deleteDoc,
@@ -159,6 +160,34 @@ async function testDocConversationFollowsDocRename(): Promise<void> {
       (await listDocConversations(renamed.path))[0]?.id,
       conversation.id,
       'renamed doc path should retain session',
+    )
+  })
+}
+
+async function testDocRenameUsesInjectedConversationRefRewriter(): Promise<void> {
+  await withTempDataDir(async () => {
+    const created = await createDoc(null)
+    const doc = await updateDoc(created.path, { title: 'Injected Rewrite Source' })
+    const rewrites: string[] = []
+
+    configureDocConversationRefRewriter(async (input) => {
+      rewrites.push(
+        input
+          .map((rewrite) => `${rewrite.oldPath}->${rewrite.newPath}:${rewrite.isFolder === true}`)
+          .join(','),
+      )
+      return []
+    })
+    try {
+      await updateDoc(doc.path, { title: 'Injected Rewrite Target' })
+    } finally {
+      configureDocConversationRefRewriter()
+    }
+
+    assertEqual(
+      rewrites.join(','),
+      `${doc.path}->Injected Rewrite Target:false`,
+      'doc rename should use injected conversation ref rewriter',
     )
   })
 }
@@ -1619,6 +1648,7 @@ async function main(): Promise<void> {
   await testDesktopWorkspaceRoots()
   await testConversationPartitionContract()
   await testDocConversationFollowsDocRename()
+  await testDocRenameUsesInjectedConversationRefRewriter()
   await testDocDeleteSweepsOnlyDeletedDocConversations()
   await testFolderDeleteSweepsNestedDocConversations()
   await testConversationDeleteCleansActivity()
