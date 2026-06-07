@@ -1,10 +1,5 @@
 import { randomUUID } from 'node:crypto'
 import type { AgentEvent } from './agent'
-import type {
-  AgentEventAppendResult,
-  ConversationSummary,
-  PersistedAgentEvent,
-} from './conversations'
 import { summarizeToolTarget, type ToolApprovalRequest } from './tools'
 
 export type ToolApprovalResolutionReason = 'user' | 'timeout' | 'shutdown' | 'cancelled'
@@ -38,15 +33,13 @@ type MaybePromise<T> = T | Promise<T>
 export type ToolApprovalActivityRecorder = (
   conversationId: string,
   event: AgentEvent,
-) => MaybePromise<AgentEventAppendResult | undefined>
+) => MaybePromise<unknown>
 
 export interface ToolApprovalStoreOptions {
   timeoutMs: number
   recordAgentEvent?: ToolApprovalActivityRecorder
   onRequest?: (payload: ToolApprovalRequestPayload) => void
   onResolved?: (payload: ToolApprovalResolvedPayload) => void
-  onAgentEvent?: (event: PersistedAgentEvent) => void
-  onConversationUpdated?: (summary: ConversationSummary) => void
   logger?: Pick<Console, 'warn'>
 }
 
@@ -71,10 +64,7 @@ async function recordToolApprovalActivity(
   req: ToolApprovalRequest,
   requestId: string,
   state: 'requested' | 'resolved',
-  callbacks: Pick<
-    ToolApprovalStoreOptions,
-    'recordAgentEvent' | 'onAgentEvent' | 'onConversationUpdated' | 'logger'
-  >,
+  callbacks: Pick<ToolApprovalStoreOptions, 'recordAgentEvent' | 'logger'>,
   approved?: boolean,
   reason?: ToolApprovalResolutionReason,
 ): Promise<void> {
@@ -107,10 +97,7 @@ async function recordToolApprovalActivity(
   }
 
   try {
-    const result = await callbacks.recordAgentEvent?.(req.conversationId, event)
-    if (!result) return
-    callbacks.onAgentEvent?.(result.event)
-    if (result.summary) callbacks.onConversationUpdated?.(result.summary)
+    await callbacks.recordAgentEvent?.(req.conversationId, event)
   } catch (error) {
     callbacks.logger?.warn('[activity] tool approval event append failed:', error)
   }

@@ -2,7 +2,6 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
-  AILA_AGENT_EVENT_SCHEMA_VERSION,
   AILA_CONVERSATION_META_SCHEMA_VERSION,
   AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
   appendAgentEvent,
@@ -1361,21 +1360,11 @@ async function testToolApprovalStoreUsesInjectedActivityRecorder(): Promise<void
   await withTempDataDir(async () => {
     const conversation = await createConversation()
     const recorded: Array<{ conversationId: string; type: string }> = []
-    const emitted: Array<{ type: string; schemaVersion: number }> = []
-    const updated: ConversationSummary[] = []
     const store = new ToolApprovalStore({
       timeoutMs: 1000,
       recordAgentEvent: (conversationId, event) => {
         recorded.push({ conversationId, type: event.type })
-        return {
-          event: {
-            ...event,
-            schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
-          },
-        }
       },
-      onAgentEvent: (event) => emitted.push(event),
-      onConversationUpdated: (summary) => updated.push(summary),
     })
 
     const approval = store.request({
@@ -1412,17 +1401,10 @@ async function testToolApprovalStoreUsesInjectedActivityRecorder(): Promise<void
       true,
       'custom recorder should receive conversation id',
     )
-    assertEqual(emitted.length, 2, 'custom recorder returned events should be emitted')
-    assertEqual(
-      emitted[0]?.schemaVersion,
-      AILA_AGENT_EVENT_SCHEMA_VERSION,
-      'custom recorder emitted event version',
-    )
-    assertEqual(updated.length, 0, 'custom recorder should not synthesize summary updates')
     assertEqual(
       (await listAgentEvents(conversation.id)).length,
       0,
-      'custom recorder should bypass default conversation event log',
+      'custom recorder should own any event persistence and fanout',
     )
   })
 }
