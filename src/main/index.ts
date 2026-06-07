@@ -108,6 +108,7 @@ const agentRuntime = new AgentRuntime({
     onToolApproval: requestToolApproval,
     onConversationAbort: cancelConversationApprovals,
     cleanupConversationAssets: cleanupConversationImages,
+    loadSettings,
     loadProfiles: async () => (await loadAgentProfilesFromDir()).map((profile) => profile.profile),
     loadToolPacks: async () => (await loadToolPacksFromDir()).map((pack) => pack.toolPack),
     loadTransientContext: ({ record }) => buildDesktopWorkspaceContextFromRecord(record),

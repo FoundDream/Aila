@@ -358,6 +358,7 @@ function createRuntime(input: {
       })
     },
     onToolApproval: (request) => approveTool(request, input.autoApprove, input.events),
+    loadSettings,
     loadProfiles: async () => (await loadAgentProfilesFromDir()).map((profile) => profile.profile),
     loadToolPacks: async () => (await loadToolPacksFromDir()).map((pack) => pack.toolPack),
   })

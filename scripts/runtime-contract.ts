@@ -316,6 +316,62 @@ async function testRuntimeHostBoundaryContract(): Promise<void> {
   })
 }
 
+async function testRuntimeSettingsFallbackIsHostAgnostic(): Promise<void> {
+  await withTempDataDir(async () => {
+    const previousOpenRouterKey = process.env.OPENROUTER_API_KEY
+    process.env.OPENROUTER_API_KEY = 'env-key-must-not-leak-into-runtime'
+    try {
+      const conversation = await createConversation()
+      let streamStarted = false
+      let streamSettingsKey: string | null | undefined
+      let streamDefaultModel: Settings['defaultModel'] | undefined
+      const runtime = new AgentRuntime({
+        streamChat: async (req, handlers) => {
+          streamSettingsKey = req.settings?.apiKeys.openrouter
+          streamDefaultModel = req.settings?.defaultModel
+          streamStarted = true
+          await handlers.onError({
+            conversationId: req.conversationId,
+            messageId: req.assistantMessageId,
+            error: 'settings fallback contract',
+            message: {
+              schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+              id: req.assistantMessageId,
+              role: 'assistant',
+              blocks: [],
+              status: 'error',
+              error: 'settings fallback contract',
+              model: req.selection,
+            },
+          })
+        },
+        logger: { warn() {}, error() {} },
+      })
+
+      await runtime.send({
+        conversationId: conversation.id,
+        userText: 'exercise runtime settings fallback',
+        selection: { providerId: 'openrouter', modelId: 'contract/mock' },
+        requestedProfileId: 'coding',
+      })
+      await waitFor(() => streamStarted, 'runtime settings fallback stream should start')
+
+      assertEqual(
+        streamSettingsKey,
+        undefined,
+        'runtime without host settings must not read provider keys from env',
+      )
+      assertEqual(streamDefaultModel, null, 'runtime fallback settings should be empty')
+    } finally {
+      if (previousOpenRouterKey === undefined) {
+        delete process.env.OPENROUTER_API_KEY
+      } else {
+        process.env.OPENROUTER_API_KEY = previousOpenRouterKey
+      }
+    }
+  })
+}
+
 async function testRuntimeHostStaticExtensionContract(): Promise<void> {
   const topLevelPack: ToolPack = {
     id: 'top-level-static-pack',
@@ -4213,6 +4269,7 @@ async function main(): Promise<void> {
   await testRuntimeEventContract()
   await testRuntimeEmitsVersionedEvents()
   await testRuntimeHostBoundaryContract()
+  await testRuntimeSettingsFallbackIsHostAgnostic()
   await testRuntimeHostStaticExtensionContract()
   await testRuntimeInjectableStoreContract()
   await testRuntimeHostTransientContextUsesInjectedRecord()

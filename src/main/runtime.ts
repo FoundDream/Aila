@@ -39,7 +39,7 @@ import {
   upsertMessage,
 } from './conversations'
 import { type AgentRuntimeEvent, createRuntimeEvent } from './runtime-events'
-import { loadSettings as defaultLoadSettings, type Settings } from './settings'
+import type { Settings } from './settings'
 import {
   createDefaultToolRegistry,
   executeTool as executeRegisteredTool,
@@ -73,6 +73,7 @@ type AgentEventInput = RuntimeRecordAgentEventInput
 export type ConversationAbortReason = 'user' | 'delete' | 'shutdown'
 
 const DEFAULT_ABORT_ALL_CLEANUP_TIMEOUT_MS = 5_000
+const EMPTY_RUNTIME_SETTINGS: Settings = { apiKeys: {}, defaultModel: null }
 const TURN_LIFECYCLE_EVENTS = new Set<AgentEvent['type']>([
   'turn.started',
   'turn.completed',
@@ -891,7 +892,7 @@ export class AgentRuntime {
   }
 
   private async resolveSettingsOrDefault(): Promise<Settings> {
-    return (await this.resolveSettings()) ?? defaultLoadSettings()
+    return (await this.resolveSettings()) ?? { ...EMPTY_RUNTIME_SETTINGS, apiKeys: {} }
   }
 
   private async buildToolContext(input: RuntimeToolContextInput): Promise<ToolContext> {
