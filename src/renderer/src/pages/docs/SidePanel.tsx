@@ -13,8 +13,13 @@ interface SidePanelProps {
   defaultWidth: number
   minWidth: number
   maxWidth?: number
+  /** Called when a drag overshoots well below minWidth; parent should close the panel. */
+  onCollapse?: () => void
   children: ReactNode
 }
+
+// How far past minWidth a drag must overshoot before the panel snaps closed.
+const COLLAPSE_OVERSHOOT = 80
 
 function readStoredWidth(key: string, fallback: number, min: number): number {
   try {
@@ -34,6 +39,7 @@ export function SidePanel({
   defaultWidth,
   minWidth,
   maxWidth,
+  onCollapse,
   children,
 }: SidePanelProps): ReactElement | null {
   const [width, setWidth] = useState(() => readStoredWidth(storageKey, defaultWidth, minWidth))
@@ -62,6 +68,13 @@ export function SidePanel({
         // Handle is on the panel's left edge; dragging left widens the panel.
         const delta = startX - ev.clientX
         let next = startWidth + delta
+        if (onCollapse && next < minWidth - COLLAPSE_OVERSHOOT) {
+          // Dragged well past the minimum: snap the panel closed and end the
+          // gesture. Width keeps its last good value for the next open.
+          onUp()
+          onCollapse()
+          return
+        }
         if (next < minWidth) next = minWidth
         if (next > cap) next = cap
         setWidth(next)
@@ -77,7 +90,7 @@ export function SidePanel({
       window.addEventListener('pointermove', onMove)
       window.addEventListener('pointerup', onUp)
     },
-    [width, minWidth, maxWidth],
+    [width, minWidth, maxWidth, onCollapse],
   )
 
   if (!open) return null

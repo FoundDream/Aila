@@ -253,6 +253,7 @@ export function DocsPage({
           storageKey={SIDE_PANEL_STORAGE_KEY}
           defaultWidth={SIDE_PANEL_DEFAULT_WIDTH}
           minWidth={SIDE_PANEL_MIN_WIDTH}
+          onCollapse={closePanel}
         >
           {activeDoc && panelMode === 'chat' && (
             <DocChatPanel

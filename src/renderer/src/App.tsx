@@ -1,5 +1,13 @@
 import { PanelLeftCloseIcon, PanelLeftOpenIcon, SettingsIcon } from 'lucide-react'
-import { type ReactElement, type ReactNode, useCallback, useEffect, useMemo, useState } from 'react'
+import {
+  type ReactElement,
+  type ReactNode,
+  type PointerEvent as ReactPointerEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+} from 'react'
 import { SettingsModal } from '@/components/SettingsModal'
 import { ToolApprovalDialog } from '@/components/ToolApprovalDialog'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
@@ -70,9 +78,34 @@ const navItems: NavItem[] = [
   },
 ]
 
+const SIDEBAR_DEFAULT_WIDTH = 260
+const SIDEBAR_MIN_WIDTH = 180
+const SIDEBAR_MAX_WIDTH = 320
+// Dragging the handle below this raw width snaps the sidebar closed.
+const SIDEBAR_COLLAPSE_THRESHOLD = 120
+const SIDEBAR_WIDTH_STORAGE_KEY = 'app.sidebar.width'
+
+function readStoredSidebarWidth(): number {
+  try {
+    const raw = localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY)
+    if (raw === null) return SIDEBAR_DEFAULT_WIDTH
+    const parsed = Number(raw)
+    if (!Number.isFinite(parsed)) return SIDEBAR_DEFAULT_WIDTH
+    return Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, parsed))
+  } catch {
+    return SIDEBAR_DEFAULT_WIDTH
+  }
+}
+
 export default function App(): ReactElement {
   const [tab, setTab] = useState<Tab>('chat')
   const [collapsed, setCollapsed] = useState(false)
+  const [sidebarWidth, setSidebarWidth] = useState(readStoredSidebarWidth)
+  const [resizingSidebar, setResizingSidebar] = useState(false)
+  // Hover-peek: with the sidebar collapsed, hovering the window's left edge
+  // floats it over the content without un-collapsing.
+  const [peeking, setPeeking] = useState(false)
+  const showPeek = collapsed && peeking
   const docsState = useDocs()
   const conversationsState = useConversations()
   const chatStreams = useChatStreams(
@@ -149,6 +182,56 @@ export default function App(): ReactElement {
     setToolApprovalsState((current) => resolveToolApprovalsForConversation(current, conversationId))
   }, [])
 
+  // Leaving the peeked sidebar (or expanding it for real) ends the peek.
+  useEffect(() => {
+    if (!collapsed) setPeeking(false)
+  }, [collapsed])
+
+  // Persist width as it changes. Drag emits many updates; localStorage writes
+  // are cheap enough that debouncing isn't worth the complexity.
+  useEffect(() => {
+    try {
+      localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(Math.round(sidebarWidth)))
+    } catch {
+      // ignore quota / privacy-mode errors
+    }
+  }, [sidebarWidth])
+
+  const onSidebarResizeStart = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      event.preventDefault()
+      const startX = event.clientX
+      const startWidth = sidebarWidth
+      setResizingSidebar(true)
+      document.body.style.cursor = 'col-resize'
+      document.body.style.userSelect = 'none'
+
+      const onMove = (ev: PointerEvent): void => {
+        const next = startWidth + (ev.clientX - startX)
+        if (next < SIDEBAR_COLLAPSE_THRESHOLD) {
+          // Dragged far enough in: snap closed. Dragging back out within the
+          // same gesture re-opens at the minimum width.
+          setCollapsed(true)
+          return
+        }
+        setCollapsed(false)
+        setSidebarWidth(Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, next)))
+      }
+
+      const onUp = (): void => {
+        setResizingSidebar(false)
+        document.body.style.cursor = ''
+        document.body.style.userSelect = ''
+        window.removeEventListener('pointermove', onMove)
+        window.removeEventListener('pointerup', onUp)
+      }
+
+      window.addEventListener('pointermove', onMove)
+      window.addEventListener('pointerup', onUp)
+    },
+    [sidebarWidth],
+  )
+
   // ⌘\ toggles the sidebar. preventDefault so a stray backslash doesn't reach
   // a focused input/editor.
   useEffect(() => {
@@ -166,14 +249,27 @@ export default function App(): ReactElement {
     <TooltipProvider delayDuration={300}>
       <div className="flex h-full bg-transparent text-[var(--text)]">
         <aside
-          className={`flex shrink-0 flex-col overflow-hidden transition-[width] duration-200 ease-out ${
-            collapsed ? 'w-0' : 'w-[260px]'
+          className={`flex shrink-0 flex-col overflow-hidden ${
+            resizingSidebar ? '' : 'transition-[width] duration-200 ease-out'
           }`}
+          style={{ width: collapsed ? 0 : sidebarWidth }}
         >
-          {/* Fixed-width inner wrapper so the collapse animation clips the
-              sidebar instead of squashing its content. */}
-          <div className="flex h-full w-[260px] flex-col">
-            <div className="h-11 shrink-0 [-webkit-app-region:drag]" />
+          {/* Full-width inner wrapper so collapsing clips the sidebar instead
+              of squashing its content. While peeking, the same element floats
+              over the content as a fixed overlay (position: fixed escapes the
+              aside's overflow-hidden), so scroll state is preserved. */}
+          <div
+            className={`flex flex-col ${
+              showPeek
+                ? 'fixed inset-y-0 left-0 z-40 border-r border-[var(--border)] bg-[var(--surface)] shadow-xl animate-in fade-in-0 slide-in-from-left-2 duration-150'
+                : 'h-full'
+            }`}
+            style={{ width: sidebarWidth }}
+            onMouseLeave={showPeek ? () => setPeeking(false) : undefined}
+          >
+            {/* Keep the h-11 spacer in peek mode too so content clears the
+                traffic lights; drag region only when docked. */}
+            <div className={`h-11 shrink-0 ${showPeek ? '' : '[-webkit-app-region:drag]'}`} />
             <nav className="flex shrink-0 flex-col gap-px px-2">
               {navItems.map((item) => (
                 <SidebarButton
@@ -192,7 +288,7 @@ export default function App(): ReactElement {
             </nav>
             <div
               className={tab === 'chat' ? 'mt-5 flex min-h-0 flex-1 flex-col' : 'hidden'}
-              aria-hidden={collapsed || tab !== 'chat'}
+              aria-hidden={(collapsed && !showPeek) || tab !== 'chat'}
             >
               <ConversationList
                 conversations={conversationsState.conversations}
@@ -221,7 +317,7 @@ export default function App(): ReactElement {
             </div>
             <div
               className={tab === 'docs' ? 'mt-5 flex min-h-0 flex-1 flex-col' : 'hidden'}
-              aria-hidden={collapsed || tab !== 'docs'}
+              aria-hidden={(collapsed && !showPeek) || tab !== 'docs'}
             >
               <DocList
                 docs={docsState.docs}
@@ -239,6 +335,28 @@ export default function App(): ReactElement {
             </div>
           </div>
         </aside>
+        {collapsed && !resizingSidebar && (
+          // Invisible strip along the left edge that triggers the hover-peek.
+          // Skipped below the title bar so the traffic lights stay clear, and
+          // while resizing so a collapse-drag doesn't immediately pop it open.
+          <div
+            aria-hidden="true"
+            onMouseEnter={() => setPeeking(true)}
+            className="fixed bottom-0 left-0 top-11 z-30 w-2"
+          />
+        )}
+        {!collapsed && (
+          <div className="relative z-40 w-0 shrink-0">
+            <div
+              aria-hidden="true"
+              title="Drag to resize"
+              onPointerDown={onSidebarResizeStart}
+              className="group absolute inset-y-0 -left-[2px] w-1 cursor-col-resize [-webkit-app-region:no-drag]"
+            >
+              <div className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-transparent transition-colors group-hover:bg-[var(--border-strong)] group-active:bg-[var(--border-strong)]" />
+            </div>
+          </div>
+        )}
         <main
           className={`min-w-0 flex-1 bg-[var(--bg)] ${
             collapsed
