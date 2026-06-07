@@ -614,11 +614,15 @@ export async function appendAgentEventAndTouchConversation(
   const persisted = await appendAgentEvent(id, event)
   const activity = activityFromAgentEvent(persisted)
   const summary = activity
-    ? await updateMeta(id, (current) => ({
-        ...current,
-        updatedAt: nextUpdatedAt(current, persisted.timestamp),
-        activity,
-      }))
+    ? await updateMeta(id, (current) =>
+        current.activity && current.activity.updatedAt > activity.updatedAt
+          ? current
+          : {
+              ...current,
+              updatedAt: nextUpdatedAt(current, persisted.timestamp),
+              activity,
+            },
+      )
     : undefined
   return { event: persisted, ...(summary ? { summary } : {}) }
 }

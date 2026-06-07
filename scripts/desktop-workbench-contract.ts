@@ -249,6 +249,37 @@ async function testActivityDeltaDoesNotTouchConversationSummary(): Promise<void>
   })
 }
 
+async function testStaleActivityDoesNotOverwriteNewerSummary(): Promise<void> {
+  await withTempDataDir(async () => {
+    const conversation = await createConversation()
+    await appendAgentEventAndTouchConversation(conversation.id, {
+      timestamp: 200,
+      conversationId: conversation.id,
+      messageId: 'assistant-message',
+      type: 'turn.completed',
+    })
+    const { summary } = await appendAgentEventAndTouchConversation(conversation.id, {
+      timestamp: 100,
+      conversationId: conversation.id,
+      messageId: 'assistant-message',
+      type: 'tool.execution.started',
+      data: { toolName: 'read_file' },
+    })
+
+    assert(summary, 'stale activity append should still return a summary')
+    assertEqual(summary.activity?.state, 'completed', 'newer activity state should be preserved')
+    assertEqual(summary.activity?.eventType, 'turn.completed', 'newer activity event should stay')
+    assertEqual(summary.activity?.updatedAt, 200, 'newer activity timestamp should stay')
+    const events = await listAgentEvents(conversation.id)
+    assertEqual(events.length, 2, 'stale activity should still persist in the event log')
+    assertEqual(
+      events[0]?.type,
+      'tool.execution.started',
+      'event log should remain timestamp sorted',
+    )
+  })
+}
+
 async function testToolResultActivityKeepsToolName(): Promise<void> {
   await withTempDataDir(async () => {
     const conversation = await createConversation()
@@ -658,6 +689,7 @@ async function main(): Promise<void> {
   await testConversationDeleteCleansActivity()
   await testActivityUpdatesConversationSummary()
   await testActivityDeltaDoesNotTouchConversationSummary()
+  await testStaleActivityDoesNotOverwriteNewerSummary()
   await testToolResultActivityKeepsToolName()
   testRendererHydratesActiveAssistantTurn()
   testRendererFinishAppendsMissingAssistantMessage()
