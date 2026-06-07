@@ -18,6 +18,7 @@ interface DocsPageProps {
   streams: ChatStreamsApi
   settings: Settings | null
   configuredProviders: ProviderId[]
+  pendingApprovalConversationIds: Set<string>
   onUpdateSettings: (settings: Settings) => Promise<void>
   onOpenSettings: () => void
 }
@@ -55,6 +56,7 @@ export function DocsPage({
   streams,
   settings,
   configuredProviders,
+  pendingApprovalConversationIds,
   onUpdateSettings,
   onOpenSettings,
 }: DocsPageProps): ReactElement {
@@ -262,6 +264,7 @@ export function DocsPage({
               streams={streams}
               settings={settings}
               configuredProviders={configuredProviders}
+              pendingApprovalConversationIds={pendingApprovalConversationIds}
               onUpdateSettings={onUpdateSettings}
               onOpenSettings={onOpenSettings}
               onClose={closePanel}

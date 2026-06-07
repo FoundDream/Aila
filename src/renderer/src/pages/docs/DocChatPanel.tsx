@@ -13,6 +13,7 @@ interface DocChatPanelProps {
   streams: ChatStreamsApi
   settings: Settings | null
   configuredProviders: ProviderId[]
+  pendingApprovalConversationIds: Set<string>
   onUpdateSettings: (settings: Settings) => Promise<void>
   onOpenSettings: () => void
   onClose: () => void
@@ -25,6 +26,7 @@ export function DocChatPanel({
   streams,
   settings,
   configuredProviders,
+  pendingApprovalConversationIds,
   onUpdateSettings,
   onOpenSettings,
   onClose,
@@ -119,6 +121,7 @@ export function DocChatPanel({
         <SessionPicker
           sessions={sessions}
           active={activeSession}
+          pendingApprovalConversationIds={pendingApprovalConversationIds}
           onSelect={selectSession}
           onNewSession={newSession}
           onRenameSession={handleRenameSession}
@@ -178,6 +181,7 @@ export function DocChatPanel({
 interface SessionPickerProps {
   sessions: ConversationSummary[]
   active: ConversationSummary | null
+  pendingApprovalConversationIds: Set<string>
   onSelect: (id: string) => void
   onNewSession: () => void
   onRenameSession: (id: string, title: string) => void
@@ -187,6 +191,7 @@ interface SessionPickerProps {
 function SessionPicker({
   sessions,
   active,
+  pendingApprovalConversationIds,
   onSelect,
   onNewSession,
   onRenameSession,
@@ -205,6 +210,7 @@ function SessionPicker({
   }, [open])
 
   const label = active?.title || 'New chat'
+  const activeNeedsApproval = active ? pendingApprovalConversationIds.has(active.id) : false
 
   return (
     <div className="relative min-w-0 flex-1" ref={ref}>
@@ -215,6 +221,16 @@ function SessionPicker({
         style={{ fontFamily: 'var(--font-serif)', fontStyle: 'italic' }}
       >
         <span className="truncate">{label}</span>
+        {activeNeedsApproval && (
+          <span
+            role="status"
+            aria-label="Approval required"
+            title="Approval required"
+            className="ml-1 shrink-0 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] leading-none text-amber-700"
+          >
+            review
+          </span>
+        )}
         <ChevronDownIcon />
       </button>
       {open && (
@@ -238,6 +254,7 @@ function SessionPicker({
               <ul className="max-h-[280px] overflow-y-auto">
                 {sessions.map((session) => {
                   const isActive = session.id === active?.id
+                  const needsApproval = pendingApprovalConversationIds.has(session.id)
                   return (
                     <li
                       key={session.id}
@@ -256,6 +273,16 @@ function SessionPicker({
                         className="flex h-7 min-w-0 flex-1 items-center px-2 text-[13px]"
                       >
                         <span className="truncate">{session.title || '新对话'}</span>
+                        {needsApproval && (
+                          <span
+                            role="status"
+                            aria-label="Approval required"
+                            title="Approval required"
+                            className="ml-2 shrink-0 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] leading-none text-amber-700"
+                          >
+                            review
+                          </span>
+                        )}
                       </button>
                       <button
                         type="button"

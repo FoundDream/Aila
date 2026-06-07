@@ -78,6 +78,15 @@ export default function App(): ReactElement {
   const [settingsState, setSettingsState] = useState<SettingsState | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [toolApprovals, setToolApprovals] = useState<ToolApprovalRequestEvent[]>([])
+  const pendingApprovalConversationIds = useMemo(
+    () =>
+      new Set(
+        toolApprovals
+          .map((request) => request.conversationId)
+          .filter((id): id is string => Boolean(id)),
+      ),
+    [toolApprovals],
+  )
 
   useEffect(() => {
     void window.api.settings.get().then((state) => {
@@ -171,6 +180,7 @@ export default function App(): ReactElement {
               conversations={conversationsState.conversations}
               activeId={conversationsState.activeId}
               busyIds={chatStreams.busyIds}
+              pendingApprovalIds={pendingApprovalConversationIds}
               onSelect={conversationsState.select}
               onCreate={() => {
                 void conversationsState.create()
@@ -228,6 +238,7 @@ export default function App(): ReactElement {
               streams={chatStreams}
               settings={settingsState?.settings ?? null}
               configuredProviders={settingsState?.configuredProviders ?? ([] as ProviderId[])}
+              pendingApprovalConversationIds={pendingApprovalConversationIds}
               onUpdateSettings={updateSettings}
               onOpenSettings={openSettings}
             />

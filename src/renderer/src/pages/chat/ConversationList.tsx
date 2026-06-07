@@ -5,6 +5,7 @@ interface ConversationListProps {
   conversations: ConversationSummary[]
   activeId: string | null
   busyIds: Set<string>
+  pendingApprovalIds: Set<string>
   onSelect: (id: string) => void
   onCreate: () => void
   onRename: (id: string, title: string) => void
@@ -87,6 +88,7 @@ export function ConversationList({
   conversations,
   activeId,
   busyIds,
+  pendingApprovalIds,
   onSelect,
   onCreate,
   onRename,
@@ -126,6 +128,7 @@ export function ConversationList({
             {conversations.map((conversation) => {
               const isActive = conversation.id === activeId
               const isBusy = busyIds.has(conversation.id)
+              const needsApproval = pendingApprovalIds.has(conversation.id)
               const title = conversation.title || '新对话'
               return (
                 <li
@@ -153,13 +156,24 @@ export function ConversationList({
                     >
                       {title}
                     </span>
-                    {isBusy && (
+                    {needsApproval ? (
                       <span
                         role="status"
-                        aria-label="Streaming"
-                        title="Streaming"
-                        className="mr-1 inline-block h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-[var(--accent,#3b82f6)]"
-                      />
+                        aria-label="Approval required"
+                        title="Approval required"
+                        className="mr-1 shrink-0 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] leading-none text-amber-700"
+                      >
+                        review
+                      </span>
+                    ) : (
+                      isBusy && (
+                        <span
+                          role="status"
+                          aria-label="Streaming"
+                          title="Streaming"
+                          className="mr-1 inline-block h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-[var(--accent,#3b82f6)]"
+                        />
+                      )
                     )}
                   </button>
                   <button
