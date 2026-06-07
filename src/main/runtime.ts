@@ -739,7 +739,9 @@ export class AgentRuntime {
 
   async rewriteDocRefs(rewrites: readonly DocRefRewrite[]): Promise<ConversationSummary[]> {
     if (!this.store.rewriteDocRefs) throw new Error('runtime store cannot rewrite doc refs')
-    const summaries = cloneRuntimeConversationSummaries(await this.store.rewriteDocRefs(rewrites))
+    const summaries = cloneRuntimeConversationSummaries(
+      await this.store.rewriteDocRefs(cloneRuntimeValue([...rewrites])),
+    )
     for (const summary of summaries) {
       this.emit(createRuntimeEvent('conversations:updated', summary))
     }

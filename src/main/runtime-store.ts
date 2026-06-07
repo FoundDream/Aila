@@ -23,7 +23,7 @@ export function createPersistedRuntimeStore(): AgentRuntimeStore {
     listAgentEvents,
     recoverInterruptedConversationActivities,
     renameConversation,
-    rewriteDocRefs: (rewrites) => rewriteDocRefs([...rewrites]),
+    rewriteDocRefs: (rewrites) => rewriteDocRefs(rewrites.map((rewrite) => ({ ...rewrite }))),
     setConversationUsage,
     deleteConversation,
   }

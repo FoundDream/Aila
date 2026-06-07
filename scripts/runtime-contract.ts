@@ -1363,6 +1363,7 @@ async function testRuntimeRecordAgentEventUsesInjectedStore(): Promise<void> {
 async function testRuntimeRewriteDocRefsUsesInjectedStore(): Promise<void> {
   const emitted: AgentRuntimeEvent[] = []
   const calls: string[] = []
+  let summaryFromStore: ConversationSummary | undefined
   const store: AgentRuntimeStore = {
     getConversation: async () => {
       throw new Error('rewrite doc refs should not read conversation')
@@ -1379,16 +1380,16 @@ async function testRuntimeRewriteDocRefsUsesInjectedStore(): Promise<void> {
           .map((rewrite) => `${rewrite.oldPath}->${rewrite.newPath}:${rewrite.isFolder === true}`)
           .join(','),
       )
-      return [
-        {
-          schemaVersion: AILA_CONVERSATION_META_SCHEMA_VERSION,
-          id: 'doc-bound-conversation',
-          title: 'doc-bound',
-          createdAt: 1,
-          updatedAt: 2,
-          docId: 'docs/new',
-        },
-      ]
+      if (rewrites[0]) rewrites[0].oldPath = 'store-mutated-old-path'
+      summaryFromStore = {
+        schemaVersion: AILA_CONVERSATION_META_SCHEMA_VERSION,
+        id: 'doc-bound-conversation',
+        title: 'doc-bound',
+        createdAt: 1,
+        updatedAt: 2,
+        docId: 'docs/new',
+      }
+      return [summaryFromStore]
     },
     setConversationUsage: async () => {
       throw new Error('rewrite doc refs should not persist usage')
@@ -1400,19 +1401,37 @@ async function testRuntimeRewriteDocRefsUsesInjectedStore(): Promise<void> {
 
   const runtime = new AgentRuntime({
     store,
-    onEvent: (event) => emitted.push(event),
+    onEvent: (event) => {
+      if (event.type === 'conversations:updated') event.data.docId = 'event-mutated-doc'
+      emitted.push(event)
+    },
     logger: { warn() {}, error() {} },
   })
-  const summaries = await runtime.rewriteDocRefs([
-    { oldPath: 'docs/old', newPath: 'docs/new', isFolder: true },
-  ])
+  const rewrites = [{ oldPath: 'docs/old', newPath: 'docs/new', isFolder: true }]
+  const summaries = await runtime.rewriteDocRefs(rewrites)
 
   assertEqual(
     calls.join(','),
     'docs/old->docs/new:true',
     'runtime rewrite doc refs should use injected store',
   )
+  assertEqual(
+    rewrites[0]?.oldPath,
+    'docs/old',
+    'runtime rewrite doc refs should isolate caller rewrites from store mutation',
+  )
   assertEqual(summaries[0]?.docId, 'docs/new', 'runtime rewrite doc refs summary')
+  assertEqual(
+    summaryFromStore?.docId,
+    'docs/new',
+    'runtime rewrite doc refs should isolate store summary from onEvent mutation',
+  )
+  if (summaries[0]) summaries[0].docId = 'caller-mutated-doc'
+  assertEqual(
+    summaryFromStore?.docId,
+    'docs/new',
+    'runtime rewrite doc refs should isolate store summary from caller mutation',
+  )
   assert(
     emitted.some(
       (event) =>
@@ -1456,13 +1475,27 @@ async function testRuntimeRecoveryDelegatesToInjectedStore(): Promise<void> {
 
   const runtime = new AgentRuntime({
     store,
-    onEvent: (event) => events.push(event),
+    onEvent: (event) => {
+      if (event.type === 'conversations:updated') event.data.title = 'event-mutated recovery'
+      events.push(event)
+    },
     logger: { warn() {}, error() {} },
   })
   const recovered = await runtime.recoverInterruptedActivities('delegated host restart')
 
   assertEqual(delegatedReason, 'delegated host restart', 'runtime should pass recovery reason')
   assertEqual(recovered[0]?.id, 'delegated-recovery', 'runtime should return delegated recovery')
+  assertEqual(
+    summary.title,
+    'delegated recovery',
+    'delegated recovery should isolate store summary from onEvent mutation',
+  )
+  if (recovered[0]) recovered[0].title = 'caller-mutated recovery'
+  assertEqual(
+    summary.title,
+    'delegated recovery',
+    'delegated recovery should isolate store summary from caller mutation',
+  )
   assert(
     events.some(
       (event) => event.type === 'conversations:updated' && event.data.id === 'delegated-recovery',
@@ -1656,6 +1689,14 @@ async function testRuntimeDeleteAssetCleanupHostBoundary(): Promise<void> {
       host: {
         cleanupConversationAssets: (cleanupRecord) => {
           order.push(`cleanup:${cleanupRecord.meta.id}`)
+          cleanupRecord.meta.title = 'cleanup-mutated-title'
+          cleanupRecord.messages.push({
+            schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+            id: 'cleanup-mutated-message',
+            role: 'assistant',
+            blocks: [{ type: 'text', content: 'cleanup mutated message' }],
+            status: 'done',
+          })
         },
       },
       logger: { warn() {}, error() {} },
@@ -1666,6 +1707,16 @@ async function testRuntimeDeleteAssetCleanupHostBoundary(): Promise<void> {
       order.join(','),
       'get:delete-with-cleanup-hook,cleanup:delete-with-cleanup-hook,delete:delete-with-cleanup-hook',
       'runtime delete should delegate asset cleanup to host before store delete',
+    )
+    assertEqual(
+      record.meta.title,
+      'cleanup',
+      'runtime delete should isolate store record from cleanup host mutation',
+    )
+    assertEqual(
+      record.messages.length,
+      1,
+      'runtime delete should isolate store messages from cleanup host mutation',
     )
   })
 }
@@ -4775,8 +4826,11 @@ async function testRuntimeExecuteToolUsesHostBoundary(): Promise<void> {
         },
         async run(args, ctx) {
           const root = ctx.workspaceRoots?.[0]
+          const nested = args.nested as { value?: unknown } | undefined
+          const originalValue = args.value
           runnerSawRuntimeContext =
             args.value === 'runtime' &&
+            nested?.value === 'caller-nested' &&
             ctx.settings !== settings &&
             ctx.settings.apiKeys.openrouter === 'runtime-key' &&
             ctx.conversationId === 'conversation-runtime-tool' &&
@@ -4787,9 +4841,11 @@ async function testRuntimeExecuteToolUsesHostBoundary(): Promise<void> {
             root.path === '/contract/runtime-root' &&
             root.label === 'contract' &&
             root !== workspaceRoots[0]
+          args.value = 'runner-mutated'
+          if (nested) nested.value = 'runner-mutated'
           ctx.settings.apiKeys.openrouter = 'mutated'
           if (root && typeof root !== 'string') root.label = 'mutated'
-          return JSON.stringify({ ok: true, value: args.value })
+          return JSON.stringify({ ok: true, value: originalValue })
         },
       },
     ],
@@ -4803,24 +4859,40 @@ async function testRuntimeExecuteToolUsesHostBoundary(): Promise<void> {
     loadToolPacks: async () => [toolPack],
     workspaceRoots: () => workspaceRoots,
     onToolPolicy: (request) => {
+      const nested = request.args.nested as { value?: unknown } | undefined
       policySawRuntimeRequest =
         request.name === 'contract_runtime_execute' &&
+        request.args.value === 'runtime' &&
+        nested?.value === 'caller-nested' &&
         request.conversationId === 'conversation-runtime-tool' &&
         request.messageId === 'assistant-runtime-tool' &&
         request.toolCallId === 'tool-call-runtime-tool' &&
         request.metadata.requiresApproval
+      request.args.value = 'policy-mutated'
+      if (nested) nested.value = 'policy-mutated'
+      request.metadata.requiresApproval = false
       return { action: 'ask' }
     },
     onToolApproval: async (request) => {
+      const nested = request.args.nested as { value?: unknown } | undefined
       approvalSawRuntimeRequest =
-        request.name === 'contract_runtime_execute' && request.metadata.destructive
+        request.name === 'contract_runtime_execute' &&
+        request.args.value === 'runtime' &&
+        nested?.value === 'caller-nested' &&
+        request.metadata.destructive
+      request.args.value = 'approval-mutated'
+      if (nested) nested.value = 'approval-mutated'
       return true
     },
   })
 
+  const runtimeArgs: Record<string, unknown> = {
+    value: 'runtime',
+    nested: { value: 'caller-nested' },
+  }
   const result = await runtime.executeTool({
     name: 'contract_runtime_execute',
-    args: { value: 'runtime' },
+    args: runtimeArgs,
     profileId: 'coding',
     conversationId: 'conversation-runtime-tool',
     messageId: 'assistant-runtime-tool',
@@ -4832,6 +4904,16 @@ async function testRuntimeExecuteToolUsesHostBoundary(): Promise<void> {
   assertEqual(policySawRuntimeRequest, true, 'runtime execute should use host tool policy')
   assertEqual(approvalSawRuntimeRequest, true, 'runtime execute should use host tool approval')
   assertEqual(runnerSawRuntimeContext, true, 'runtime execute should pass runtime tool context')
+  assertEqual(
+    runtimeArgs.value,
+    'runtime',
+    'runtime execute should isolate caller args from policy and runner mutation',
+  )
+  assertEqual(
+    (runtimeArgs.nested as { value?: unknown }).value,
+    'caller-nested',
+    'runtime execute should isolate caller nested args from policy and runner mutation',
+  )
   assertEqual(
     settings.apiKeys.openrouter,
     'runtime-key',
