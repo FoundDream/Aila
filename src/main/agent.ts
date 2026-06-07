@@ -529,6 +529,7 @@ export async function streamChat(req: StreamRequest, handlers: StreamHandlers): 
           builder.finishToolCall(part.toolCallId, result, false)
           emitAgentEvent('tool.result.returned', {
             toolCallId: part.toolCallId,
+            toolName: part.toolName,
             result: previewEventValue(result),
             isError: false,
           })
@@ -546,6 +547,7 @@ export async function streamChat(req: StreamRequest, handlers: StreamHandlers): 
           builder.finishToolCall(part.toolCallId, message, true)
           emitAgentEvent('tool.result.returned', {
             toolCallId: part.toolCallId,
+            toolName: part.toolName,
             result: previewEventValue(message),
             isError: true,
           })

@@ -77,7 +77,9 @@ function eventItem(event: PersistedAgentEvent): ActivityItem | null {
       }
     case 'tool.result.returned':
       return {
-        title: 'Tool result returned',
+        title: `${boolData(data, 'isError') ? 'Tool result failed' : 'Tool result returned'}: ${
+          toolName ?? 'tool'
+        }`,
         detail: previewData(data, 'result') ?? undefined,
         tone: boolData(data, 'isError') ? 'error' : 'success',
       }

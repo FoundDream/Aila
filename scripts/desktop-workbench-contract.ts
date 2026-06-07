@@ -245,6 +245,38 @@ async function testActivityDeltaDoesNotTouchConversationSummary(): Promise<void>
   })
 }
 
+async function testToolResultActivityKeepsToolName(): Promise<void> {
+  await withTempDataDir(async () => {
+    const conversation = await createConversation()
+    const { summary } = await appendAgentEventAndTouchConversation(conversation.id, {
+      timestamp: Date.now(),
+      conversationId: conversation.id,
+      messageId: 'assistant-message',
+      type: 'tool.result.returned',
+      data: {
+        toolCallId: 'tool-call',
+        toolName: 'read_file',
+        isError: false,
+        result: { preview: 'ok', size: 2 },
+      },
+    })
+
+    assert(summary, 'tool result activity should return refreshed summary')
+    assertEqual(summary.activity?.state, 'running', 'tool result activity state')
+    assertEqual(
+      summary.activity?.title,
+      'Tool result returned: read_file',
+      'tool result activity title should keep tool name',
+    )
+    assertEqual(summary.activity?.toolName, 'read_file', 'tool result activity tool name')
+    assertEqual(
+      summary.activity?.eventType,
+      'tool.result.returned',
+      'tool result activity event type',
+    )
+  })
+}
+
 async function testInterruptedActivityRecovery(): Promise<void> {
   await withTempDataDir(async () => {
     const running = await createConversation()
@@ -421,6 +453,7 @@ async function main(): Promise<void> {
   await testConversationDeleteCleansActivity()
   await testActivityUpdatesConversationSummary()
   await testActivityDeltaDoesNotTouchConversationSummary()
+  await testToolResultActivityKeepsToolName()
   await testInterruptedActivityRecovery()
   await testToolApprovalsCanHydrateAndResolvePendingRequests()
   await testToolApprovalTimeoutClearsPendingRequests()
