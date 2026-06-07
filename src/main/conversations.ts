@@ -215,6 +215,11 @@ export async function listConversations(): Promise<ConversationSummary[]> {
     .sort((a, b) => b.updatedAt - a.updatedAt)
 }
 
+export async function listChatConversations(): Promise<ConversationSummary[]> {
+  const list = await listConversations()
+  return list.filter((meta) => !meta.docId)
+}
+
 export async function getConversation(id: string): Promise<ConversationRecord> {
   const meta = await readMeta(id)
   let raw = ''

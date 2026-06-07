@@ -29,8 +29,16 @@ export function DocChatPanel({
   onOpenSettings,
   onClose,
 }: DocChatPanelProps): ReactElement {
-  const { sessions, activeId, isReady, newSession, selectSession, ensureActiveSession } =
-    useDocConversation(docPath)
+  const {
+    sessions,
+    activeId,
+    isReady,
+    newSession,
+    selectSession,
+    renameSession,
+    deleteSession,
+    ensureActiveSession,
+  } = useDocConversation(docPath)
 
   const { selection, selectionRef, contextLength, handleSelectionChange } = useModelSelection(
     settings,
@@ -88,6 +96,21 @@ export function DocChatPanel({
     streams.enqueueRetryLast(activeId, currentSelection, DOC_WORKBENCH_PROFILE_ID)
   }, [activeId, streams, onOpenSettings, selectionRef])
 
+  const handleRenameSession = useCallback(
+    (id: string, title: string) => {
+      void renameSession(id, title)
+    },
+    [renameSession],
+  )
+
+  const handleDeleteSession = useCallback(
+    (id: string) => {
+      streams.drop(id)
+      void deleteSession(id)
+    },
+    [deleteSession, streams],
+  )
+
   const activeSession = sessions.find((s) => s.id === activeId) ?? null
 
   return (
@@ -98,6 +121,8 @@ export function DocChatPanel({
           active={activeSession}
           onSelect={selectSession}
           onNewSession={newSession}
+          onRenameSession={handleRenameSession}
+          onDeleteSession={handleDeleteSession}
         />
         <button
           type="button"
@@ -155,6 +180,8 @@ interface SessionPickerProps {
   active: ConversationSummary | null
   onSelect: (id: string) => void
   onNewSession: () => void
+  onRenameSession: (id: string, title: string) => void
+  onDeleteSession: (id: string) => void
 }
 
 function SessionPicker({
@@ -162,6 +189,8 @@ function SessionPicker({
   active,
   onSelect,
   onNewSession,
+  onRenameSession,
+  onDeleteSession,
 }: SessionPickerProps): ReactElement {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
@@ -210,20 +239,50 @@ function SessionPicker({
                 {sessions.map((session) => {
                   const isActive = session.id === active?.id
                   return (
-                    <li key={session.id}>
+                    <li
+                      key={session.id}
+                      className={`group flex h-7 items-center ${
+                        isActive
+                          ? 'bg-[var(--surface-hover)] text-[var(--text)]'
+                          : 'text-[var(--text-dim)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]'
+                      }`}
+                    >
                       <button
                         type="button"
                         onClick={() => {
                           onSelect(session.id)
                           setOpen(false)
                         }}
-                        className={`flex h-7 w-full items-center px-2 text-[13px] ${
-                          isActive
-                            ? 'bg-[var(--surface-hover)] text-[var(--text)]'
-                            : 'text-[var(--text-dim)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]'
-                        }`}
+                        className="flex h-7 min-w-0 flex-1 items-center px-2 text-[13px]"
                       >
                         <span className="truncate">{session.title || '新对话'}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          const title = window.prompt('Rename chat', session.title || '新对话')
+                          if (title !== null) onRenameSession(session.id, title)
+                        }}
+                        aria-label="Rename chat"
+                        title="Rename"
+                        className="flex h-7 w-7 shrink-0 items-center justify-center text-[var(--text-dim)] opacity-0 hover:text-[var(--text)] group-hover:opacity-100"
+                      >
+                        <PencilIcon />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          if (window.confirm(`Delete "${session.title || '新对话'}"?`)) {
+                            onDeleteSession(session.id)
+                          }
+                        }}
+                        aria-label="Delete chat"
+                        title="Delete"
+                        className="flex h-7 w-7 shrink-0 items-center justify-center text-[var(--text-dim)] opacity-0 hover:text-[var(--error)] group-hover:opacity-100"
+                      >
+                        <TrashIcon />
                       </button>
                     </li>
                   )
@@ -289,6 +348,42 @@ function ChevronDownIcon(): ReactElement {
       aria-hidden="true"
     >
       <polyline points="6 9 12 15 18 9" />
+    </svg>
+  )
+}
+
+function PencilIcon(): ReactElement {
+  return (
+    <svg
+      width="12"
+      height="12"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M17 3a2.85 2.85 0 0 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
+    </svg>
+  )
+}
+
+function TrashIcon(): ReactElement {
+  return (
+    <svg
+      width="12"
+      height="12"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
     </svg>
   )
 }

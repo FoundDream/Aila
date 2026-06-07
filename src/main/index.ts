@@ -11,6 +11,7 @@ import {
   createConversation,
   getConversation,
   listAgentEvents,
+  listChatConversations,
   listConversations,
   listDocConversations,
   renameConversation,
@@ -309,7 +310,7 @@ function registerIpcHandlers(): void {
     }
   })
 
-  ipcMain.handle('conversations:list', () => listConversations())
+  ipcMain.handle('conversations:list', () => listChatConversations())
   ipcMain.handle('conversations:get', (_event, id: string) => getConversation(id))
   ipcMain.handle('conversations:list-events', (_event, id: string) => listAgentEvents(id))
   ipcMain.handle('conversations:create', (_event, docPath?: string) => createConversation(docPath))

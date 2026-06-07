@@ -21,10 +21,8 @@ export function useConversations(): ConversationsState {
 
   const refreshList = useCallback(async (): Promise<ConversationSummary[]> => {
     const list = await window.api.conversations.list()
-    // Doc-bound conversations live in the docs sidebar, not the chat tab.
-    const chatList = list.filter((c) => !c.docId)
-    setConversations(chatList)
-    return chatList
+    setConversations(list)
+    return list
   }, [])
 
   useEffect(() => {
@@ -36,19 +34,34 @@ export function useConversations(): ConversationsState {
   }, [refreshList])
 
   useEffect(() => {
+    if (!isReady) return
+    if (activeId && conversations.some((conversation) => conversation.id === activeId)) return
+    setActiveId(conversations[0]?.id ?? null)
+  }, [activeId, conversations, isReady])
+
+  useEffect(() => {
     if (!activeId) {
       setActiveRecord(null)
       return
     }
     let cancelled = false
     void (async () => {
-      const record = await window.api.conversations.get(activeId)
-      if (!cancelled) setActiveRecord(record)
+      try {
+        const record = await window.api.conversations.get(activeId)
+        if (!cancelled) setActiveRecord(record)
+      } catch (error) {
+        console.warn('[conversations] failed to hydrate active conversation:', error)
+        const list = await refreshList()
+        if (!cancelled) {
+          setActiveRecord(null)
+          setActiveId(list[0]?.id ?? null)
+        }
+      }
     })()
     return () => {
       cancelled = true
     }
-  }, [activeId])
+  }, [activeId, refreshList])
 
   const create = useCallback(async (): Promise<ConversationSummary> => {
     const summary = await window.api.conversations.create()
@@ -64,6 +77,7 @@ export function useConversations(): ConversationsState {
       const list = await refreshList()
       if (activeId === id) {
         setActiveId(list.length > 0 ? list[0].id : null)
+        setActiveRecord(null)
       }
     },
     [activeId, refreshList],
@@ -76,19 +90,30 @@ export function useConversations(): ConversationsState {
       next.sort((a, b) => b.updatedAt - a.updatedAt)
       return next
     })
+    setActiveRecord((current) =>
+      current?.meta.id === updated.id ? { ...current, meta: updated } : current,
+    )
   }, [])
 
   // Reconciles a single ConversationSummary update from main (fired after every
   // appendMessage / setUsage). Keeps the sidebar in sync without a full refetch.
   // Doc-bound conversations are filtered out — they belong to the docs sidebar.
   const applyUpdate = useCallback((summary: ConversationSummary) => {
-    if (summary.docId) return
+    if (summary.docId) {
+      setConversations((prev) => prev.filter((conversation) => conversation.id !== summary.id))
+      setActiveRecord((current) => (current?.meta.id === summary.id ? null : current))
+      setActiveId((current) => (current === summary.id ? null : current))
+      return
+    }
     setConversations((prev) => {
       const found = prev.some((c) => c.id === summary.id)
       const next = found ? prev.map((c) => (c.id === summary.id ? summary : c)) : [...prev, summary]
       next.sort((a, b) => b.updatedAt - a.updatedAt)
       return next
     })
+    setActiveRecord((current) =>
+      current?.meta.id === summary.id ? { ...current, meta: summary } : current,
+    )
   }, [])
 
   return {

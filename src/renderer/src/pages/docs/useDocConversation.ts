@@ -16,6 +16,8 @@ export interface DocConversationApi {
   isReady: boolean
   newSession: () => void
   selectSession: (id: string) => void
+  renameSession: (id: string, title: string) => Promise<void>
+  deleteSession: (id: string) => Promise<void>
   ensureActiveSession: () => Promise<string | null>
 }
 
@@ -75,6 +77,25 @@ export function useDocConversation(docPath: string | null): DocConversationApi {
     setActiveId(id)
   }, [])
 
+  const renameSession = useCallback(async (id: string, title: string): Promise<void> => {
+    const updated = await window.api.conversations.rename(id, title)
+    setSessions((prev) => {
+      const next = prev.map((session) => (session.id === updated.id ? updated : session))
+      next.sort((a, b) => b.updatedAt - a.updatedAt)
+      return next
+    })
+  }, [])
+
+  const deleteSession = useCallback(
+    async (id: string): Promise<void> => {
+      await window.api.conversations.delete(id)
+      const next = sessions.filter((session) => session.id !== id)
+      setSessions(next)
+      if (activeId === id) setActiveId(next[0]?.id ?? null)
+    },
+    [activeId, sessions],
+  )
+
   const ensureActiveSession = useCallback(async (): Promise<string | null> => {
     if (activeId) return activeId
     if (!docPath) return null
@@ -84,5 +105,14 @@ export function useDocConversation(docPath: string | null): DocConversationApi {
     return fresh.id
   }, [activeId, docPath])
 
-  return { sessions, activeId, isReady, newSession, selectSession, ensureActiveSession }
+  return {
+    sessions,
+    activeId,
+    isReady,
+    newSession,
+    selectSession,
+    renameSession,
+    deleteSession,
+    ensureActiveSession,
+  }
 }

@@ -1,7 +1,17 @@
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createConversation } from '../src/main/conversations'
+import {
+  AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+  appendAgentEvent,
+  appendMessage,
+  createConversation,
+  deleteConversation,
+  getConversation,
+  listAgentEvents,
+  listChatConversations,
+  listDocConversations,
+} from '../src/main/conversations'
 import { createDoc, getDocFilePath, updateDoc } from '../src/main/docs'
 import { configureDataDir, getDocumentsDir } from '../src/main/paths'
 import {
@@ -68,9 +78,92 @@ async function testDesktopWorkspaceRoots(): Promise<void> {
   })
 }
 
+async function testConversationPartitionContract(): Promise<void> {
+  await withTempDataDir(async () => {
+    const chat = await createConversation()
+    const created = await createDoc(null)
+    const doc = await updateDoc(created.path, { title: 'Partitioned Doc' })
+    const docConversation = await createConversation(doc.path)
+
+    const chatList = await listChatConversations()
+    assert(
+      chatList.some((conversation) => conversation.id === chat.id),
+      'chat list should include chat conversations',
+    )
+    assert(
+      !chatList.some((conversation) => conversation.id === docConversation.id),
+      'chat list must not include doc-owned conversations',
+    )
+
+    const docList = await listDocConversations(doc.path)
+    assertEqual(docList.length, 1, 'doc list should include doc-owned conversation')
+    assertEqual(docList[0]?.id, docConversation.id, 'doc-owned conversation id')
+  })
+}
+
+async function testDocConversationFollowsDocRename(): Promise<void> {
+  await withTempDataDir(async () => {
+    const created = await createDoc(null)
+    const doc = await updateDoc(created.path, { title: 'Original Session Doc' })
+    const conversation = await createConversation(doc.path)
+
+    const renamed = await updateDoc(doc.path, { title: 'Renamed Session Doc' })
+    const record = await getConversation(conversation.id)
+    assertEqual(record.meta.docId, renamed.path, 'doc rename should rewrite conversation docId')
+    assertEqual(
+      (await listDocConversations(doc.path)).length,
+      0,
+      'old doc path should have no sessions after rename',
+    )
+    assertEqual(
+      (await listDocConversations(renamed.path))[0]?.id,
+      conversation.id,
+      'renamed doc path should retain session',
+    )
+  })
+}
+
+async function testConversationDeleteCleansActivity(): Promise<void> {
+  await withTempDataDir(async () => {
+    const conversation = await createConversation()
+    await appendMessage(conversation.id, {
+      schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+      id: 'message',
+      role: 'user',
+      blocks: [{ type: 'text', content: 'delete me' }],
+      status: 'done',
+    })
+    await appendAgentEvent(conversation.id, {
+      timestamp: 1,
+      conversationId: conversation.id,
+      messageId: 'message',
+      type: 'turn.started',
+    })
+
+    await deleteConversation(conversation.id)
+    assertEqual(
+      (await listAgentEvents(conversation.id)).length,
+      0,
+      'delete should remove activity log',
+    )
+    try {
+      await getConversation(conversation.id)
+      throw new Error('deleted conversation unexpectedly loaded')
+    } catch (error) {
+      assert(
+        error instanceof Error && !error.message.includes('unexpectedly loaded'),
+        'deleted conversation should not be recoverable from disk',
+      )
+    }
+  })
+}
+
 async function main(): Promise<void> {
   await testDocConversationWorkspaceContext()
   await testDesktopWorkspaceRoots()
+  await testConversationPartitionContract()
+  await testDocConversationFollowsDocRename()
+  await testConversationDeleteCleansActivity()
   console.log('desktop workbench contract: ok')
 }
 

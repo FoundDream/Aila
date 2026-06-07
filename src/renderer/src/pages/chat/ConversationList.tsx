@@ -7,6 +7,7 @@ interface ConversationListProps {
   busyIds: Set<string>
   onSelect: (id: string) => void
   onCreate: () => void
+  onRename: (id: string, title: string) => void
   onDelete: (id: string) => void
 }
 
@@ -64,12 +65,31 @@ function TrashIcon(): ReactElement {
   )
 }
 
+function PencilIcon(): ReactElement {
+  return (
+    <svg
+      width="13"
+      height="13"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M17 3a2.85 2.85 0 0 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
+    </svg>
+  )
+}
+
 export function ConversationList({
   conversations,
   activeId,
   busyIds,
   onSelect,
   onCreate,
+  onRename,
   onDelete,
 }: ConversationListProps): ReactElement {
   return (
@@ -141,6 +161,18 @@ export function ConversationList({
                         className="mr-1 inline-block h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-[var(--accent,#3b82f6)]"
                       />
                     )}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const next = window.prompt('Rename conversation', title)
+                      if (next !== null) onRename(conversation.id, next)
+                    }}
+                    aria-label="Rename conversation"
+                    title="Rename"
+                    className="flex h-5 w-5 shrink-0 cursor-pointer items-center justify-center rounded text-[var(--text-dim)] opacity-0 transition group-hover:opacity-100 hover:bg-[var(--surface)] hover:text-[var(--text)]"
+                  >
+                    <PencilIcon />
                   </button>
                   <button
                     type="button"

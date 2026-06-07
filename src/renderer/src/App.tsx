@@ -175,6 +175,9 @@ export default function App(): ReactElement {
               onCreate={() => {
                 void conversationsState.create()
               }}
+              onRename={(id, title) => {
+                void conversationsState.rename(id, title)
+              }}
               onDelete={(id) => {
                 chatStreams.drop(id)
                 void conversationsState.remove(id)
