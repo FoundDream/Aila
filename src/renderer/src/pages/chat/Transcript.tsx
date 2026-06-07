@@ -1,11 +1,9 @@
-import { CheckIcon, ChevronRightIcon, CopyIcon, RotateCcwIcon, WrenchIcon } from 'lucide-react'
+import { CheckIcon, ChevronRightIcon, CopyIcon, RotateCcwIcon, TerminalIcon } from 'lucide-react'
 import { type ReactElement, useCallback, useState } from 'react'
 import { Streamdown } from 'streamdown'
 import { useStickToBottom } from 'use-stick-to-bottom'
 import { markdownComponents } from '@/components/markdown/streamdownComponents'
 import type { Block, Message, ToolCallBlock } from './types'
-
-const SERIF_STYLE: React.CSSProperties = { fontFamily: 'var(--font-serif)' }
 
 export function Transcript({
   messages,
@@ -24,17 +22,15 @@ export function Transcript({
   if (messages.length === 0) {
     return (
       <div className="flex flex-1 items-center justify-center">
-        <p className="text-lg italic text-[var(--text-dim)]" style={SERIF_STYLE}>
-          A blank page.
-        </p>
+        <p className="text-[22px] font-medium text-[var(--text)]">What can I help with?</p>
       </div>
     )
   }
 
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
-      <div ref={scrollRef} className="flex-1 overflow-y-auto px-8 py-10">
-        <div ref={contentRef} className="mx-auto flex max-w-[680px] flex-col gap-10">
+      <div ref={scrollRef} className="flex-1 overflow-y-auto px-8 py-8">
+        <div ref={contentRef} className="mx-auto flex max-w-[680px] flex-col gap-7">
           {messages.map((message) => (
             <MessageRow key={message.id} message={message} />
           ))}
@@ -46,10 +42,9 @@ export function Transcript({
           type="button"
           onClick={() => scrollToBottom()}
           aria-label="Jump to latest"
-          className="absolute bottom-4 left-1/2 -translate-x-1/2 rounded-full border border-[var(--border-strong)] bg-[var(--bg)] px-3 py-1 text-[12px] italic text-[var(--text-dim)] shadow-sm transition-colors hover:text-[var(--text)]"
-          style={SERIF_STYLE}
+          className="absolute bottom-4 left-1/2 -translate-x-1/2 rounded-full border border-[var(--border)] bg-[var(--surface)] px-3 py-1 text-[12px] text-[var(--text-soft)] shadow-[0_2px_10px_rgba(0,0,0,0.08)] transition-colors hover:text-[var(--text)]"
         >
-          ↓ jump to latest
+          ↓ Jump to latest
         </button>
       )}
     </div>
@@ -62,11 +57,10 @@ function RetryLastTurn({ onRetryLast }: { onRetryLast: () => void }): ReactEleme
       <button
         type="button"
         onClick={onRetryLast}
-        className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border-strong)] px-3 py-1.5 text-[12px] italic text-[var(--text-dim)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
-        style={SERIF_STYLE}
+        className="inline-flex items-center gap-1.5 rounded-full border border-[var(--border)] px-3.5 py-1.5 text-[12.5px] text-[var(--text-soft)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
       >
         <RotateCcwIcon className="h-3.5 w-3.5" />
-        resume last turn
+        Resume last turn
       </button>
     </div>
   )
@@ -76,17 +70,29 @@ function MessageRow({ message }: { message: Message }): ReactElement {
   const isUser = message.role === 'user'
   const isStreaming = message.status === 'streaming'
   const canCopy = !isStreaming && messageToPlainText(message).length > 0
-  return (
-    <article className="group flex flex-col gap-2">
-      <header
-        className={`flex items-center justify-between text-xs italic ${
-          isUser ? 'text-[var(--text-soft)]' : 'text-[var(--text-dim)]'
-        }`}
-        style={SERIF_STYLE}
-      >
-        <span>{isUser ? 'You' : 'Assistant'}</span>
+
+  if (isUser) {
+    return (
+      <article className="group flex flex-col items-end gap-1">
+        <div className="max-w-[85%] rounded-[18px] bg-[var(--bg-soft)] px-4 py-2.5">
+          <div className="flex flex-col gap-3">
+            {message.blocks.map((block, index) => (
+              <BlockView
+                // biome-ignore lint/suspicious/noArrayIndexKey: blocks are append-only per message
+                key={index}
+                block={block}
+                isStreaming={isStreaming}
+              />
+            ))}
+          </div>
+        </div>
         {canCopy && <CopyButton message={message} />}
-      </header>
+      </article>
+    )
+  }
+
+  return (
+    <article className="group flex flex-col gap-1">
       <div className="flex flex-col gap-3">
         {message.blocks.length === 0 && isStreaming ? (
           <StreamingDots />
@@ -104,6 +110,7 @@ function MessageRow({ message }: { message: Message }): ReactElement {
           <p className="text-sm text-[var(--error)]">Error: {message.error}</p>
         )}
       </div>
+      {canCopy && <CopyButton message={message} />}
     </article>
   )
 }
@@ -126,14 +133,12 @@ function CopyButton({ message }: { message: Message }): ReactElement {
       type="button"
       onClick={onCopy}
       aria-label={copied ? 'Copied' : 'Copy message'}
-      className={`flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] not-italic text-[var(--text-dim)] transition-opacity hover:text-[var(--text)] ${
+      title={copied ? 'Copied' : 'Copy'}
+      className={`grid size-6 place-items-center rounded-md text-[var(--text-dim)] transition-opacity hover:bg-[var(--surface-hover)] hover:text-[var(--text)] ${
         copied ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 focus:opacity-100'
       }`}
     >
-      {copied ? <CheckIcon className="h-3 w-3" /> : <CopyIcon className="h-3 w-3" />}
-      <span style={SERIF_STYLE} className="italic">
-        {copied ? 'copied' : 'copy'}
-      </span>
+      {copied ? <CheckIcon className="h-3.5 w-3.5" /> : <CopyIcon className="h-3.5 w-3.5" />}
     </button>
   )
 }
@@ -149,10 +154,8 @@ function messageToPlainText(message: Message): string {
 function BlockView({ block, isStreaming }: { block: Block; isStreaming: boolean }): ReactElement {
   if (block.type === 'reasoning') {
     return (
-      <aside className="border-l-2 border-[var(--border-strong)] pl-4 text-[14px] italic text-[var(--text-soft)]">
-        <div className="mb-1 text-[11px] not-italic text-[var(--text-dim)]" style={SERIF_STYLE}>
-          thinking
-        </div>
+      <aside className="text-[13.5px] leading-[1.6] text-[var(--text-dim)]">
+        <div className="mb-1 text-[12px] font-medium text-[var(--text-soft)]">Thinking</div>
         <div className="whitespace-pre-wrap">{block.content}</div>
       </aside>
     )
@@ -163,12 +166,10 @@ function BlockView({ block, isStreaming }: { block: Block; isStreaming: boolean 
         <img
           src={block.url}
           alt={block.prompt ?? 'generated image'}
-          className="max-w-full rounded-md border border-[var(--border-strong)]"
+          className="max-w-full rounded-xl border border-[var(--border)]"
         />
         {block.prompt && (
-          <figcaption className="text-[11px] italic text-[var(--text-dim)]" style={SERIF_STYLE}>
-            {block.prompt}
-          </figcaption>
+          <figcaption className="text-[11.5px] text-[var(--text-dim)]">{block.prompt}</figcaption>
         )}
       </figure>
     )
@@ -193,36 +194,36 @@ function ToolCallView({ block }: { block: ToolCallBlock }): ReactElement {
   // frozen UI.
   const [expanded, setExpanded] = useState(block.status === 'running')
   const statusLabel =
-    block.status === 'running' ? 'running' : block.status === 'error' ? 'error' : 'done'
+    block.status === 'running' ? 'Running' : block.status === 'error' ? 'Error' : 'Done'
   const statusColor =
     block.status === 'error'
       ? 'text-[var(--error)]'
       : block.status === 'running'
-        ? 'text-[var(--text-soft)]'
+        ? 'text-[var(--blue)]'
         : 'text-[var(--text-dim)]'
   return (
-    <aside className="rounded-md border border-[var(--border-strong)] bg-[var(--bg-soft,transparent)] font-mono text-[12px] text-[var(--text-soft)]">
+    <aside className="overflow-hidden rounded-xl bg-[var(--bg-soft)] font-mono text-[12px] text-[var(--text-soft)]">
       <button
         type="button"
         onClick={() => setExpanded((v) => !v)}
-        className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] text-[var(--text-dim)] hover:text-[var(--text)]"
+        className="flex w-full items-center gap-2 px-3 py-2 text-left text-[11.5px] text-[var(--text-dim)] hover:text-[var(--text)]"
         aria-expanded={expanded}
       >
         <ChevronRightIcon
           className={`h-3 w-3 shrink-0 transition-transform ${expanded ? 'rotate-90' : ''}`}
         />
-        <WrenchIcon className="h-3 w-3 shrink-0" />
-        <span className="truncate text-[var(--text)]">{block.name}</span>
+        <TerminalIcon className="h-3 w-3 shrink-0" />
+        <span className="truncate text-[var(--text-soft)]">{block.name}</span>
         <span className={`ml-auto shrink-0 ${statusColor}`}>{statusLabel}</span>
       </button>
       {expanded && (
-        <div className="border-t border-[var(--border-strong)] px-3 py-2">
+        <div className="border-t border-[var(--border)] px-3 py-2">
           <pre className="overflow-x-auto whitespace-pre-wrap break-all text-[var(--text-soft)]">
             {block.arguments || '{}'}
           </pre>
           {block.result !== undefined && (
             <pre
-              className={`mt-2 overflow-x-auto whitespace-pre-wrap break-all border-t border-[var(--border-strong)] pt-2 ${
+              className={`mt-2 overflow-x-auto whitespace-pre-wrap break-all border-t border-[var(--border)] pt-2 ${
                 block.status === 'error' ? 'text-[var(--error)]' : 'text-[var(--text-soft)]'
               }`}
             >

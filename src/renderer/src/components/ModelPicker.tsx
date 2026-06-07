@@ -50,7 +50,7 @@ export function ModelPicker({
       <button
         type="button"
         onClick={onOpenSettings}
-        className="flex min-w-0 items-center gap-1.5 rounded-md text-[11px] text-[var(--text-dim)] transition-colors hover:text-[var(--text)]"
+        className="flex min-w-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-[12px] text-[var(--text-soft)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
       >
         <SettingsIcon className="size-3.5 shrink-0" />
         <span className="truncate">Configure API key</span>
@@ -63,7 +63,7 @@ export function ModelPicker({
       <PopoverTrigger asChild>
         <button
           type="button"
-          className="flex min-w-0 items-center gap-1.5 rounded-md px-1.5 py-0.5 text-[11px] text-[var(--text-dim)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
+          className="flex min-w-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-[12px] text-[var(--text-soft)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
         >
           {selection ? <ProviderLogo id={selection.providerId} size={12} /> : null}
           <span className="truncate">

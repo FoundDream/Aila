@@ -31,19 +31,14 @@ const SIDE_PANEL_STORAGE_KEY = 'docs.sidePanel.width'
 function EmptyState({ onCreate }: { onCreate: () => void }): ReactElement {
   return (
     <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
-      <div
-        className="text-[20px] text-[var(--text-soft)]"
-        style={{ fontFamily: 'var(--font-serif)', fontStyle: 'italic' }}
-      >
-        No document selected
-      </div>
+      <div className="text-[18px] font-medium text-[var(--text)]">No document selected</div>
       <div className="text-[13px] text-[var(--text-dim)]">
         Pick one from the sidebar, or start a new page.
       </div>
       <button
         type="button"
         onClick={onCreate}
-        className="mt-2 rounded-md border border-[var(--border-strong)] px-3 py-1 text-[12px] text-[var(--text-soft)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
+        className="mt-2 rounded-full border border-[var(--border)] px-3.5 py-1 text-[12.5px] text-[var(--text-soft)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
       >
         + New document
       </button>

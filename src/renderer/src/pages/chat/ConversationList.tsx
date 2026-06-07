@@ -13,24 +13,6 @@ interface ConversationListProps {
   onDelete: (id: string) => void
 }
 
-function BubbleIcon(): ReactElement {
-  return (
-    <svg
-      width="14"
-      height="14"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.6"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
-    </svg>
-  )
-}
-
 function PlusIcon(): ReactElement {
   return (
     <svg
@@ -86,11 +68,11 @@ function PencilIcon(): ReactElement {
 }
 
 function statusClassName(tone: ConversationStatusTone): string {
-  if (tone === 'approval') return 'bg-amber-100 text-amber-700'
-  if (tone === 'failed') return 'bg-red-100 text-red-700'
-  if (tone === 'cancelled') return 'bg-zinc-100 text-zinc-600'
-  if (tone === 'interrupted') return 'bg-amber-100 text-amber-700'
-  return 'bg-blue-100 text-blue-700'
+  if (tone === 'approval') return 'bg-amber-50 text-amber-600'
+  if (tone === 'failed') return 'bg-red-50 text-red-600'
+  if (tone === 'cancelled') return 'bg-zinc-100 text-zinc-500'
+  if (tone === 'interrupted') return 'bg-amber-50 text-amber-600'
+  return 'bg-blue-50 text-blue-600'
 }
 
 export function ConversationList({
@@ -125,7 +107,7 @@ export function ConversationList({
           <button
             type="button"
             onClick={onCreate}
-            className="flex h-7 w-full cursor-pointer items-center gap-2 rounded-md px-2 text-[13px] text-[var(--text-dim)] hover:bg-[var(--surface-hover)] hover:text-[var(--text-soft)]"
+            className="flex h-7 w-full cursor-pointer items-center gap-2 rounded-lg px-2.5 text-[13px] text-[var(--text-dim)] hover:bg-[var(--surface-hover)] hover:text-[var(--text-soft)]"
           >
             <span className="flex h-4 w-4 items-center justify-center">
               <PlusIcon />
@@ -145,24 +127,17 @@ export function ConversationList({
               return (
                 <li
                   key={conversation.id}
-                  className={`group flex h-7 items-center rounded-md transition ${
+                  className={`group flex h-7 items-center rounded-lg transition ${
                     isActive ? 'bg-[var(--surface-hover)]' : 'hover:bg-[var(--surface-hover)]'
                   }`}
                 >
                   <button
                     type="button"
                     onClick={() => onSelect(conversation.id)}
-                    className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 px-2 text-left"
+                    className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 px-2.5 text-left"
                   >
                     <span
-                      className={`flex h-4 w-4 shrink-0 items-center justify-center ${
-                        isActive ? 'text-[var(--text-soft)]' : 'text-[var(--text-dim)]'
-                      }`}
-                    >
-                      <BubbleIcon />
-                    </span>
-                    <span
-                      className={`min-w-0 flex-1 truncate text-[13.5px] ${
+                      className={`min-w-0 flex-1 truncate text-[13px] ${
                         isActive ? 'text-[var(--text)]' : 'text-[var(--text-soft)]'
                       }`}
                     >
@@ -173,7 +148,7 @@ export function ConversationList({
                         role="status"
                         aria-label={status.ariaLabel}
                         title={status.title}
-                        className={`mr-1 shrink-0 rounded px-1.5 py-0.5 text-[10px] leading-none ${statusClassName(
+                        className={`mr-1 shrink-0 rounded-full px-1.5 py-0.5 text-[10px] leading-none ${statusClassName(
                           status.tone,
                         )}`}
                       >
@@ -213,7 +188,7 @@ export function ConversationList({
               <button
                 type="button"
                 onClick={onCreate}
-                className="mt-0.5 flex h-7 w-full cursor-pointer items-center gap-2 rounded-md px-2 text-[13px] text-[var(--text-dim)] transition hover:bg-[var(--surface-hover)] hover:text-[var(--text-soft)]"
+                className="mt-0.5 flex h-7 w-full cursor-pointer items-center gap-2 rounded-lg px-2.5 text-[13px] text-[var(--text-dim)] transition hover:bg-[var(--surface-hover)] hover:text-[var(--text-soft)]"
               >
                 <span className="flex h-4 w-4 items-center justify-center">
                   <PlusIcon />

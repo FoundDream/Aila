@@ -1,9 +1,9 @@
 import {
+  ArrowUpIcon,
   Code2Icon,
   MessageCircleIcon,
-  PaperclipIcon,
+  PlusIcon,
   SearchIcon,
-  SendIcon,
   SquareIcon,
 } from 'lucide-react'
 import {
@@ -81,7 +81,7 @@ function ComposerToolButton({
           aria-label={label}
           disabled={disabled}
           onClick={onClick}
-          className="grid size-7 shrink-0 place-items-center rounded-md text-[var(--text-dim)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)] disabled:cursor-not-allowed disabled:opacity-40"
+          className="grid size-8 shrink-0 place-items-center rounded-full text-[var(--text-soft)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)] disabled:cursor-not-allowed disabled:opacity-40"
         >
           {children}
         </button>
@@ -101,7 +101,7 @@ function AgentProfileControl({
   onChange: (profileId: AgentProfileId) => void
 }): ReactElement {
   return (
-    <div className="flex h-6 max-w-[min(54vw,420px)] shrink-0 items-center overflow-x-auto rounded-md border border-[var(--border)] bg-[var(--surface)]">
+    <div className="flex h-7 max-w-[min(54vw,420px)] shrink-0 items-center gap-0.5 overflow-x-auto rounded-full bg-[var(--bg-soft)] p-0.5">
       {profiles.map((profile) => {
         const active = profile.id === value
         return (
@@ -112,10 +112,10 @@ function AgentProfileControl({
                 aria-label={profile.description}
                 aria-pressed={active}
                 onClick={() => onChange(profile.id)}
-                className={`flex h-6 items-center gap-1 px-1.5 text-[11px] transition-colors ${
+                className={`flex h-6 items-center gap-1 rounded-full px-2 text-[11.5px] transition-colors ${
                   active
-                    ? 'bg-[var(--brand-ink)] text-[var(--brand-ink-fg)]'
-                    : 'text-[var(--text-dim)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]'
+                    ? 'bg-[var(--surface)] text-[var(--text)] shadow-[0_1px_3px_rgba(0,0,0,0.08)]'
+                    : 'text-[var(--text-dim)] hover:text-[var(--text)]'
                 }`}
               >
                 {profileIcon(profile)}
@@ -180,60 +180,26 @@ export function Composer({
   const used = usage?.totalTokens ?? 0
   const ratio = contextLength && contextLength > 0 ? Math.min(used / contextLength, 1) : 0
   const showMeter = (contextLength ?? 0) > 0 || used > 0
-  const barColor =
-    ratio >= 0.9 ? 'bg-red-500' : ratio >= 0.75 ? 'bg-amber-500' : 'bg-[var(--text-dim)]'
+  const meterColor =
+    ratio >= 0.9 ? 'text-red-500' : ratio >= 0.75 ? 'text-amber-500' : 'text-[var(--text-dim)]'
 
   return (
-    <div className="shrink-0 px-8 pb-8 pt-2">
+    <div className="shrink-0 px-6 pb-6 pt-2">
       <div className="mx-auto max-w-[680px]">
-        <div className="overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface)] shadow-[0_18px_50px_rgba(31,31,28,0.06)] transition-colors focus-within:border-[var(--border-strong)]">
-          <div className="flex min-h-8 items-center justify-between gap-3 border-b border-[var(--border)] bg-[var(--bg-soft)]/55 px-3 py-1.5">
-            <div className="flex min-w-0 items-center gap-2">
-              <ModelPicker
-                configuredProviders={configuredProviders}
-                selection={selection}
-                onChange={onSelectionChange}
-                onOpenSettings={onOpenSettings}
-                recentOpenRouterModels={recentOpenRouterModels}
-              />
-              {agentProfileId && onAgentProfileChange && agentProfiles.length > 0 ? (
-                <AgentProfileControl
-                  profiles={agentProfiles}
-                  value={agentProfileId}
-                  onChange={onAgentProfileChange}
-                />
-              ) : null}
-              {queuedCount > 0 && (
-                <span
-                  aria-live="polite"
-                  title={`${queuedCount} message${queuedCount > 1 ? 's' : ''} queued`}
-                  className="shrink-0 rounded-full bg-[var(--surface-hover)] px-2 py-0.5 text-[10.5px] italic tracking-wide text-[var(--text-dim)]"
-                  style={{ fontFamily: 'var(--font-serif)' }}
-                >
-                  {queuedCount} queued
-                </span>
-              )}
+        <div className="rounded-[24px] border border-[var(--border)] bg-[var(--surface)] shadow-[0_2px_16px_rgba(0,0,0,0.04)] transition-shadow focus-within:border-[var(--border-strong)] focus-within:shadow-[0_4px_24px_rgba(0,0,0,0.07)]">
+          {queuedCount > 0 && (
+            <div className="px-4 pt-2.5">
+              <span
+                aria-live="polite"
+                title={`${queuedCount} message${queuedCount > 1 ? 's' : ''} queued`}
+                className="inline-flex items-center rounded-full bg-[var(--bg-soft)] px-2.5 py-0.5 text-[11px] text-[var(--text-soft)]"
+              >
+                {queuedCount} queued
+              </span>
             </div>
-            {showMeter && (
-              <div className="flex min-w-[150px] max-w-[260px] flex-1 items-center justify-end gap-2">
-                <div className="h-[3px] min-w-16 flex-1 overflow-hidden rounded-full bg-[var(--border)]">
-                  {contextLength ? (
-                    <div
-                      className={`h-full ${barColor} transition-[width] duration-300 ease-out`}
-                      style={{ width: `${Math.max(ratio * 100, 1)}%` }}
-                    />
-                  ) : null}
-                </div>
-                <span className="shrink-0 text-[11px] tabular-nums text-[var(--text-dim)]">
-                  {contextLength
-                    ? `${formatTokens(used)} / ${formatTokens(contextLength)}`
-                    : formatTokens(used)}
-                </span>
-              </div>
-            )}
-          </div>
+          )}
 
-          <div className="px-4 py-3">
+          <div className="px-4 pb-1 pt-3">
             <textarea
               ref={textareaRef}
               value={value}
@@ -241,33 +207,59 @@ export function Composer({
               onKeyDown={handleKeyDown}
               placeholder={isStreaming ? 'Generating...' : 'Ask Aila anything'}
               rows={1}
-              className="block min-h-9 max-h-[180px] w-full resize-none overflow-y-auto bg-transparent text-[15px] leading-[1.6] text-[var(--text)] outline-none placeholder:text-[var(--text-dim)]"
+              className="block min-h-7 max-h-[180px] w-full resize-none overflow-y-auto bg-transparent text-[15px] leading-[1.6] text-[var(--text)] outline-none placeholder:text-[var(--text-dim)]"
             />
           </div>
 
-          <div className="flex min-h-11 items-center justify-between gap-3 border-t border-[var(--border)] px-3 py-2">
-            <div className="flex items-center gap-1">
+          <div className="flex min-h-12 items-center justify-between gap-2 px-2.5 pb-2.5 pt-1">
+            <div className="flex min-w-0 items-center gap-1.5">
               <ComposerToolButton label="Attach file">
-                <PaperclipIcon className="size-4" />
+                <PlusIcon className="size-[18px]" />
               </ComposerToolButton>
+              {agentProfileId && onAgentProfileChange && agentProfiles.length > 0 ? (
+                <AgentProfileControl
+                  profiles={agentProfiles}
+                  value={agentProfileId}
+                  onChange={onAgentProfileChange}
+                />
+              ) : null}
             </div>
 
-            <div className="flex items-center gap-2">
-              {isStreaming && (
+            <div className="flex shrink-0 items-center gap-2">
+              {showMeter && (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <span className={`text-[11px] tabular-nums ${meterColor}`}>
+                      {contextLength
+                        ? `${formatTokens(used)} / ${formatTokens(contextLength)}`
+                        : formatTokens(used)}
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent>Context used</TooltipContent>
+                </Tooltip>
+              )}
+              <ModelPicker
+                configuredProviders={configuredProviders}
+                selection={selection}
+                onChange={onSelectionChange}
+                onOpenSettings={onOpenSettings}
+                recentOpenRouterModels={recentOpenRouterModels}
+              />
+              {isStreaming ? (
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <button
                       type="button"
                       aria-label="Stop"
                       onClick={onAbort}
-                      className="grid size-8 shrink-0 place-items-center rounded-md border border-[var(--border)] text-[var(--text-soft)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
+                      className="grid size-8 shrink-0 place-items-center rounded-full bg-[var(--brand-ink)] text-[var(--brand-ink-fg)] transition-opacity hover:opacity-85"
                     >
-                      <SquareIcon className="size-3.5 fill-current" />
+                      <SquareIcon className="size-3 fill-current" />
                     </button>
                   </TooltipTrigger>
                   <TooltipContent>Stop</TooltipContent>
                 </Tooltip>
-              )}
+              ) : null}
               <Tooltip>
                 <TooltipTrigger asChild>
                   <button
@@ -275,9 +267,9 @@ export function Composer({
                     aria-label={isStreaming ? 'Queue send' : 'Send'}
                     onClick={() => void submit()}
                     disabled={!canSend}
-                    className="grid size-8 shrink-0 place-items-center rounded-md bg-[var(--brand-ink)] text-[var(--brand-ink-fg)] transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:bg-[var(--surface-hover)] disabled:text-[var(--text-dim)] disabled:opacity-100"
+                    className="grid size-8 shrink-0 place-items-center rounded-full bg-[var(--brand-ink)] text-[var(--brand-ink-fg)] transition-opacity hover:opacity-85 disabled:cursor-not-allowed disabled:bg-[var(--surface-hover)] disabled:text-[var(--text-dim)]"
                   >
-                    <SendIcon className="size-4" />
+                    <ArrowUpIcon className="size-4" strokeWidth={2.4} />
                   </button>
                 </TooltipTrigger>
                 <TooltipContent>{isStreaming ? 'Send (queued)' : 'Send'}</TooltipContent>

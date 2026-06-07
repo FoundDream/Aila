@@ -262,7 +262,7 @@ export default function App(): ReactElement {
             />
           </div>
         </aside>
-        <main className="min-w-0 flex-1 rounded-tl-lg border-t border-l border-[var(--border)] bg-[var(--bg)] shadow-[0_0_0_0.5px_rgba(0,0,0,0.02)]">
+        <main className="min-w-0 flex-1 rounded-tl-xl border-t border-l border-[var(--border)] bg-[var(--bg)] shadow-[0_1px_4px_rgba(0,0,0,0.03)]">
           <div className={tab === 'chat' ? 'h-full' : 'hidden'}>
             <ChatPage
               conversation={conversationsState.activeRecord}
@@ -331,7 +331,7 @@ function SidebarButton({
           type="button"
           onClick={onClick}
           aria-label={label}
-          className={`flex h-7 cursor-pointer items-center rounded-md text-[13.5px] transition-[padding,gap,background-color,color] duration-200 ease-out ${
+          className={`flex h-7 cursor-pointer items-center rounded-lg text-[13px] transition-[padding,gap,background-color,color] duration-200 ease-out ${
             collapsed ? 'gap-0 pr-6 pl-6' : 'gap-2 pr-2 pl-2'
           } ${
             active

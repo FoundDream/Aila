@@ -17,10 +17,7 @@ export function DocPreviewPanel({
   return (
     <div className="flex h-full flex-col">
       <header className="flex h-10 shrink-0 items-center gap-1 px-2">
-        <div
-          className="min-w-0 flex-1 truncate px-1.5 text-[12.5px] tracking-wide text-[var(--text-dim)]"
-          style={{ fontFamily: 'var(--font-serif)', fontStyle: 'italic' }}
-        >
+        <div className="min-w-0 flex-1 truncate px-1.5 text-[12.5px] font-medium text-[var(--text-soft)]">
           Preview
         </div>
         <button

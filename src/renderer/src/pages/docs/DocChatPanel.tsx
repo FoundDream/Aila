@@ -238,8 +238,7 @@ function SessionPicker({
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="flex h-6 max-w-full items-center gap-1 rounded px-1.5 text-[12.5px] tracking-wide text-[var(--text-dim)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
-        style={{ fontFamily: 'var(--font-serif)', fontStyle: 'italic' }}
+        className="flex h-6 max-w-full items-center gap-1 rounded-md px-1.5 text-[12.5px] font-medium text-[var(--text-soft)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
       >
         <span className="truncate">{label}</span>
         {activeStatus && (
@@ -352,11 +351,11 @@ function SessionPicker({
 }
 
 function statusClassName(tone: ConversationStatusTone): string {
-  if (tone === 'approval') return 'bg-amber-100 text-amber-700'
-  if (tone === 'failed') return 'bg-red-100 text-red-700'
-  if (tone === 'cancelled') return 'bg-zinc-100 text-zinc-600'
-  if (tone === 'interrupted') return 'bg-amber-100 text-amber-700'
-  return 'bg-blue-100 text-blue-700'
+  if (tone === 'approval') return 'bg-amber-50 text-amber-600'
+  if (tone === 'failed') return 'bg-red-50 text-red-600'
+  if (tone === 'cancelled') return 'bg-zinc-100 text-zinc-500'
+  if (tone === 'interrupted') return 'bg-amber-50 text-amber-600'
+  return 'bg-blue-50 text-blue-600'
 }
 
 function PlusIcon(): ReactElement {

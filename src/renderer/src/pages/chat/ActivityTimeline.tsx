@@ -136,13 +136,13 @@ function formatTime(timestamp: number): string {
 function ActivityIcon({ tone }: { tone: ActivityTone }): ReactElement {
   const className =
     tone === 'success'
-      ? 'text-emerald-600'
+      ? 'text-[var(--blue)]'
       : tone === 'warning'
-        ? 'text-amber-600'
+        ? 'text-amber-500'
         : tone === 'error'
-          ? 'text-red-600'
+          ? 'text-[var(--error)]'
           : tone === 'running'
-            ? 'text-blue-600'
+            ? 'text-[var(--blue)]'
             : 'text-[var(--text-dim)]'
 
   if (tone === 'success') return <CheckCircleIcon className={`size-3.5 ${className}`} />
@@ -168,14 +168,9 @@ export function ActivityTimeline({
   if (items.length === 0) return null
 
   return (
-    <section
-      aria-label="Assistant activity"
-      className="shrink-0 border-t border-[var(--border)] bg-[var(--bg-soft)]/35 px-8 py-2"
-    >
-      <div className="mx-auto max-h-32 max-w-[680px] overflow-y-auto">
-        <div className="mb-1 text-[11px] font-medium tracking-wide text-[var(--text-dim)]">
-          Activity
-        </div>
+    <section aria-label="Assistant activity" className="shrink-0 px-8 py-1.5">
+      <div className="mx-auto max-h-32 max-w-[680px] overflow-y-auto rounded-xl bg-[var(--bg-soft)] px-3.5 py-2.5">
+        <div className="mb-1.5 text-[11px] font-medium text-[var(--text-soft)]">Progress</div>
         <ol className="flex flex-col gap-1">
           {items.map(({ event, item }) => (
             <li
@@ -189,7 +184,7 @@ export function ActivityTimeline({
               </span>
               <div className="min-w-0 flex-1">
                 <div className="flex min-w-0 items-center gap-2">
-                  <span className="truncate text-[12px] text-[var(--text)]">{item.title}</span>
+                  <span className="truncate text-[12px] text-[var(--text-soft)]">{item.title}</span>
                   <span className="shrink-0 text-[10.5px] tabular-nums text-[var(--text-dim)]">
                     {formatTime(event.timestamp)}
                   </span>

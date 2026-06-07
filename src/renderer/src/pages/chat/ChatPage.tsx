@@ -143,12 +143,9 @@ export function ChatPage({
 
   return (
     <div className="flex h-full flex-col bg-[var(--bg)] text-[var(--text)]">
-      <header className="flex h-10 shrink-0 items-center justify-center [-webkit-app-region:drag]">
-        <span
-          className="text-[13px] italic tracking-wide text-[var(--text-dim)]"
-          style={{ fontFamily: 'var(--font-serif)' }}
-        >
-          Aila
+      <header className="flex h-10 shrink-0 items-center justify-center px-8 [-webkit-app-region:drag]">
+        <span className="max-w-[60%] truncate text-[13px] font-medium text-[var(--text-soft)]">
+          {conversation?.meta.title || 'Aila'}
         </span>
       </header>
       <main className="flex min-h-0 flex-1 flex-col">
