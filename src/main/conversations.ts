@@ -668,6 +668,7 @@ export function createInterruptedConversationRecoveryEvent(
     options.activity?.messageId === runtimeState.turn.assistantMessageId
       ? options.activity
       : undefined
+  const selection = runtimeState.turn.selection
 
   return {
     timestamp: options.timestamp ?? Date.now(),
@@ -679,6 +680,7 @@ export function createInterruptedConversationRecoveryEvent(
       previousState: runtimeState.phase,
       previousEventType: runtimeState.turn.eventType,
       previousTitle: activity?.title ?? runtimeState.turn.eventType,
+      ...(selection && { providerId: selection.providerId, modelId: selection.modelId }),
     },
   }
 }

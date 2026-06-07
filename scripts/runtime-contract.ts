@@ -2515,6 +2515,8 @@ function testInterruptedRecoveryEventHelper(): void {
   assertEqual(recoveryEvent.messageId, 'assistant-recovery-helper', 'recovery assistant message')
   assertEqual(recoveryEvent.type, 'turn.interrupted', 'recovery event type')
   assertEqual(recoveryEvent.data?.previousState, 'running', 'recovery previous state')
+  assertEqual(recoveryEvent.data?.providerId, 'openrouter', 'recovery provider id')
+  assertEqual(recoveryEvent.data?.modelId, 'contract/mock', 'recovery model id')
   assertEqual(
     recoveryEvent.data?.previousEventType,
     'tool.execution.failed',
@@ -2670,6 +2672,11 @@ async function testInterruptedRecoveryUsesRuntimeReplayForNonTerminalToolFailure
       interrupted.data?.previousState,
       'running',
       'interrupted event should use runtime lifecycle state',
+    )
+    assertEqual(
+      interrupted.data?.modelId,
+      'contract/mock',
+      'runtime replay recovery should preserve model id',
     )
   })
 }
