@@ -7,7 +7,7 @@ import type { ProviderId } from '../shared/models'
 import { type AgentEvent, getModelInfo, type ModelSelection } from './agent'
 import type { AgentProfileId } from './agent-profile'
 import {
-  appendAgentEvent,
+  appendAgentEventAndTouchConversation,
   createConversation,
   getConversation,
   listAgentEvents,
@@ -171,8 +171,12 @@ async function recordToolApprovalActivity(
   }
 
   try {
-    const persisted = await appendAgentEvent(req.conversationId, event)
+    const { event: persisted, summary } = await appendAgentEventAndTouchConversation(
+      req.conversationId,
+      event,
+    )
     send('agent:event', persisted)
+    send('conversations:updated', summary)
   } catch (error) {
     console.warn('[activity] tool approval event append failed:', error)
   }

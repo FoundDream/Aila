@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import {
   AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
   appendAgentEvent,
+  appendAgentEventAndTouchConversation,
   appendMessage,
   createConversation,
   deleteConversation,
@@ -158,12 +159,44 @@ async function testConversationDeleteCleansActivity(): Promise<void> {
   })
 }
 
+async function testActivityUpdatesConversationSummary(): Promise<void> {
+  await withTempDataDir(async () => {
+    const conversation = await createConversation()
+    const before = await getConversation(conversation.id)
+
+    const { event, summary } = await appendAgentEventAndTouchConversation(conversation.id, {
+      timestamp: before.meta.updatedAt,
+      conversationId: conversation.id,
+      messageId: 'assistant-message',
+      type: 'tool.execution.started',
+      data: { toolName: 'read' },
+    })
+
+    assertEqual(event.schemaVersion, 1, 'activity event should be versioned')
+    assert(
+      summary.updatedAt > before.meta.updatedAt,
+      'activity append should bump conversation updatedAt',
+    )
+    assertEqual(
+      (await listAgentEvents(conversation.id))[0]?.type,
+      'tool.execution.started',
+      'activity append should still persist the event log',
+    )
+    assertEqual(
+      (await listChatConversations())[0]?.id,
+      conversation.id,
+      'activity append should refresh conversation summaries',
+    )
+  })
+}
+
 async function main(): Promise<void> {
   await testDocConversationWorkspaceContext()
   await testDesktopWorkspaceRoots()
   await testConversationPartitionContract()
   await testDocConversationFollowsDocRename()
   await testConversationDeleteCleansActivity()
+  await testActivityUpdatesConversationSummary()
   console.log('desktop workbench contract: ok')
 }
 

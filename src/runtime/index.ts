@@ -12,10 +12,12 @@ export {
   normalizeChatAgentProfileId,
 } from '../main/agent-profile'
 export {
+  type AgentEventAppendResult,
   AILA_AGENT_EVENT_SCHEMA_VERSION,
   AILA_CONVERSATION_META_SCHEMA_VERSION,
   AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
   appendAgentEvent,
+  appendAgentEventAndTouchConversation,
   appendMessage,
   type ConversationRecord,
   type ConversationSummary,

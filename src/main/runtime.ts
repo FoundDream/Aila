@@ -13,7 +13,7 @@ import {
 import { buildAgentContext } from './context'
 import {
   AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
-  appendAgentEvent,
+  appendAgentEventAndTouchConversation,
   appendMessage,
   type ConversationRecord,
   getConversation,
@@ -358,8 +358,12 @@ export class AgentRuntime {
           onAgentEvent: (event) => {
             eventLogChain = eventLogChain
               .then(async () => {
-                const persisted = await appendAgentEvent(conversationId, event)
+                const { event: persisted, summary } = await appendAgentEventAndTouchConversation(
+                  conversationId,
+                  event,
+                )
                 this.emit(createRuntimeEvent('agent:event', persisted))
+                this.emit(createRuntimeEvent('conversations:updated', summary))
               })
               .catch((err) => {
                 this.logger.warn('[runtime] agent-event append failed:', err)

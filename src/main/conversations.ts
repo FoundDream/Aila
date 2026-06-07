@@ -72,8 +72,14 @@ export interface PersistedAgentEvent extends AgentEvent {
   schemaVersion: typeof AILA_AGENT_EVENT_SCHEMA_VERSION
 }
 
+export interface AgentEventAppendResult {
+  event: PersistedAgentEvent
+  summary: ConversationSummary
+}
+
 const DEFAULT_TITLE = '新对话'
 const TITLE_MAX = 40
+const metaWriteChains = new Map<string, Promise<void>>()
 
 async function ensureDir(): Promise<string> {
   const dir = getConversationsDir()
@@ -105,6 +111,34 @@ async function writeMeta(meta: ConversationMeta): Promise<void> {
     JSON.stringify(normalizeConversationMeta(meta), null, 2),
     'utf-8',
   )
+}
+
+async function updateMeta(
+  id: string,
+  updater: (current: ConversationMeta) => ConversationMeta,
+): Promise<ConversationMeta> {
+  const previous = metaWriteChains.get(id) ?? Promise.resolve()
+  const run = previous
+    .catch(() => {})
+    .then(async () => {
+      const current = await readMeta(id)
+      const next = normalizeConversationMeta(updater(current), id)
+      await writeMeta(next)
+      return next
+    })
+  const guard = run.then(
+    () => undefined,
+    () => undefined,
+  )
+  metaWriteChains.set(id, guard)
+  guard.finally(() => {
+    if (metaWriteChains.get(id) === guard) metaWriteChains.delete(id)
+  })
+  return run
+}
+
+function nextUpdatedAt(current: ConversationMeta, timestamp = Date.now()): number {
+  return Math.max(Date.now(), timestamp, current.updatedAt + 1)
 }
 
 function normalizeConversationMeta(
@@ -272,17 +306,17 @@ export async function appendMessage(
 ): Promise<ConversationSummary> {
   await ensureDir()
   await appendFile(logPath(id), `${JSON.stringify(preparePersistedMessage(message))}\n`, 'utf-8')
-  const current = await readMeta(id)
-  const next: ConversationMeta = {
-    ...current,
-    updatedAt: Date.now(),
-  }
-  if (current.title === DEFAULT_TITLE) {
-    const derived = deriveTitle(message)
-    if (derived) next.title = derived
-  }
-  await writeMeta(next)
-  return next
+  return updateMeta(id, (current) => {
+    const next: ConversationMeta = {
+      ...current,
+      updatedAt: nextUpdatedAt(current),
+    }
+    if (current.title === DEFAULT_TITLE) {
+      const derived = deriveTitle(message)
+      if (derived) next.title = derived
+    }
+    return next
+  })
 }
 
 export async function appendAgentEvent(
@@ -293,6 +327,18 @@ export async function appendAgentEvent(
   const prepared = prepareAgentEvent(event)
   await appendFile(eventLogPath(id), `${JSON.stringify(prepared)}\n`, 'utf-8')
   return prepared
+}
+
+export async function appendAgentEventAndTouchConversation(
+  id: string,
+  event: AgentEvent,
+): Promise<AgentEventAppendResult> {
+  const persisted = await appendAgentEvent(id, event)
+  const summary = await updateMeta(id, (current) => ({
+    ...current,
+    updatedAt: nextUpdatedAt(current, persisted.timestamp),
+  }))
+  return { event: persisted, summary }
 }
 
 export async function listAgentEvents(id: string): Promise<PersistedAgentEvent[]> {
@@ -319,35 +365,32 @@ export async function listAgentEvents(id: string): Promise<PersistedAgentEvent[]
 }
 
 export async function renameConversation(id: string, title: string): Promise<ConversationSummary> {
-  const current = await readMeta(id)
-  const next: ConversationMeta = {
+  return updateMeta(id, (current) => ({
     ...current,
     title: title.trim() || DEFAULT_TITLE,
-    updatedAt: Date.now(),
-  }
-  await writeMeta(next)
-  return next
+    updatedAt: nextUpdatedAt(current),
+  }))
 }
 
 export async function setConversationUsage(
   id: string,
   usage: { promptTokens: number; completionTokens: number; totalTokens: number },
 ): Promise<ConversationSummary> {
-  const current = await readMeta(id)
-  const next: ConversationMeta = {
+  return updateMeta(id, (current) => ({
     ...current,
+    updatedAt: nextUpdatedAt(current),
     usage: { ...usage, updatedAt: Date.now() },
-  }
-  await writeMeta(next)
-  return next
+  }))
 }
 
 export async function deleteConversation(id: string): Promise<void> {
+  await metaWriteChains.get(id)?.catch(() => {})
   await Promise.all([
     rm(metaPath(id), { force: true }),
     rm(logPath(id), { force: true }),
     rm(eventLogPath(id), { force: true }),
   ])
+  metaWriteChains.delete(id)
 }
 
 export interface DocRefRewrite {
@@ -369,6 +412,18 @@ export async function rewriteDocRefs(rewrites: DocRefRewrite[]): Promise<Convers
   const dir = getConversationsDir()
   const entries = await readdir(dir)
   const updated: ConversationSummary[] = []
+  const rewriteDocId = (docId: string): string | null => {
+    for (const r of rewrites) {
+      if (r.isFolder) {
+        if (docId === r.oldPath || docId.startsWith(`${r.oldPath}/`)) {
+          return `${r.newPath}${docId.slice(r.oldPath.length)}`
+        }
+      } else if (docId === r.oldPath) {
+        return r.newPath
+      }
+    }
+    return null
+  }
   await Promise.all(
     entries
       .filter((name) => name.endsWith('.meta.json'))
@@ -388,22 +443,14 @@ export async function rewriteDocRefs(rewrites: DocRefRewrite[]): Promise<Convers
         }
         const docId = meta.docId
         if (!docId) return
-        let nextDocId: string | null = null
-        for (const r of rewrites) {
-          if (r.isFolder) {
-            if (docId === r.oldPath || docId.startsWith(`${r.oldPath}/`)) {
-              nextDocId = `${r.newPath}${docId.slice(r.oldPath.length)}`
-              break
-            }
-          } else if (docId === r.oldPath) {
-            nextDocId = r.newPath
-            break
-          }
-        }
-        if (nextDocId === null) return
-        const next: ConversationMeta = { ...meta, docId: nextDocId }
-        await writeFile(path, JSON.stringify(next, null, 2), 'utf-8')
-        updated.push(next)
+        if (rewriteDocId(docId) === null) return
+        const next = await updateMeta(meta.id, (current) => {
+          const currentDocId = current.docId
+          if (!currentDocId) return current
+          const nextDocId = rewriteDocId(currentDocId)
+          return nextDocId === null ? current : { ...current, docId: nextDocId }
+        })
+        if (next.docId !== docId) updated.push(next)
       }),
   )
   return updated
