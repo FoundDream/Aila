@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type { AgentEvent } from './agent'
 import {
+  type AgentEventAppendResult,
   appendAgentEventAndTouchConversation,
   type ConversationSummary,
   type PersistedAgentEvent,
@@ -33,8 +34,16 @@ interface PendingToolApproval {
   timer: ReturnType<typeof setTimeout>
 }
 
+type MaybePromise<T> = T | Promise<T>
+
+export type ToolApprovalActivityRecorder = (
+  conversationId: string,
+  event: AgentEvent,
+) => MaybePromise<AgentEventAppendResult | undefined>
+
 export interface ToolApprovalStoreOptions {
   timeoutMs: number
+  recordAgentEvent?: ToolApprovalActivityRecorder
   onRequest?: (payload: ToolApprovalRequestPayload) => void
   onResolved?: (payload: ToolApprovalResolvedPayload) => void
   onAgentEvent?: (event: PersistedAgentEvent) => void
@@ -63,7 +72,10 @@ async function recordToolApprovalActivity(
   req: ToolApprovalRequest,
   requestId: string,
   state: 'requested' | 'resolved',
-  callbacks: Pick<ToolApprovalStoreOptions, 'onAgentEvent' | 'onConversationUpdated' | 'logger'>,
+  callbacks: Pick<
+    ToolApprovalStoreOptions,
+    'recordAgentEvent' | 'onAgentEvent' | 'onConversationUpdated' | 'logger'
+  >,
   approved?: boolean,
   reason?: ToolApprovalResolutionReason,
 ): Promise<void> {
@@ -96,12 +108,12 @@ async function recordToolApprovalActivity(
   }
 
   try {
-    const { event: persisted, summary } = await appendAgentEventAndTouchConversation(
-      req.conversationId,
-      event,
-    )
-    callbacks.onAgentEvent?.(persisted)
-    if (summary) callbacks.onConversationUpdated?.(summary)
+    const result = callbacks.recordAgentEvent
+      ? await callbacks.recordAgentEvent(req.conversationId, event)
+      : await appendAgentEventAndTouchConversation(req.conversationId, event)
+    if (!result) return
+    callbacks.onAgentEvent?.(result.event)
+    if (result.summary) callbacks.onConversationUpdated?.(result.summary)
   } catch (error) {
     callbacks.logger?.warn('[activity] tool approval event append failed:', error)
   }
