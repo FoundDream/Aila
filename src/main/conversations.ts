@@ -253,6 +253,12 @@ function preparePersistedMessage(message: PersistedMessage): PersistedMessage {
   }
 }
 
+function upsertPersistedMessage(messages: PersistedMessage[], message: PersistedMessage): void {
+  const existing = messages.findIndex((candidate) => candidate.id === message.id)
+  if (existing !== -1) messages.splice(existing, 1)
+  messages.push(message)
+}
+
 function prepareAgentEvent(event: AgentEvent): PersistedAgentEvent {
   return {
     ...event,
@@ -461,7 +467,7 @@ export async function getConversation(id: string): Promise<ConversationRecord> {
     if (!trimmed) continue
     try {
       const message = normalizePersistedMessage(JSON.parse(trimmed) as Partial<PersistedMessage>)
-      if (message) messages.push(message)
+      if (message) upsertPersistedMessage(messages, message)
     } catch {
       // skip malformed line — keeps the rest of the conversation readable
     }

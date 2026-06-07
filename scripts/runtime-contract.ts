@@ -814,6 +814,11 @@ async function testLegacyPersistenceNormalization(): Promise<void> {
         role: 'user',
         blocks: [{ type: 'text', content: 'old format' }],
         status: 'done',
+      })}\n${JSON.stringify({
+        id: 'legacy-message',
+        role: 'user',
+        blocks: [{ type: 'text', content: 'old format updated' }],
+        status: 'done',
       })}\n`,
       'utf-8',
     )
@@ -834,6 +839,12 @@ async function testLegacyPersistenceNormalization(): Promise<void> {
       record.messages[0]?.schemaVersion,
       AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
       'legacy message normalized',
+    )
+    assertEqual(record.messages.length, 1, 'duplicate legacy message ids should be collapsed')
+    assertEqual(
+      record.messages[0]?.blocks[0]?.type === 'text' ? record.messages[0].blocks[0].content : '',
+      'old format updated',
+      'duplicate legacy message should keep latest content',
     )
   })
 }
