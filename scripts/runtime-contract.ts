@@ -506,6 +506,81 @@ async function testRuntimeHostStaticExtensionContract(): Promise<void> {
   )
 }
 
+async function testRuntimeDynamicExtensionLoaderSnapshots(): Promise<void> {
+  const loadedProfiles: AgentProfile[] = [
+    {
+      id: 'dynamic-snapshot-profile',
+      label: 'Dynamic Snapshot Profile',
+      description: 'Loaded profile snapshot fixture.',
+      baseProfileId: 'coding',
+    },
+  ]
+  const loadedPack: ToolPack = {
+    id: 'dynamic-snapshot-pack',
+    name: 'Dynamic Snapshot Pack',
+    tools: [
+      {
+        spec: {
+          type: 'function',
+          function: {
+            name: 'dynamic_snapshot_tool',
+            description: 'Loaded tool snapshot fixture.',
+            parameters: { type: 'object', properties: {}, additionalProperties: false },
+          },
+          metadata: {
+            name: 'dynamic_snapshot_tool',
+            readOnly: true,
+            destructive: false,
+            requiresApproval: false,
+            access: ['read'],
+            scope: ['workspace'],
+            allowedProfiles: ['coding'],
+          },
+        },
+        async run() {
+          return 'dynamic'
+        },
+      },
+    ],
+  }
+  const runtime = new AgentRuntime({
+    loadProfiles: async () => loadedProfiles,
+    loadToolPacks: async () => [loadedPack],
+    logger: { warn() {}, error() {} },
+  })
+
+  const profiles = await runtime.getProfiles()
+  const registry = await runtime.getToolRegistry()
+
+  loadedProfiles[0] = {
+    ...loadedProfiles[0],
+    label: 'Mutated Dynamic Profile',
+    baseProfileId: 'chat',
+  }
+  loadedPack.tools[0] = {
+    ...loadedPack.tools[0],
+    spec: {
+      ...loadedPack.tools[0].spec,
+      metadata: {
+        ...loadedPack.tools[0].spec.metadata,
+        allowedProfiles: [],
+      },
+    },
+  }
+
+  assertEqual(
+    profiles.get('dynamic-snapshot-profile')?.label,
+    'Dynamic Snapshot Profile',
+    'dynamic loaded profiles should be snapped when loaded',
+  )
+  assert(
+    getToolDefinitionsForProfile('coding', registry).some(
+      (definition) => definition.function.name === 'dynamic_snapshot_tool',
+    ),
+    'dynamic loaded tool packs should be snapped when loaded',
+  )
+}
+
 async function testRuntimeInjectableStoreContract(): Promise<void> {
   await withTempDataDir(async () => {
     const conversation = await createConversation()
@@ -4607,6 +4682,7 @@ async function main(): Promise<void> {
   await testRuntimeHostBoundaryContract()
   await testRuntimeSettingsFallbackIsHostAgnostic()
   await testRuntimeHostStaticExtensionContract()
+  await testRuntimeDynamicExtensionLoaderSnapshots()
   await testRuntimeInjectableStoreContract()
   await testRuntimeHostTransientContextUsesInjectedRecord()
   await testRuntimeConversationStoreFacadeContract()

@@ -514,11 +514,11 @@ function normalizeRuntimeHost(options: AgentRuntimeOptions): AgentRuntimeHost {
   return host
 }
 
-function cloneStaticProfile(profile: AgentProfile): AgentProfile {
+function cloneRuntimeProfile(profile: AgentProfile): AgentProfile {
   return cloneRuntimeValue(profile)
 }
 
-function cloneStaticToolPack(toolPack: ToolPack): ToolPack {
+function cloneRuntimeToolPack(toolPack: ToolPack): ToolPack {
   return {
     ...toolPack,
     tools: toolPack.tools.map((entry) => ({
@@ -529,11 +529,11 @@ function cloneStaticToolPack(toolPack: ToolPack): ToolPack {
 }
 
 function resolveStaticProfiles(options: AgentRuntimeOptions): readonly AgentProfile[] {
-  return (options.host?.profiles ?? options.profiles ?? []).map(cloneStaticProfile)
+  return (options.host?.profiles ?? options.profiles ?? []).map(cloneRuntimeProfile)
 }
 
 function resolveStaticToolPacks(options: AgentRuntimeOptions): readonly ToolPack[] {
-  return (options.host?.toolPacks ?? options.toolPacks ?? []).map(cloneStaticToolPack)
+  return (options.host?.toolPacks ?? options.toolPacks ?? []).map(cloneRuntimeToolPack)
 }
 
 export class AgentRuntime {
@@ -1234,7 +1234,10 @@ export class AgentRuntime {
   private async loadProfiles(): Promise<Map<string, AgentProfile>> {
     try {
       const loaded = await this.host.loadProfiles?.()
-      return this.buildProfileMap([...this.staticProfiles, ...(loaded ?? [])])
+      return this.buildProfileMap([
+        ...this.staticProfiles,
+        ...(loaded ?? []).map(cloneRuntimeProfile),
+      ])
     } catch (error) {
       this.logger.warn(
         '[runtime] profile load failed; continuing with built-in/static profiles:',
@@ -1264,7 +1267,10 @@ export class AgentRuntime {
   private async loadToolRegistry(): Promise<ToolRegistry> {
     try {
       const loaded = await this.host.loadToolPacks?.()
-      return createDefaultToolRegistry([...this.staticToolPacks, ...(loaded ?? [])])
+      return createDefaultToolRegistry([
+        ...this.staticToolPacks,
+        ...(loaded ?? []).map(cloneRuntimeToolPack),
+      ])
     } catch (error) {
       this.logger.warn(
         '[runtime] tool-pack load failed; continuing with built-in/static tools:',
