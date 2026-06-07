@@ -7,7 +7,7 @@
 
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
-import type { ProviderId } from '@shared/models'
+import type { ProviderId } from '../shared/models'
 import { getDataDir, getSettingsPath } from './paths'
 
 export interface Settings {

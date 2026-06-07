@@ -1,4 +1,4 @@
-import type { ProviderId } from '@shared/models'
+import type { ProviderId } from '../../shared/models'
 
 export interface ImageRequest {
   prompt: string

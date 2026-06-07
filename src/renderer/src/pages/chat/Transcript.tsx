@@ -1,12 +1,21 @@
-import { CheckIcon, ChevronRightIcon, CopyIcon, WrenchIcon } from 'lucide-react'
+import { CheckIcon, ChevronRightIcon, CopyIcon, RotateCcwIcon, WrenchIcon } from 'lucide-react'
 import { type ReactElement, useCallback, useState } from 'react'
 import { Streamdown } from 'streamdown'
 import { useStickToBottom } from 'use-stick-to-bottom'
+import { markdownComponents } from '@/components/markdown/streamdownComponents'
 import type { Block, Message, ToolCallBlock } from './types'
 
 const SERIF_STYLE: React.CSSProperties = { fontFamily: 'var(--font-serif)' }
 
-export function Transcript({ messages }: { messages: Message[] }): ReactElement {
+export function Transcript({
+  messages,
+  canRetryLast = false,
+  onRetryLast,
+}: {
+  messages: Message[]
+  canRetryLast?: boolean
+  onRetryLast?: () => void
+}): ReactElement {
   const { scrollRef, contentRef, isAtBottom, scrollToBottom } = useStickToBottom({
     initial: 'instant',
     resize: 'instant',
@@ -29,6 +38,7 @@ export function Transcript({ messages }: { messages: Message[] }): ReactElement 
           {messages.map((message) => (
             <MessageRow key={message.id} message={message} />
           ))}
+          {canRetryLast && onRetryLast && <RetryLastTurn onRetryLast={onRetryLast} />}
         </div>
       </div>
       {!isAtBottom && (
@@ -42,6 +52,22 @@ export function Transcript({ messages }: { messages: Message[] }): ReactElement 
           ↓ jump to latest
         </button>
       )}
+    </div>
+  )
+}
+
+function RetryLastTurn({ onRetryLast }: { onRetryLast: () => void }): ReactElement {
+  return (
+    <div className="flex justify-center">
+      <button
+        type="button"
+        onClick={onRetryLast}
+        className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border-strong)] px-3 py-1.5 text-[12px] italic text-[var(--text-dim)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
+        style={SERIF_STYLE}
+      >
+        <RotateCcwIcon className="h-3.5 w-3.5" />
+        resume last turn
+      </button>
     </div>
   )
 }
@@ -153,6 +179,7 @@ function BlockView({ block, isStreaming }: { block: Block; isStreaming: boolean 
   return (
     <Streamdown
       mode={isStreaming ? 'streaming' : 'static'}
+      components={markdownComponents}
       parseIncompleteMarkdown
       className="aila-md text-[15px] leading-[1.7]"
     >

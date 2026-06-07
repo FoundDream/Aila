@@ -23,6 +23,7 @@ export interface BuildAgentContextInput {
   modelInfo: ModelInfo
   latestUserText: string
   doc?: DocRecord | null
+  profileInstructions?: string
 }
 
 export interface AgentContextResult {
@@ -256,6 +257,12 @@ export function buildAgentContext(input: BuildAgentContextInput): AgentContextRe
   const omittedCount = Math.max(0, rounds.length - selected.length)
   const summaryMessage = summarizeOmittedRounds(rounds.slice(0, omittedCount))
   const output: ChatMessage[] = []
+  if (input.profileInstructions?.trim()) {
+    output.push({
+      role: 'system',
+      content: `Agent profile instructions:\n${input.profileInstructions.trim()}`,
+    })
+  }
   if (docMessage) output.push(docMessage)
   if (summaryMessage) output.push(summaryMessage)
   output.push(...selected.flatMap((round) => round.messages))

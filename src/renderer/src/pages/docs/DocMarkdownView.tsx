@@ -1,5 +1,6 @@
 import { type ReactElement, useMemo } from 'react'
 import { Streamdown } from 'streamdown'
+import { markdownComponents } from '@/components/markdown/streamdownComponents'
 import { docsRehypePlugins } from './docHtmlRendering'
 
 interface DocMarkdownViewProps {
@@ -30,6 +31,7 @@ export function DocMarkdownView({
       )}
       <Streamdown
         mode="static"
+        components={markdownComponents}
         rehypePlugins={rehypePlugins}
         className="aila-md aila-md-read text-[15px] leading-[1.75]"
       >

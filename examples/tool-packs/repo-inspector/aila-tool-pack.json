@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 1,
+  "id": "repo-inspector",
+  "name": "Repo Inspector",
+  "description": "Example read-only tool pack for repository-oriented adapters.",
+  "entry": "index.mjs"
+}

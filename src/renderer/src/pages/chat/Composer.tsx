@@ -16,7 +16,13 @@ import {
 } from 'react'
 import { ModelPicker } from '@/components/ModelPicker'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import type { AgentProfileId, ModelSelection, ProviderId, UsageInfo } from '../../types'
+import type {
+  AgentProfile,
+  AgentProfileId,
+  ModelSelection,
+  ProviderId,
+  UsageInfo,
+} from '../../types'
 
 interface ComposerProps {
   isStreaming: boolean
@@ -30,37 +36,24 @@ interface ComposerProps {
   configuredProviders: ProviderId[]
   selection: ModelSelection | null
   onSelectionChange: (selection: ModelSelection) => void
+  agentProfiles?: AgentProfile[]
   agentProfileId?: AgentProfileId
   onAgentProfileChange?: (profileId: AgentProfileId) => void
   onOpenSettings: () => void
   recentOpenRouterModels: string[]
 }
 
-const CHAT_PROFILE_OPTIONS: Array<{
-  id: AgentProfileId
-  label: string
-  tooltip: string
-  icon: ReactElement
-}> = [
-  {
-    id: 'chat',
-    label: 'Chat',
-    tooltip: 'Chat profile',
-    icon: <MessageCircleIcon className="size-3.5" />,
-  },
-  {
-    id: 'research',
-    label: 'Research',
-    tooltip: 'Research profile',
-    icon: <SearchIcon className="size-3.5" />,
-  },
-  {
-    id: 'coding',
-    label: 'Code',
-    tooltip: 'Coding profile',
-    icon: <Code2Icon className="size-3.5" />,
-  },
-]
+function profileIcon(profile: AgentProfile): ReactElement {
+  const baseProfileId = profile.baseProfileId ?? profile.id
+  if (baseProfileId === 'coding') return <Code2Icon className="size-3.5" />
+  if (baseProfileId === 'research') return <SearchIcon className="size-3.5" />
+  return <MessageCircleIcon className="size-3.5" />
+}
+
+function profileLabel(profile: AgentProfile): string {
+  if (profile.id === 'coding') return 'Code'
+  return profile.label
+}
 
 function formatTokens(n: number): string {
   if (n < 1000) return `${n}`
@@ -99,35 +92,39 @@ function ComposerToolButton({
 }
 
 function AgentProfileControl({
+  profiles,
   value,
   onChange,
 }: {
+  profiles: AgentProfile[]
   value: AgentProfileId
   onChange: (profileId: AgentProfileId) => void
 }): ReactElement {
+  const chatProfiles = profiles.filter((profile) => profile.id !== 'doc')
+
   return (
-    <div className="flex h-6 shrink-0 items-center overflow-hidden rounded-md border border-[var(--border)] bg-[var(--surface)]">
-      {CHAT_PROFILE_OPTIONS.map((option) => {
-        const active = option.id === value
+    <div className="flex h-6 max-w-[min(54vw,420px)] shrink-0 items-center overflow-x-auto rounded-md border border-[var(--border)] bg-[var(--surface)]">
+      {chatProfiles.map((profile) => {
+        const active = profile.id === value
         return (
-          <Tooltip key={option.id}>
+          <Tooltip key={profile.id}>
             <TooltipTrigger asChild>
               <button
                 type="button"
-                aria-label={option.tooltip}
+                aria-label={profile.description}
                 aria-pressed={active}
-                onClick={() => onChange(option.id)}
+                onClick={() => onChange(profile.id)}
                 className={`flex h-6 items-center gap-1 px-1.5 text-[11px] transition-colors ${
                   active
                     ? 'bg-[var(--brand-ink)] text-[var(--brand-ink-fg)]'
                     : 'text-[var(--text-dim)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]'
                 }`}
               >
-                {option.icon}
-                <span className="hidden sm:inline">{option.label}</span>
+                {profileIcon(profile)}
+                <span className="hidden whitespace-nowrap sm:inline">{profileLabel(profile)}</span>
               </button>
             </TooltipTrigger>
-            <TooltipContent>{option.tooltip}</TooltipContent>
+            <TooltipContent>{profile.description}</TooltipContent>
           </Tooltip>
         )
       })}
@@ -145,6 +142,7 @@ export function Composer({
   configuredProviders,
   selection,
   onSelectionChange,
+  agentProfiles = [],
   agentProfileId,
   onAgentProfileChange,
   onOpenSettings,
@@ -200,8 +198,12 @@ export function Composer({
                 onOpenSettings={onOpenSettings}
                 recentOpenRouterModels={recentOpenRouterModels}
               />
-              {agentProfileId && onAgentProfileChange ? (
-                <AgentProfileControl value={agentProfileId} onChange={onAgentProfileChange} />
+              {agentProfileId && onAgentProfileChange && agentProfiles.length > 0 ? (
+                <AgentProfileControl
+                  profiles={agentProfiles}
+                  value={agentProfileId}
+                  onChange={onAgentProfileChange}
+                />
               ) : null}
               {queuedCount > 0 && (
                 <span

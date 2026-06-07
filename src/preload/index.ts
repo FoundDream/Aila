@@ -1,11 +1,23 @@
-import type { ProviderId } from '@shared/models'
-import type { OrCatalog } from '@shared/openrouter'
 import { contextBridge, ipcRenderer } from 'electron'
+import type { ProviderId } from '../shared/models'
+import type { OrCatalog } from '../shared/openrouter'
 
-export type { OrCatalog, OrFamily, OrModel } from '@shared/openrouter'
+export type { OrCatalog, OrFamily, OrModel } from '../shared/openrouter'
 export type { ProviderId }
 
-export type AgentProfileId = 'chat' | 'doc' | 'coding' | 'research'
+export const AILA_CONVERSATION_META_SCHEMA_VERSION = 1
+export const AILA_PERSISTED_MESSAGE_SCHEMA_VERSION = 1
+
+export type BuiltinAgentProfileId = 'chat' | 'doc' | 'coding' | 'research'
+export type AgentProfileId = BuiltinAgentProfileId | (string & {})
+
+export interface AgentProfile {
+  id: AgentProfileId
+  label: string
+  description: string
+  baseProfileId?: BuiltinAgentProfileId
+  instructions?: string
+}
 
 export interface ToolCallPayload {
   id: string
@@ -46,6 +58,27 @@ export interface ToolCallResultEvent extends ChatStreamEventBase {
   toolCallId: string
   result: string
   isError: boolean
+}
+
+export interface ToolApprovalRequestEvent {
+  requestId: string
+  name: string
+  args: Record<string, unknown>
+  metadata: {
+    name: string
+    readOnly: boolean
+    destructive: boolean
+    requiresApproval: boolean
+    access: string[]
+    scope: string[]
+    allowedProfiles: AgentProfileId[]
+    maxResultBytes?: number
+  }
+}
+
+export interface ToolApprovalResponse {
+  requestId: string
+  approved: boolean
 }
 
 export interface DocRecord {
@@ -139,6 +172,7 @@ export interface ModelSelection {
 }
 
 export interface PersistedMessage {
+  schemaVersion: typeof AILA_PERSISTED_MESSAGE_SCHEMA_VERSION
   id: string
   role: 'user' | 'assistant'
   blocks: PersistedBlock[]
@@ -172,6 +206,7 @@ export interface ConversationUsage {
 }
 
 export interface ConversationSummary {
+  schemaVersion: typeof AILA_CONVERSATION_META_SCHEMA_VERSION
   id: string
   title: string
   createdAt: number
@@ -227,6 +262,12 @@ const api = {
     profileId?: AgentProfileId,
   ): Promise<SendResult> =>
     ipcRenderer.invoke('chat:send', conversationId, userText, selection, profileId),
+  retryLast: (
+    conversationId: string,
+    selection: ModelSelection,
+    profileId?: AgentProfileId,
+  ): Promise<SendResult> =>
+    ipcRenderer.invoke('chat:retry-last', conversationId, selection, profileId),
   abort: (conversationId: string): Promise<void> =>
     ipcRenderer.invoke('chat:abort', conversationId),
   onTextDelta: (cb: (event: TextDeltaEvent) => void) => on<TextDeltaEvent>('chat:text-delta', cb),
@@ -251,6 +292,16 @@ const api = {
   },
   openrouter: {
     listModels: (): Promise<OrCatalog> => ipcRenderer.invoke('openrouter:list-models'),
+  },
+  profiles: {
+    list: (): Promise<AgentProfile[]> => ipcRenderer.invoke('profiles:list'),
+  },
+  tools: {
+    onApprovalRequest: (cb: (event: ToolApprovalRequestEvent) => void) =>
+      on<ToolApprovalRequestEvent>('tools:approval-request', cb),
+    sendApprovalResponse: (response: ToolApprovalResponse): void => {
+      ipcRenderer.send('tools:approval-response', response)
+    },
   },
   docs: {
     list: (): Promise<DocsListResult> => ipcRenderer.invoke('docs:list'),

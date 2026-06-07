@@ -1,5 +1,6 @@
 import { type ReactElement, useCallback, useEffect, useState } from 'react'
 import type {
+  AgentProfile,
   AgentProfileId,
   ConversationRecord,
   ConversationSummary,
@@ -26,7 +27,7 @@ const CHAT_PROFILE_STORAGE_KEY = 'chat.agentProfile'
 function readStoredProfile(): AgentProfileId {
   if (typeof window === 'undefined') return 'chat'
   const stored = window.localStorage.getItem(CHAT_PROFILE_STORAGE_KEY)
-  return stored === 'research' || stored === 'coding' ? stored : 'chat'
+  return stored?.trim() ? stored : 'chat'
 }
 
 export function ChatPage({
@@ -39,6 +40,7 @@ export function ChatPage({
   onOpenSettings,
 }: ChatPageProps): ReactElement {
   const [profileId, setProfileId] = useState<AgentProfileId>(readStoredProfile)
+  const [agentProfiles, setAgentProfiles] = useState<AgentProfile[]>([])
   const { selection, selectionRef, contextLength, handleSelectionChange } = useModelSelection(
     settings,
     configuredProviders,
@@ -59,11 +61,34 @@ export function ChatPage({
     window.localStorage.setItem(CHAT_PROFILE_STORAGE_KEY, profileId)
   }, [profileId])
 
+  useEffect(() => {
+    let cancelled = false
+    window.api.profiles
+      .list()
+      .then((profiles) => {
+        if (cancelled) return
+        const chatProfiles = profiles.filter((profile) => profile.id !== 'doc')
+        setAgentProfiles(profiles)
+        if (chatProfiles.length > 0 && !chatProfiles.some((profile) => profile.id === profileId)) {
+          setProfileId(chatProfiles[0].id)
+        }
+      })
+      .catch((error) => {
+        console.warn('[profiles] list failed:', error)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [profileId])
+
   const stream = conversationId ? streams.getStream(conversationId) : null
   const messages = stream?.messages ?? []
   const isStreaming = stream?.runningMessageId !== null && stream?.runningMessageId !== undefined
   const usage = stream?.usage ?? null
   const queuedCount = stream?.queue.length ?? 0
+  const lastMessage = messages.at(-1)
+  const canRetryLast =
+    Boolean(conversationId) && !isStreaming && queuedCount === 0 && lastMessage?.role === 'user'
 
   const handleSubmit = useCallback(
     async (text: string) => {
@@ -102,6 +127,16 @@ export function ChatPage({
     streams.abort(conversationId)
   }, [conversationId, streams])
 
+  const handleRetryLast = useCallback(() => {
+    if (!conversationId) return
+    const currentSelection = selectionRef.current
+    if (!currentSelection) {
+      onOpenSettings()
+      return
+    }
+    streams.enqueueRetryLast(conversationId, currentSelection, profileId)
+  }, [conversationId, streams, onOpenSettings, profileId, selectionRef.current])
+
   return (
     <div className="flex h-full flex-col bg-[var(--bg)] text-[var(--text)]">
       <header className="flex h-10 shrink-0 items-center justify-center [-webkit-app-region:drag]">
@@ -113,7 +148,7 @@ export function ChatPage({
         </span>
       </header>
       <main className="flex min-h-0 flex-1 flex-col">
-        <Transcript messages={messages} />
+        <Transcript messages={messages} canRetryLast={canRetryLast} onRetryLast={handleRetryLast} />
         <Composer
           isStreaming={isStreaming}
           queuedCount={queuedCount}
@@ -124,6 +159,7 @@ export function ChatPage({
           configuredProviders={configuredProviders}
           selection={selection}
           onSelectionChange={handleSelectionChange}
+          agentProfiles={agentProfiles}
           agentProfileId={profileId}
           onAgentProfileChange={setProfileId}
           onOpenSettings={onOpenSettings}

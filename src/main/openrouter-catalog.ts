@@ -10,7 +10,7 @@ import {
   type OrCatalog,
   type OrFamily,
   type OrModel,
-} from '@shared/openrouter'
+} from '../shared/openrouter'
 
 const ENDPOINT = 'https://openrouter.ai/api/v1/models'
 const TTL_MS = 1000 * 60 * 60 * 6 // 6h, refresh on next call after that

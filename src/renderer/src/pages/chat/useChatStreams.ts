@@ -29,16 +29,23 @@ import type {
 } from '../../types'
 import type { Block, ImageBlock, Message, TextBlock, ToolCallBlock } from './types'
 
-interface QueuedPrompt {
-  text: string
-  selection: ModelSelection
-  profileId?: AgentProfileId
-}
+type QueuedRun =
+  | {
+      kind: 'send'
+      text: string
+      selection: ModelSelection
+      profileId?: AgentProfileId
+    }
+  | {
+      kind: 'retryLast'
+      selection: ModelSelection
+      profileId?: AgentProfileId
+    }
 
 export interface ConversationStream {
   messages: Message[]
   isHydrated: boolean
-  queue: QueuedPrompt[]
+  queue: QueuedRun[]
   runningMessageId: string | null
   usage: UsageInfo | null
 }
@@ -62,12 +69,17 @@ type Action =
       messages: Message[]
       usage: UsageInfo | null
     }
-  | { type: 'ENQUEUE'; conversationId: string; queued: QueuedPrompt }
+  | { type: 'ENQUEUE'; conversationId: string; queued: QueuedRun }
   | { type: 'POP_QUEUE_HEAD'; conversationId: string }
   | {
       type: 'RUN_STARTED'
       conversationId: string
       userMessage: Message
+      assistantMessage: Message
+    }
+  | {
+      type: 'RETRY_STARTED'
+      conversationId: string
       assistantMessage: Message
     }
   | {
@@ -189,6 +201,13 @@ function reducer(state: State, action: Action): State {
         runningMessageId: action.assistantMessage.id,
       }))
 
+    case 'RETRY_STARTED':
+      return withStream(state, action.conversationId, (current) => ({
+        ...current,
+        messages: [...current.messages, action.assistantMessage],
+        runningMessageId: action.assistantMessage.id,
+      }))
+
     case 'TEXT_DELTA':
       return withStream(state, action.conversationId, (current) => ({
         ...current,
@@ -293,6 +312,7 @@ export interface ChatStreamsApi {
     selection: ModelSelection,
     profileId?: AgentProfileId,
   ) => void
+  enqueueRetryLast: (id: string, selection: ModelSelection, profileId?: AgentProfileId) => void
   abort: (id: string) => void
   drop: (id: string) => void
 }
@@ -315,11 +335,14 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
   // a run is already on its way.
   const startingRef = useRef<Set<string>>(new Set())
 
-  const startRun = useCallback(async (id: string, queued: QueuedPrompt): Promise<void> => {
+  const startRun = useCallback(async (id: string, queued: QueuedRun): Promise<void> => {
     dispatch({ type: 'POP_QUEUE_HEAD', conversationId: id })
     let result: Awaited<ReturnType<typeof window.api.send>>
     try {
-      result = await window.api.send(id, queued.text, queued.selection, queued.profileId)
+      result =
+        queued.kind === 'send'
+          ? await window.api.send(id, queued.text, queued.selection, queued.profileId)
+          : await window.api.retryLast(id, queued.selection, queued.profileId)
     } catch (err) {
       const errorText = err instanceof Error ? err.message : String(err)
       // Surface as a synthetic error message in the conversation so it isn't lost.
@@ -331,17 +354,25 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
         error: errorText,
         model: queued.selection,
       }
-      dispatch({
-        type: 'RUN_STARTED',
-        conversationId: id,
-        userMessage: {
-          id: crypto.randomUUID(),
-          role: 'user',
-          blocks: [{ type: 'text', content: queued.text }],
-          status: 'done',
-        },
-        assistantMessage: stub,
-      })
+      if (queued.kind === 'send') {
+        dispatch({
+          type: 'RUN_STARTED',
+          conversationId: id,
+          userMessage: {
+            id: crypto.randomUUID(),
+            role: 'user',
+            blocks: [{ type: 'text', content: queued.text }],
+            status: 'done',
+          },
+          assistantMessage: stub,
+        })
+      } else {
+        dispatch({
+          type: 'RETRY_STARTED',
+          conversationId: id,
+          assistantMessage: stub,
+        })
+      }
       dispatch({
         type: 'FINISH',
         conversationId: id,
@@ -358,12 +389,20 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
       status: 'streaming',
       model: queued.selection,
     }
-    dispatch({
-      type: 'RUN_STARTED',
-      conversationId: id,
-      userMessage,
-      assistantMessage,
-    })
+    dispatch(
+      queued.kind === 'send'
+        ? {
+            type: 'RUN_STARTED',
+            conversationId: id,
+            userMessage,
+            assistantMessage,
+          }
+        : {
+            type: 'RETRY_STARTED',
+            conversationId: id,
+            assistantMessage,
+          },
+    )
   }, [])
 
   // Single source of truth for "run the next queued send". An earlier version
@@ -398,7 +437,18 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
       dispatch({
         type: 'ENQUEUE',
         conversationId: id,
-        queued: { text: trimmed, selection, profileId },
+        queued: { kind: 'send', text: trimmed, selection, profileId },
+      })
+    },
+    [],
+  )
+
+  const enqueueRetryLast = useCallback(
+    (id: string, selection: ModelSelection, profileId?: AgentProfileId): void => {
+      dispatch({
+        type: 'ENQUEUE',
+        conversationId: id,
+        queued: { kind: 'retryLast', selection, profileId },
       })
     },
     [],
@@ -547,6 +597,7 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
     hydrate,
     markHydrated,
     enqueueSend,
+    enqueueRetryLast,
     abort,
     drop,
   }

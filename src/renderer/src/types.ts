@@ -1,7 +1,9 @@
 // Re-exports renderer-facing types from preload so renderer code doesn't have
 // to dig into ../../preload paths.
 export type {
+  AgentProfile,
   AgentProfileId,
+  BuiltinAgentProfileId,
   ChatDoneEvent,
   ChatErrorEvent,
   ChatMessage,
@@ -29,6 +31,8 @@ export type {
   Settings,
   SettingsState,
   TextDeltaEvent,
+  ToolApprovalRequestEvent,
+  ToolApprovalResponse,
   ToolCallArgsDeltaEvent,
   ToolCallPayload,
   ToolCallResultEvent,

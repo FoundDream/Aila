@@ -8,14 +8,15 @@
  * persist it on completion regardless of renderer state.
  */
 
-import { findModel, type ProviderId } from '@shared/models'
 import { jsonSchema, type ModelMessage, smoothStream, stepCountIs, streamText, tool } from 'ai'
+import { findModel, type ProviderId } from '../shared/models'
 import type { AgentProfileId } from './agent-profile'
-import type {
-  PersistedBlock,
-  PersistedImageBlock,
-  PersistedMessage,
-  PersistedToolCallBlock,
+import {
+  AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+  type PersistedBlock,
+  type PersistedImageBlock,
+  type PersistedMessage,
+  type PersistedToolCallBlock,
 } from './conversations'
 import { MissingApiKeyError, resolveModel } from './providers'
 import { loadSettings } from './settings'
@@ -24,6 +25,7 @@ import {
   getToolDefinitionsForProfile,
   type ImageSideChannelBlock,
   type ToolContext,
+  type ToolRegistry,
 } from './tools'
 
 export interface ToolCall {
@@ -114,6 +116,8 @@ export interface AgentEvent {
 
 export type AgentEventSink = (event: AgentEvent) => void
 
+type MaybePromise<T> = T | Promise<T>
+
 export interface StreamHandlers {
   onTextDelta: (event: DeltaEvent) => void
   onReasoningDelta: (event: DeltaEvent) => void
@@ -121,8 +125,8 @@ export interface StreamHandlers {
   onToolCallArgsDelta: (event: ToolCallArgsDeltaEvent) => void
   onToolCallResult: (event: ToolResultEvent) => void
   onImageBlock: (event: ImageBlockEvent) => void
-  onDone: (event: DoneEvent) => void
-  onError: (event: ErrorEvent) => void
+  onDone: (event: DoneEvent) => MaybePromise<void>
+  onError: (event: ErrorEvent) => MaybePromise<void>
 }
 
 const MAX_STEPS = 10
@@ -154,9 +158,10 @@ function previewEventValue(value: unknown): { preview: string; size: number } {
 function buildTools(
   ctx: Parameters<typeof executeTool>[2],
   emitAgentEvent: (type: AgentEventType, data?: Record<string, unknown>) => void,
+  toolRegistry?: ToolRegistry,
 ) {
   return Object.fromEntries(
-    getToolDefinitionsForProfile(ctx.profileId).map((td) => [
+    getToolDefinitionsForProfile(ctx.profileId, toolRegistry).map((td) => [
       td.function.name,
       tool({
         description: td.function.description,
@@ -167,7 +172,12 @@ function buildTools(
             input: previewEventValue(args),
           })
           try {
-            const result = await executeTool(td.function.name, args as Record<string, unknown>, ctx)
+            const result = await executeTool(
+              td.function.name,
+              args as Record<string, unknown>,
+              ctx,
+              toolRegistry,
+            )
             emitAgentEvent('tool.execution.completed', {
               toolName: td.function.name,
               result: previewEventValue(result),
@@ -315,6 +325,7 @@ class AssistantBuilder {
     error?: string,
   ): PersistedMessage {
     return {
+      schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
       id: messageId,
       role: 'assistant',
       blocks: this.blocks,
@@ -338,11 +349,13 @@ export interface StreamRequest {
   signal: AbortSignal
   onAgentEvent?: AgentEventSink
   profileId: AgentProfileId
+  onToolApproval?: ToolContext['onToolApproval']
   // Optional doc-edit side-channel; only set for doc-bound conversations so
   // edit_doc resolves through the active editor's CodeMirror view (or the
   // disk path for inactive docs). See main/index.ts.
   onDocEdit?: ToolContext['onDocEdit']
   boundDocPath?: string
+  toolRegistry?: ToolRegistry
 }
 
 export async function streamChat(req: StreamRequest, handlers: StreamHandlers): Promise<void> {
@@ -354,8 +367,10 @@ export async function streamChat(req: StreamRequest, handlers: StreamHandlers): 
     signal,
     onAgentEvent,
     profileId,
+    onToolApproval,
     onDocEdit,
     boundDocPath,
+    toolRegistry,
   } = req
 
   const builder = new AssistantBuilder()
@@ -399,7 +414,7 @@ export async function streamChat(req: StreamRequest, handlers: StreamHandlers): 
         : err instanceof Error
           ? err.message
           : String(err)
-    handlers.onError({
+    await handlers.onError({
       conversationId,
       messageId: assistantMessageId,
       error: message,
@@ -419,10 +434,12 @@ export async function streamChat(req: StreamRequest, handlers: StreamHandlers): 
           profileId,
           boundDocPath,
           signal,
+          onToolApproval,
           onImage: onImageFromTool,
           onDocEdit,
         },
         emitAgentEvent,
+        toolRegistry,
       ),
       stopWhen: stepCountIs(MAX_STEPS),
       abortSignal: signal,
@@ -551,7 +568,7 @@ export async function streamChat(req: StreamRequest, handlers: StreamHandlers): 
           break
         }
         case 'abort': {
-          handlers.onError({
+          await handlers.onError({
             conversationId,
             messageId: assistantMessageId,
             error: 'Aborted',
@@ -562,7 +579,7 @@ export async function streamChat(req: StreamRequest, handlers: StreamHandlers): 
         }
         case 'error': {
           const message = part.error instanceof Error ? part.error.message : String(part.error)
-          handlers.onError({
+          await handlers.onError({
             conversationId,
             messageId: assistantMessageId,
             error: message,
@@ -578,7 +595,7 @@ export async function streamChat(req: StreamRequest, handlers: StreamHandlers): 
       usage: lastUsage ?? undefined,
       outputBlockCount: builder.blocks.length,
     })
-    handlers.onDone({
+    await handlers.onDone({
       conversationId,
       messageId: assistantMessageId,
       message: builder.build(assistantMessageId, 'done', selection),
@@ -587,7 +604,7 @@ export async function streamChat(req: StreamRequest, handlers: StreamHandlers): 
   } catch (error) {
     const isAbort = signal.aborted
     const message = isAbort ? 'Aborted' : error instanceof Error ? error.message : String(error)
-    handlers.onError({
+    await handlers.onError({
       conversationId,
       messageId: assistantMessageId,
       error: message,

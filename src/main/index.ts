@@ -1,31 +1,19 @@
 import { randomUUID } from 'node:crypto'
-import { unlink } from 'node:fs/promises'
 import { join } from 'node:path'
 import { is } from '@electron-toolkit/utils'
-import type { ProviderId } from '@shared/models'
 import * as dotenv from 'dotenv'
 import { app, BrowserWindow, ipcMain } from 'electron'
+import type { ProviderId } from '../shared/models'
+import { getModelInfo, type ModelSelection } from './agent'
+import type { AgentProfileId } from './agent-profile'
 import {
-  getModelInfo,
-  type ModelSelection,
-  streamChat,
-} from './agent'
-import { type AgentProfileId, normalizeChatAgentProfileId } from './agent-profile'
-import {
-  appendAgentEvent,
-  appendMessage,
   createConversation,
-  deleteConversation,
   getConversation,
   listConversations,
   listDocConversations,
-  type PersistedImageBlock,
-  type PersistedMessage,
   renameConversation,
-  setConversationUsage,
 } from './conversations'
-import { buildAgentContext } from './context'
-import type { DocPatch, DocRecord } from './docs'
+import type { DocPatch } from './docs'
 import {
   createDoc,
   createFolder,
@@ -37,17 +25,17 @@ import {
   renameFolder,
   updateDoc,
 } from './docs'
+import { getExtensionReport } from './extensions'
 import { applyFindReplace, type FindReplaceEdit, formatFindReplaceErrors } from './find-replace'
-import {
-  handleImageProtocol,
-  imageNameFromUrl,
-  registerImageProtocolScheme,
-  saveImage,
-} from './images'
+import { saveImage } from './image-store'
+import { handleImageProtocol, registerImageProtocolScheme } from './images'
 import { getOpenRouterCatalog } from './openrouter-catalog'
-import { getDataDir, getImagesDir } from './paths'
+import { configureDataDir, getDataDir } from './paths'
+import { loadAgentProfilesFromDir } from './profile-loader'
+import { AgentRuntime } from './runtime'
 import { configuredProviders, loadSettings, type Settings, saveSettings } from './settings'
-import type { DocEditRequest, DocEditResult } from './tools'
+import { loadToolPacksFromDir } from './tool-pack-loader'
+import type { DocEditRequest, DocEditResult, ToolApprovalRequest } from './tools'
 
 dotenv.config()
 
@@ -61,29 +49,25 @@ const DEV_RENDERER_URL = process.env.ELECTRON_RENDERER_URL ?? 'http://localhost:
 
 let mainWindow: BrowserWindow | null = null
 
-interface StreamSlot {
-  controller: AbortController
-  cleanup: Promise<void>
-}
-
-// One slot per conversation. The cleanup promise resolves only after the
-// stream's persistence side-effects have written to disk — chat:send awaits
-// it so a fresh user message can never land on disk before the previous
-// (possibly aborted) assistant message.
-const activeStreams = new Map<string, StreamSlot>()
-
 // edit_doc tool round-trip: tool fires, main webContents.send's a request to
 // the renderer (which dispatches a CodeMirror transaction for the active
 // doc), renderer ipcRenderer.send's the response, main resolves the matching
 // promise. 5s timeout to avoid wedging the model on a missing/crashed view.
 const DOC_EDIT_TIMEOUT_MS = 5000
+const TOOL_APPROVAL_TIMEOUT_MS = 60_000
 
 interface PendingDocEdit {
   resolve: (result: DocEditResult) => void
   timer: ReturnType<typeof setTimeout>
 }
 
+interface PendingToolApproval {
+  resolve: (approved: boolean) => void
+  timer: ReturnType<typeof setTimeout>
+}
+
 const pendingDocEdits = new Map<string, PendingDocEdit>()
+const pendingToolApprovals = new Map<string, PendingToolApproval>()
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -116,13 +100,50 @@ function send(channel: string, data?: unknown): void {
   }
 }
 
-async function persistAndAnnounce(
-  conversationId: string,
-  message: PersistedMessage,
-): Promise<void> {
-  const summary = await appendMessage(conversationId, message)
-  send('conversations:updated', summary)
+function requestDocEdit(req: DocEditRequest): Promise<DocEditResult> {
+  return new Promise<DocEditResult>((resolve) => {
+    const requestId = randomUUID()
+    const timer = setTimeout(() => {
+      if (pendingDocEdits.delete(requestId)) {
+        resolve({
+          ok: false,
+          error: 'editor did not respond within 5s',
+        })
+      }
+    }, DOC_EDIT_TIMEOUT_MS)
+    pendingDocEdits.set(requestId, { resolve, timer })
+    send('docs:edit-request', {
+      requestId,
+      docPath: req.docPath,
+      edits: req.edits,
+      reason: req.reason,
+    })
+  })
 }
+
+function requestToolApproval(req: ToolApprovalRequest): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    const requestId = randomUUID()
+    const timer = setTimeout(() => {
+      if (pendingToolApprovals.delete(requestId)) resolve(false)
+    }, TOOL_APPROVAL_TIMEOUT_MS)
+    pendingToolApprovals.set(requestId, { resolve, timer })
+    send('tools:approval-request', {
+      requestId,
+      name: req.name,
+      args: req.args,
+      metadata: req.metadata,
+    })
+  })
+}
+
+const agentRuntime = new AgentRuntime({
+  onEvent: (event) => send(event.type, event.data),
+  onToolApproval: requestToolApproval,
+  onDocEdit: requestDocEdit,
+  loadProfiles: async () => (await loadAgentProfilesFromDir()).map((profile) => profile.profile),
+  loadToolPacks: async () => (await loadToolPacksFromDir()).map((pack) => pack.toolPack),
+})
 
 function registerIpcHandlers(): void {
   ipcMain.handle(
@@ -133,157 +154,21 @@ function registerIpcHandlers(): void {
       userText: string,
       selection: ModelSelection,
       requestedProfileId?: AgentProfileId,
-    ) => {
-      // Wait for any prior stream on this conversation to fully clean up
-      // (including its persisted error/done message) before we touch the log.
-      // The renderer's queue runner already serializes per-conversation, but
-      // an abort+immediate-resend flow would otherwise race.
-      const previous = activeStreams.get(conversationId)
-      if (previous) await previous.cleanup.catch(() => {})
-
-      const userMessage: PersistedMessage = {
-        id: randomUUID(),
-        role: 'user',
-        blocks: [{ type: 'text', content: userText }],
-        status: 'done',
-      }
-      await persistAndAnnounce(conversationId, userMessage)
-
-      const assistantMessageId = randomUUID()
-      const controller = new AbortController()
-      let resolveCleanup: () => void = () => {}
-      let eventLogChain = Promise.resolve()
-      const cleanup = new Promise<void>((resolve) => {
-        resolveCleanup = resolve
-      })
-      activeStreams.set(conversationId, { controller, cleanup })
-
-      const record = await getConversation(conversationId)
-      let boundDoc: DocRecord | null = null
-
-      // Doc-bound conversation: read the current doc body and prepend it as a
-      // budgeted system message every time. Re-reading on each send keeps the
-      // context fresh — the user might be editing while chatting in the sidebar.
-      const boundDocPath = record.meta.docId ?? null
-      const profileId = boundDocPath ? 'doc' : normalizeChatAgentProfileId(requestedProfileId)
-      if (boundDocPath) {
-        try {
-          boundDoc = await getDoc(boundDocPath)
-        } catch (err) {
-          console.warn('[chat:send] doc context fetch failed for', boundDocPath, err)
-        }
-      }
-      const context = buildAgentContext({
-        messages: record.messages,
-        doc: boundDoc,
-        latestUserText: userText,
-        modelInfo: getModelInfo(selection.providerId, selection.modelId),
-      })
-      const messages = context.messages
-
-      // Wire the doc-edit side-channel only for doc-bound conversations. Plain
-      // chat-tab conversations don't get edit_doc capability — there's no
-      // "current document" to operate on, and we don't want the model going
-      // off and editing arbitrary docs from the chat tab.
-      const onDocEdit = boundDocPath
-        ? (req: DocEditRequest): Promise<DocEditResult> =>
-            new Promise<DocEditResult>((resolve) => {
-              const requestId = randomUUID()
-              const timer = setTimeout(() => {
-                if (pendingDocEdits.delete(requestId)) {
-                  resolve({
-                    ok: false,
-                    error: 'editor did not respond within 5s',
-                  })
-                }
-              }, DOC_EDIT_TIMEOUT_MS)
-              pendingDocEdits.set(requestId, { resolve, timer })
-              send('docs:edit-request', {
-                requestId,
-                docPath: req.docPath,
-                edits: req.edits,
-                reason: req.reason,
-              })
-            })
-        : undefined
-
-      void (async () => {
-        try {
-          await streamChat(
-            {
-              conversationId,
-              assistantMessageId,
-              messages,
-              selection,
-              signal: controller.signal,
-              profileId,
-              onAgentEvent: (event) => {
-                eventLogChain = eventLogChain
-                  .then(() => appendAgentEvent(conversationId, event))
-                  .catch((err) => {
-                    console.warn("[agent-event] append failed:", err);
-                  });
-              },
-              onDocEdit,
-              boundDocPath: boundDocPath ?? undefined,
-            },
-            {
-              onTextDelta: (event) => send('chat:text-delta', event),
-              onReasoningDelta: (event) => send('chat:reasoning-delta', event),
-              onToolCallStart: (event) => send('chat:tool-call-start', event),
-              onToolCallArgsDelta: (event) => send('chat:tool-call-args-delta', event),
-              onToolCallResult: (event) => send('chat:tool-call-result', event),
-              onImageBlock: (event) => send('chat:image-block', event),
-              onDone: async (event) => {
-                await persistAndAnnounce(conversationId, event.message)
-                if (event.usage) {
-                  const summary = await setConversationUsage(conversationId, event.usage)
-                  send('conversations:updated', summary)
-                }
-                send('chat:done', event)
-              },
-              onError: async (event) => {
-                await persistAndAnnounce(conversationId, event.message)
-                send('chat:error', event)
-              },
-            },
-          )
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err)
-          console.error('[chat] unexpected stream error:', message)
-          const errored: PersistedMessage = {
-            id: assistantMessageId,
-            role: 'assistant',
-            blocks: [],
-            status: 'error',
-            error: message,
-            model: selection,
-          }
-          await persistAndAnnounce(conversationId, errored).catch(() => {})
-          send('chat:error', {
-            conversationId,
-            messageId: assistantMessageId,
-            error: message,
-            message: errored,
-          })
-        } finally {
-          if (activeStreams.get(conversationId)?.controller === controller) {
-            activeStreams.delete(conversationId)
-          }
-          await eventLogChain
-          resolveCleanup()
-        }
-      })()
-
-      return { userMessage, assistantMessageId }
-    },
+    ) => agentRuntime.send({ conversationId, userText, selection, requestedProfileId }),
   )
 
-  // Don't remove from the map here — the stream's finally{} block handles
-  // that after persisting the partial message. Keeping the slot ensures any
-  // subsequent chat:send awaits the cleanup before writing.
+  ipcMain.handle(
+    'chat:retry-last',
+    async (
+      _event,
+      conversationId: string,
+      selection: ModelSelection,
+      requestedProfileId?: AgentProfileId,
+    ) => agentRuntime.retryLastUserMessage({ conversationId, selection, requestedProfileId }),
+  )
+
   ipcMain.handle('chat:abort', (_event, conversationId: string) => {
-    activeStreams.get(conversationId)?.controller.abort()
+    agentRuntime.abort(conversationId)
   })
 
   ipcMain.handle('docs:list', () => listAll())
@@ -315,6 +200,17 @@ function registerIpcHandlers(): void {
     const { requestId: _id, ...result } = payload
     pending.resolve(result)
   })
+
+  ipcMain.on(
+    'tools:approval-response',
+    (_event, payload: { requestId: string; approved: boolean }) => {
+      const pending = pendingToolApprovals.get(payload.requestId)
+      if (!pending) return
+      pendingToolApprovals.delete(payload.requestId)
+      clearTimeout(pending.timer)
+      pending.resolve(payload.approved)
+    },
+  )
 
   // Direct disk-based find/replace for docs that aren't currently mounted in
   // the editor. Used by the renderer when edit_doc targets an inactive doc.
@@ -349,30 +245,14 @@ function registerIpcHandlers(): void {
     },
   )
 
-  async function sweepOrphanedDocConversations(): Promise<void> {
-    const [{ docs }, convos] = await Promise.all([listAll(), listConversations()])
-    const liveDocPaths = new Set(docs.map((d) => d.path))
-    const orphans = convos.filter((c) => c.docId && !liveDocPaths.has(c.docId))
-    await Promise.all(
-      orphans.map(async (orphan) => {
-        const slot = activeStreams.get(orphan.id)
-        if (slot) {
-          slot.controller.abort()
-          await slot.cleanup.catch(() => {})
-        }
-        await deleteConversation(orphan.id)
-      }),
-    )
-  }
-
   ipcMain.handle('docs:delete', async (_event, docPath: string) => {
     await deleteDoc(docPath)
-    await sweepOrphanedDocConversations()
+    await agentRuntime.sweepOrphanedDocConversations()
   })
 
   ipcMain.handle('folders:delete', async (_event, path: string) => {
     await deleteFolder(path)
-    await sweepOrphanedDocConversations()
+    await agentRuntime.sweepOrphanedDocConversations()
   })
 
   ipcMain.handle('images:save', (_event, bytes: ArrayBuffer, filename: string) =>
@@ -392,6 +272,23 @@ function registerIpcHandlers(): void {
   ipcMain.handle('settings:get', () => packSettings(loadSettings()))
   ipcMain.handle('settings:set', (_event, next: Settings) => packSettings(saveSettings(next)))
   ipcMain.handle('openrouter:list-models', () => getOpenRouterCatalog())
+  ipcMain.handle('profiles:list', async () =>
+    Array.from((await agentRuntime.getProfiles()).values()),
+  )
+  ipcMain.handle('extensions:report', () => getExtensionReport())
+  ipcMain.handle('extensions:reload', async () => {
+    const [profiles, registry, report] = await Promise.all([
+      agentRuntime.reloadProfiles(),
+      agentRuntime.reloadToolPacks(),
+      getExtensionReport(),
+    ])
+    return {
+      profileCount: profiles.size,
+      toolPackCount: registry.toolPacks.length,
+      toolCount: registry.specs.length,
+      report,
+    }
+  })
 
   ipcMain.handle('conversations:list', () => listConversations())
   ipcMain.handle('conversations:get', (_event, id: string) => getConversation(id))
@@ -402,31 +299,13 @@ function registerIpcHandlers(): void {
   ipcMain.handle('conversations:rename', (_event, id: string, title: string) =>
     renameConversation(id, title),
   )
-  ipcMain.handle('conversations:delete', async (_event, id: string) => {
-    const slot = activeStreams.get(id)
-    if (slot) {
-      slot.controller.abort()
-      await slot.cleanup.catch(() => {})
-    }
-    // Sweep image files referenced by this conversation before dropping the log.
-    try {
-      const record = await getConversation(id)
-      const imagesDir = getImagesDir()
-      const filenames = record.messages.flatMap((m) =>
-        m.blocks
-          .filter((b): b is PersistedImageBlock => b.type === 'image')
-          .map((b) => imageNameFromUrl(b.url))
-          .filter((n): n is string => n !== null),
-      )
-      await Promise.all(filenames.map((name) => unlink(join(imagesDir, name)).catch(() => {})))
-    } catch (err) {
-      console.warn('[conversations:delete] image cleanup failed:', err)
-    }
-    return deleteConversation(id)
-  })
+  ipcMain.handle('conversations:delete', (_event, id: string) =>
+    agentRuntime.deleteConversation(id),
+  )
 }
 
 app.whenReady().then(() => {
+  configureDataDir(is.dev ? join(app.getAppPath(), '.dev-data') : app.getPath('userData'))
   console.log('[storage] data dir =', getDataDir())
   handleImageProtocol()
   createWindow()
@@ -442,5 +321,10 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', () => {
-  for (const slot of activeStreams.values()) slot.controller.abort()
+  agentRuntime.abortAll()
+  for (const [requestId, pending] of pendingToolApprovals) {
+    pendingToolApprovals.delete(requestId)
+    clearTimeout(pending.timer)
+    pending.resolve(false)
+  }
 })

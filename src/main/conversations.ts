@@ -1,9 +1,13 @@
 import { randomUUID } from 'node:crypto'
 import { appendFile, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import type { ProviderId } from '@shared/models'
+import type { ProviderId } from '../shared/models'
 import type { AgentEvent } from './agent'
 import { getConversationsDir } from './paths'
+
+export const AILA_CONVERSATION_META_SCHEMA_VERSION = 1
+export const AILA_PERSISTED_MESSAGE_SCHEMA_VERSION = 1
+export const AILA_AGENT_EVENT_SCHEMA_VERSION = 1
 
 export interface PersistedTextBlock {
   type: 'text' | 'reasoning'
@@ -29,6 +33,7 @@ export interface PersistedImageBlock {
 export type PersistedBlock = PersistedTextBlock | PersistedToolCallBlock | PersistedImageBlock
 
 export interface PersistedMessage {
+  schemaVersion: typeof AILA_PERSISTED_MESSAGE_SCHEMA_VERSION
   id: string
   role: 'user' | 'assistant'
   blocks: PersistedBlock[]
@@ -45,6 +50,7 @@ export interface ConversationUsage {
 }
 
 export interface ConversationMeta {
+  schemaVersion: typeof AILA_CONVERSATION_META_SCHEMA_VERSION
   id: string
   title: string
   createdAt: number
@@ -61,6 +67,10 @@ export type ConversationSummary = ConversationMeta
 export interface ConversationRecord {
   meta: ConversationMeta
   messages: PersistedMessage[]
+}
+
+export interface PersistedAgentEvent extends AgentEvent {
+  schemaVersion: typeof AILA_AGENT_EVENT_SCHEMA_VERSION
 }
 
 const DEFAULT_TITLE = '新对话'
@@ -86,12 +96,68 @@ function metaPath(id: string): string {
 
 async function readMeta(id: string): Promise<ConversationMeta> {
   const raw = await readFile(metaPath(id), 'utf-8')
-  return JSON.parse(raw) as ConversationMeta
+  return normalizeConversationMeta(JSON.parse(raw) as Partial<ConversationMeta>, id)
 }
 
 async function writeMeta(meta: ConversationMeta): Promise<void> {
   await ensureDir()
-  await writeFile(metaPath(meta.id), JSON.stringify(meta, null, 2), 'utf-8')
+  await writeFile(
+    metaPath(meta.id),
+    JSON.stringify(normalizeConversationMeta(meta), null, 2),
+    'utf-8',
+  )
+}
+
+function normalizeConversationMeta(
+  value: Partial<ConversationMeta>,
+  fallbackId?: string,
+): ConversationMeta {
+  const now = Date.now()
+  const id = typeof value.id === 'string' && value.id.length > 0 ? value.id : fallbackId
+  if (!id) throw new Error('conversation meta is missing id')
+
+  return {
+    schemaVersion: AILA_CONVERSATION_META_SCHEMA_VERSION,
+    id,
+    title: typeof value.title === 'string' && value.title.length > 0 ? value.title : DEFAULT_TITLE,
+    createdAt: typeof value.createdAt === 'number' ? value.createdAt : now,
+    updatedAt: typeof value.updatedAt === 'number' ? value.updatedAt : now,
+    ...(value.usage ? { usage: value.usage } : {}),
+    ...(value.docId !== undefined ? { docId: value.docId } : {}),
+  }
+}
+
+function normalizePersistedMessage(value: Partial<PersistedMessage>): PersistedMessage | null {
+  if (typeof value.id !== 'string' || value.id.length === 0) return null
+  if (value.role !== 'user' && value.role !== 'assistant') return null
+  if (!Array.isArray(value.blocks)) return null
+  if (value.status !== 'streaming' && value.status !== 'done' && value.status !== 'error') {
+    return null
+  }
+
+  return {
+    schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+    id: value.id,
+    role: value.role,
+    blocks: value.blocks,
+    status: value.status,
+    ...(value.error !== undefined && { error: value.error }),
+    ...(value.model !== undefined && { model: value.model }),
+  }
+}
+
+function preparePersistedMessage(message: PersistedMessage): PersistedMessage {
+  return {
+    ...message,
+    schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+  }
+}
+
+function prepareAgentEvent(event: AgentEvent): PersistedAgentEvent {
+  return {
+    ...event,
+    schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+  }
 }
 
 function deriveTitle(message: PersistedMessage): string | null {
@@ -114,7 +180,7 @@ export async function listConversations(): Promise<ConversationSummary[]> {
       .map(async (name) => {
         try {
           const raw = await readFile(join(getConversationsDir(), name), 'utf-8')
-          return JSON.parse(raw) as ConversationMeta
+          return normalizeConversationMeta(JSON.parse(raw) as Partial<ConversationMeta>)
         } catch {
           return null
         }
@@ -138,7 +204,8 @@ export async function getConversation(id: string): Promise<ConversationRecord> {
     const trimmed = line.trim()
     if (!trimmed) continue
     try {
-      messages.push(JSON.parse(trimmed) as PersistedMessage)
+      const message = normalizePersistedMessage(JSON.parse(trimmed) as Partial<PersistedMessage>)
+      if (message) messages.push(message)
     } catch {
       // skip malformed line — keeps the rest of the conversation readable
     }
@@ -150,6 +217,7 @@ export async function createConversation(docId?: string): Promise<ConversationSu
   await ensureDir()
   const now = Date.now()
   const meta: ConversationMeta = {
+    schemaVersion: AILA_CONVERSATION_META_SCHEMA_VERSION,
     id: randomUUID(),
     title: DEFAULT_TITLE,
     createdAt: now,
@@ -174,7 +242,7 @@ export async function appendMessage(
   message: PersistedMessage,
 ): Promise<ConversationSummary> {
   await ensureDir()
-  await appendFile(logPath(id), `${JSON.stringify(message)}\n`, 'utf-8')
+  await appendFile(logPath(id), `${JSON.stringify(preparePersistedMessage(message))}\n`, 'utf-8')
   const current = await readMeta(id)
   const next: ConversationMeta = {
     ...current,
@@ -190,7 +258,7 @@ export async function appendMessage(
 
 export async function appendAgentEvent(id: string, event: AgentEvent): Promise<void> {
   await ensureDir()
-  await appendFile(eventLogPath(id), `${JSON.stringify(event)}\n`, 'utf-8')
+  await appendFile(eventLogPath(id), `${JSON.stringify(prepareAgentEvent(event))}\n`, 'utf-8')
 }
 
 export async function renameConversation(id: string, title: string): Promise<ConversationSummary> {
@@ -257,7 +325,7 @@ export async function rewriteDocRefs(rewrites: DocRefRewrite[]): Promise<Convers
         }
         let meta: ConversationMeta
         try {
-          meta = JSON.parse(raw) as ConversationMeta
+          meta = normalizeConversationMeta(JSON.parse(raw) as Partial<ConversationMeta>)
         } catch {
           return
         }

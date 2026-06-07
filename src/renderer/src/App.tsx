@@ -1,6 +1,7 @@
 import { PanelLeftCloseIcon, PanelLeftOpenIcon, SettingsIcon } from 'lucide-react'
 import { type ReactElement, type ReactNode, useCallback, useEffect, useMemo, useState } from 'react'
 import { SettingsModal } from '@/components/SettingsModal'
+import { ToolApprovalDialog } from '@/components/ToolApprovalDialog'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { ChatPage } from '@/pages/chat/ChatPage'
 import { ConversationList } from '@/pages/chat/ConversationList'
@@ -9,7 +10,7 @@ import { useConversations } from '@/pages/chat/useConversations'
 import { DocList } from '@/pages/docs/DocList'
 import { DocsPage } from '@/pages/docs/DocsPage'
 import { useDocs } from '@/pages/docs/useDocs'
-import type { ProviderId, Settings, SettingsState } from './types'
+import type { ProviderId, Settings, SettingsState, ToolApprovalRequestEvent } from './types'
 
 type Tab = 'chat' | 'docs'
 
@@ -76,6 +77,7 @@ export default function App(): ReactElement {
   )
   const [settingsState, setSettingsState] = useState<SettingsState | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [toolApprovals, setToolApprovals] = useState<ToolApprovalRequestEvent[]>([])
 
   useEffect(() => {
     void window.api.settings.get().then((state) => {
@@ -90,6 +92,17 @@ export default function App(): ReactElement {
   }, [])
 
   const openSettings = useCallback(() => setSettingsOpen(true), [])
+
+  useEffect(() => {
+    return window.api.tools.onApprovalRequest((request) => {
+      setToolApprovals((current) => [...current, request])
+    })
+  }, [])
+
+  const resolveToolApproval = useCallback((requestId: string, approved: boolean): void => {
+    window.api.tools.sendApprovalResponse({ requestId, approved })
+    setToolApprovals((current) => current.filter((request) => request.requestId !== requestId))
+  }, [])
 
   // ⌘\ toggles the sidebar. preventDefault so a stray backslash doesn't reach
   // a focused input/editor.
@@ -225,6 +238,7 @@ export default function App(): ReactElement {
             onSave={updateSettings}
           />
         )}
+        <ToolApprovalDialog request={toolApprovals[0] ?? null} onResolve={resolveToolApproval} />
       </div>
     </TooltipProvider>
   )

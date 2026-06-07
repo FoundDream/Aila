@@ -13,7 +13,7 @@ import { promisify } from 'node:util'
 import type { AgentProfileId } from './agent-profile'
 import type { FindReplaceEdit } from './find-replace'
 import { generateImage } from './image'
-import { saveImage } from './images'
+import { saveImage } from './image-store'
 import type { Settings } from './settings'
 
 const execAsync = promisify(exec)
@@ -27,8 +27,8 @@ export interface ToolDefinition {
   }
 }
 
-type ToolAccess = 'read' | 'write' | 'shell' | 'network' | 'image' | 'doc'
-type ToolScope = 'workspace' | 'current_doc' | 'external' | 'image_library'
+export type ToolAccess = 'read' | 'write' | 'shell' | 'network' | 'image' | 'doc'
+export type ToolScope = 'workspace' | 'current_doc' | 'external' | 'image_library'
 
 export interface ToolMetadata {
   name: string
@@ -45,7 +45,29 @@ export interface ToolSpec extends ToolDefinition {
   metadata: ToolMetadata
 }
 
-export const TOOL_SPECS: ToolSpec[] = [
+export type ToolHandler = (args: Record<string, unknown>, ctx: ToolContext) => Promise<string>
+
+export interface ToolPackEntry {
+  spec: ToolSpec
+  run: ToolHandler
+}
+
+export interface ToolPack {
+  id: string
+  name: string
+  description?: string
+  tools: ToolPackEntry[]
+}
+
+export interface ToolRegistry {
+  toolPacks: ToolPack[]
+  specs: ToolSpec[]
+  definitions: ToolDefinition[]
+  specsByName: Map<string, ToolSpec>
+  runnersByName: Map<string, ToolHandler>
+}
+
+const BUILTIN_TOOL_SPECS: ToolSpec[] = [
   {
     type: 'function',
     function: {
@@ -320,17 +342,121 @@ export const TOOL_SPECS: ToolSpec[] = [
   },
 ]
 
-export const TOOL_DEFINITIONS: ToolDefinition[] = TOOL_SPECS.map(({ type, function: fn }) => ({
-  type,
-  function: fn,
-}))
+const BUILTIN_TOOL_HANDLERS: Record<string, ToolHandler> = {
+  read: (args) => runRead(args),
+  write: (args) => runWrite(args),
+  edit: (args) => runEdit(args),
+  web_search: (args) => runWebSearch(args),
+  generate_image: (args, ctx) => runGenerateImage(args, ctx),
+  bash: (args) => runBash(args),
+  edit_doc: (args, ctx) => runEditDoc(args, ctx),
+}
 
-const TOOL_SPECS_BY_NAME = new Map(TOOL_SPECS.map((spec) => [spec.function.name, spec]))
+const BUILTIN_TOOL_PACK_DEFINITIONS = [
+  {
+    id: 'filesystem',
+    name: 'Filesystem',
+    description: 'Read and modify files inside the workspace.',
+    toolNames: ['read', 'write', 'edit'],
+  },
+  {
+    id: 'web',
+    name: 'Web',
+    description: 'Fetch fresh external information.',
+    toolNames: ['web_search'],
+  },
+  {
+    id: 'image',
+    name: 'Image',
+    description: 'Generate and store images in the local image library.',
+    toolNames: ['generate_image'],
+  },
+  {
+    id: 'shell',
+    name: 'Shell',
+    description: 'Run approved shell commands in the workspace.',
+    toolNames: ['bash'],
+  },
+  {
+    id: 'doc',
+    name: 'Document',
+    description: 'Apply structured edits to the active markdown document.',
+    toolNames: ['edit_doc'],
+  },
+]
 
-export function getToolDefinitionsForProfile(profileId: AgentProfileId): ToolDefinition[] {
-  return TOOL_SPECS.filter((spec) => spec.metadata.allowedProfiles.includes(profileId)).map(
-    ({ type, function: fn }) => ({ type, function: fn }),
-  )
+function createBuiltinToolPack(
+  definition: (typeof BUILTIN_TOOL_PACK_DEFINITIONS)[number],
+): ToolPack {
+  const tools = definition.toolNames.map((toolName) => {
+    const spec = BUILTIN_TOOL_SPECS.find((candidate) => candidate.function.name === toolName)
+    const run = BUILTIN_TOOL_HANDLERS[toolName]
+    if (!spec || !run) throw new Error(`builtin tool is not registered: ${toolName}`)
+    return { spec, run }
+  })
+
+  return {
+    id: definition.id,
+    name: definition.name,
+    description: definition.description,
+    tools,
+  }
+}
+
+export const BUILTIN_TOOL_PACKS: ToolPack[] =
+  BUILTIN_TOOL_PACK_DEFINITIONS.map(createBuiltinToolPack)
+
+export function createToolRegistry(
+  toolPacks: readonly ToolPack[] = BUILTIN_TOOL_PACKS,
+): ToolRegistry {
+  const specs: ToolSpec[] = []
+  const definitions: ToolDefinition[] = []
+  const specsByName = new Map<string, ToolSpec>()
+  const runnersByName = new Map<string, ToolHandler>()
+
+  for (const pack of toolPacks) {
+    for (const entry of pack.tools) {
+      const name = entry.spec.function.name
+      if (entry.spec.metadata.name !== name) {
+        throw new Error(`tool metadata name mismatch in "${pack.id}": ${entry.spec.metadata.name}`)
+      }
+      if (specsByName.has(name)) {
+        throw new Error(`duplicate tool registered: ${name}`)
+      }
+
+      specs.push(entry.spec)
+      definitions.push({ type: entry.spec.type, function: entry.spec.function })
+      specsByName.set(name, entry.spec)
+      runnersByName.set(name, entry.run)
+    }
+  }
+
+  return {
+    toolPacks: [...toolPacks],
+    specs,
+    definitions,
+    specsByName,
+    runnersByName,
+  }
+}
+
+export function createDefaultToolRegistry(extraToolPacks: readonly ToolPack[] = []): ToolRegistry {
+  return createToolRegistry([...BUILTIN_TOOL_PACKS, ...extraToolPacks])
+}
+
+const DEFAULT_TOOL_REGISTRY = createDefaultToolRegistry()
+
+export const TOOL_SPECS: ToolSpec[] = DEFAULT_TOOL_REGISTRY.specs
+
+export const TOOL_DEFINITIONS: ToolDefinition[] = DEFAULT_TOOL_REGISTRY.definitions
+
+export function getToolDefinitionsForProfile(
+  profileId: AgentProfileId,
+  registry: ToolRegistry = DEFAULT_TOOL_REGISTRY,
+): ToolDefinition[] {
+  return registry.specs
+    .filter((spec) => spec.metadata.allowedProfiles.includes(profileId))
+    .map(({ type, function: fn }) => ({ type, function: fn }))
 }
 
 const MAX_OUTPUT_BYTES = 64 * 1024
@@ -383,8 +509,12 @@ function truncate(text: string): string {
   return `${buf.toString('utf-8')}\n…[truncated]`
 }
 
-function assertToolAllowed(name: string, profileId: AgentProfileId): ToolSpec {
-  const spec = TOOL_SPECS_BY_NAME.get(name)
+function assertToolAllowed(
+  name: string,
+  profileId: AgentProfileId,
+  registry: ToolRegistry = DEFAULT_TOOL_REGISTRY,
+): ToolSpec {
+  const spec = registry.specsByName.get(name)
   if (!spec) throw new Error(`unknown tool: ${name}`)
   if (!spec.metadata.allowedProfiles.includes(profileId)) {
     throw new Error(`tool "${name}" is not available in the ${profileId} agent profile`)
@@ -580,11 +710,18 @@ export type DocEditResult =
   | { ok: true; title: string; appliedCount: number; patches: DocEditPatch[]; diffPreview: string }
   | { ok: false; error: string; conflicts?: string[] }
 
+export interface ToolApprovalRequest {
+  name: string
+  args: Record<string, unknown>
+  metadata: ToolMetadata
+}
+
 export interface ToolContext {
   settings: Settings
   profileId: AgentProfileId
   boundDocPath?: string
   signal?: AbortSignal
+  onToolApproval?: (request: ToolApprovalRequest) => Promise<boolean>
   onImage?: (block: ImageSideChannelBlock) => void
   // Round-trips through the renderer (active doc → CodeMirror transaction)
   // or main's disk path (inactive doc). Resolves with success or a structured
@@ -707,24 +844,14 @@ export async function executeTool(
   name: string,
   args: Record<string, unknown>,
   ctx: ToolContext,
+  registry: ToolRegistry = DEFAULT_TOOL_REGISTRY,
 ): Promise<string> {
-  assertToolAllowed(name, ctx.profileId)
-  switch (name) {
-    case 'read':
-      return runRead(args)
-    case 'write':
-      return runWrite(args)
-    case 'edit':
-      return runEdit(args)
-    case 'web_search':
-      return runWebSearch(args)
-    case 'generate_image':
-      return runGenerateImage(args, ctx)
-    case 'bash':
-      return runBash(args)
-    case 'edit_doc':
-      return runEditDoc(args, ctx)
-    default:
-      throw new Error(`unknown tool: ${name}`)
+  const spec = assertToolAllowed(name, ctx.profileId, registry)
+  if (spec.metadata.requiresApproval && ctx.onToolApproval) {
+    const approved = await ctx.onToolApproval({ name, args, metadata: spec.metadata })
+    if (!approved) throw new Error(`tool "${name}" was rejected by user`)
   }
+  const runner = registry.runnersByName.get(name)
+  if (!runner) throw new Error(`unknown tool: ${name}`)
+  return runner(args, ctx)
 }

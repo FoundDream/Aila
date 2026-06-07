@@ -1,10 +1,13 @@
 import { join } from 'node:path'
-import { is } from '@electron-toolkit/utils'
-import { app } from 'electron'
+
+let configuredDataDir: string | null = null
+
+export function configureDataDir(path: string): void {
+  configuredDataDir = path
+}
 
 export function getDataDir(): string {
-  if (is.dev) return join(app.getAppPath(), '.dev-data')
-  return app.getPath('userData')
+  return configuredDataDir ?? process.env.AILA_DATA_DIR ?? join(process.cwd(), '.aila-data')
 }
 
 export function getConversationsDir(): string {
@@ -21,4 +24,12 @@ export function getImagesDir(): string {
 
 export function getSettingsPath(): string {
   return join(getDataDir(), 'settings.json')
+}
+
+export function getToolPacksDir(): string {
+  return join(getDataDir(), 'tool-packs')
+}
+
+export function getProfilesDir(): string {
+  return join(getDataDir(), 'profiles')
 }

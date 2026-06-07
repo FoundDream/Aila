@@ -8,8 +8,8 @@ import { createAnthropic } from '@ai-sdk/anthropic'
 import { createGoogleGenerativeAI } from '@ai-sdk/google'
 import { createOpenAI } from '@ai-sdk/openai'
 import { createOpenRouter } from '@openrouter/ai-sdk-provider'
-import type { ProviderId } from '@shared/models'
 import type { LanguageModel } from 'ai'
+import type { ProviderId } from '../shared/models'
 import { resolveApiKey, type Settings } from './settings'
 
 export class MissingApiKeyError extends Error {
