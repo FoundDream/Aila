@@ -571,6 +571,18 @@ function cloneRuntimeConversationSummaries(
   return cloneRuntimeValue([...summaries])
 }
 
+function sortRuntimeConversationSummaries(
+  summaries: readonly ConversationSummary[],
+): ConversationSummary[] {
+  return summaries
+    .map((summary, index) => ({ summary, index }))
+    .sort((left, right) => {
+      const updatedOrder = right.summary.updatedAt - left.summary.updatedAt
+      return updatedOrder === 0 ? left.index - right.index : updatedOrder
+    })
+    .map(({ summary }) => summary)
+}
+
 function cloneRuntimePersistedMessage(message: PersistedMessage): PersistedMessage {
   return cloneRuntimeValue(message)
 }
@@ -664,9 +676,13 @@ export class AgentRuntime {
     input: RuntimeListConversationsInput = {},
   ): Promise<ConversationSummary[]> {
     if (!this.store.listConversations) throw new Error('runtime store cannot list conversations')
-    const conversations = cloneRuntimeConversationSummaries(await this.store.listConversations())
+    const conversations = sortRuntimeConversationSummaries(
+      cloneRuntimeConversationSummaries(await this.store.listConversations()),
+    )
     if (input.docId === undefined) return conversations
-    if (input.docId === null) return conversations.filter((summary) => !summary.docId)
+    if (input.docId === null) {
+      return conversations.filter((summary) => !summary.docId)
+    }
     return conversations.filter((summary) => summary.docId === input.docId)
   }
 

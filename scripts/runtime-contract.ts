@@ -1058,6 +1058,11 @@ async function testRuntimeConversationStoreFacadeContract(): Promise<void> {
 
   const listedConversations = await runtime.listConversations()
   assertEqual(listedConversations.length, 2, 'runtime should list all conversations')
+  assertEqual(
+    listedConversations.map((summary) => summary.id).join(','),
+    `${doc.id},${chat.id}`,
+    'runtime should sort injected store conversations by updatedAt desc',
+  )
   const listedChat = listedConversations.find((summary) => summary.id === chat.id)
   if (listedChat) listedChat.title = 'caller-mutated-list'
   assertEqual(
@@ -1094,6 +1099,11 @@ async function testRuntimeConversationStoreFacadeContract(): Promise<void> {
       .conversationId,
     doc.id,
     'runtime resolve should resume within a conversation scope',
+  )
+  assertEqual(
+    (await runtime.resolveConversation({ resumeLatest: true })).conversationId,
+    doc.id,
+    'runtime resolve latest should not depend on injected store ordering',
   )
   const resolvedNew = await runtime.resolveConversation({ docId: 'docs/resolved.md' })
   assertEqual(resolvedNew.isExisting, false, 'runtime resolve should create missing input')
