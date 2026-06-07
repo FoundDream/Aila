@@ -529,6 +529,79 @@ async function testToolApprovalTimeoutClearsPendingRequests(): Promise<void> {
   assertEqual(resolved[0]?.reason, 'timeout', 'timed approval resolved reason')
 }
 
+async function testToolApprovalCancellationClearsConversationRequests(): Promise<void> {
+  await withTempDataDir(async () => {
+    const cancelledConversation = await createConversation()
+    const otherConversation = await createConversation()
+    const resolved: ToolApprovalResolvedPayload[] = []
+    const store = new ToolApprovalStore({
+      timeoutMs: 1000,
+      onResolved: (payload) => resolved.push(payload),
+    })
+
+    const cancelledApproval = store.request({
+      name: 'write_file',
+      args: { path: '/workspace/cancelled.md', content: 'cancelled write' },
+      metadata: {
+        name: 'write_file',
+        readOnly: false,
+        destructive: true,
+        requiresApproval: true,
+        access: ['write'],
+        scope: ['workspace'],
+        allowedProfiles: ['coding'],
+      },
+      conversationId: cancelledConversation.id,
+      messageId: 'cancelled-assistant',
+      toolCallId: 'cancelled-tool-call',
+    })
+    const otherApproval = store.request({
+      name: 'write_file',
+      args: { path: '/workspace/other.md', content: 'other write' },
+      metadata: {
+        name: 'write_file',
+        readOnly: false,
+        destructive: true,
+        requiresApproval: true,
+        access: ['write'],
+        scope: ['workspace'],
+        allowedProfiles: ['coding'],
+      },
+      conversationId: otherConversation.id,
+      messageId: 'other-assistant',
+      toolCallId: 'other-tool-call',
+    })
+
+    assertEqual(
+      store.resolveForConversation(cancelledConversation.id, false, 'cancelled'),
+      1,
+      'conversation cancellation should resolve matching approvals only',
+    )
+    assertEqual(await cancelledApproval, false, 'cancelled approval promise')
+    assertEqual(store.list().length, 1, 'conversation cancellation should keep other approvals')
+    assertEqual(
+      store.list()[0]?.conversationId,
+      otherConversation.id,
+      'remaining approval conversation id',
+    )
+    await waitFor(() => resolved.length === 1, 'cancelled approval should emit resolved payload')
+    assertEqual(resolved[0]?.approved, false, 'cancelled approval resolved approved flag')
+    assertEqual(resolved[0]?.reason, 'cancelled', 'cancelled approval resolved reason')
+
+    await store.flushActivity()
+    const events = await listAgentEvents(cancelledConversation.id)
+    assertEqual(events.at(-1)?.type, 'tool.approval.resolved', 'cancelled approval event type')
+    assertEqual(events.at(-1)?.data?.reason, 'cancelled', 'cancelled approval event reason')
+
+    const record = await getConversation(cancelledConversation.id)
+    assertEqual(record.meta.activity?.state, 'failed', 'cancelled approval activity state')
+    assertEqual(record.meta.activity?.title, 'Denied: write_file', 'cancelled approval title')
+
+    store.shutdown()
+    assertEqual(await otherApproval, false, 'shutdown should clear remaining approval')
+  })
+}
+
 async function main(): Promise<void> {
   await testDocConversationWorkspaceContext()
   await testDesktopWorkspaceRoots()
@@ -544,6 +617,7 @@ async function main(): Promise<void> {
   await testInterruptedActivityRecovery()
   await testToolApprovalsCanHydrateAndResolvePendingRequests()
   await testToolApprovalTimeoutClearsPendingRequests()
+  await testToolApprovalCancellationClearsConversationRequests()
   console.log('desktop workbench contract: ok')
 }
 

@@ -90,7 +90,7 @@ export interface ToolApprovalResponse {
 export interface ToolApprovalResolvedEvent {
   requestId: string
   approved: boolean
-  reason: 'user' | 'timeout' | 'shutdown'
+  reason: 'user' | 'timeout' | 'shutdown' | 'cancelled'
 }
 
 export type AgentEventType =

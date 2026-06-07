@@ -7,7 +7,7 @@ import {
 } from './conversations'
 import type { ToolApprovalRequest } from './tools'
 
-export type ToolApprovalResolutionReason = 'user' | 'timeout' | 'shutdown'
+export type ToolApprovalResolutionReason = 'user' | 'timeout' | 'shutdown' | 'cancelled'
 
 export interface ToolApprovalRequestPayload {
   requestId: string
@@ -151,6 +151,20 @@ export class ToolApprovalStore {
 
   resolve(requestId: string, approved: boolean, reason: ToolApprovalResolutionReason): void {
     this.pending.get(requestId)?.finish(approved, reason)
+  }
+
+  resolveForConversation(
+    conversationId: string,
+    approved: boolean,
+    reason: ToolApprovalResolutionReason,
+  ): number {
+    let resolved = 0
+    for (const pending of Array.from(this.pending.values())) {
+      if (pending.payload.conversationId !== conversationId) continue
+      pending.finish(approved, reason)
+      resolved += 1
+    }
+    return resolved
   }
 
   shutdown(): void {

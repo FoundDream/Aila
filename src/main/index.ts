@@ -154,9 +154,11 @@ function registerIpcHandlers(): void {
     },
   )
 
-  ipcMain.handle('chat:abort', (_event, conversationId: string) =>
-    agentRuntime.abort(conversationId),
-  )
+  ipcMain.handle('chat:abort', async (_event, conversationId: string) => {
+    const abort = agentRuntime.abort(conversationId)
+    toolApprovals.resolveForConversation(conversationId, false, 'cancelled')
+    await abort
+  })
   ipcMain.handle('chat:list-active-streams', () => agentRuntime.listActiveStreams())
 
   ipcMain.handle('docs:list', () => listAll())
