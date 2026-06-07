@@ -111,6 +111,7 @@ export {
   type RuntimeRetryLastInput,
   type RuntimeSendInput,
   type RuntimeSendResult,
+  type RuntimeTransientContextInput,
 } from '../main/runtime'
 export {
   configuredProviders,

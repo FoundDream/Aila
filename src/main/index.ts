@@ -30,7 +30,10 @@ import { configuredProviders, loadSettings, type Settings, saveSettings } from '
 import { ToolApprovalStore } from './tool-approvals'
 import { loadToolPacksFromDir } from './tool-pack-loader'
 import type { ToolApprovalRequest } from './tools'
-import { buildDesktopWorkspaceContext, getDesktopWorkspaceRoots } from './workspace-context'
+import {
+  buildDesktopWorkspaceContextFromRecord,
+  getDesktopWorkspaceRoots,
+} from './workspace-context'
 
 dotenv.config()
 
@@ -107,6 +110,7 @@ const agentRuntime = new AgentRuntime({
     cleanupConversationAssets: cleanupConversationImages,
     loadProfiles: async () => (await loadAgentProfilesFromDir()).map((profile) => profile.profile),
     loadToolPacks: async () => (await loadToolPacksFromDir()).map((pack) => pack.toolPack),
+    loadTransientContext: ({ record }) => buildDesktopWorkspaceContextFromRecord(record),
     workspaceRoots: getDesktopWorkspaceRoots,
   },
 })
@@ -126,13 +130,11 @@ function registerIpcHandlers(): void {
       selection: ModelSelection,
       requestedProfileId?: AgentProfileId,
     ) => {
-      const transientContext = await buildDesktopWorkspaceContext(conversationId)
       return agentRuntime.send({
         conversationId,
         userText,
         selection,
         requestedProfileId,
-        transientContext,
       })
     },
   )
@@ -145,12 +147,10 @@ function registerIpcHandlers(): void {
       selection: ModelSelection,
       requestedProfileId?: AgentProfileId,
     ) => {
-      const transientContext = await buildDesktopWorkspaceContext(conversationId)
       return agentRuntime.retryLastUserMessage({
         conversationId,
         selection,
         requestedProfileId,
-        transientContext,
       })
     },
   )

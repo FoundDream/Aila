@@ -520,6 +520,103 @@ async function testRuntimeInjectableStoreContract(): Promise<void> {
   })
 }
 
+async function testRuntimeHostTransientContextUsesInjectedRecord(): Promise<void> {
+  const conversationId = 'transient-context-contract'
+  const calls: string[] = []
+  const summary: ConversationSummary = {
+    schemaVersion: AILA_CONVERSATION_META_SCHEMA_VERSION,
+    id: conversationId,
+    title: 'transient context',
+    createdAt: 1,
+    updatedAt: 1,
+  }
+  let record: ConversationRecord = { meta: summary, messages: [] }
+  let streamedContext: string | null = null
+
+  const store: AgentRuntimeStore = {
+    getConversation: async (id) => {
+      calls.push(`get:${id}`)
+      if (id !== conversationId) throw new Error(`unexpected conversation: ${id}`)
+      return record
+    },
+    upsertMessage: async (_id, message) => {
+      calls.push(`upsert:${message.role}`)
+      record = { ...record, messages: [...record.messages, message] }
+      return { ...summary, updatedAt: summary.updatedAt + record.messages.length }
+    },
+    appendAgentEventAndTouchConversation: async (_id, event) => {
+      calls.push(`event:${event.type}`)
+      return {
+        event: {
+          ...event,
+          schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+        },
+        summary: { ...summary, updatedAt: summary.updatedAt + record.messages.length + 1 },
+      }
+    },
+    setConversationUsage: async () => {
+      throw new Error('transient context contract should not persist usage')
+    },
+    deleteConversation: async () => {
+      throw new Error('transient context contract should not delete conversation')
+    },
+  }
+
+  const runtime = new AgentRuntime({
+    store,
+    loadTransientContext: ({ record: inputRecord, source }) => {
+      calls.push(`context:${source}:${inputRecord.messages.length}`)
+      return [
+        {
+          role: 'system',
+          content: `host context for ${inputRecord.meta.id} with ${inputRecord.messages.length} messages`,
+        },
+      ]
+    },
+    streamChat: async (req, handlers) => {
+      streamedContext =
+        req.messages.find(
+          (message) => message.role === 'system' && message.content.includes('host context for'),
+        )?.content ?? null
+      await handlers.onDone({
+        conversationId: req.conversationId,
+        messageId: req.assistantMessageId,
+        message: {
+          schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+          id: req.assistantMessageId,
+          role: 'assistant',
+          blocks: [{ type: 'text', content: 'used host transient context' }],
+          status: 'done',
+          model: req.selection,
+        },
+      })
+    },
+    logger: { warn() {}, error() {} },
+  })
+
+  await runtime.send({
+    conversationId,
+    userText: 'use host transient context',
+    selection: { providerId: 'openrouter', modelId: 'contract/mock' },
+    requestedProfileId: 'coding',
+  })
+  await waitFor(
+    () => runtime.listActiveStreams().length === 0,
+    'transient context stream should settle',
+  )
+
+  assert(calls.includes(`get:${conversationId}`), 'runtime should load record through store')
+  assert(
+    calls.includes('context:send:1'),
+    'host transient context should receive the post-user-message record',
+  )
+  assertEqual(
+    streamedContext,
+    `host context for ${conversationId} with 1 messages`,
+    'host transient context should be passed to streamChat',
+  )
+}
+
 async function testRuntimeConversationStoreFacadeContract(): Promise<void> {
   const calls: string[] = []
   const emitted: AgentRuntimeEvent[] = []
@@ -3924,6 +4021,7 @@ async function main(): Promise<void> {
   await testRuntimeHostBoundaryContract()
   await testRuntimeHostStaticExtensionContract()
   await testRuntimeInjectableStoreContract()
+  await testRuntimeHostTransientContextUsesInjectedRecord()
   await testRuntimeConversationStoreFacadeContract()
   await testRuntimeAppendUserMessageUsesInjectedStore()
   await testRuntimeRecordAgentEventUsesInjectedStore()
