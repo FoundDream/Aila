@@ -286,6 +286,7 @@ export class AgentRuntime {
         selection,
         errorMessage(error),
       )
+      this.assertConversationOpen(conversationId)
       return { userMessage, assistantMessageId }
     }
     this.assertConversationOpen(conversationId)

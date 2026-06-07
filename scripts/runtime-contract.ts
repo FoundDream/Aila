@@ -708,6 +708,59 @@ async function testRuntimeSetupFailurePersistsAssistantError(): Promise<void> {
   })
 }
 
+async function testRuntimeSetupFailureRejectsWhenConversationDeleted(): Promise<void> {
+  await withTempDataDir(async () => {
+    const conversation = await createConversation()
+    const events: AgentRuntimeEvent[] = []
+    let deleteStarted: Promise<void> | null = null
+    let streamStarted = false
+    let runtime: AgentRuntime
+
+    runtime = new AgentRuntime({
+      onEvent: (event) => events.push(event),
+      logger: { warn() {}, error() {} },
+      workspaceRoots: () => {
+        deleteStarted = runtime.deleteConversation(conversation.id)
+        throw new Error('workspace roots unavailable after delete')
+      },
+      streamChat: async () => {
+        streamStarted = true
+      },
+    })
+
+    let rejected = false
+    try {
+      await runtime.send({
+        conversationId: conversation.id,
+        userText: 'delete during setup failure',
+        selection: { providerId: 'openrouter', modelId: 'contract/mock' },
+        requestedProfileId: 'coding',
+      })
+    } catch (error) {
+      rejected = error instanceof Error && error.message.includes('deleted')
+    }
+
+    assert(rejected, 'setup failure after delete should reject the send')
+    assertEqual(streamStarted, false, 'deleted setup failure should not start stream')
+    assertEqual(runtime.listActiveStreams().length, 0, 'deleted setup failure should not be active')
+    assert(
+      !events.some((event) => event.type === 'chat:error'),
+      'deleted setup failure should not emit chat:error',
+    )
+
+    if (deleteStarted) await deleteStarted
+    assert(
+      !(await listConversations()).some((record) => record.id === conversation.id),
+      'setup failure delete should remove conversation',
+    )
+    assertEqual(
+      (await listAgentEvents(conversation.id)).length,
+      0,
+      'deleted setup failure should not recreate event log',
+    )
+  })
+}
+
 async function testRuntimeListsActiveAssistantTurns(): Promise<void> {
   await withTempDataDir(async () => {
     const conversation = await createConversation()
@@ -2144,6 +2197,7 @@ async function main(): Promise<void> {
   await testRuntimeAbortTimesOutStuckStreamCleanup()
   await testRuntimeUnexpectedStreamErrorPersistsFailureActivity()
   await testRuntimeSetupFailurePersistsAssistantError()
+  await testRuntimeSetupFailureRejectsWhenConversationDeleted()
   await testRuntimeListsActiveAssistantTurns()
   await testRuntimeDeleteRunsAbortCleanupBeforeWaitingForStream()
   await testRuntimeDeleteTimesOutStuckStreamAndSuppressesLateEvents()
