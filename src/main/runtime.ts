@@ -17,9 +17,11 @@ import {
 } from './agent-profile'
 import { buildAgentContext } from './context'
 import {
+  type AgentEventAppendResult,
   AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
   appendAgentEventAndTouchConversation,
   type ConversationRecord,
+  type ConversationSummary,
   getConversation,
   type PersistedImageBlock,
   type PersistedMessage,
@@ -149,9 +151,32 @@ export interface AgentRuntimeHost {
 
 export interface AgentRuntimeOptions extends AgentRuntimeHost {
   host?: AgentRuntimeHost
+  store?: AgentRuntimeStore
   profiles?: readonly AgentProfile[]
   toolPacks?: readonly ToolPack[]
   abortAllCleanupTimeoutMs?: number
+}
+
+export interface AgentRuntimeStore {
+  getConversation: (conversationId: string) => Promise<ConversationRecord>
+  upsertMessage: (conversationId: string, message: PersistedMessage) => Promise<ConversationSummary>
+  appendAgentEventAndTouchConversation: (
+    conversationId: string,
+    event: Parameters<typeof appendAgentEventAndTouchConversation>[1],
+  ) => Promise<AgentEventAppendResult>
+  setConversationUsage: (
+    conversationId: string,
+    usage: { promptTokens: number; completionTokens: number; totalTokens: number },
+  ) => Promise<ConversationSummary>
+  deleteConversation: (conversationId: string) => Promise<void>
+}
+
+const DEFAULT_RUNTIME_STORE: AgentRuntimeStore = {
+  getConversation,
+  upsertMessage,
+  appendAgentEventAndTouchConversation,
+  setConversationUsage,
+  deleteConversation: removeConversation,
 }
 
 function normalizeRuntimeHost(options: AgentRuntimeOptions): AgentRuntimeHost {
@@ -181,6 +206,7 @@ export class AgentRuntime {
   private readonly activeStreams = new Map<string, StreamSlot>()
   private readonly deletedConversations = new Set<string>()
   private readonly host: AgentRuntimeHost
+  private readonly store: AgentRuntimeStore
   private readonly logger: Pick<Console, 'error' | 'warn'>
   private readonly staticProfiles: readonly AgentProfile[]
   private readonly staticToolPacks: readonly ToolPack[]
@@ -190,6 +216,7 @@ export class AgentRuntime {
 
   constructor(private readonly options: AgentRuntimeOptions = {}) {
     this.host = normalizeRuntimeHost(options)
+    this.store = options.store ?? DEFAULT_RUNTIME_STORE
     this.logger = this.host.logger ?? console
     this.staticProfiles = options.profiles ?? []
     this.staticToolPacks = options.toolPacks ?? []
@@ -242,7 +269,7 @@ export class AgentRuntime {
     }
     this.assertConversationOpen(conversationId)
 
-    const record = await getConversation(conversationId)
+    const record = await this.store.getConversation(conversationId)
     this.assertConversationOpen(conversationId)
     return this.startAssistantTurn({
       conversationId,
@@ -262,7 +289,7 @@ export class AgentRuntime {
     if (previous) await this.waitForPriorStreamBeforeNextTurn(conversationId, previous)
     this.assertConversationOpen(conversationId)
 
-    const record = await getConversation(conversationId)
+    const record = await this.store.getConversation(conversationId)
     this.assertConversationOpen(conversationId)
     const retry = resolveRetryTurn(record)
 
@@ -455,7 +482,7 @@ export class AgentRuntime {
       }
 
       try {
-        const record = await getConversation(conversationId)
+        const record = await this.store.getConversation(conversationId)
         const imagesDir = getImagesDir()
         const filenames = record.messages.flatMap((message) =>
           message.blocks
@@ -468,7 +495,7 @@ export class AgentRuntime {
         this.logger.warn('[runtime] conversation image cleanup failed:', err)
       }
 
-      await removeConversation(conversationId)
+      await this.store.deleteConversation(conversationId)
       removed = true
     } finally {
       if (!removed) this.deletedConversations.delete(conversationId)
@@ -480,7 +507,7 @@ export class AgentRuntime {
     message: PersistedMessage,
   ): Promise<boolean> {
     if (this.deletedConversations.has(conversationId)) return false
-    const summary = await upsertMessage(conversationId, message)
+    const summary = await this.store.upsertMessage(conversationId, message)
     if (this.deletedConversations.has(conversationId)) return false
     this.emit(createRuntimeEvent('conversations:updated', summary))
     return true
@@ -542,7 +569,7 @@ export class AgentRuntime {
     event: Parameters<typeof appendAgentEventAndTouchConversation>[1],
   ): Promise<boolean> {
     if (this.deletedConversations.has(event.conversationId)) return false
-    const { event: persisted, summary } = await appendAgentEventAndTouchConversation(
+    const { event: persisted, summary } = await this.store.appendAgentEventAndTouchConversation(
       event.conversationId,
       event,
     )
@@ -787,7 +814,7 @@ export class AgentRuntime {
             this.emit(createRuntimeEvent('chat:done', event))
             if (event.usage) {
               try {
-                const summary = await setConversationUsage(conversationId, event.usage)
+                const summary = await this.store.setConversationUsage(conversationId, event.usage)
                 this.emit(createRuntimeEvent('conversations:updated', summary))
               } catch (err) {
                 this.logger.warn('[runtime] usage persistence failed:', err)

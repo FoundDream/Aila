@@ -83,6 +83,7 @@ export {
   type AgentRuntimeEventMap,
   type AgentRuntimeHost,
   type AgentRuntimeOptions,
+  type AgentRuntimeStore,
   AILA_RUNTIME_EVENT_SCHEMA_VERSION,
   AILA_RUNTIME_EVENT_TYPES,
   type AilaRuntimeEventType,

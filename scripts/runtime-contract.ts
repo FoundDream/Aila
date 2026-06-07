@@ -6,6 +6,7 @@ import {
   AgentRuntime,
   type AgentRuntimeEvent,
   type AgentRuntimeHost,
+  type AgentRuntimeStore,
   AILA_AGENT_EVENT_SCHEMA_VERSION,
   AILA_CONVERSATION_META_SCHEMA_VERSION,
   AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
@@ -21,6 +22,7 @@ import {
   createConversation,
   createDefaultToolRegistry,
   createRuntimeEvent,
+  deleteConversation,
   executeTool,
   getConversation,
   getConversationsDir,
@@ -37,6 +39,7 @@ import {
   recoverInterruptedConversationActivities,
   replayConversationActivity,
   type Settings,
+  setConversationUsage,
   summarizeToolTarget,
   type ToolPack,
   upsertMessage,
@@ -264,6 +267,108 @@ async function testRuntimeHostBoundaryContract(): Promise<void> {
       'host onEvent should receive runtime events',
     )
     assertEqual(runtime.listActiveStreams().length, 0, 'host aborted stream should settle')
+  })
+}
+
+async function testRuntimeInjectableStoreContract(): Promise<void> {
+  await withTempDataDir(async () => {
+    const conversation = await createConversation()
+    const calls: string[] = []
+    const store: AgentRuntimeStore = {
+      getConversation: async (conversationId) => {
+        calls.push(`get:${conversationId}`)
+        return getConversation(conversationId)
+      },
+      upsertMessage: async (conversationId, message) => {
+        calls.push(`upsert:${message.role}:${message.id}`)
+        return upsertMessage(conversationId, message)
+      },
+      appendAgentEventAndTouchConversation: async (conversationId, event) => {
+        calls.push(`event:${event.type}`)
+        return appendAgentEventAndTouchConversation(conversationId, event)
+      },
+      setConversationUsage: async (conversationId, usage) => {
+        calls.push(`usage:${usage.totalTokens}`)
+        return setConversationUsage(conversationId, usage)
+      },
+      deleteConversation: async (conversationId) => {
+        calls.push(`delete:${conversationId}`)
+        return deleteConversation(conversationId)
+      },
+    }
+    const runtime = new AgentRuntime({
+      store,
+      logger: { warn() {}, error() {} },
+      streamChat: async (req, handlers) => {
+        req.onAgentEvent?.({
+          timestamp: Date.now(),
+          conversationId: req.conversationId,
+          messageId: req.assistantMessageId,
+          type: 'turn.started',
+          data: { providerId: req.selection.providerId, modelId: req.selection.modelId },
+        })
+        req.onAgentEvent?.({
+          timestamp: Date.now(),
+          conversationId: req.conversationId,
+          messageId: req.assistantMessageId,
+          type: 'turn.completed',
+          data: { outputBlockCount: 1 },
+        })
+        await handlers.onDone({
+          conversationId: req.conversationId,
+          messageId: req.assistantMessageId,
+          usage: { promptTokens: 3, completionTokens: 5, totalTokens: 8 },
+          message: {
+            schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+            id: req.assistantMessageId,
+            role: 'assistant',
+            blocks: [{ type: 'text', content: 'stored through injected runtime store' }],
+            status: 'done',
+            model: req.selection,
+          },
+        })
+      },
+    })
+
+    await runtime.send({
+      conversationId: conversation.id,
+      userText: 'use injectable store',
+      selection: { providerId: 'openrouter', modelId: 'contract/mock' },
+      requestedProfileId: 'coding',
+    })
+    await waitFor(
+      () => runtime.listActiveStreams().length === 0,
+      'injected store stream should settle',
+    )
+
+    assert(
+      calls.some((call) => call.startsWith('upsert:user:')),
+      'runtime should persist user through injected store',
+    )
+    assert(
+      calls.some((call) => call.startsWith('upsert:assistant:')),
+      'runtime should persist assistant through injected store',
+    )
+    assert(calls.includes('event:turn.started'), 'runtime should append start event through store')
+    assert(
+      calls.includes('event:turn.completed'),
+      'runtime should append terminal event through store',
+    )
+    assertEqual(calls.includes('usage:8'), true, 'runtime should persist usage through store')
+
+    const record = await getConversation(conversation.id)
+    assertEqual(record.messages.length, 2, 'injected store should preserve persisted messages')
+    assertEqual(record.meta.usage?.totalTokens, 8, 'injected store should preserve usage')
+
+    await runtime.deleteConversation(conversation.id)
+    assert(
+      calls.includes(`delete:${conversation.id}`),
+      'runtime should delete conversation through injected store',
+    )
+    assert(
+      !(await listConversations()).some((record) => record.id === conversation.id),
+      'injected store delete should remove persisted conversation',
+    )
   })
 }
 
@@ -2537,6 +2642,7 @@ async function main(): Promise<void> {
   await testRuntimeEventContract()
   await testRuntimeEmitsVersionedEvents()
   await testRuntimeHostBoundaryContract()
+  await testRuntimeInjectableStoreContract()
   await testRuntimeRetriesDanglingUserTurn()
   await testRuntimeRetriesFailedAssistantTurn()
   await testRuntimeContextSkipsNonDoneAssistantHistory()
