@@ -346,6 +346,7 @@ function statusClassName(tone: ConversationStatusTone): string {
   if (tone === 'approval') return 'bg-amber-100 text-amber-700'
   if (tone === 'failed') return 'bg-red-100 text-red-700'
   if (tone === 'cancelled') return 'bg-zinc-100 text-zinc-600'
+  if (tone === 'interrupted') return 'bg-amber-100 text-amber-700'
   return 'bg-blue-100 text-blue-700'
 }
 

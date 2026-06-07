@@ -47,6 +47,12 @@ function eventItem(event: PersistedAgentEvent): ActivityItem | null {
         detail: stringData(data, 'reason') ?? undefined,
         tone: 'warning',
       }
+    case 'turn.interrupted':
+      return {
+        title: 'Interrupted',
+        detail: stringData(data, 'reason') ?? undefined,
+        tone: 'warning',
+      }
     case 'tool.requested':
       return { title: `Tool requested: ${toolName ?? 'tool'}`, tone: 'running' }
     case 'tool.input.completed':

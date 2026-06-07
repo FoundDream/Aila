@@ -55,6 +55,7 @@ export type ConversationActivityState =
   | 'completed'
   | 'failed'
   | 'cancelled'
+  | 'interrupted'
 
 export interface ConversationActivity {
   state: ConversationActivityState
@@ -104,6 +105,7 @@ const CONVERSATION_ACTIVITY_STATES = new Set<ConversationActivityState>([
   'completed',
   'failed',
   'cancelled',
+  'interrupted',
 ])
 
 async function ensureDir(): Promise<string> {
@@ -324,6 +326,13 @@ function activityFromAgentEvent(event: PersistedAgentEvent): ConversationActivit
         title: dataString(data, 'phase') === 'requested' ? 'Stop requested' : 'Stopped',
         detail: dataString(data, 'reason'),
       }
+    case 'turn.interrupted':
+      return {
+        ...base,
+        state: 'interrupted',
+        title: 'Interrupted',
+        detail: dataString(data, 'reason'),
+      }
     case 'tool.requested':
       return { ...base, state: 'running', title: `Tool requested: ${toolLabel}` }
     case 'tool.input.delta':
@@ -391,6 +400,36 @@ export async function listConversations(): Promise<ConversationSummary[]> {
 export async function listChatConversations(): Promise<ConversationSummary[]> {
   const list = await listConversations()
   return list.filter((meta) => !meta.docId)
+}
+
+export async function recoverInterruptedConversationActivities(
+  reason = 'runtime restarted before this turn finished',
+): Promise<ConversationSummary[]> {
+  const list = await listConversations()
+  const active = list.filter(
+    (meta) => meta.activity?.state === 'running' || meta.activity?.state === 'approval',
+  )
+  const recovered: ConversationSummary[] = []
+  await Promise.all(
+    active.map(async (meta) => {
+      const activity = meta.activity
+      if (!activity) return
+      const { summary } = await appendAgentEventAndTouchConversation(meta.id, {
+        timestamp: Date.now(),
+        conversationId: meta.id,
+        messageId: activity.messageId,
+        type: 'turn.interrupted',
+        data: {
+          reason,
+          previousState: activity.state,
+          previousEventType: activity.eventType,
+          previousTitle: activity.title,
+        },
+      })
+      if (summary) recovered.push(summary)
+    }),
+  )
+  return recovered.sort((a, b) => b.updatedAt - a.updatedAt)
 }
 
 export async function getConversation(id: string): Promise<ConversationRecord> {

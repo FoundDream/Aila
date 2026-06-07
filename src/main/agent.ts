@@ -99,6 +99,7 @@ export type AgentEventType =
   | 'turn.completed'
   | 'turn.failed'
   | 'turn.cancelled'
+  | 'turn.interrupted'
   | 'tool.requested'
   | 'tool.input.delta'
   | 'tool.input.completed'

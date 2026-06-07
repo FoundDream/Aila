@@ -12,6 +12,7 @@ import {
   listChatConversations,
   listConversations,
   listDocConversations,
+  recoverInterruptedConversationActivities,
   renameConversation,
 } from './conversations'
 import type { DocPatch } from './docs'
@@ -243,9 +244,18 @@ function registerIpcHandlers(): void {
   )
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   configureDataDir(is.dev ? join(app.getAppPath(), '.dev-data') : app.getPath('userData'))
   console.log('[storage] data dir =', getDataDir())
+  const recovered = await recoverInterruptedConversationActivities(
+    'app restarted before this turn finished',
+  ).catch((error) => {
+    console.warn('[startup] interrupted activity recovery failed:', error)
+    return []
+  })
+  if (recovered.length > 0) {
+    console.log(`[startup] recovered ${recovered.length} interrupted conversation activities`)
+  }
   handleImageProtocol()
   createWindow()
   registerIpcHandlers()

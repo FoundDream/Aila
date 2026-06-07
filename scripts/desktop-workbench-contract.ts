@@ -12,6 +12,7 @@ import {
   listAgentEvents,
   listChatConversations,
   listDocConversations,
+  recoverInterruptedConversationActivities,
 } from '../src/main/conversations'
 import { createDoc, getDocFilePath, updateDoc } from '../src/main/docs'
 import { configureDataDir, getDocumentsDir } from '../src/main/paths'
@@ -244,6 +245,84 @@ async function testActivityDeltaDoesNotTouchConversationSummary(): Promise<void>
   })
 }
 
+async function testInterruptedActivityRecovery(): Promise<void> {
+  await withTempDataDir(async () => {
+    const running = await createConversation()
+    await appendMessage(running.id, {
+      schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+      id: 'running-user',
+      role: 'user',
+      blocks: [{ type: 'text', content: 'recover interrupted running turn' }],
+      status: 'done',
+    })
+    await appendAgentEventAndTouchConversation(running.id, {
+      timestamp: Date.now(),
+      conversationId: running.id,
+      messageId: 'running-assistant',
+      type: 'turn.started',
+    })
+
+    const approval = await createConversation()
+    await appendAgentEventAndTouchConversation(approval.id, {
+      timestamp: Date.now(),
+      conversationId: approval.id,
+      messageId: 'approval-assistant',
+      type: 'tool.approval.requested',
+      data: { toolName: 'write_file', requestId: 'approval-request' },
+    })
+
+    const completed = await createConversation()
+    await appendAgentEventAndTouchConversation(completed.id, {
+      timestamp: Date.now(),
+      conversationId: completed.id,
+      messageId: 'completed-assistant',
+      type: 'turn.completed',
+    })
+
+    const recovered = await recoverInterruptedConversationActivities('contract restart')
+    assertEqual(recovered.length, 2, 'recovery should update active runtime activities only')
+
+    const runningRecord = await getConversation(running.id)
+    assertEqual(
+      runningRecord.meta.activity?.state,
+      'interrupted',
+      'running activity should recover as interrupted',
+    )
+    assertEqual(
+      runningRecord.meta.activity?.title,
+      'Interrupted',
+      'running recovery activity title',
+    )
+    assertEqual(
+      runningRecord.meta.activity?.messageId,
+      'running-assistant',
+      'running recovery should keep assistant message id',
+    )
+
+    const approvalRecord = await getConversation(approval.id)
+    assertEqual(
+      approvalRecord.meta.activity?.state,
+      'interrupted',
+      'approval activity should recover as interrupted',
+    )
+
+    const completedRecord = await getConversation(completed.id)
+    assertEqual(
+      completedRecord.meta.activity?.state,
+      'completed',
+      'completed activity should not be recovered',
+    )
+
+    const events = await listAgentEvents(running.id)
+    assertEqual(events.at(-1)?.type, 'turn.interrupted', 'recovery should append event log entry')
+    assertEqual(
+      events.at(-1)?.data?.previousState,
+      'running',
+      'recovery event should include previous state',
+    )
+  })
+}
+
 async function testToolApprovalsCanHydrateAndResolvePendingRequests(): Promise<void> {
   await withTempDataDir(async () => {
     const conversation = await createConversation()
@@ -342,6 +421,7 @@ async function main(): Promise<void> {
   await testConversationDeleteCleansActivity()
   await testActivityUpdatesConversationSummary()
   await testActivityDeltaDoesNotTouchConversationSummary()
+  await testInterruptedActivityRecovery()
   await testToolApprovalsCanHydrateAndResolvePendingRequests()
   await testToolApprovalTimeoutClearsPendingRequests()
   console.log('desktop workbench contract: ok')

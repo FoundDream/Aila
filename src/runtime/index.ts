@@ -36,6 +36,7 @@ export {
   type PersistedMessage,
   type PersistedTextBlock,
   type PersistedToolCallBlock,
+  recoverInterruptedConversationActivities,
   renameConversation,
   setConversationUsage,
 } from '../main/conversations'
