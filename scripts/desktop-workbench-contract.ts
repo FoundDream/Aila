@@ -32,6 +32,7 @@ import {
   reduceChatStreamsForTest,
 } from '../src/renderer/src/pages/chat/useChatStreams'
 import { mergeConversationSummaryUpdate } from '../src/renderer/src/pages/chat/useConversations'
+import { mergeDocConversationSummaryUpdate } from '../src/renderer/src/pages/docs/useDocConversation'
 import {
   createToolApprovalsState,
   mergeToolApprovals,
@@ -774,6 +775,18 @@ function conversationSummary(id: string, title: string, updatedAt: number): Conv
   }
 }
 
+function docConversationSummary(
+  id: string,
+  title: string,
+  docId: string,
+  updatedAt: number,
+): ConversationSummary {
+  return {
+    ...conversationSummary(id, title, updatedAt),
+    docId,
+  }
+}
+
 function testRendererConversationListIgnoresRemovedSummaryUpdates(): void {
   const removedIds = new Set<string>(['conversation-deleted'])
   const deletedSummary = conversationSummary('conversation-deleted', 'Deleted', 10)
@@ -810,6 +823,48 @@ function testRendererConversationListIgnoresRemovedSummaryUpdates(): void {
     conversations[0]?.id,
     'conversation-visible',
     'visible conversation should remain after late removed update',
+  )
+}
+
+function testRendererDocConversationListIgnoresRemovedSummaryUpdates(): void {
+  const docPath = 'docs/current.md'
+  const removedIds = new Set<string>(['doc-session-deleted'])
+  const deletedSummary = docConversationSummary('doc-session-deleted', 'Deleted', docPath, 10)
+  const visibleSummary = docConversationSummary('doc-session-visible', 'Visible', docPath, 5)
+
+  let sessions = mergeDocConversationSummaryUpdate(
+    [deletedSummary, visibleSummary],
+    deletedSummary,
+    docPath,
+    removedIds,
+  )
+  assert(
+    !sessions.some((session) => session.id === 'doc-session-deleted'),
+    'removed doc session should be filtered immediately',
+  )
+
+  sessions = mergeDocConversationSummaryUpdate(
+    sessions,
+    {
+      ...deletedSummary,
+      updatedAt: 20,
+      activity: {
+        state: 'interrupted',
+        title: 'Interrupted',
+        updatedAt: 20,
+        eventType: 'turn.interrupted',
+        messageId: 'assistant-deleted-doc-session',
+      },
+    },
+    docPath,
+    removedIds,
+  )
+
+  assertEqual(sessions.length, 1, 'late summary should not reinsert removed doc session')
+  assertEqual(
+    sessions[0]?.id,
+    'doc-session-visible',
+    'visible doc session should remain after late removed update',
   )
 }
 
@@ -1270,6 +1325,7 @@ async function main(): Promise<void> {
   testRendererLateStreamingPatchDoesNotMutateFinishedMessage()
   testRendererDropTombstonesLateStreamEvents()
   testRendererConversationListIgnoresRemovedSummaryUpdates()
+  testRendererDocConversationListIgnoresRemovedSummaryUpdates()
   testRendererFinishAppendsMissingAssistantMessage()
   testRendererRunStartedDoesNotDuplicateFinishedAssistant()
   testRendererToolResultAppendsMissingAssistantMessage()

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ConversationSummary } from '../../../../preload/index'
 
 // A doc owns N conversations (all carry docId, which under the vault model is
@@ -21,10 +21,38 @@ export interface DocConversationApi {
   ensureActiveSession: () => Promise<string | null>
 }
 
+function visibleDocConversationSummaries(
+  sessions: ConversationSummary[],
+  removedIds: ReadonlySet<string>,
+): ConversationSummary[] {
+  if (removedIds.size === 0) return sessions
+  return sessions.filter((session) => !removedIds.has(session.id))
+}
+
+export function mergeDocConversationSummaryUpdate(
+  sessions: ConversationSummary[],
+  summary: ConversationSummary,
+  docPath: string,
+  removedIds: ReadonlySet<string>,
+): ConversationSummary[] {
+  if (removedIds.has(summary.id) || summary.docId !== docPath) {
+    return sessions.filter((session) => session.id !== summary.id)
+  }
+  const found = sessions.some((session) => session.id === summary.id)
+  const next = found
+    ? sessions.map((session) => (session.id === summary.id ? summary : session))
+    : [summary, ...sessions]
+  next.sort((a, b) => b.updatedAt - a.updatedAt)
+  return next
+}
+
 export function useDocConversation(docPath: string | null): DocConversationApi {
   const [sessions, setSessions] = useState<ConversationSummary[]>([])
   const [activeId, setActiveId] = useState<string | null>(null)
   const [isReady, setIsReady] = useState(false)
+  const sessionsRef = useRef<ConversationSummary[]>([])
+  const removedSessionIdsRef = useRef<Set<string>>(new Set())
+  sessionsRef.current = sessions
 
   useEffect(() => {
     if (!docPath) {
@@ -37,7 +65,10 @@ export function useDocConversation(docPath: string | null): DocConversationApi {
     setIsReady(false)
     void (async () => {
       try {
-        const list = await window.api.conversations.listForDoc(docPath)
+        const list = visibleDocConversationSummaries(
+          await window.api.conversations.listForDoc(docPath),
+          removedSessionIdsRef.current,
+        )
         if (cancelled) return
         setSessions(list)
         setActiveId(list[0]?.id ?? null)
@@ -57,15 +88,12 @@ export function useDocConversation(docPath: string | null): DocConversationApi {
   useEffect(() => {
     if (!docPath) return
     return window.api.conversations.onUpdated((summary) => {
-      if (summary.docId !== docPath) return
-      setSessions((prev) => {
-        const found = prev.some((s) => s.id === summary.id)
-        const next = found
-          ? prev.map((s) => (s.id === summary.id ? summary : s))
-          : [summary, ...prev]
-        next.sort((a, b) => b.updatedAt - a.updatedAt)
-        return next
-      })
+      setSessions((prev) =>
+        mergeDocConversationSummaryUpdate(prev, summary, docPath, removedSessionIdsRef.current),
+      )
+      if (removedSessionIdsRef.current.has(summary.id) || summary.docId !== docPath) {
+        setActiveId((current) => (current === summary.id ? null : current))
+      }
     })
   }, [docPath])
 
@@ -88,18 +116,34 @@ export function useDocConversation(docPath: string | null): DocConversationApi {
 
   const deleteSession = useCallback(
     async (id: string): Promise<void> => {
-      await window.api.conversations.delete(id)
-      const next = sessions.filter((session) => session.id !== id)
+      removedSessionIdsRef.current.add(id)
+      const next = sessionsRef.current.filter((session) => session.id !== id)
       setSessions(next)
-      if (activeId === id) setActiveId(next[0]?.id ?? null)
+      setActiveId((current) => (current === id ? (next[0]?.id ?? null) : current))
+
+      try {
+        await window.api.conversations.delete(id)
+      } catch (error) {
+        removedSessionIdsRef.current.delete(id)
+        if (docPath) {
+          const list = visibleDocConversationSummaries(
+            await window.api.conversations.listForDoc(docPath),
+            removedSessionIdsRef.current,
+          )
+          setSessions(list)
+          setActiveId((current) => current ?? list[0]?.id ?? null)
+        }
+        throw error
+      }
     },
-    [activeId, sessions],
+    [docPath],
   )
 
   const ensureActiveSession = useCallback(async (): Promise<string | null> => {
     if (activeId) return activeId
     if (!docPath) return null
     const fresh = await window.api.conversations.create(docPath)
+    removedSessionIdsRef.current.delete(fresh.id)
     setSessions((prev) => [fresh, ...prev])
     setActiveId(fresh.id)
     return fresh.id
