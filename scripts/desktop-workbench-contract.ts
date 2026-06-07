@@ -1342,6 +1342,117 @@ async function testToolApprovalsCanHydrateAndResolvePendingRequests(): Promise<v
   })
 }
 
+async function testToolApprovalStoreSnapshotsMutableBoundaries(): Promise<void> {
+  const requested: ToolApprovalRequestPayload[] = []
+  const recorded: Array<{ type: string; data?: Record<string, unknown> }> = []
+  const store = new ToolApprovalStore({
+    timeoutMs: 1000,
+    recordAgentEvent: (_conversationId, event) => {
+      recorded.push({ type: event.type, data: event.data })
+    },
+    onRequest: (payload) => {
+      requested.push(payload)
+      payload.args.path = '/workspace/request-callback-mutated.md'
+      const nested = payload.args.nested as { value: string }
+      nested.value = 'request-callback-mutated'
+      payload.metadata.access.push('shell')
+    },
+  })
+
+  const request: Parameters<ToolApprovalStore['request']>[0] = {
+    name: 'write_file',
+    args: {
+      path: '/workspace/original.md',
+      content: 'original write',
+      nested: { value: 'original' },
+    },
+    metadata: {
+      name: 'write_file',
+      readOnly: false,
+      destructive: true,
+      requiresApproval: true,
+      access: ['write'],
+      scope: ['workspace'],
+      allowedProfiles: ['coding'],
+    },
+    conversationId: 'approval-snapshot-conversation',
+    messageId: 'approval-snapshot-assistant',
+    toolCallId: 'approval-snapshot-tool-call',
+  }
+
+  const approval = store.request(request)
+  request.args.path = '/workspace/caller-mutated.md'
+  const requestNested = request.args.nested as { value: string }
+  requestNested.value = 'caller-mutated'
+  request.metadata.access.push('shell')
+  request.metadata.scope.push('external')
+  request.metadata.destructive = false
+
+  assertEqual(requested.length, 1, 'snapshot approval should emit request callback payload')
+
+  const listed = store.list()
+  assertEqual(listed.length, 1, 'snapshot approval should be pending')
+  listed[0].args.path = '/workspace/list-mutated.md'
+  const listedNested = listed[0].args.nested as { value: string }
+  listedNested.value = 'list-mutated'
+  listed[0].metadata.scope.push('external')
+
+  const relisted = store.list()
+  assertEqual(
+    relisted[0]?.args.path,
+    '/workspace/original.md',
+    'approval list should return payload snapshots',
+  )
+  assertEqual(
+    (relisted[0]?.args.nested as { value?: unknown } | undefined)?.value,
+    'original',
+    'approval list should isolate nested args',
+  )
+  assertEqual(
+    relisted[0]?.metadata.access.includes('shell'),
+    false,
+    'approval request callback should not mutate pending metadata',
+  )
+  assertEqual(
+    relisted[0]?.metadata.scope.includes('external'),
+    false,
+    'approval list mutation should not mutate pending metadata',
+  )
+  assertEqual(
+    relisted[0]?.metadata.destructive,
+    true,
+    'caller metadata mutation should not mutate pending metadata',
+  )
+
+  store.resolve(relisted[0]?.requestId ?? '', true, 'user')
+  assertEqual(await approval, true, 'snapshot approval promise should resolve')
+  await store.flushActivity()
+
+  assertEqual(recorded[0]?.type, 'tool.approval.requested', 'snapshot requested activity type')
+  assertEqual(
+    (recorded[0]?.data?.target as { preview?: unknown } | undefined)?.preview,
+    '/workspace/original.md',
+    'approval activity should use original target snapshot',
+  )
+  assert(
+    String((recorded[0]?.data?.args as { preview?: unknown } | undefined)?.preview).includes(
+      'original write',
+    ),
+    'approval activity should use original args snapshot',
+  )
+  assertEqual(
+    ((recorded[0]?.data?.access as string[] | undefined) ?? []).includes('shell'),
+    false,
+    'approval activity should isolate metadata access from mutation',
+  )
+  assertEqual(
+    ((recorded[0]?.data?.scope as string[] | undefined) ?? []).includes('external'),
+    false,
+    'approval activity should isolate metadata scope from mutation',
+  )
+  assertEqual(recorded[1]?.type, 'tool.approval.resolved', 'snapshot resolved activity type')
+}
+
 async function testToolApprovalStoreRequiresInjectedActivityRecorder(): Promise<void> {
   await withTempDataDir(async () => {
     const conversation = await createConversation()
@@ -1683,6 +1794,7 @@ async function main(): Promise<void> {
   testRendererToolResultAppendsMissingAssistantMessage()
   await testInterruptedActivityRecovery()
   await testToolApprovalsCanHydrateAndResolvePendingRequests()
+  await testToolApprovalStoreSnapshotsMutableBoundaries()
   await testToolApprovalStoreRequiresInjectedActivityRecorder()
   await testToolApprovalStoreUsesInjectedActivityRecorder()
   await testToolApprovalTimeoutClearsPendingRequests()

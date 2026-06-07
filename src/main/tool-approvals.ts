@@ -43,6 +43,30 @@ export interface ToolApprovalStoreOptions {
   logger?: Pick<Console, 'warn'>
 }
 
+function cloneApprovalValue<T>(value: T): T {
+  return structuredClone(value)
+}
+
+function cloneToolApprovalRequest(req: ToolApprovalRequest): ToolApprovalRequest {
+  return {
+    ...req,
+    args: cloneApprovalValue(req.args),
+    metadata: cloneApprovalValue(req.metadata),
+  }
+}
+
+function cloneToolApprovalRequestPayload(
+  payload: ToolApprovalRequestPayload,
+): ToolApprovalRequestPayload {
+  return cloneApprovalValue(payload)
+}
+
+function cloneToolApprovalResolvedPayload(
+  payload: ToolApprovalResolvedPayload,
+): ToolApprovalResolvedPayload {
+  return cloneApprovalValue(payload)
+}
+
 function previewActivityValue(value: unknown): { preview: string; size: number } {
   const text =
     typeof value === 'string' ? value : value == null ? '' : (JSON.stringify(value) ?? '')
@@ -86,8 +110,8 @@ async function recordToolApprovalActivity(
             args: previewActivityValue(req.args),
             ...(target && { target }),
             destructive: req.metadata.destructive,
-            access: req.metadata.access,
-            scope: req.metadata.scope,
+            access: [...req.metadata.access],
+            scope: [...req.metadata.scope],
           }
         : {
             approved: approved === true,
@@ -111,39 +135,44 @@ export class ToolApprovalStore {
 
   request(req: ToolApprovalRequest): Promise<boolean> {
     return new Promise<boolean>((resolve) => {
+      const request = cloneToolApprovalRequest(req)
       const requestId = randomUUID()
       const requestedAt = Date.now()
       const payload: ToolApprovalRequestPayload = {
         requestId,
-        name: req.name,
-        args: req.args,
-        metadata: req.metadata,
-        ...(req.conversationId && { conversationId: req.conversationId }),
-        ...(req.messageId && { messageId: req.messageId }),
-        ...(req.toolCallId && { toolCallId: req.toolCallId }),
+        name: request.name,
+        args: cloneApprovalValue(request.args),
+        metadata: cloneApprovalValue(request.metadata),
+        ...(request.conversationId && { conversationId: request.conversationId }),
+        ...(request.messageId && { messageId: request.messageId }),
+        ...(request.toolCallId && { toolCallId: request.toolCallId }),
         requestedAt,
         expiresAt: requestedAt + this.options.timeoutMs,
       }
 
-      this.recordActivity(req, requestId, 'requested')
+      this.recordActivity(request, requestId, 'requested')
       const finish = (approved: boolean, reason: ToolApprovalResolutionReason): void => {
         if (!this.pending.delete(requestId)) return
         clearTimeout(timer)
-        this.recordActivity(req, requestId, 'resolved', approved, reason)
-        this.options.onResolved?.({ requestId, approved, reason })
+        this.recordActivity(request, requestId, 'resolved', approved, reason)
+        this.options.onResolved?.(cloneToolApprovalResolvedPayload({ requestId, approved, reason }))
         resolve(approved)
       }
       const timer = setTimeout(() => {
         finish(false, 'timeout')
       }, this.options.timeoutMs)
-      this.pending.set(requestId, { payload, finish, timer })
-      this.options.onRequest?.(payload)
+      this.pending.set(requestId, {
+        payload: cloneToolApprovalRequestPayload(payload),
+        finish,
+        timer,
+      })
+      this.options.onRequest?.(cloneToolApprovalRequestPayload(payload))
     })
   }
 
   list(): ToolApprovalRequestPayload[] {
     return Array.from(this.pending.values())
-      .map((pending) => pending.payload)
+      .map((pending) => cloneToolApprovalRequestPayload(pending.payload))
       .sort((a, b) => a.requestedAt - b.requestedAt)
   }
 
