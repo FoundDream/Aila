@@ -1,52 +1,54 @@
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import {
+  AILA_AGENT_EVENT_SCHEMA_VERSION,
+  AILA_CONVERSATION_META_SCHEMA_VERSION,
+  AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+  appendAgentEvent,
+  appendAgentEventAndTouchConversation,
+  appendMessage,
+  type ConversationRecord,
+  type ConversationSummary,
+  createConversation,
+  deleteConversation,
+  getConversation,
+  listAgentEvents,
+  listConversations,
+  type PersistedAgentEvent,
+  recoverInterruptedConversationActivities,
+  setConversationUsage,
+  upsertMessage,
+} from '../src/main/conversations'
 import * as runtimeSdk from '../src/runtime'
 import {
   AgentRuntime,
   type AgentRuntimeEvent,
   type AgentRuntimeHost,
   type AgentRuntimeStore,
-  AILA_AGENT_EVENT_SCHEMA_VERSION,
-  AILA_CONVERSATION_META_SCHEMA_VERSION,
-  AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
   AILA_PROFILE_MANIFEST_SCHEMA_VERSION,
   AILA_RUNTIME_EVENT_SCHEMA_VERSION,
   AILA_RUNTIME_EVENT_TYPES,
   AILA_TOOL_PACK_MANIFEST_FILE,
   AILA_TOOL_PACK_MANIFEST_SCHEMA_VERSION,
-  appendAgentEvent,
-  appendAgentEventAndTouchConversation,
-  appendMessage,
-  type ConversationRecord,
-  type ConversationSummary,
   configureDataDir,
-  createConversation,
   createDefaultToolRegistry,
   createInterruptedConversationRecoveryEvent,
   createRuntimeEvent,
-  deleteConversation,
   executeTool,
-  getConversation,
   getConversationsDir,
   getExtensionReport,
   getProfilesDir,
   getToolDefinitionsForProfile,
   getToolPacksDir,
   isRuntimeEventType,
-  listAgentEvents,
-  listConversations,
   loadAgentProfilesFromDir,
   loadToolPacksFromDir,
-  type PersistedAgentEvent,
-  recoverInterruptedConversationActivities,
   replayConversationActivity,
   replayConversationRuntimeState,
   type Settings,
-  setConversationUsage,
   summarizeToolTarget,
   type ToolPack,
-  upsertMessage,
 } from '../src/runtime'
 
 function assert(condition: unknown, message: string): asserts condition {
@@ -3731,6 +3733,24 @@ async function testRuntimeSdkDoesNotExportDocsContract(): Promise<void> {
     'rewriteDocRefs',
   ]) {
     assert(!(name in sdk), `runtime SDK must not export Desktop docs API: ${name}`)
+  }
+
+  for (const name of [
+    'appendAgentEvent',
+    'appendAgentEventAndTouchConversation',
+    'appendMessage',
+    'createConversation',
+    'deleteConversation',
+    'getConversation',
+    'listAgentEvents',
+    'listChatConversations',
+    'listConversations',
+    'recoverInterruptedConversationActivities',
+    'renameConversation',
+    'setConversationUsage',
+    'upsertMessage',
+  ]) {
+    assert(!(name in sdk), `runtime SDK must not export raw persistence helper: ${name}`)
   }
 }
 

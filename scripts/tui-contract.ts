@@ -2,14 +2,12 @@ import { spawn } from 'node:child_process'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { appendMessage, createConversation, getConversation } from '../src/main/conversations'
 import {
   AILA_AGENT_EVENT_SCHEMA_VERSION,
   AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
-  appendMessage,
   configureDataDir,
-  createConversation,
   createRuntimeEvent,
-  getConversation,
 } from '../src/runtime'
 import { handleRuntimeEvent } from '../src/tui/line-mode'
 

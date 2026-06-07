@@ -3,14 +3,12 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { handleRuntimeEvent } from '../src/cli/index'
+import { appendMessage, createConversation, getConversation } from '../src/main/conversations'
 import {
   AILA_AGENT_EVENT_SCHEMA_VERSION,
   AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
-  appendMessage,
   configureDataDir,
-  createConversation,
   createRuntimeEvent,
-  getConversation,
 } from '../src/runtime'
 
 interface RunResult {
