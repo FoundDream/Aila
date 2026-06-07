@@ -15,7 +15,15 @@ import {
   listDocConversations,
   recoverInterruptedConversationActivities,
 } from '../src/main/conversations'
-import { createDoc, getDocFilePath, updateDoc } from '../src/main/docs'
+import { sweepOrphanedDocConversations } from '../src/main/doc-conversation-cleanup'
+import {
+  createDoc,
+  createFolder,
+  deleteDoc,
+  deleteFolder,
+  getDocFilePath,
+  updateDoc,
+} from '../src/main/docs'
 import { configureDataDir, getDocumentsDir } from '../src/main/paths'
 import {
   type ToolApprovalRequestPayload,
@@ -149,6 +157,74 @@ async function testDocConversationFollowsDocRename(): Promise<void> {
       (await listDocConversations(renamed.path))[0]?.id,
       conversation.id,
       'renamed doc path should retain session',
+    )
+  })
+}
+
+async function testDocDeleteSweepsOnlyDeletedDocConversations(): Promise<void> {
+  await withTempDataDir(async () => {
+    const deletedDoc = await updateDoc((await createDoc(null)).path, { title: 'Deleted Doc' })
+    const keptDoc = await updateDoc((await createDoc(null)).path, { title: 'Kept Doc' })
+    const deletedDocConversation = await createConversation(deletedDoc.path)
+    const keptDocConversation = await createConversation(keptDoc.path)
+    const chatConversation = await createConversation()
+
+    await deleteDoc(deletedDoc.path)
+    const swept = await sweepOrphanedDocConversations(deleteConversation)
+
+    assertEqual(swept.length, 1, 'doc delete sweep should return one orphan')
+    assertEqual(
+      swept[0]?.id,
+      deletedDocConversation.id,
+      'doc delete sweep should target deleted doc conversation',
+    )
+    assertEqual(
+      (await listDocConversations(deletedDoc.path)).length,
+      0,
+      'deleted doc should have no remaining conversations',
+    )
+    assertEqual(
+      (await listDocConversations(keptDoc.path))[0]?.id,
+      keptDocConversation.id,
+      'doc delete sweep should keep other doc conversations',
+    )
+    assert(
+      (await listChatConversations()).some(
+        (conversation) => conversation.id === chatConversation.id,
+      ),
+      'doc delete sweep should keep ordinary chat conversations',
+    )
+  })
+}
+
+async function testFolderDeleteSweepsNestedDocConversations(): Promise<void> {
+  await withTempDataDir(async () => {
+    const folder = await createFolder(null, 'Folder Sweep')
+    const nestedDoc = await updateDoc((await createDoc(folder.path)).path, {
+      title: 'Nested Deleted Doc',
+    })
+    const keptDoc = await updateDoc((await createDoc(null)).path, { title: 'Outside Kept Doc' })
+    const nestedConversation = await createConversation(nestedDoc.path)
+    const keptConversation = await createConversation(keptDoc.path)
+
+    await deleteFolder(folder.path)
+    const swept = await sweepOrphanedDocConversations(deleteConversation)
+
+    assertEqual(swept.length, 1, 'folder delete sweep should return one nested orphan')
+    assertEqual(
+      swept[0]?.id,
+      nestedConversation.id,
+      'folder delete sweep should target nested doc conversation',
+    )
+    assertEqual(
+      (await listDocConversations(nestedDoc.path)).length,
+      0,
+      'deleted folder doc should have no remaining conversations',
+    )
+    assertEqual(
+      (await listDocConversations(keptDoc.path))[0]?.id,
+      keptConversation.id,
+      'folder delete sweep should keep outside doc conversations',
     )
   })
 }
@@ -1342,6 +1418,8 @@ async function main(): Promise<void> {
   await testDesktopWorkspaceRoots()
   await testConversationPartitionContract()
   await testDocConversationFollowsDocRename()
+  await testDocDeleteSweepsOnlyDeletedDocConversations()
+  await testFolderDeleteSweepsNestedDocConversations()
   await testConversationDeleteCleansActivity()
   await testActivityUpdatesConversationSummary()
   await testActivityDeltaDoesNotTouchConversationSummary()

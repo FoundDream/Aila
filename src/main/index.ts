@@ -10,11 +10,11 @@ import {
   getConversation,
   listAgentEvents,
   listChatConversations,
-  listConversations,
   listDocConversations,
   recoverInterruptedConversationActivities,
   renameConversation,
 } from './conversations'
+import { sweepOrphanedDocConversations } from './doc-conversation-cleanup'
 import type { DocPatch } from './docs'
 import {
   createDoc,
@@ -119,15 +119,6 @@ async function shutdownRuntimeWorkbench(): Promise<void> {
   await toolApprovals.shutdown()
 }
 
-async function sweepOrphanedDocConversations(): Promise<void> {
-  const [{ docs }, conversations] = await Promise.all([listAll(), listConversations()])
-  const liveDocPaths = new Set(docs.map((doc) => doc.path))
-  const orphans = conversations.filter(
-    (conversation) => conversation.docId && !liveDocPaths.has(conversation.docId),
-  )
-  await Promise.all(orphans.map((orphan) => agentRuntime.deleteConversation(orphan.id)))
-}
-
 function registerIpcHandlers(): void {
   ipcMain.handle(
     'chat:send',
@@ -200,12 +191,12 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle('docs:delete', async (_event, docPath: string) => {
     await deleteDoc(docPath)
-    await sweepOrphanedDocConversations()
+    await sweepOrphanedDocConversations((id) => agentRuntime.deleteConversation(id))
   })
 
   ipcMain.handle('folders:delete', async (_event, path: string) => {
     await deleteFolder(path)
-    await sweepOrphanedDocConversations()
+    await sweepOrphanedDocConversations((id) => agentRuntime.deleteConversation(id))
   })
 
   ipcMain.handle('images:save', (_event, bytes: ArrayBuffer, filename: string) =>
