@@ -146,6 +146,7 @@ export interface AgentRuntimeHost {
   generateImage?: ToolContext['generateImage']
   saveImage?: ToolContext['saveImage']
   workspaceRoots?: ToolContext['workspaceRoots'] | (() => ToolContext['workspaceRoots'])
+  shellCwd?: ToolContext['shellCwd'] | (() => ToolContext['shellCwd'])
   streamChat?: typeof defaultStreamChat
   logger?: Pick<Console, 'error' | 'warn'>
 }
@@ -195,6 +196,7 @@ function normalizeRuntimeHost(options: AgentRuntimeOptions): AgentRuntimeHost {
   if (options.generateImage) host.generateImage = options.generateImage
   if (options.saveImage) host.saveImage = options.saveImage
   if (options.workspaceRoots !== undefined) host.workspaceRoots = options.workspaceRoots
+  if (options.shellCwd !== undefined) host.shellCwd = options.shellCwd
   if (options.streamChat) host.streamChat = options.streamChat
   if (options.logger) host.logger = options.logger
 
@@ -212,6 +214,7 @@ function normalizeRuntimeHost(options: AgentRuntimeOptions): AgentRuntimeHost {
   if (options.host.generateImage) host.generateImage = options.host.generateImage
   if (options.host.saveImage) host.saveImage = options.host.saveImage
   if (options.host.workspaceRoots !== undefined) host.workspaceRoots = options.host.workspaceRoots
+  if (options.host.shellCwd !== undefined) host.shellCwd = options.host.shellCwd
   if (options.host.streamChat) host.streamChat = options.host.streamChat
   if (options.host.logger) host.logger = options.host.logger
   return host
@@ -603,6 +606,11 @@ export class AgentRuntime {
     return typeof roots === 'function' ? roots() : roots
   }
 
+  private resolveShellCwd(): ToolContext['shellCwd'] {
+    const cwd = this.host.shellCwd
+    return typeof cwd === 'function' ? cwd() : cwd
+  }
+
   private async resolveSettings(): Promise<Settings | undefined> {
     return this.host.loadSettings?.()
   }
@@ -771,6 +779,7 @@ export class AgentRuntime {
       workspaceRoots,
       toolRegistry,
     } = input
+    const shellCwd = this.resolveShellCwd()
     let eventLogChain = Promise.resolve()
     let terminalAgentEventQueued = false
     const queueAgentEvent = (
@@ -805,6 +814,7 @@ export class AgentRuntime {
           signal: controller.signal,
           profileId,
           workspaceRoots,
+          shellCwd,
           settings,
           generateImage: this.host.generateImage,
           saveImage: this.host.saveImage,

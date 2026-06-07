@@ -164,6 +164,7 @@ async function testRuntimeHostBoundaryContract(): Promise<void> {
     let profileId: string | null = null
     let workspaceRootPath: string | null = null
     let workspaceRootLabel: string | null = null
+    let shellCwdPath: string | null = null
     let settingsLoaded = false
     let streamSettingsKey: string | null = null
 
@@ -195,8 +196,10 @@ async function testRuntimeHostBoundaryContract(): Promise<void> {
         return { apiKeys: { openrouter: 'host-openrouter-key' }, defaultModel: null }
       },
       workspaceRoots: () => [{ path: '/host/workspace', label: 'host-root' }],
+      shellCwd: () => '/host/shell',
       streamChat: async (req, handlers) => {
         profileId = req.profileId
+        shellCwdPath = req.shellCwd ?? null
         streamSettingsKey = req.settings?.apiKeys.openrouter ?? null
         const [root] = req.workspaceRoots ?? []
         if (root && typeof root !== 'string') {
@@ -296,6 +299,7 @@ async function testRuntimeHostBoundaryContract(): Promise<void> {
     )
     assertEqual(workspaceRootPath, '/host/workspace', 'host workspace root path')
     assertEqual(workspaceRootLabel, 'host-root', 'host workspace root label')
+    assertEqual(shellCwdPath, '/host/shell', 'host shell cwd should pass to streamChat')
     assertEqual(policyRequested, true, 'host tool policy should receive tool request')
     assertEqual(approvalRequested, true, 'host tool approval should receive tool request')
     assertEqual(approvalResult, true, 'host tool approval should resolve request')
@@ -3051,6 +3055,27 @@ async function testFilesystemToolWorkspaceRootsContract(): Promise<void> {
   }
 }
 
+async function testBashToolShellCwdContract(): Promise<void> {
+  const settings: Settings = { apiKeys: {}, defaultModel: null }
+  const dir = await mkdtemp(join(tmpdir(), 'aila-tool-shell-'))
+  try {
+    const result = await executeTool(
+      'bash',
+      { command: 'printf shell-cwd > shell-cwd.txt' },
+      { settings, profileId: 'coding', shellCwd: dir },
+    )
+    const parsed = JSON.parse(result) as { exit_code?: unknown }
+    assertEqual(parsed.exit_code, 0, 'bash shell cwd command should succeed')
+    assertEqual(
+      await readFile(join(dir, 'shell-cwd.txt'), 'utf-8'),
+      'shell-cwd',
+      'bash tool should run from injected shell cwd',
+    )
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+}
+
 async function testRuntimeCoreHasNoDocToolContract(): Promise<void> {
   const registry = createDefaultToolRegistry()
   assert(!registry.specsByName.has('edit_doc'), 'runtime core must not register edit_doc')
@@ -3494,6 +3519,7 @@ async function main(): Promise<void> {
   await testGenerateImageToolUsesInjectedImageDependencies()
   testToolActivityTargetContract()
   await testFilesystemToolWorkspaceRootsContract()
+  await testBashToolShellCwdContract()
   await testRuntimeCoreHasNoDocToolContract()
   await testRuntimeSdkDoesNotExportDocsContract()
   await testToolPackManifestLoader()

@@ -290,7 +290,7 @@ const BUILTIN_TOOL_HANDLERS: Record<string, ToolHandler> = {
   edit: (args, ctx) => runEdit(args, ctx),
   web_search: (args) => runWebSearch(args),
   generate_image: (args, ctx) => runGenerateImage(args, ctx),
-  bash: (args) => runBash(args),
+  bash: (args, ctx) => runBash(args, ctx),
 }
 
 const BUILTIN_TOOL_PACK_DEFINITIONS = [
@@ -729,6 +729,7 @@ export interface ToolContext {
   messageId?: string
   toolCallId?: string
   workspaceRoots?: readonly ToolWorkspaceRoot[]
+  shellCwd?: string
   signal?: AbortSignal
   onToolPolicy?: ToolPolicyEvaluator
   onToolApproval?: (request: ToolApprovalRequest) => Promise<boolean>
@@ -773,14 +774,15 @@ async function runGenerateImage(args: { prompt?: unknown }, ctx: ToolContext): P
   })
 }
 
-async function runBash(args: { command?: unknown }): Promise<string> {
+async function runBash(args: { command?: unknown }, ctx: ToolContext): Promise<string> {
   const command = args.command
   if (typeof command !== 'string') throw new Error('`command` must be a string')
   assertBashCommandAllowed(command)
+  const cwd = resolve(ctx.shellCwd ?? process.cwd())
 
   try {
     const { stdout, stderr } = await execAsync(command, {
-      cwd: process.cwd(),
+      cwd,
       env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
       timeout: BASH_TIMEOUT_MS,
       maxBuffer: MAX_OUTPUT_BYTES * 2,
