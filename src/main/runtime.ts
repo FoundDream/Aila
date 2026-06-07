@@ -207,6 +207,14 @@ function normalizeRuntimeHost(options: AgentRuntimeOptions): AgentRuntimeHost {
   return host
 }
 
+function resolveStaticProfiles(options: AgentRuntimeOptions): readonly AgentProfile[] {
+  return options.host?.profiles ?? options.profiles ?? []
+}
+
+function resolveStaticToolPacks(options: AgentRuntimeOptions): readonly ToolPack[] {
+  return options.host?.toolPacks ?? options.toolPacks ?? []
+}
+
 export class AgentRuntime {
   private readonly activeStreams = new Map<string, StreamSlot>()
   private readonly deletedConversations = new Set<string>()
@@ -225,8 +233,8 @@ export class AgentRuntime {
     this.host = normalizeRuntimeHost(options)
     this.store = options.store ?? DEFAULT_RUNTIME_STORE
     this.logger = this.host.logger ?? console
-    this.staticProfiles = options.profiles ?? []
-    this.staticToolPacks = options.toolPacks ?? []
+    this.staticProfiles = resolveStaticProfiles(options)
+    this.staticToolPacks = resolveStaticToolPacks(options)
     this.fallbackToolRegistry = createDefaultToolRegistry(this.staticToolPacks)
   }
 

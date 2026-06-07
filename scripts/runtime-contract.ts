@@ -296,6 +296,110 @@ async function testRuntimeHostBoundaryContract(): Promise<void> {
   })
 }
 
+async function testRuntimeHostStaticExtensionContract(): Promise<void> {
+  const topLevelPack: ToolPack = {
+    id: 'top-level-static-pack',
+    name: 'Top Level Static Pack',
+    tools: [
+      {
+        spec: {
+          type: 'function',
+          function: {
+            name: 'top_level_static_tool',
+            description: 'Top-level fixture tool.',
+            parameters: { type: 'object', properties: {}, additionalProperties: false },
+          },
+          metadata: {
+            name: 'top_level_static_tool',
+            readOnly: true,
+            destructive: false,
+            requiresApproval: false,
+            access: ['read'],
+            scope: ['workspace'],
+            allowedProfiles: ['coding'],
+          },
+        },
+        async run() {
+          return 'top-level'
+        },
+      },
+    ],
+  }
+  const hostPack: ToolPack = {
+    id: 'host-static-pack',
+    name: 'Host Static Pack',
+    tools: [
+      {
+        spec: {
+          type: 'function',
+          function: {
+            name: 'host_static_tool',
+            description: 'Host fixture tool.',
+            parameters: { type: 'object', properties: {}, additionalProperties: false },
+          },
+          metadata: {
+            name: 'host_static_tool',
+            readOnly: true,
+            destructive: false,
+            requiresApproval: false,
+            access: ['read'],
+            scope: ['workspace'],
+            allowedProfiles: ['coding'],
+          },
+        },
+        async run() {
+          return 'host'
+        },
+      },
+    ],
+  }
+
+  const runtime = new AgentRuntime({
+    profiles: [
+      {
+        id: 'static-host-profile',
+        label: 'Top Level Profile',
+        description: 'Top-level compatibility profile.',
+        baseProfileId: 'chat',
+      },
+    ],
+    toolPacks: [topLevelPack],
+    host: {
+      profiles: [
+        {
+          id: 'static-host-profile',
+          label: 'Host Profile',
+          description: 'Host static profile.',
+          baseProfileId: 'coding',
+        },
+      ],
+      toolPacks: [hostPack],
+    },
+  })
+
+  const profiles = await runtime.getProfiles()
+  assertEqual(
+    profiles.get('static-host-profile')?.label,
+    'Host Profile',
+    'host static profiles should be part of the runtime host boundary',
+  )
+  assertEqual(
+    profiles.get('static-host-profile')?.baseProfileId,
+    'coding',
+    'host static profiles should take precedence over top-level compatibility profiles',
+  )
+
+  const registry = await runtime.getToolRegistry()
+  assert(
+    registry.specsByName.has('host_static_tool'),
+    'host static tool packs should be part of the runtime host boundary',
+  )
+  assert(
+    !registry.specsByName.has('top_level_static_tool'),
+    'host static tool packs should take precedence over top-level compatibility tool packs',
+  )
+}
+
 async function testRuntimeInjectableStoreContract(): Promise<void> {
   await withTempDataDir(async () => {
     const conversation = await createConversation()
@@ -3283,6 +3387,7 @@ async function main(): Promise<void> {
   await testRuntimeEventContract()
   await testRuntimeEmitsVersionedEvents()
   await testRuntimeHostBoundaryContract()
+  await testRuntimeHostStaticExtensionContract()
   await testRuntimeInjectableStoreContract()
   await testRuntimeDeleteAssetCleanupHostBoundary()
   await testRuntimeRetriesDanglingUserTurn()
