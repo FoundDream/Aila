@@ -328,6 +328,17 @@ export class AgentRuntime {
     } finally {
       await abortCleanup
     }
+    const cleanedUp = await this.waitForStreamCleanup(slot, this.cleanupTimeoutMs())
+    if (!cleanedUp) {
+      if (this.activeStreams.get(conversationId)?.controller === slot.controller) {
+        this.activeStreams.delete(conversationId)
+      }
+      try {
+        await this.recordInterruptedStreamCleanup(conversationId, slot, 'user cleanup timed out')
+      } catch (err) {
+        this.logger.warn('[runtime] interrupted abort activity append failed:', err)
+      }
+    }
   }
 
   listActiveStreams(): ActiveAssistantTurn[] {

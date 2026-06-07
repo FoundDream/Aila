@@ -491,6 +491,86 @@ async function testRuntimeAbortPersistsCancellationActivity(): Promise<void> {
   })
 }
 
+async function testRuntimeAbortTimesOutStuckStreamCleanup(): Promise<void> {
+  await withTempDataDir(async () => {
+    const conversation = await createConversation()
+    const events: AgentRuntimeEvent[] = []
+    let resolveStarted: () => void = () => {}
+    const started = new Promise<void>((resolve) => {
+      resolveStarted = resolve
+    })
+    let cleanupReason: string | null = null
+
+    const runtime = new AgentRuntime({
+      abortAllCleanupTimeoutMs: 10,
+      onEvent: (event) => events.push(event),
+      logger: { warn() {}, error() {} },
+      onConversationAbort: (_conversationId, reason) => {
+        cleanupReason = reason
+      },
+      streamChat: async (req) => {
+        req.onAgentEvent?.({
+          timestamp: Date.now(),
+          conversationId: req.conversationId,
+          messageId: req.assistantMessageId,
+          type: 'turn.started',
+          data: { providerId: req.selection.providerId, modelId: req.selection.modelId },
+        })
+        resolveStarted()
+        await new Promise<void>(() => {})
+      },
+    })
+
+    const result = await runtime.send({
+      conversationId: conversation.id,
+      userText: 'abort a stuck stream',
+      selection: { providerId: 'openrouter', modelId: 'contract/mock' },
+      requestedProfileId: 'coding',
+    })
+    await started
+
+    await withTimeout(runtime.abort(conversation.id), 'abort should time out stuck cleanup', 500)
+    assertEqual(cleanupReason, 'user', 'stuck abort cleanup reason')
+    assertEqual(runtime.listActiveStreams().length, 0, 'stuck abort should clear active stream')
+
+    const agentEvents = await listAgentEvents(conversation.id)
+    assert(
+      agentEvents.some(
+        (event) =>
+          event.messageId === result.assistantMessageId &&
+          event.type === 'turn.cancelled' &&
+          event.data?.phase === 'requested' &&
+          event.data.reason === 'user',
+      ),
+      'stuck abort should persist user cancellation request',
+    )
+    assertEqual(
+      agentEvents.at(-1)?.type,
+      'turn.interrupted',
+      'stuck abort should end with interrupted event',
+    )
+    assertEqual(
+      agentEvents.at(-1)?.data?.reason,
+      'user cleanup timed out',
+      'stuck abort interrupted reason',
+    )
+
+    const record = await getConversation(conversation.id)
+    assertEqual(record.meta.activity?.state, 'interrupted', 'stuck abort activity state')
+    assertEqual(
+      record.meta.activity?.messageId,
+      result.assistantMessageId,
+      'stuck abort activity message id',
+    )
+    assert(
+      events.some(
+        (event) => event.type === 'agent:event' && event.data.type === 'turn.interrupted',
+      ),
+      'stuck abort should emit interrupted runtime event',
+    )
+  })
+}
+
 async function testRuntimeUnexpectedStreamErrorPersistsFailureActivity(): Promise<void> {
   await withTempDataDir(async () => {
     const conversation = await createConversation()
@@ -956,6 +1036,11 @@ async function testRuntimeSendRecoversAbortedStuckPreviousStream(): Promise<void
     })
     await firstStarted
     await runtime.abort(conversation.id)
+    assertEqual(
+      runtime.listActiveStreams().length,
+      0,
+      'abort should recover the stuck first stream',
+    )
 
     const second = await withTimeout(
       runtime.send({
@@ -979,9 +1064,9 @@ async function testRuntimeSendRecoversAbortedStuckPreviousStream(): Promise<void
         (event) =>
           event.messageId === first.assistantMessageId &&
           event.type === 'turn.interrupted' &&
-          event.data?.reason === 'aborted cleanup timed out',
+          event.data?.reason === 'user cleanup timed out',
       ),
-      'recovery should mark the abandoned first turn interrupted',
+      'abort should mark the abandoned first turn interrupted',
     )
     assert(
       agentEvents.some(
@@ -1974,6 +2059,7 @@ async function main(): Promise<void> {
   await testRuntimeRetriesFailedAssistantTurn()
   await testRuntimeContextSkipsNonDoneAssistantHistory()
   await testRuntimeAbortPersistsCancellationActivity()
+  await testRuntimeAbortTimesOutStuckStreamCleanup()
   await testRuntimeUnexpectedStreamErrorPersistsFailureActivity()
   await testRuntimeSetupFailurePersistsAssistantError()
   await testRuntimeListsActiveAssistantTurns()
