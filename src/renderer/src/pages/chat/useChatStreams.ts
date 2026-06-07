@@ -224,6 +224,17 @@ function appendMissingMessage(messages: Message[], message: Message): Message[] 
     : [...messages, message]
 }
 
+function insertMissingMessageBefore(
+  messages: Message[],
+  message: Message,
+  beforeMessageId: string,
+): Message[] {
+  if (messages.some((candidate) => candidate.id === message.id)) return messages
+  const beforeIndex = messages.findIndex((candidate) => candidate.id === beforeMessageId)
+  if (beforeIndex === -1) return [...messages, message]
+  return [...messages.slice(0, beforeIndex), message, ...messages.slice(beforeIndex)]
+}
+
 function hydrateMessages(messages: Message[], activeTurn?: ActiveAssistantTurn | null): Message[] {
   if (!activeTurn) return messages
   return ensureAssistantMessage(messages, activeTurn.assistantMessageId, activeTurn.selection)
@@ -275,9 +286,32 @@ function selectionFromAgentEventData(
     : undefined
 }
 
+function stringFromAgentEventData(
+  data: Record<string, unknown> | undefined,
+  key: string,
+): string | null {
+  const value = data?.[key]
+  return typeof value === 'string' && value.length > 0 ? value : null
+}
+
+function assistantErrorFromAgentEvent(event: PersistedAgentEvent): string | null {
+  if (event.type === 'turn.failed') {
+    return stringFromAgentEventData(event.data, 'error') ?? 'Turn failed'
+  }
+  if (event.type === 'turn.cancelled' && event.data?.phase === 'completed') {
+    const reason = stringFromAgentEventData(event.data, 'reason')
+    return reason ? `Cancelled: ${reason}` : 'Cancelled'
+  }
+  if (event.type === 'turn.interrupted') {
+    return stringFromAgentEventData(event.data, 'reason') ?? 'Interrupted'
+  }
+  return null
+}
+
 function shouldClearRunningFromAgentEvent(event: PersistedAgentEvent): boolean {
   return (
     event.type === 'turn.failed' ||
+    event.type === 'turn.interrupted' ||
     (event.type === 'turn.cancelled' && event.data?.phase === 'completed')
   )
 }
@@ -341,7 +375,11 @@ function reducer(state: State, action: Action): State {
     case 'RUN_STARTED':
       return withStream(state, action.conversationId, (current) => {
         const messages = appendMissingMessage(
-          appendMissingMessage(current.messages, action.userMessage),
+          insertMissingMessageBefore(
+            current.messages,
+            action.userMessage,
+            action.assistantMessage.id,
+          ),
           action.assistantMessage,
         )
         const assistant = messages.find((message) => message.id === action.assistantMessage.id)
@@ -475,25 +513,38 @@ function reducer(state: State, action: Action): State {
       }))
 
     case 'AGENT_EVENT':
-      return withStream(state, action.event.conversationId, (current) => ({
-        ...current,
-        messages:
-          action.event.type === 'turn.started'
-            ? ensureAssistantMessage(
-                current.messages,
-                action.event.messageId,
-                selectionFromAgentEventData(action.event.data),
-              )
-            : current.messages,
-        runningMessageId:
-          action.event.type === 'turn.started'
-            ? action.event.messageId
-            : shouldClearRunningFromAgentEvent(action.event) &&
-                current.runningMessageId === action.event.messageId
-              ? null
-              : current.runningMessageId,
-        events: mergeAgentEvents(current.events, [action.event]),
-      }))
+      return withStream(state, action.event.conversationId, (current) => {
+        const terminalError = assistantErrorFromAgentEvent(action.event)
+        return {
+          ...current,
+          messages:
+            action.event.type === 'turn.started'
+              ? ensureAssistantMessage(
+                  current.messages,
+                  action.event.messageId,
+                  selectionFromAgentEventData(action.event.data),
+                )
+              : terminalError
+                ? patchOrAppendAssistantMessage(
+                    current.messages,
+                    action.event.messageId,
+                    (message) => ({
+                      ...message,
+                      status: 'error',
+                      error: terminalError,
+                    }),
+                  )
+                : current.messages,
+          runningMessageId:
+            action.event.type === 'turn.started'
+              ? action.event.messageId
+              : shouldClearRunningFromAgentEvent(action.event) &&
+                  current.runningMessageId === action.event.messageId
+                ? null
+                : current.runningMessageId,
+          events: mergeAgentEvents(current.events, [action.event]),
+        }
+      })
 
     case 'DROP': {
       if (!state.streams.has(action.conversationId)) return state

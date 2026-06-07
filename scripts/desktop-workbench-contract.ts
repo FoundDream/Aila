@@ -494,6 +494,88 @@ function testRendererCompletedEventWaitsForFinishMessage(): void {
   assertEqual(stream.messages[1]?.status, 'done', 'finish should replace streaming message')
 }
 
+function testRendererFailedEventFinalizesStreamingPlaceholder(): void {
+  let state = createChatStreamsStateForTest()
+  state = reduceChatStreamsForTest(state, {
+    type: 'RUN_STARTED',
+    conversationId: 'conversation-failed-event',
+    userMessage: {
+      id: 'user-failed-event',
+      role: 'user',
+      blocks: [{ type: 'text', content: 'fail before error message' }],
+      status: 'done',
+    },
+    assistantMessage: {
+      id: 'assistant-failed-event',
+      role: 'assistant',
+      blocks: [{ type: 'text', content: 'partial before failure' }],
+      status: 'streaming',
+      model: { providerId: 'openrouter', modelId: 'contract/mock' },
+    },
+  })
+  state = reduceChatStreamsForTest(state, {
+    type: 'AGENT_EVENT',
+    event: {
+      schemaVersion: 1,
+      timestamp: 1,
+      conversationId: 'conversation-failed-event',
+      messageId: 'assistant-failed-event',
+      type: 'turn.failed',
+      data: { error: 'provider disconnected' },
+    },
+  })
+
+  const stream = state.streams.get('conversation-failed-event')
+  assert(stream, 'failed event should keep stream')
+  assertEqual(stream.runningMessageId, null, 'failed event should clear running message')
+  assertEqual(stream.messages[1]?.status, 'error', 'failed event should mark assistant error')
+  assertEqual(stream.messages[1]?.error, 'provider disconnected', 'failed event should keep error')
+  assertEqual(stream.events.length, 1, 'failed event should append timeline event')
+}
+
+function testRendererInterruptedEventFinalizesStreamingPlaceholder(): void {
+  let state = createChatStreamsStateForTest()
+  state = reduceChatStreamsForTest(state, {
+    type: 'RUN_STARTED',
+    conversationId: 'conversation-interrupted-event',
+    userMessage: {
+      id: 'user-interrupted-event',
+      role: 'user',
+      blocks: [{ type: 'text', content: 'recover interrupted turn' }],
+      status: 'done',
+    },
+    assistantMessage: {
+      id: 'assistant-interrupted-event',
+      role: 'assistant',
+      blocks: [],
+      status: 'streaming',
+      model: { providerId: 'openrouter', modelId: 'contract/mock' },
+    },
+  })
+  state = reduceChatStreamsForTest(state, {
+    type: 'AGENT_EVENT',
+    event: {
+      schemaVersion: 1,
+      timestamp: 1,
+      conversationId: 'conversation-interrupted-event',
+      messageId: 'assistant-interrupted-event',
+      type: 'turn.interrupted',
+      data: { reason: 'runtime restarted before this turn finished' },
+    },
+  })
+
+  const stream = state.streams.get('conversation-interrupted-event')
+  assert(stream, 'interrupted event should keep stream')
+  assertEqual(stream.runningMessageId, null, 'interrupted event should clear running message')
+  assertEqual(stream.messages[1]?.status, 'error', 'interrupted event should mark assistant error')
+  assertEqual(
+    stream.messages[1]?.error,
+    'runtime restarted before this turn finished',
+    'interrupted event should expose recovery reason',
+  )
+  assertEqual(stream.events.length, 1, 'interrupted event should append timeline event')
+}
+
 function testRendererFinishAppendsMissingAssistantMessage(): void {
   let state = createChatStreamsStateForTest()
   state = reduceChatStreamsForTest(state, {
@@ -560,6 +642,12 @@ function testRendererRunStartedDoesNotDuplicateFinishedAssistant(): void {
     stream.messages.find((message) => message.id === 'assistant-early-error')?.status,
     'error',
     'RUN_STARTED should not downgrade an early error to streaming',
+  )
+  assertEqual(stream.messages[0]?.id, 'user-early-error', 'RUN_STARTED should preserve user order')
+  assertEqual(
+    stream.messages[1]?.id,
+    'assistant-early-error',
+    'RUN_STARTED should keep assistant after user',
   )
   assertEqual(stream.runningMessageId, null, 'early error should not become running')
 }
@@ -850,6 +938,8 @@ async function main(): Promise<void> {
   testRendererHydratePreservesLocalStreamingMessages()
   testRendererHydrateReplacesStreamingWithPersistedTerminal()
   testRendererCompletedEventWaitsForFinishMessage()
+  testRendererFailedEventFinalizesStreamingPlaceholder()
+  testRendererInterruptedEventFinalizesStreamingPlaceholder()
   testRendererFinishAppendsMissingAssistantMessage()
   testRendererRunStartedDoesNotDuplicateFinishedAssistant()
   testRendererToolResultAppendsMissingAssistantMessage()
