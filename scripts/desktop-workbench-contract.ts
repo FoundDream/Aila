@@ -25,6 +25,10 @@ import {
   buildDesktopWorkspaceContext,
   getDesktopWorkspaceRoots,
 } from '../src/main/workspace-context'
+import {
+  createChatStreamsStateForTest,
+  reduceChatStreamsForTest,
+} from '../src/renderer/src/pages/chat/useChatStreams'
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message)
@@ -277,6 +281,86 @@ async function testToolResultActivityKeepsToolName(): Promise<void> {
   })
 }
 
+function testRendererHydratesActiveAssistantTurn(): void {
+  let state = createChatStreamsStateForTest()
+  state = reduceChatStreamsForTest(state, {
+    type: 'HYDRATE',
+    conversationId: 'conversation-active',
+    messages: [
+      { id: 'user', role: 'user', blocks: [{ type: 'text', content: 'hello' }], status: 'done' },
+    ],
+    usage: null,
+    events: [],
+    activeTurn: {
+      conversationId: 'conversation-active',
+      assistantMessageId: 'assistant-active',
+      selection: { providerId: 'openrouter', modelId: 'contract/mock' },
+    },
+  })
+
+  const stream = state.streams.get('conversation-active')
+  assert(stream, 'active hydrate should create a stream')
+  assertEqual(stream.runningMessageId, 'assistant-active', 'active hydrate running message id')
+  const assistant = stream.messages.at(-1)
+  assertEqual(assistant?.id, 'assistant-active', 'active hydrate assistant message id')
+  assertEqual(assistant?.role, 'assistant', 'active hydrate assistant role')
+  assertEqual(assistant?.status, 'streaming', 'active hydrate assistant status')
+  assertEqual(assistant?.model?.modelId, 'contract/mock', 'active hydrate assistant model')
+}
+
+function testRendererFinishAppendsMissingAssistantMessage(): void {
+  let state = createChatStreamsStateForTest()
+  state = reduceChatStreamsForTest(state, {
+    type: 'FINISH',
+    conversationId: 'conversation-finish',
+    messageId: 'assistant-finish',
+    message: {
+      id: 'assistant-finish',
+      role: 'assistant',
+      blocks: [{ type: 'text', content: 'final answer' }],
+      status: 'done',
+      model: { providerId: 'openrouter', modelId: 'contract/mock' },
+    },
+  })
+
+  const stream = state.streams.get('conversation-finish')
+  assert(stream, 'finish should create a stream for late renderer events')
+  assertEqual(stream.messages.length, 1, 'finish should append missing assistant message')
+  assertEqual(stream.messages[0]?.id, 'assistant-finish', 'finish appended assistant id')
+  assertEqual(stream.messages[0]?.status, 'done', 'finish appended assistant status')
+}
+
+function testRendererToolResultAppendsMissingAssistantMessage(): void {
+  let state = createChatStreamsStateForTest()
+  state = reduceChatStreamsForTest(state, {
+    type: 'TOOL_CALL_RESULT',
+    conversationId: 'conversation-tool',
+    messageId: 'assistant-tool',
+    toolCallId: 'tool-call',
+    name: 'read_file',
+    result: 'file contents',
+    isError: false,
+  })
+
+  const stream = state.streams.get('conversation-tool')
+  assert(stream, 'tool result should create a stream for late renderer events')
+  assertEqual(stream.runningMessageId, 'assistant-tool', 'tool result running message id')
+  const assistant = stream.messages[0]
+  assertEqual(assistant?.id, 'assistant-tool', 'tool result assistant id')
+  const block = assistant?.blocks[0]
+  assertEqual(block?.type, 'tool_call', 'tool result should create a tool block')
+  assertEqual(
+    block?.type === 'tool_call' ? block.name : undefined,
+    'read_file',
+    'tool result should keep tool name',
+  )
+  assertEqual(
+    block?.type === 'tool_call' ? block.status : undefined,
+    'done',
+    'tool result should mark tool done',
+  )
+}
+
 async function testInterruptedActivityRecovery(): Promise<void> {
   await withTempDataDir(async () => {
     const running = await createConversation()
@@ -454,6 +538,9 @@ async function main(): Promise<void> {
   await testActivityUpdatesConversationSummary()
   await testActivityDeltaDoesNotTouchConversationSummary()
   await testToolResultActivityKeepsToolName()
+  testRendererHydratesActiveAssistantTurn()
+  testRendererFinishAppendsMissingAssistantMessage()
+  testRendererToolResultAppendsMissingAssistantMessage()
   await testInterruptedActivityRecovery()
   await testToolApprovalsCanHydrateAndResolvePendingRequests()
   await testToolApprovalTimeoutClearsPendingRequests()

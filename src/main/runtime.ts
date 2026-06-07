@@ -42,6 +42,7 @@ interface StreamSlot {
   controller: AbortController
   cleanup: Promise<void>
   assistantMessageId: string
+  selection: ModelSelection
   abortRecorded: boolean
 }
 
@@ -102,6 +103,12 @@ export interface RuntimeRetryLastInput {
 export interface RuntimeSendResult {
   userMessage: PersistedMessage
   assistantMessageId: string
+}
+
+export interface ActiveAssistantTurn {
+  conversationId: string
+  assistantMessageId: string
+  selection: ModelSelection
 }
 
 export {
@@ -235,6 +242,7 @@ export class AgentRuntime {
       controller,
       cleanup,
       assistantMessageId,
+      selection,
       abortRecorded: false,
     })
 
@@ -281,6 +289,14 @@ export class AgentRuntime {
     } catch (err) {
       this.logger.warn('[runtime] cancellation activity append failed:', err)
     }
+  }
+
+  listActiveStreams(): ActiveAssistantTurn[] {
+    return Array.from(this.activeStreams.entries()).map(([conversationId, slot]) => ({
+      conversationId,
+      assistantMessageId: slot.assistantMessageId,
+      selection: slot.selection,
+    }))
   }
 
   abortAll(): void {

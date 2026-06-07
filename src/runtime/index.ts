@@ -75,6 +75,7 @@ export {
   parseAgentProfileManifest,
 } from '../main/profile-loader'
 export {
+  type ActiveAssistantTurn,
   AgentRuntime,
   type AgentRuntimeEvent,
   type AgentRuntimeEventMap,

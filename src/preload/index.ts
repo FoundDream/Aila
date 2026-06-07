@@ -56,6 +56,7 @@ export interface ToolCallArgsDeltaEvent extends ChatStreamEventBase {
 
 export interface ToolCallResultEvent extends ChatStreamEventBase {
   toolCallId: string
+  name?: string
   result: string
   isError: boolean
 }
@@ -264,6 +265,12 @@ export interface SendResult {
   assistantMessageId: string
 }
 
+export interface ActiveAssistantTurn {
+  conversationId: string
+  assistantMessageId: string
+  selection: ModelSelection
+}
+
 export interface ModelInfo {
   model: string
   contextLength: number | null
@@ -296,6 +303,8 @@ const api = {
     ipcRenderer.invoke('chat:retry-last', conversationId, selection, profileId),
   abort: (conversationId: string): Promise<void> =>
     ipcRenderer.invoke('chat:abort', conversationId),
+  listActiveStreams: (): Promise<ActiveAssistantTurn[]> =>
+    ipcRenderer.invoke('chat:list-active-streams'),
   onTextDelta: (cb: (event: TextDeltaEvent) => void) => on<TextDeltaEvent>('chat:text-delta', cb),
   onReasoningDelta: (cb: (event: ReasoningDeltaEvent) => void) =>
     on<ReasoningDeltaEvent>('chat:reasoning-delta', cb),

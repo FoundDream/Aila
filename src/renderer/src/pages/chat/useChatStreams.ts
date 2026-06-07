@@ -1,3 +1,5 @@
+/// <reference path="../../env.d.ts" />
+
 /**
  * Per-conversation streaming buffers. Lifts what used to live in ChatPage refs
  * out into an app-level hook so multiple conversations can stream in parallel:
@@ -13,6 +15,7 @@
 
 import { useCallback, useEffect, useMemo, useReducer, useRef } from 'react'
 import type {
+  ActiveAssistantTurn,
   AgentProfileId,
   ChatDoneEvent,
   ChatErrorEvent,
@@ -72,6 +75,7 @@ type Action =
       messages: Message[]
       usage: UsageInfo | null
       events: PersistedAgentEvent[]
+      activeTurn?: ActiveAssistantTurn | null
     }
   | { type: 'ENQUEUE'; conversationId: string; queued: QueuedRun }
   | { type: 'POP_QUEUE_HEAD'; conversationId: string }
@@ -113,6 +117,7 @@ type Action =
       conversationId: string
       messageId: string
       toolCallId: string
+      name?: string
       result: string
       isError: boolean
     }
@@ -177,6 +182,65 @@ function patchMessage(
   return messages.map((m) => (m.id === messageId ? patcher(m) : m))
 }
 
+function createStreamingAssistantMessage(messageId: string, selection?: ModelSelection): Message {
+  return {
+    id: messageId,
+    role: 'assistant',
+    blocks: [],
+    status: 'streaming',
+    ...(selection ? { model: selection } : {}),
+  }
+}
+
+function ensureAssistantMessage(
+  messages: Message[],
+  messageId: string,
+  selection?: ModelSelection,
+): Message[] {
+  return messages.some((message) => message.id === messageId)
+    ? messages
+    : [...messages, createStreamingAssistantMessage(messageId, selection)]
+}
+
+function patchOrAppendAssistantMessage(
+  messages: Message[],
+  messageId: string,
+  patcher: (msg: Message) => Message,
+  selection?: ModelSelection,
+): Message[] {
+  const seeded = ensureAssistantMessage(messages, messageId, selection)
+  return patchMessage(seeded, messageId, patcher)
+}
+
+function replaceOrAppendMessage(messages: Message[], message: Message): Message[] {
+  return messages.some((candidate) => candidate.id === message.id)
+    ? patchMessage(messages, message.id, () => message)
+    : [...messages, message]
+}
+
+function hydrateMessages(messages: Message[], activeTurn?: ActiveAssistantTurn | null): Message[] {
+  if (!activeTurn) return messages
+  return ensureAssistantMessage(messages, activeTurn.assistantMessageId, activeTurn.selection)
+}
+
+function selectionFromAgentEventData(
+  data: Record<string, unknown> | undefined,
+): ModelSelection | undefined {
+  const providerId = data?.providerId
+  const modelId = data?.modelId
+  return typeof providerId === 'string' && typeof modelId === 'string'
+    ? { providerId: providerId as ModelSelection['providerId'], modelId }
+    : undefined
+}
+
+function isTerminalAgentEvent(event: PersistedAgentEvent): boolean {
+  return (
+    event.type === 'turn.completed' ||
+    event.type === 'turn.failed' ||
+    (event.type === 'turn.cancelled' && event.data?.phase === 'completed')
+  )
+}
+
 function agentEventKey(event: PersistedAgentEvent): string {
   return [
     event.timestamp,
@@ -207,9 +271,10 @@ function reducer(state: State, action: Action): State {
     case 'HYDRATE':
       return withStream(state, action.conversationId, (current) => ({
         ...current,
-        messages: action.messages,
+        messages: hydrateMessages(action.messages, action.activeTurn),
         usage: action.usage,
         events: mergeAgentEvents(current.events, action.events),
+        runningMessageId: action.activeTurn?.assistantMessageId ?? current.runningMessageId,
         isHydrated: true,
       }))
 
@@ -242,16 +307,17 @@ function reducer(state: State, action: Action): State {
     case 'TEXT_DELTA':
       return withStream(state, action.conversationId, (current) => ({
         ...current,
-        messages: patchMessage(current.messages, action.messageId, (m) => ({
+        messages: patchOrAppendAssistantMessage(current.messages, action.messageId, (m) => ({
           ...m,
           blocks: appendDelta(m.blocks, action.kind, action.delta),
         })),
+        runningMessageId: current.runningMessageId ?? action.messageId,
       }))
 
     case 'TOOL_CALL_START':
       return withStream(state, action.conversationId, (current) => ({
         ...current,
-        messages: patchMessage(current.messages, action.messageId, (m) => ({
+        messages: patchOrAppendAssistantMessage(current.messages, action.messageId, (m) => ({
           ...m,
           blocks: upsertToolCall(
             m.blocks,
@@ -266,48 +332,72 @@ function reducer(state: State, action: Action): State {
             },
           ),
         })),
+        runningMessageId: current.runningMessageId ?? action.messageId,
       }))
 
     case 'TOOL_CALL_ARGS_DELTA':
       if (!action.delta) return state
       return withStream(state, action.conversationId, (current) => ({
         ...current,
-        messages: patchMessage(current.messages, action.messageId, (m) => ({
+        messages: patchOrAppendAssistantMessage(current.messages, action.messageId, (m) => ({
           ...m,
-          blocks: m.blocks.map((b) =>
-            b.type === 'tool_call' && b.id === action.toolCallId
-              ? { ...b, arguments: b.arguments + action.delta }
-              : b,
+          blocks: upsertToolCall(
+            m.blocks,
+            action.toolCallId,
+            (b) => ({ ...b, arguments: b.arguments + action.delta }),
+            {
+              type: 'tool_call',
+              id: action.toolCallId,
+              name: 'tool',
+              arguments: action.delta,
+              status: 'running',
+            },
           ),
         })),
+        runningMessageId: current.runningMessageId ?? action.messageId,
       }))
 
     case 'TOOL_CALL_RESULT':
       return withStream(state, action.conversationId, (current) => ({
         ...current,
-        messages: patchMessage(current.messages, action.messageId, (m) => ({
+        messages: patchOrAppendAssistantMessage(current.messages, action.messageId, (m) => ({
           ...m,
-          blocks: m.blocks.map((b) =>
-            b.type === 'tool_call' && b.id === action.toolCallId
-              ? { ...b, status: action.isError ? 'error' : 'done', result: action.result }
-              : b,
+          blocks: upsertToolCall(
+            m.blocks,
+            action.toolCallId,
+            (b) => ({
+              ...b,
+              ...(action.name ? { name: action.name } : {}),
+              status: action.isError ? 'error' : 'done',
+              result: action.result,
+            }),
+            {
+              type: 'tool_call',
+              id: action.toolCallId,
+              name: action.name ?? 'tool',
+              arguments: '',
+              status: action.isError ? 'error' : 'done',
+              result: action.result,
+            },
           ),
         })),
+        runningMessageId: current.runningMessageId ?? action.messageId,
       }))
 
     case 'IMAGE_BLOCK':
       return withStream(state, action.conversationId, (current) => ({
         ...current,
-        messages: patchMessage(current.messages, action.messageId, (m) => ({
+        messages: patchOrAppendAssistantMessage(current.messages, action.messageId, (m) => ({
           ...m,
           blocks: [...m.blocks, action.block],
         })),
+        runningMessageId: current.runningMessageId ?? action.messageId,
       }))
 
     case 'FINISH':
       return withStream(state, action.conversationId, (current) => ({
         ...current,
-        messages: patchMessage(current.messages, action.messageId, () => action.message),
+        messages: replaceOrAppendMessage(current.messages, action.message),
         runningMessageId:
           current.runningMessageId === action.messageId ? null : current.runningMessageId,
         usage: action.usage ?? current.usage,
@@ -322,6 +412,21 @@ function reducer(state: State, action: Action): State {
     case 'AGENT_EVENT':
       return withStream(state, action.event.conversationId, (current) => ({
         ...current,
+        messages:
+          action.event.type === 'turn.started'
+            ? ensureAssistantMessage(
+                current.messages,
+                action.event.messageId,
+                selectionFromAgentEventData(action.event.data),
+              )
+            : current.messages,
+        runningMessageId:
+          action.event.type === 'turn.started'
+            ? action.event.messageId
+            : isTerminalAgentEvent(action.event) &&
+                current.runningMessageId === action.event.messageId
+              ? null
+              : current.runningMessageId,
         events: mergeAgentEvents(current.events, [action.event]),
       }))
 
@@ -356,6 +461,20 @@ export interface ChatStreamsApi {
 
 interface UseChatStreamsOptions {
   onConversationUpdated?: (summary: ConversationSummary) => void
+}
+
+export type ChatStreamsStateForTest = State
+export type ChatStreamsActionForTest = Action
+
+export function createChatStreamsStateForTest(): ChatStreamsStateForTest {
+  return { streams: new Map() }
+}
+
+export function reduceChatStreamsForTest(
+  state: ChatStreamsStateForTest,
+  action: ChatStreamsActionForTest,
+): ChatStreamsStateForTest {
+  return reducer(state, action)
 }
 
 export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreamsApi {
@@ -493,9 +612,10 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
 
   const hydrate = useCallback(async (id: string): Promise<void> => {
     if (stateRef.current.streams.get(id)?.isHydrated) return
-    const [record, events] = await Promise.all([
+    const [record, events, activeTurns] = await Promise.all([
       window.api.conversations.get(id),
       window.api.conversations.listEvents(id),
+      window.api.listActiveStreams(),
     ])
     if (stateRef.current.streams.get(id)?.isHydrated) return
     const messages = record.messages.map(persistedToMessage)
@@ -506,7 +626,14 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
           totalTokens: record.meta.usage.totalTokens,
         }
       : null
-    dispatch({ type: 'HYDRATE', conversationId: id, messages, usage, events })
+    dispatch({
+      type: 'HYDRATE',
+      conversationId: id,
+      messages,
+      usage,
+      events,
+      activeTurn: activeTurns.find((turn) => turn.conversationId === id) ?? null,
+    })
   }, [])
 
   // Mark a freshly-created conversation as hydrated without a disk read. Used
@@ -574,6 +701,7 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
           conversationId: event.conversationId,
           messageId: event.messageId,
           toolCallId: event.toolCallId,
+          name: event.name,
           result: event.result,
           isError: event.isError,
         }),

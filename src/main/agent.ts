@@ -58,6 +58,7 @@ export interface ToolResultEvent {
   conversationId: string
   messageId: string
   toolCallId: string
+  name?: string
   result: string
   isError: boolean
 }
@@ -537,6 +538,7 @@ export async function streamChat(req: StreamRequest, handlers: StreamHandlers): 
             conversationId,
             messageId: assistantMessageId,
             toolCallId: part.toolCallId,
+            name: part.toolName,
             result,
             isError: false,
           })
@@ -555,6 +557,7 @@ export async function streamChat(req: StreamRequest, handlers: StreamHandlers): 
             conversationId,
             messageId: assistantMessageId,
             toolCallId: part.toolCallId,
+            name: part.toolName,
             result: message,
             isError: true,
           })

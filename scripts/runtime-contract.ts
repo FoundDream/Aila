@@ -460,6 +460,76 @@ async function testRuntimeUnexpectedStreamErrorPersistsFailureActivity(): Promis
   })
 }
 
+async function testRuntimeListsActiveAssistantTurns(): Promise<void> {
+  await withTempDataDir(async () => {
+    const conversation = await createConversation()
+    let resolveStarted: () => void = () => {}
+    let resolveStream: () => void = () => {}
+    const started = new Promise<void>((resolve) => {
+      resolveStarted = resolve
+    })
+    const release = new Promise<void>((resolve) => {
+      resolveStream = resolve
+    })
+    const runtime = new AgentRuntime({
+      logger: { warn() {}, error() {} },
+      streamChat: async (req, handlers) => {
+        req.onAgentEvent?.({
+          timestamp: Date.now(),
+          conversationId: req.conversationId,
+          messageId: req.assistantMessageId,
+          type: 'turn.started',
+          data: { providerId: req.selection.providerId, modelId: req.selection.modelId },
+        })
+        resolveStarted()
+        await release
+        req.onAgentEvent?.({
+          timestamp: Date.now(),
+          conversationId: req.conversationId,
+          messageId: req.assistantMessageId,
+          type: 'turn.completed',
+        })
+        await handlers.onDone({
+          conversationId: req.conversationId,
+          messageId: req.assistantMessageId,
+          message: {
+            schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+            id: req.assistantMessageId,
+            role: 'assistant',
+            blocks: [{ type: 'text', content: 'listed active turn finished' }],
+            status: 'done',
+            model: req.selection,
+          },
+        })
+      },
+    })
+
+    const result = await runtime.send({
+      conversationId: conversation.id,
+      userText: 'list active turn',
+      selection: { providerId: 'openrouter', modelId: 'contract/mock' },
+      requestedProfileId: 'coding',
+    })
+    await started
+
+    const [active] = runtime.listActiveStreams()
+    assert(active, 'runtime should list active assistant turn')
+    assertEqual(active.conversationId, conversation.id, 'active turn conversation id')
+    assertEqual(
+      active.assistantMessageId,
+      result.assistantMessageId,
+      'active turn assistant message id',
+    )
+    assertEqual(active.selection.modelId, 'contract/mock', 'active turn model id')
+
+    resolveStream()
+    await waitFor(
+      () => runtime.listActiveStreams().length === 0,
+      'completed stream should leave active turn list',
+    )
+  })
+}
+
 async function testPersistenceContract(): Promise<void> {
   await withTempDataDir(async () => {
     const conversation = await createConversation('docs/runtime-contract')
@@ -1147,6 +1217,7 @@ async function main(): Promise<void> {
   await testRuntimeRetriesFailedAssistantTurn()
   await testRuntimeAbortPersistsCancellationActivity()
   await testRuntimeUnexpectedStreamErrorPersistsFailureActivity()
+  await testRuntimeListsActiveAssistantTurns()
   await testPersistenceContract()
   await testLegacyPersistenceNormalization()
   await testToolRegistryContract()

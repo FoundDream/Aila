@@ -157,6 +157,7 @@ function registerIpcHandlers(): void {
   ipcMain.handle('chat:abort', (_event, conversationId: string) =>
     agentRuntime.abort(conversationId),
   )
+  ipcMain.handle('chat:list-active-streams', () => agentRuntime.listActiveStreams())
 
   ipcMain.handle('docs:list', () => listAll())
   ipcMain.handle('docs:get', (_event, docPath: string) => getDoc(docPath))
