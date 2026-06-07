@@ -34,6 +34,7 @@ import { type AgentRuntimeEvent, createRuntimeEvent } from './runtime-events'
 import type { Settings } from './settings'
 import {
   createDefaultToolRegistry,
+  createToolRegistry,
   executeTool as executeRegisteredTool,
   type ToolContext,
   type ToolPack,
@@ -528,6 +529,18 @@ function cloneRuntimeToolPack(toolPack: ToolPack): ToolPack {
   }
 }
 
+function cloneRuntimeProfileMap(
+  profiles: ReadonlyMap<string, AgentProfile>,
+): Map<string, AgentProfile> {
+  return new Map(
+    Array.from(profiles.entries(), ([id, profile]) => [id, cloneRuntimeProfile(profile)]),
+  )
+}
+
+function cloneRuntimeToolRegistry(registry: ToolRegistry): ToolRegistry {
+  return createToolRegistry(registry.toolPacks.map(cloneRuntimeToolPack))
+}
+
 function cloneRuntimeSettings(settings: Settings): Settings {
   return cloneRuntimeValue(settings)
 }
@@ -612,9 +625,11 @@ export class AgentRuntime {
   }
 
   async getProfiles(): Promise<Map<string, AgentProfile>> {
-    if (!this.host.loadProfiles) return this.buildProfileMap(this.staticProfiles)
+    if (!this.host.loadProfiles) {
+      return cloneRuntimeProfileMap(this.buildProfileMap(this.staticProfiles))
+    }
     if (!this.profileLoad) this.profileLoad = this.loadProfiles()
-    return this.profileLoad
+    return cloneRuntimeProfileMap(await this.profileLoad)
   }
 
   async reloadProfiles(): Promise<Map<string, AgentProfile>> {
@@ -623,9 +638,9 @@ export class AgentRuntime {
   }
 
   async getToolRegistry(): Promise<ToolRegistry> {
-    if (!this.host.loadToolPacks) return this.fallbackToolRegistry
+    if (!this.host.loadToolPacks) return cloneRuntimeToolRegistry(this.fallbackToolRegistry)
     if (!this.toolRegistryLoad) this.toolRegistryLoad = this.loadToolRegistry()
-    return this.toolRegistryLoad
+    return cloneRuntimeToolRegistry(await this.toolRegistryLoad)
   }
 
   async reloadToolPacks(): Promise<ToolRegistry> {

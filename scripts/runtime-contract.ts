@@ -508,6 +508,15 @@ async function testRuntimeHostStaticExtensionContract(): Promise<void> {
     'coding',
     'host static profiles should take precedence over top-level compatibility profiles',
   )
+  const staticReturnedProfile = profiles.get('static-host-profile')
+  if (staticReturnedProfile) staticReturnedProfile.label = 'Caller Mutated Static Profile'
+  profiles.delete('static-host-profile')
+  const profilesAgain = await runtime.getProfiles()
+  assertEqual(
+    profilesAgain.get('static-host-profile')?.label,
+    'Host Profile',
+    'runtime should return profile map snapshots to callers',
+  )
 
   const registry = await runtime.getToolRegistry()
   assert(
@@ -523,6 +532,17 @@ async function testRuntimeHostStaticExtensionContract(): Promise<void> {
   assert(
     !registry.specsByName.has('top_level_static_tool'),
     'host static tool packs should take precedence over top-level compatibility tool packs',
+  )
+  const returnedSpec = registry.specsByName.get('host_static_tool')
+  if (returnedSpec) returnedSpec.metadata.allowedProfiles = []
+  registry.specsByName.delete('host_static_tool')
+  registry.specs.length = 0
+  const registryAgain = await runtime.getToolRegistry()
+  assert(
+    getToolDefinitionsForProfile('coding', registryAgain).some(
+      (definition) => definition.function.name === 'host_static_tool',
+    ),
+    'runtime should return tool registry snapshots to callers',
   )
 }
 
@@ -571,6 +591,13 @@ async function testRuntimeDynamicExtensionLoaderSnapshots(): Promise<void> {
 
   const profiles = await runtime.getProfiles()
   const registry = await runtime.getToolRegistry()
+  const returnedDynamicProfile = profiles.get('dynamic-snapshot-profile')
+  if (returnedDynamicProfile) returnedDynamicProfile.label = 'Caller Mutated Dynamic Profile'
+  profiles.delete('dynamic-snapshot-profile')
+  const returnedDynamicSpec = registry.specsByName.get('dynamic_snapshot_tool')
+  if (returnedDynamicSpec) returnedDynamicSpec.metadata.allowedProfiles = []
+  registry.specsByName.delete('dynamic_snapshot_tool')
+  registry.specs.length = 0
 
   loadedProfiles[0] = {
     ...loadedProfiles[0],
@@ -589,15 +616,15 @@ async function testRuntimeDynamicExtensionLoaderSnapshots(): Promise<void> {
   }
 
   assertEqual(
-    profiles.get('dynamic-snapshot-profile')?.label,
+    (await runtime.getProfiles()).get('dynamic-snapshot-profile')?.label,
     'Dynamic Snapshot Profile',
-    'dynamic loaded profiles should be snapped when loaded',
+    'dynamic loaded profiles should be snapped when loaded and returned as caller snapshots',
   )
   assert(
-    getToolDefinitionsForProfile('coding', registry).some(
+    getToolDefinitionsForProfile('coding', await runtime.getToolRegistry()).some(
       (definition) => definition.function.name === 'dynamic_snapshot_tool',
     ),
-    'dynamic loaded tool packs should be snapped when loaded',
+    'dynamic loaded tool packs should be snapped when loaded and returned as caller snapshots',
   )
 }
 
