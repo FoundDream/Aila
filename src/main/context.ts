@@ -68,6 +68,8 @@ function messageToRound(message: PersistedMessage): ContextRound | null {
     return { source: message, messages, charCost: charCost(messages) }
   }
 
+  if (message.status !== 'done') return null
+
   const content = textContent(message)
   const calls = toolCalls(message)
   if (!content && calls.length === 0) return null

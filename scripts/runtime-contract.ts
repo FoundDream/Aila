@@ -295,6 +295,94 @@ async function testRuntimeRetriesFailedAssistantTurn(): Promise<void> {
   })
 }
 
+async function testRuntimeContextSkipsNonDoneAssistantHistory(): Promise<void> {
+  await withTempDataDir(async () => {
+    const conversation = await createConversation()
+    await appendMessage(conversation.id, {
+      schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+      id: 'context-user-before-error',
+      role: 'user',
+      blocks: [{ type: 'text', content: 'request before failed assistant' }],
+      status: 'done',
+    })
+    await appendMessage(conversation.id, {
+      schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+      id: 'context-failed-assistant',
+      role: 'assistant',
+      blocks: [{ type: 'text', content: 'failed partial output should be excluded' }],
+      status: 'error',
+      error: 'provider failed',
+      model: { providerId: 'openrouter', modelId: 'contract/mock' },
+    })
+    await appendMessage(conversation.id, {
+      schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+      id: 'context-streaming-assistant',
+      role: 'assistant',
+      blocks: [{ type: 'text', content: 'legacy streaming output should be excluded' }],
+      status: 'streaming',
+      model: { providerId: 'openrouter', modelId: 'contract/mock' },
+    })
+
+    let modelInput = ''
+    const runtime = new AgentRuntime({
+      logger: { warn() {}, error() {} },
+      streamChat: async (req, handlers) => {
+        modelInput = JSON.stringify(req.messages)
+        req.onAgentEvent?.({
+          timestamp: Date.now(),
+          conversationId: req.conversationId,
+          messageId: req.assistantMessageId,
+          type: 'turn.started',
+          data: { providerId: req.selection.providerId, modelId: req.selection.modelId },
+        })
+        req.onAgentEvent?.({
+          timestamp: Date.now(),
+          conversationId: req.conversationId,
+          messageId: req.assistantMessageId,
+          type: 'turn.completed',
+          data: { outputBlockCount: 1 },
+        })
+        await handlers.onDone({
+          conversationId: req.conversationId,
+          messageId: req.assistantMessageId,
+          message: {
+            schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+            id: req.assistantMessageId,
+            role: 'assistant',
+            blocks: [{ type: 'text', content: 'continued after failed history' }],
+            status: 'done',
+            model: req.selection,
+          },
+        })
+      },
+    })
+
+    await runtime.send({
+      conversationId: conversation.id,
+      userText: 'continue after failed assistant',
+      selection: { providerId: 'openrouter', modelId: 'contract/mock' },
+      requestedProfileId: 'coding',
+    })
+
+    assert(
+      modelInput.includes('request before failed assistant'),
+      'context should keep user history before failed assistant',
+    )
+    assert(
+      modelInput.includes('continue after failed assistant'),
+      'context should include current user request',
+    )
+    assert(
+      !modelInput.includes('failed partial output should be excluded'),
+      'context should exclude failed assistant output',
+    )
+    assert(
+      !modelInput.includes('legacy streaming output should be excluded'),
+      'context should exclude legacy streaming assistant output',
+    )
+  })
+}
+
 async function testRuntimeAbortPersistsCancellationActivity(): Promise<void> {
   await withTempDataDir(async () => {
     const conversation = await createConversation()
@@ -1606,6 +1694,7 @@ async function main(): Promise<void> {
   await testRuntimeEmitsVersionedEvents()
   await testRuntimeRetriesDanglingUserTurn()
   await testRuntimeRetriesFailedAssistantTurn()
+  await testRuntimeContextSkipsNonDoneAssistantHistory()
   await testRuntimeAbortPersistsCancellationActivity()
   await testRuntimeUnexpectedStreamErrorPersistsFailureActivity()
   await testRuntimeSetupFailurePersistsAssistantError()
