@@ -520,6 +520,127 @@ async function testRuntimeInjectableStoreContract(): Promise<void> {
   })
 }
 
+async function testRuntimeConversationStoreFacadeContract(): Promise<void> {
+  const calls: string[] = []
+  const emitted: AgentRuntimeEvent[] = []
+  const eventsByConversation = new Map<string, PersistedAgentEvent[]>()
+  const summaries = new Map<string, ConversationSummary>()
+  const records = new Map<string, ConversationRecord>()
+  let nextId = 1
+
+  const store: AgentRuntimeStore = {
+    createConversation: async (docId) => {
+      const id = `injected-conversation-${nextId++}`
+      calls.push(`create:${docId ?? 'chat'}`)
+      const summary: ConversationSummary = {
+        schemaVersion: AILA_CONVERSATION_META_SCHEMA_VERSION,
+        id,
+        title: 'injected conversation',
+        createdAt: nextId,
+        updatedAt: nextId,
+        ...(docId ? { docId } : {}),
+      }
+      summaries.set(id, summary)
+      records.set(id, { meta: summary, messages: [] })
+      eventsByConversation.set(id, [
+        {
+          schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+          timestamp: 1,
+          conversationId: id,
+          messageId: 'assistant-injected-facade',
+          type: 'turn.started',
+          data: { providerId: 'openrouter', modelId: 'contract/mock' },
+        },
+      ])
+      return summary
+    },
+    getConversation: async (conversationId) => {
+      calls.push(`get:${conversationId}`)
+      const record = records.get(conversationId)
+      if (!record) throw new Error(`missing record: ${conversationId}`)
+      return record
+    },
+    upsertMessage: async () => {
+      throw new Error('conversation facade should not upsert messages')
+    },
+    appendAgentEventAndTouchConversation: async () => {
+      throw new Error('conversation facade should not append events')
+    },
+    listConversations: async () => {
+      calls.push('list')
+      return Array.from(summaries.values())
+    },
+    listAgentEvents: async (conversationId) => {
+      calls.push(`events:${conversationId}`)
+      return eventsByConversation.get(conversationId) ?? []
+    },
+    renameConversation: async (conversationId, title) => {
+      calls.push(`rename:${conversationId}:${title}`)
+      const current = summaries.get(conversationId)
+      if (!current) throw new Error(`missing summary: ${conversationId}`)
+      const renamed = { ...current, title, updatedAt: current.updatedAt + 1 }
+      summaries.set(conversationId, renamed)
+      const record = records.get(conversationId)
+      if (record) records.set(conversationId, { ...record, meta: renamed })
+      return renamed
+    },
+    setConversationUsage: async () => {
+      throw new Error('conversation facade should not persist usage')
+    },
+    deleteConversation: async () => {
+      throw new Error('conversation facade should not delete conversations')
+    },
+  }
+
+  const runtime = new AgentRuntime({
+    store,
+    onEvent: (event) => emitted.push(event),
+    logger: { warn() {}, error() {} },
+  })
+
+  const chat = await runtime.createConversation()
+  const doc = await runtime.createConversation({ docId: 'docs/facade.md' })
+  assertEqual(chat.docId, undefined, 'runtime create chat conversation')
+  assertEqual(doc.docId, 'docs/facade.md', 'runtime create doc-bound conversation')
+
+  assertEqual(
+    (await runtime.listConversations()).length,
+    2,
+    'runtime should list all conversations',
+  )
+  assertEqual(
+    (await runtime.listConversations({ docId: null })).map((summary) => summary.id).join(','),
+    chat.id,
+    'runtime should filter chat conversations',
+  )
+  assertEqual(
+    (await runtime.listConversations({ docId: 'docs/facade.md' }))[0]?.id,
+    doc.id,
+    'runtime should filter doc-bound conversations by metadata',
+  )
+
+  assertEqual(
+    (await runtime.getConversation(chat.id)).meta.id,
+    chat.id,
+    'runtime get conversation should delegate to store',
+  )
+  assertEqual(
+    (await runtime.listAgentEvents(chat.id))[0]?.type,
+    'turn.started',
+    'runtime list events should delegate to store',
+  )
+  const renamed = await runtime.renameConversation(chat.id, 'renamed via runtime')
+  assertEqual(renamed.title, 'renamed via runtime', 'runtime rename should delegate to store')
+  assert(
+    emitted.filter((event) => event.type === 'conversations:updated').length >= 3,
+    'runtime create and rename should emit conversation updates',
+  )
+  assert(
+    calls.some((call) => call === `rename:${chat.id}:renamed via runtime`),
+    'runtime should call injected rename',
+  )
+}
+
 async function testRuntimeRecoveryDelegatesToInjectedStore(): Promise<void> {
   const summary: ConversationSummary = {
     schemaVersion: AILA_CONVERSATION_META_SCHEMA_VERSION,
@@ -3673,6 +3794,7 @@ async function main(): Promise<void> {
   await testRuntimeHostBoundaryContract()
   await testRuntimeHostStaticExtensionContract()
   await testRuntimeInjectableStoreContract()
+  await testRuntimeConversationStoreFacadeContract()
   await testRuntimeRecoveryDelegatesToInjectedStore()
   await testRuntimeRecoveryUsesInjectedStoreReplay()
   await testRuntimeDeleteAssetCleanupHostBoundary()

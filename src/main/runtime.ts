@@ -18,6 +18,7 @@ import { buildAgentContext } from './context'
 import {
   type AgentEventAppendResult,
   AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+  createConversation as addConversation,
   appendAgentEventAndTouchConversation,
   type ConversationRecord,
   type ConversationSummary,
@@ -30,6 +31,7 @@ import {
   type PersistedTextBlock,
   recoverInterruptedConversationActivities,
   deleteConversation as removeConversation,
+  renameConversation,
   replayConversationActivity,
   setConversationUsage,
   upsertMessage,
@@ -148,6 +150,14 @@ export interface ActiveAssistantTurn {
   selection: ModelSelection
 }
 
+export interface RuntimeCreateConversationInput {
+  docId?: string | null
+}
+
+export interface RuntimeListConversationsInput {
+  docId?: string | null
+}
+
 export {
   type AgentRuntimeEvent,
   type AgentRuntimeEventMap,
@@ -189,6 +199,7 @@ export interface AgentRuntimeOptions extends AgentRuntimeHost {
 }
 
 export interface AgentRuntimeStore {
+  createConversation?: (docId?: string) => Promise<ConversationSummary>
   getConversation: (conversationId: string) => Promise<ConversationRecord>
   upsertMessage: (conversationId: string, message: PersistedMessage) => Promise<ConversationSummary>
   appendAgentEventAndTouchConversation: (
@@ -198,6 +209,7 @@ export interface AgentRuntimeStore {
   listConversations?: () => Promise<readonly ConversationSummary[]>
   listAgentEvents?: (conversationId: string) => Promise<readonly PersistedAgentEvent[]>
   recoverInterruptedConversationActivities?: (reason?: string) => Promise<ConversationSummary[]>
+  renameConversation?: (conversationId: string, title: string) => Promise<ConversationSummary>
   setConversationUsage: (
     conversationId: string,
     usage: { promptTokens: number; completionTokens: number; totalTokens: number },
@@ -206,12 +218,14 @@ export interface AgentRuntimeStore {
 }
 
 const DEFAULT_RUNTIME_STORE: AgentRuntimeStore = {
+  createConversation: addConversation,
   getConversation,
   upsertMessage,
   appendAgentEventAndTouchConversation,
   listConversations,
   listAgentEvents,
   recoverInterruptedConversationActivities,
+  renameConversation,
   setConversationUsage,
   deleteConversation: removeConversation,
 }
@@ -306,6 +320,41 @@ export class AgentRuntime {
   async reloadToolPacks(): Promise<ToolRegistry> {
     this.toolRegistryLoad = null
     return this.getToolRegistry()
+  }
+
+  async createConversation(
+    input: RuntimeCreateConversationInput = {},
+  ): Promise<ConversationSummary> {
+    if (!this.store.createConversation) throw new Error('runtime store cannot create conversations')
+    const summary = await this.store.createConversation(input.docId ?? undefined)
+    this.emit(createRuntimeEvent('conversations:updated', summary))
+    return summary
+  }
+
+  async listConversations(
+    input: RuntimeListConversationsInput = {},
+  ): Promise<ConversationSummary[]> {
+    if (!this.store.listConversations) throw new Error('runtime store cannot list conversations')
+    const conversations = [...(await this.store.listConversations())]
+    if (input.docId === undefined) return conversations
+    if (input.docId === null) return conversations.filter((summary) => !summary.docId)
+    return conversations.filter((summary) => summary.docId === input.docId)
+  }
+
+  getConversation(conversationId: string): Promise<ConversationRecord> {
+    return this.store.getConversation(conversationId)
+  }
+
+  async listAgentEvents(conversationId: string): Promise<PersistedAgentEvent[]> {
+    if (!this.store.listAgentEvents) throw new Error('runtime store cannot list agent events')
+    return [...(await this.store.listAgentEvents(conversationId))]
+  }
+
+  async renameConversation(conversationId: string, title: string): Promise<ConversationSummary> {
+    if (!this.store.renameConversation) throw new Error('runtime store cannot rename conversations')
+    const summary = await this.store.renameConversation(conversationId, title)
+    this.emit(createRuntimeEvent('conversations:updated', summary))
+    return summary
   }
 
   async send(input: RuntimeSendInput): Promise<RuntimeSendResult> {

@@ -104,6 +104,8 @@ export {
   type ConversationAbortReason,
   createRuntimeEvent,
   isRuntimeEventType,
+  type RuntimeCreateConversationInput,
+  type RuntimeListConversationsInput,
   type RuntimeRetryLastInput,
   type RuntimeSendInput,
   type RuntimeSendResult,
