@@ -1,10 +1,9 @@
 import { randomUUID } from 'node:crypto'
 import type { AgentEvent } from './agent'
-import {
-  type AgentEventAppendResult,
-  appendAgentEventAndTouchConversation,
-  type ConversationSummary,
-  type PersistedAgentEvent,
+import type {
+  AgentEventAppendResult,
+  ConversationSummary,
+  PersistedAgentEvent,
 } from './conversations'
 import { summarizeToolTarget, type ToolApprovalRequest } from './tools'
 
@@ -108,9 +107,7 @@ async function recordToolApprovalActivity(
   }
 
   try {
-    const result = callbacks.recordAgentEvent
-      ? await callbacks.recordAgentEvent(req.conversationId, event)
-      : await appendAgentEventAndTouchConversation(req.conversationId, event)
+    const result = await callbacks.recordAgentEvent?.(req.conversationId, event)
     if (!result) return
     callbacks.onAgentEvent?.(result.event)
     if (result.summary) callbacks.onConversationUpdated?.(result.summary)

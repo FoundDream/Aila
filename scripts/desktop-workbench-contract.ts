@@ -1216,6 +1216,7 @@ async function testToolApprovalsCanHydrateAndResolvePendingRequests(): Promise<v
     const resolved: ToolApprovalResolvedPayload[] = []
     const store = new ToolApprovalStore({
       timeoutMs: 1000,
+      recordAgentEvent: appendAgentEventAndTouchConversation,
       onRequest: (payload) => requested.push(payload),
       onResolved: (payload) => resolved.push(payload),
     })
@@ -1272,6 +1273,44 @@ async function testToolApprovalsCanHydrateAndResolvePendingRequests(): Promise<v
     const record = await getConversation(conversation.id)
     assertEqual(record.meta.activity?.state, 'running', 'approved activity state')
     assertEqual(record.meta.activity?.title, 'Approved: write_file', 'approved activity title')
+  })
+}
+
+async function testToolApprovalStoreRequiresInjectedActivityRecorder(): Promise<void> {
+  await withTempDataDir(async () => {
+    const conversation = await createConversation()
+    const store = new ToolApprovalStore({
+      timeoutMs: 1000,
+    })
+
+    const approval = store.request({
+      name: 'write_file',
+      args: { path: '/workspace/no-recorder.md', content: 'not persisted by default' },
+      metadata: {
+        name: 'write_file',
+        readOnly: false,
+        destructive: true,
+        requiresApproval: true,
+        access: ['write'],
+        scope: ['workspace'],
+        allowedProfiles: ['coding'],
+      },
+      conversationId: conversation.id,
+      messageId: 'assistant-message',
+      toolCallId: 'tool-call',
+    })
+
+    const requestId = store.list()[0]?.requestId
+    assert(requestId, 'approval request should be pending')
+    store.resolve(requestId, true, 'user')
+    assertEqual(await approval, true, 'approval without recorder should resolve')
+    await store.flushActivity()
+
+    assertEqual(
+      (await listAgentEvents(conversation.id)).length,
+      0,
+      'approval store should not write conversation activity without an injected recorder',
+    )
   })
 }
 
@@ -1381,6 +1420,7 @@ async function testToolApprovalCancellationClearsConversationRequests(): Promise
     const resolved: ToolApprovalResolvedPayload[] = []
     const store = new ToolApprovalStore({
       timeoutMs: 1000,
+      recordAgentEvent: appendAgentEventAndTouchConversation,
       onResolved: (payload) => resolved.push(payload),
     })
 
@@ -1592,6 +1632,7 @@ async function main(): Promise<void> {
   testRendererToolResultAppendsMissingAssistantMessage()
   await testInterruptedActivityRecovery()
   await testToolApprovalsCanHydrateAndResolvePendingRequests()
+  await testToolApprovalStoreRequiresInjectedActivityRecorder()
   await testToolApprovalStoreUsesInjectedActivityRecorder()
   await testToolApprovalTimeoutClearsPendingRequests()
   await testToolApprovalCancellationClearsConversationRequests()
