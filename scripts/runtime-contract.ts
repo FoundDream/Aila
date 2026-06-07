@@ -797,6 +797,35 @@ async function testMessageUpsertPreventsDuplicatePersistedMessages(): Promise<vo
   })
 }
 
+async function testAgentEventReplayDeduplicatesExactDuplicates(): Promise<void> {
+  await withTempDataDir(async () => {
+    const conversation = await createConversation()
+    const event = {
+      timestamp: 42,
+      conversationId: conversation.id,
+      messageId: 'assistant-message',
+      type: 'tool.execution.started' as const,
+      data: { toolCallId: 'tool-call', toolName: 'read_file' },
+    }
+
+    await appendAgentEvent(conversation.id, event)
+    await appendAgentEvent(conversation.id, event)
+
+    const events = await listAgentEvents(conversation.id)
+    assertEqual(events.length, 1, 'duplicate agent events should collapse during replay')
+    assertEqual(events[0]?.type, 'tool.execution.started', 'deduped event type')
+    assertEqual(events[0]?.data?.toolName, 'read_file', 'deduped event data')
+
+    const rawEvents = (
+      await readFile(join(getConversationsDir(), `${conversation.id}.events.jsonl`), 'utf-8')
+    )
+      .trim()
+      .split('\n')
+      .filter(Boolean)
+    assertEqual(rawEvents.length, 2, 'event log should remain append-only on disk')
+  })
+}
+
 async function testLegacyPersistenceNormalization(): Promise<void> {
   await withTempDataDir(async () => {
     const dir = getConversationsDir()
@@ -1426,6 +1455,7 @@ async function main(): Promise<void> {
   await testRuntimeDeleteRunsAbortCleanupBeforeWaitingForStream()
   await testPersistenceContract()
   await testMessageUpsertPreventsDuplicatePersistedMessages()
+  await testAgentEventReplayDeduplicatesExactDuplicates()
   await testLegacyPersistenceNormalization()
   await testToolRegistryContract()
   await testFilesystemToolWorkspaceRootsContract()

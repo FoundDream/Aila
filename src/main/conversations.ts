@@ -100,6 +100,7 @@ const DEFAULT_TITLE = '新对话'
 const TITLE_MAX = 40
 const metaWriteChains = new Map<string, Promise<void>>()
 const messageWriteChains = new Map<string, Promise<void>>()
+const eventWriteChains = new Map<string, Promise<void>>()
 const CONVERSATION_ACTIVITY_STATES = new Set<ConversationActivityState>([
   'running',
   'approval',
@@ -175,6 +176,20 @@ async function queueMessageWrite(id: string, writer: () => Promise<void>): Promi
   messageWriteChains.set(id, guard)
   guard.finally(() => {
     if (messageWriteChains.get(id) === guard) messageWriteChains.delete(id)
+  })
+  return run
+}
+
+async function queueEventWrite(id: string, writer: () => Promise<void>): Promise<void> {
+  const previous = eventWriteChains.get(id) ?? Promise.resolve()
+  const run = previous.catch(() => {}).then(writer)
+  const guard = run.then(
+    () => undefined,
+    () => undefined,
+  )
+  eventWriteChains.set(id, guard)
+  guard.finally(() => {
+    if (eventWriteChains.get(id) === guard) eventWriteChains.delete(id)
   })
   return run
 }
@@ -264,6 +279,16 @@ function prepareAgentEvent(event: AgentEvent): PersistedAgentEvent {
     ...event,
     schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
   }
+}
+
+function agentEventReplayKey(event: PersistedAgentEvent): string {
+  return [
+    event.timestamp,
+    event.conversationId,
+    event.messageId,
+    event.type,
+    JSON.stringify(event.data ?? {}),
+  ].join(':')
 }
 
 function normalizeAgentEvent(
@@ -576,7 +601,9 @@ export async function appendAgentEvent(
 ): Promise<PersistedAgentEvent> {
   await ensureDir()
   const prepared = prepareAgentEvent(event)
-  await appendFile(eventLogPath(id), `${JSON.stringify(prepared)}\n`, 'utf-8')
+  await queueEventWrite(id, () =>
+    appendFile(eventLogPath(id), `${JSON.stringify(prepared)}\n`, 'utf-8'),
+  )
   return prepared
 }
 
@@ -606,12 +633,17 @@ export async function listAgentEvents(id: string): Promise<PersistedAgentEvent[]
   }
 
   const events: PersistedAgentEvent[] = []
+  const seen = new Set<string>()
   for (const line of raw.split('\n')) {
     const trimmed = line.trim()
     if (!trimmed) continue
     try {
       const event = normalizeAgentEvent(JSON.parse(trimmed) as Partial<PersistedAgentEvent>, id)
-      if (event) events.push(event)
+      if (!event) continue
+      const key = agentEventReplayKey(event)
+      if (seen.has(key)) continue
+      seen.add(key)
+      events.push(event)
     } catch {
       // skip malformed line
     }
@@ -641,6 +673,7 @@ export async function setConversationUsage(
 export async function deleteConversation(id: string): Promise<void> {
   await metaWriteChains.get(id)?.catch(() => {})
   await messageWriteChains.get(id)?.catch(() => {})
+  await eventWriteChains.get(id)?.catch(() => {})
   await Promise.all([
     rm(metaPath(id), { force: true }),
     rm(logPath(id), { force: true }),
@@ -648,6 +681,7 @@ export async function deleteConversation(id: string): Promise<void> {
   ])
   metaWriteChains.delete(id)
   messageWriteChains.delete(id)
+  eventWriteChains.delete(id)
 }
 
 export interface DocRefRewrite {
