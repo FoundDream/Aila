@@ -88,6 +88,7 @@ export type AgentEventType =
   | 'turn.started'
   | 'turn.completed'
   | 'turn.failed'
+  | 'turn.cancelled'
   | 'tool.requested'
   | 'tool.input.delta'
   | 'tool.input.completed'
@@ -202,7 +203,12 @@ export interface ConversationUsage {
   updatedAt: number
 }
 
-export type ConversationActivityState = 'running' | 'approval' | 'completed' | 'failed'
+export type ConversationActivityState =
+  | 'running'
+  | 'approval'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
 
 export interface ConversationActivity {
   state: ConversationActivityState

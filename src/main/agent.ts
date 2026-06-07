@@ -98,6 +98,7 @@ export type AgentEventType =
   | 'turn.started'
   | 'turn.completed'
   | 'turn.failed'
+  | 'turn.cancelled'
   | 'tool.requested'
   | 'tool.input.delta'
   | 'tool.input.completed'
@@ -575,7 +576,7 @@ export async function streamChat(req: StreamRequest, handlers: StreamHandlers): 
             error: 'Aborted',
             message: builder.build(assistantMessageId, 'error', selection, 'Aborted'),
           })
-          emitAgentEvent('turn.failed', { error: 'Aborted' })
+          emitAgentEvent('turn.cancelled', { phase: 'completed', reason: 'abort_signal' })
           return
         }
         case 'error': {
@@ -611,6 +612,9 @@ export async function streamChat(req: StreamRequest, handlers: StreamHandlers): 
       error: message,
       message: builder.build(assistantMessageId, 'error', selection, message),
     })
-    emitAgentEvent('turn.failed', { error: message })
+    emitAgentEvent(
+      isAbort ? 'turn.cancelled' : 'turn.failed',
+      isAbort ? { phase: 'completed', reason: 'abort_signal' } : { error: message },
+    )
   }
 }

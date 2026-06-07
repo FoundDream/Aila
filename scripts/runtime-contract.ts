@@ -181,6 +181,113 @@ async function testRuntimeRetriesDanglingUserTurn(): Promise<void> {
   })
 }
 
+async function testRuntimeAbortPersistsCancellationActivity(): Promise<void> {
+  await withTempDataDir(async () => {
+    const conversation = await createConversation()
+    const events: AgentRuntimeEvent[] = []
+    let resolveStarted: () => void = () => {}
+    const started = new Promise<void>((resolve) => {
+      resolveStarted = resolve
+    })
+    const runtime = new AgentRuntime({
+      onEvent: (event) => events.push(event),
+      logger: { warn() {}, error() {} },
+      streamChat: async (req, handlers) => {
+        req.onAgentEvent?.({
+          timestamp: Date.now(),
+          conversationId: req.conversationId,
+          messageId: req.assistantMessageId,
+          type: 'turn.started',
+          data: { providerId: req.selection.providerId, modelId: req.selection.modelId },
+        })
+        resolveStarted()
+        await new Promise<void>((resolve) => {
+          if (req.signal.aborted) {
+            resolve()
+            return
+          }
+          req.signal.addEventListener('abort', () => resolve(), { once: true })
+        })
+        req.onAgentEvent?.({
+          timestamp: Date.now(),
+          conversationId: req.conversationId,
+          messageId: req.assistantMessageId,
+          type: 'turn.cancelled',
+          data: { phase: 'completed', reason: 'abort_signal' },
+        })
+        await handlers.onError({
+          conversationId: req.conversationId,
+          messageId: req.assistantMessageId,
+          error: 'Aborted',
+          message: {
+            schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+            id: req.assistantMessageId,
+            role: 'assistant',
+            blocks: [],
+            status: 'error',
+            error: 'Aborted',
+            model: req.selection,
+          },
+        })
+      },
+    })
+
+    const result = await runtime.send({
+      conversationId: conversation.id,
+      userText: 'cancel this turn',
+      selection: { providerId: 'openrouter', modelId: 'contract/mock' },
+      requestedProfileId: 'coding',
+    })
+    await started
+    await runtime.abort(conversation.id)
+
+    await waitFor(
+      () => events.some((event) => event.type === 'chat:error'),
+      'abort should complete the active stream with an error message',
+    )
+    await waitFor(
+      () =>
+        events.some(
+          (event) =>
+            event.type === 'agent:event' &&
+            event.data.type === 'turn.cancelled' &&
+            event.data.data?.phase === 'completed',
+        ),
+      'abort should persist completed cancellation activity',
+    )
+
+    const agentEvents = await listAgentEvents(conversation.id)
+    assert(
+      agentEvents.some(
+        (event) => event.type === 'turn.cancelled' && event.data?.phase === 'requested',
+      ),
+      'abort should persist user cancellation request',
+    )
+    assert(
+      agentEvents.some(
+        (event) => event.type === 'turn.cancelled' && event.data?.phase === 'completed',
+      ),
+      'abort should persist completed cancellation',
+    )
+    assert(
+      !agentEvents.some((event) => event.type === 'turn.failed'),
+      'abort should not be classified as a failed turn',
+    )
+
+    const record = await getConversation(conversation.id)
+    assertEqual(record.meta.activity?.state, 'cancelled', 'aborted activity state')
+    assertEqual(record.meta.activity?.title, 'Stopped', 'aborted activity title')
+    assertEqual(
+      record.meta.activity?.messageId,
+      result.assistantMessageId,
+      'aborted activity should point at the assistant turn',
+    )
+    assertEqual(record.messages.length, 2, 'abort should persist user and assistant messages')
+    assertEqual(record.messages[1]?.status, 'error', 'aborted assistant message status')
+    assertEqual(record.messages[1]?.error, 'Aborted', 'aborted assistant message error')
+  })
+}
+
 async function testPersistenceContract(): Promise<void> {
   await withTempDataDir(async () => {
     const conversation = await createConversation('docs/runtime-contract')
@@ -865,6 +972,7 @@ async function main(): Promise<void> {
   await testRuntimeEventContract()
   await testRuntimeEmitsVersionedEvents()
   await testRuntimeRetriesDanglingUserTurn()
+  await testRuntimeAbortPersistsCancellationActivity()
   await testPersistenceContract()
   await testLegacyPersistenceNormalization()
   await testToolRegistryContract()

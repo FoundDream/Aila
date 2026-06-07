@@ -41,6 +41,12 @@ function eventItem(event: PersistedAgentEvent): ActivityItem | null {
       return { title: 'Done', tone: 'success' }
     case 'turn.failed':
       return { title: 'Error', detail: stringData(data, 'error') ?? undefined, tone: 'error' }
+    case 'turn.cancelled':
+      return {
+        title: stringData(data, 'phase') === 'requested' ? 'Stop requested' : 'Stopped',
+        detail: stringData(data, 'reason') ?? undefined,
+        tone: 'warning',
+      }
     case 'tool.requested':
       return { title: `Tool requested: ${toolName ?? 'tool'}`, tone: 'running' }
     case 'tool.input.completed':

@@ -1,7 +1,12 @@
 import { randomUUID } from 'node:crypto'
 import { unlink } from 'node:fs/promises'
 import { join } from 'node:path'
-import { type ChatMessage, getModelInfo, type ModelSelection, streamChat } from './agent'
+import {
+  type ChatMessage,
+  streamChat as defaultStreamChat,
+  getModelInfo,
+  type ModelSelection,
+} from './agent'
 import {
   AGENT_PROFILES,
   type AgentProfile,
@@ -36,6 +41,8 @@ import {
 interface StreamSlot {
   controller: AbortController
   cleanup: Promise<void>
+  assistantMessageId: string
+  abortRecorded: boolean
 }
 
 function messageText(message: PersistedMessage): string {
@@ -83,6 +90,7 @@ export interface AgentRuntimeOptions {
   toolPacks?: readonly ToolPack[]
   loadToolPacks?: () => Promise<readonly ToolPack[]>
   workspaceRoots?: ToolContext['workspaceRoots'] | (() => ToolContext['workspaceRoots'])
+  streamChat?: typeof defaultStreamChat
   logger?: Pick<Console, 'error' | 'warn'>
 }
 
@@ -194,7 +202,12 @@ export class AgentRuntime {
     const cleanup = new Promise<void>((resolve) => {
       resolveCleanup = resolve
     })
-    this.activeStreams.set(conversationId, { controller, cleanup })
+    this.activeStreams.set(conversationId, {
+      controller,
+      cleanup,
+      assistantMessageId,
+      abortRecorded: false,
+    })
 
     const profile = await this.resolveProfile(requestedProfileId)
     const profileId = profile.baseProfileId
@@ -222,8 +235,23 @@ export class AgentRuntime {
     return { userMessage, assistantMessageId }
   }
 
-  abort(conversationId: string): void {
-    this.activeStreams.get(conversationId)?.controller.abort()
+  async abort(conversationId: string): Promise<void> {
+    const slot = this.activeStreams.get(conversationId)
+    if (!slot) return
+    slot.controller.abort()
+    if (slot.abortRecorded) return
+    slot.abortRecorded = true
+    try {
+      await this.recordAgentEvent({
+        timestamp: Date.now(),
+        conversationId,
+        messageId: slot.assistantMessageId,
+        type: 'turn.cancelled',
+        data: { phase: 'requested', reason: 'user' },
+      })
+    } catch (err) {
+      this.logger.warn('[runtime] cancellation activity append failed:', err)
+    }
   }
 
   abortAll(): void {
@@ -264,6 +292,17 @@ export class AgentRuntime {
 
   private emit(event: AgentRuntimeEvent): void {
     this.options.onEvent?.(event)
+  }
+
+  private async recordAgentEvent(
+    event: Parameters<typeof appendAgentEventAndTouchConversation>[1],
+  ): Promise<void> {
+    const { event: persisted, summary } = await appendAgentEventAndTouchConversation(
+      event.conversationId,
+      event,
+    )
+    this.emit(createRuntimeEvent('agent:event', persisted))
+    if (summary) this.emit(createRuntimeEvent('conversations:updated', summary))
   }
 
   private resolveWorkspaceRoots(): ToolContext['workspaceRoots'] {
@@ -327,7 +366,7 @@ export class AgentRuntime {
     controller: AbortController
     resolveCleanup: () => void
     profileId: AgentProfileId
-    messages: Parameters<typeof streamChat>[0]['messages']
+    messages: Parameters<typeof defaultStreamChat>[0]['messages']
     workspaceRoots?: ToolContext['workspaceRoots']
     toolRegistry: ToolRegistry
   }): Promise<void> {
@@ -345,6 +384,7 @@ export class AgentRuntime {
     let eventLogChain = Promise.resolve()
 
     try {
+      const streamChat = this.options.streamChat ?? defaultStreamChat
       await streamChat(
         {
           conversationId,
@@ -357,14 +397,7 @@ export class AgentRuntime {
           onToolApproval: this.options.onToolApproval,
           onAgentEvent: (event) => {
             eventLogChain = eventLogChain
-              .then(async () => {
-                const { event: persisted, summary } = await appendAgentEventAndTouchConversation(
-                  conversationId,
-                  event,
-                )
-                this.emit(createRuntimeEvent('agent:event', persisted))
-                if (summary) this.emit(createRuntimeEvent('conversations:updated', summary))
-              })
+              .then(() => this.recordAgentEvent(event))
               .catch((err) => {
                 this.logger.warn('[runtime] agent-event append failed:', err)
               })

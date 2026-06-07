@@ -1,6 +1,6 @@
 import type { ConversationSummary } from '../../types'
 
-export type ConversationStatusTone = 'approval' | 'running' | 'failed'
+export type ConversationStatusTone = 'approval' | 'running' | 'failed' | 'cancelled'
 
 export interface ConversationStatus {
   tone: ConversationStatusTone
@@ -38,6 +38,15 @@ export function getConversationStatus(
       tone: 'failed',
       label: 'error',
       ariaLabel: 'Last run failed',
+      title: activity.title,
+    }
+  }
+
+  if (activity?.state === 'cancelled') {
+    return {
+      tone: 'cancelled',
+      label: 'stop',
+      ariaLabel: 'Last run stopped',
       title: activity.title,
     }
   }

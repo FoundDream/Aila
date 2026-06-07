@@ -49,7 +49,12 @@ export interface ConversationUsage {
   updatedAt: number
 }
 
-export type ConversationActivityState = 'running' | 'approval' | 'completed' | 'failed'
+export type ConversationActivityState =
+  | 'running'
+  | 'approval'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
 
 export interface ConversationActivity {
   state: ConversationActivityState
@@ -98,6 +103,7 @@ const CONVERSATION_ACTIVITY_STATES = new Set<ConversationActivityState>([
   'approval',
   'completed',
   'failed',
+  'cancelled',
 ])
 
 async function ensureDir(): Promise<string> {
@@ -310,6 +316,13 @@ function activityFromAgentEvent(event: PersistedAgentEvent): ConversationActivit
         state: 'failed',
         title: 'Error',
         detail: dataString(data, 'error'),
+      }
+    case 'turn.cancelled':
+      return {
+        ...base,
+        state: 'cancelled',
+        title: dataString(data, 'phase') === 'requested' ? 'Stop requested' : 'Stopped',
+        detail: dataString(data, 'reason'),
       }
     case 'tool.requested':
       return { ...base, state: 'running', title: `Tool requested: ${toolLabel}` }
