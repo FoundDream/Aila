@@ -514,12 +514,26 @@ function normalizeRuntimeHost(options: AgentRuntimeOptions): AgentRuntimeHost {
   return host
 }
 
+function cloneStaticProfile(profile: AgentProfile): AgentProfile {
+  return cloneRuntimeValue(profile)
+}
+
+function cloneStaticToolPack(toolPack: ToolPack): ToolPack {
+  return {
+    ...toolPack,
+    tools: toolPack.tools.map((entry) => ({
+      run: entry.run,
+      spec: cloneRuntimeValue(entry.spec),
+    })),
+  }
+}
+
 function resolveStaticProfiles(options: AgentRuntimeOptions): readonly AgentProfile[] {
-  return options.host?.profiles ?? options.profiles ?? []
+  return (options.host?.profiles ?? options.profiles ?? []).map(cloneStaticProfile)
 }
 
 function resolveStaticToolPacks(options: AgentRuntimeOptions): readonly ToolPack[] {
-  return options.host?.toolPacks ?? options.toolPacks ?? []
+  return (options.host?.toolPacks ?? options.toolPacks ?? []).map(cloneStaticToolPack)
 }
 
 export class AgentRuntime {

@@ -22,6 +22,7 @@ import {
 } from '../src/main/conversations'
 import * as runtimeSdk from '../src/runtime'
 import {
+  type AgentProfile,
   AgentRuntime,
   type AgentRuntimeEvent,
   type AgentRuntimeHost,
@@ -432,29 +433,49 @@ async function testRuntimeHostStaticExtensionContract(): Promise<void> {
       },
     ],
   }
+  const topLevelProfiles: AgentProfile[] = [
+    {
+      id: 'static-host-profile',
+      label: 'Top Level Profile',
+      description: 'Top-level compatibility profile.',
+      baseProfileId: 'chat',
+    },
+  ]
+  const hostProfiles: AgentProfile[] = [
+    {
+      id: 'static-host-profile',
+      label: 'Host Profile',
+      description: 'Host static profile.',
+      baseProfileId: 'coding',
+    },
+  ]
+  const topLevelToolPacks = [topLevelPack]
+  const hostToolPacks = [hostPack]
 
   const runtime = new AgentRuntime({
-    profiles: [
-      {
-        id: 'static-host-profile',
-        label: 'Top Level Profile',
-        description: 'Top-level compatibility profile.',
-        baseProfileId: 'chat',
-      },
-    ],
-    toolPacks: [topLevelPack],
+    profiles: topLevelProfiles,
+    toolPacks: topLevelToolPacks,
     host: {
-      profiles: [
-        {
-          id: 'static-host-profile',
-          label: 'Host Profile',
-          description: 'Host static profile.',
-          baseProfileId: 'coding',
-        },
-      ],
-      toolPacks: [hostPack],
+      profiles: hostProfiles,
+      toolPacks: hostToolPacks,
     },
   })
+  hostProfiles[0] = {
+    ...hostProfiles[0],
+    label: 'Mutated Host Profile',
+    baseProfileId: 'chat',
+  }
+  hostPack.tools[0] = {
+    ...hostPack.tools[0],
+    spec: {
+      ...hostPack.tools[0].spec,
+      metadata: {
+        ...hostPack.tools[0].spec.metadata,
+        allowedProfiles: [],
+      },
+    },
+  }
+  hostToolPacks.push(topLevelPack)
 
   const profiles = await runtime.getProfiles()
   assertEqual(
@@ -472,6 +493,12 @@ async function testRuntimeHostStaticExtensionContract(): Promise<void> {
   assert(
     registry.specsByName.has('host_static_tool'),
     'host static tool packs should be part of the runtime host boundary',
+  )
+  assert(
+    getToolDefinitionsForProfile('coding', registry).some(
+      (definition) => definition.function.name === 'host_static_tool',
+    ),
+    'host static tool packs should be snapped at runtime construction',
   )
   assert(
     !registry.specsByName.has('top_level_static_tool'),
