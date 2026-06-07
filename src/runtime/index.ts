@@ -1,6 +1,13 @@
 export const AILA_RUNTIME_SDK_VERSION = 1
 
-export { getModelInfo, type ModelSelection, type UsageInfo } from '../main/agent'
+export {
+  type AgentEvent,
+  type AgentEventSink,
+  type AgentEventType,
+  getModelInfo,
+  type ModelSelection,
+  type UsageInfo,
+} from '../main/agent'
 export {
   AGENT_PROFILES,
   type AgentProfile,
@@ -21,6 +28,7 @@ export {
   appendMessage,
   type ConversationActivity,
   type ConversationActivityState,
+  type ConversationInterruptedRecoveryOptions,
   type ConversationRecord,
   type ConversationRuntimePendingApproval,
   type ConversationRuntimeReplayState,
@@ -29,6 +37,7 @@ export {
   type ConversationSummary,
   type ConversationUsage,
   createConversation,
+  createInterruptedConversationRecoveryEvent,
   deleteConversation,
   getConversation,
   listAgentEvents,

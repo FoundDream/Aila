@@ -100,6 +100,12 @@ export interface ConversationRuntimeReplayState {
   turn?: ConversationRuntimeReplayTurn
 }
 
+export interface ConversationInterruptedRecoveryOptions {
+  reason?: string
+  timestamp?: number
+  activity?: ConversationActivity
+}
+
 export interface ConversationMeta {
   schemaVersion: typeof AILA_CONVERSATION_META_SCHEMA_VERSION
   id: string
@@ -651,6 +657,52 @@ export function replayConversationRuntimeState(
   return state
 }
 
+export function createInterruptedConversationRecoveryEvent(
+  events: readonly PersistedAgentEvent[],
+  options: ConversationInterruptedRecoveryOptions = {},
+): AgentEvent | null {
+  const runtimeState = replayConversationRuntimeState(events)
+  if (!runtimeState.active || !runtimeState.turn) return null
+
+  const activity =
+    options.activity?.messageId === runtimeState.turn.assistantMessageId
+      ? options.activity
+      : undefined
+
+  return {
+    timestamp: options.timestamp ?? Date.now(),
+    conversationId: runtimeState.turn.conversationId,
+    messageId: runtimeState.turn.assistantMessageId,
+    type: 'turn.interrupted',
+    data: {
+      reason: options.reason ?? 'runtime restarted before this turn finished',
+      previousState: runtimeState.phase,
+      previousEventType: runtimeState.turn.eventType,
+      previousTitle: activity?.title ?? runtimeState.turn.eventType,
+    },
+  }
+}
+
+function interruptedRecoveryEventFromLegacyActivity(
+  conversationId: string,
+  activity: ConversationActivity | undefined,
+  reason: string,
+): AgentEvent | null {
+  if (!activity || (activity.state !== 'running' && activity.state !== 'approval')) return null
+  return {
+    timestamp: Date.now(),
+    conversationId,
+    messageId: activity.messageId,
+    type: 'turn.interrupted',
+    data: {
+      reason,
+      previousState: activity.state,
+      previousEventType: activity.eventType,
+      previousTitle: activity.title,
+    },
+  }
+}
+
 function activityEquals(
   left: ConversationActivity | undefined,
   right: ConversationActivity | undefined,
@@ -700,7 +752,6 @@ export async function recoverInterruptedConversationActivities(
     list.map(async (meta) => {
       const events = await listAgentEvents(meta.id)
       const replayedActivity = replayConversationActivity(events)
-      const runtimeState = replayConversationRuntimeState(events)
       const activity = replayedActivity ?? meta.activity
       if (!activity) return
       if (replayedActivity && !activityEquals(meta.activity, replayedActivity)) {
@@ -714,21 +765,15 @@ export async function recoverInterruptedConversationActivities(
               },
         )
       }
-      if (!runtimeState.active || !runtimeState.turn) return
-      const runtimeActivity =
-        activity.messageId === runtimeState.turn.assistantMessageId ? activity : undefined
-      const { summary } = await appendAgentEventAndTouchConversation(meta.id, {
-        timestamp: Date.now(),
-        conversationId: meta.id,
-        messageId: runtimeState.turn.assistantMessageId,
-        type: 'turn.interrupted',
-        data: {
+      const recoveryEvent =
+        createInterruptedConversationRecoveryEvent(events, { reason, activity }) ??
+        interruptedRecoveryEventFromLegacyActivity(
+          meta.id,
+          replayedActivity ? undefined : activity,
           reason,
-          previousState: runtimeState.phase,
-          previousEventType: runtimeState.turn.eventType,
-          previousTitle: runtimeActivity?.title ?? runtimeState.turn.eventType,
-        },
-      })
+        )
+      if (!recoveryEvent) return
+      const { summary } = await appendAgentEventAndTouchConversation(meta.id, recoveryEvent)
       if (summary) recovered.push(summary)
     }),
   )

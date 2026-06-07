@@ -21,6 +21,7 @@ import {
   configureDataDir,
   createConversation,
   createDefaultToolRegistry,
+  createInterruptedConversationRecoveryEvent,
   createRuntimeEvent,
   deleteConversation,
   executeTool,
@@ -2227,6 +2228,69 @@ function testAgentEventReplayKeepsToolFailureActive(): void {
   assertEqual(runtimeState.active, true, 'tool failure should remain active until a turn terminal')
 }
 
+function testInterruptedRecoveryEventHelper(): void {
+  const activeEvents: PersistedAgentEvent[] = [
+    {
+      schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+      timestamp: 10,
+      conversationId: 'conversation-recovery-helper',
+      messageId: 'assistant-recovery-helper',
+      type: 'turn.started',
+      data: { providerId: 'openrouter', modelId: 'contract/mock' },
+    },
+    {
+      schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+      timestamp: 20,
+      conversationId: 'conversation-recovery-helper',
+      messageId: 'assistant-recovery-helper',
+      type: 'tool.execution.failed',
+      data: {
+        toolCallId: 'tool-call',
+        toolName: 'write',
+        error: 'contract tool failure',
+      },
+    },
+  ]
+
+  const recoveryEvent = createInterruptedConversationRecoveryEvent(activeEvents, {
+    reason: 'contract restart',
+    timestamp: 30,
+    activity: {
+      state: 'failed',
+      title: 'Tool failed: write',
+      updatedAt: 20,
+      eventType: 'tool.execution.failed',
+      messageId: 'assistant-recovery-helper',
+      toolName: 'write',
+    },
+  })
+
+  assert(recoveryEvent, 'active runtime state should create interrupted recovery event')
+  assertEqual(recoveryEvent.timestamp, 30, 'recovery helper timestamp')
+  assertEqual(recoveryEvent.conversationId, 'conversation-recovery-helper', 'recovery conversation')
+  assertEqual(recoveryEvent.messageId, 'assistant-recovery-helper', 'recovery assistant message')
+  assertEqual(recoveryEvent.type, 'turn.interrupted', 'recovery event type')
+  assertEqual(recoveryEvent.data?.previousState, 'running', 'recovery previous state')
+  assertEqual(
+    recoveryEvent.data?.previousEventType,
+    'tool.execution.failed',
+    'recovery previous event type',
+  )
+  assertEqual(recoveryEvent.data?.previousTitle, 'Tool failed: write', 'recovery previous title')
+
+  const terminalEvent = createInterruptedConversationRecoveryEvent([
+    ...activeEvents,
+    {
+      schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+      timestamp: 40,
+      conversationId: 'conversation-recovery-helper',
+      messageId: 'assistant-recovery-helper',
+      type: 'turn.completed',
+    },
+  ])
+  assertEqual(terminalEvent, null, 'terminal runtime state should not create recovery event')
+}
+
 async function testInterruptedRecoveryUsesEventReplayOverStaleMeta(): Promise<void> {
   await withTempDataDir(async () => {
     const conversation = await createConversation()
@@ -2265,6 +2329,56 @@ async function testInterruptedRecoveryUsesEventReplayOverStaleMeta(): Promise<vo
       after.meta.activity?.eventType,
       'turn.completed',
       'recovery should repair activity event type from replay',
+    )
+  })
+}
+
+async function testInterruptedRecoveryFallsBackToLegacyMetaActivity(): Promise<void> {
+  await withTempDataDir(async () => {
+    const dir = getConversationsDir()
+    await mkdir(dir, { recursive: true })
+    const id = 'legacy-running-activity'
+    await writeFile(
+      join(dir, `${id}.meta.json`),
+      `${JSON.stringify(
+        {
+          schemaVersion: AILA_CONVERSATION_META_SCHEMA_VERSION,
+          id,
+          title: 'legacy activity',
+          createdAt: 1,
+          updatedAt: 2,
+          activity: {
+            state: 'running',
+            title: 'Model streaming',
+            updatedAt: 2,
+            eventType: 'turn.started',
+            messageId: 'legacy-assistant',
+          },
+        },
+        null,
+        2,
+      )}\n`,
+      'utf-8',
+    )
+
+    const recovered = await recoverInterruptedConversationActivities('contract restart')
+    assert(
+      recovered.some((summary) => summary.id === id),
+      'legacy running meta activity should recover as interrupted',
+    )
+
+    const events = await listAgentEvents(id)
+    const interrupted = events.find((event) => event.type === 'turn.interrupted')
+    assert(interrupted, 'legacy meta fallback should append interrupted event')
+    assertEqual(
+      interrupted.data?.previousState,
+      'running',
+      'legacy recovery should preserve previous state',
+    )
+    assertEqual(
+      interrupted.data?.previousEventType,
+      'turn.started',
+      'legacy recovery should preserve previous event type',
     )
   })
 }
@@ -3098,7 +3212,9 @@ async function main(): Promise<void> {
   testAgentEventReplayDerivesLatestActivity()
   testAgentEventReplayDerivesRuntimeState()
   testAgentEventReplayKeepsToolFailureActive()
+  testInterruptedRecoveryEventHelper()
   await testInterruptedRecoveryUsesEventReplayOverStaleMeta()
+  await testInterruptedRecoveryFallsBackToLegacyMetaActivity()
   await testInterruptedRecoveryUsesRuntimeReplayForNonTerminalToolFailure()
   await testLegacyPersistenceNormalization()
   await testToolRegistryContract()
