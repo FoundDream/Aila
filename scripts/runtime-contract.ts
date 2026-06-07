@@ -3515,6 +3515,91 @@ async function testToolRegistryContract(): Promise<void> {
   }
 }
 
+async function testRuntimeExecuteToolUsesHostBoundary(): Promise<void> {
+  const settings: Settings = { apiKeys: {}, defaultModel: null }
+  let loadSettingsCalled = false
+  let policySawRuntimeRequest = false
+  let approvalSawRuntimeRequest = false
+  let runnerSawRuntimeContext = false
+
+  const toolPack: ToolPack = {
+    id: 'runtime-execute-contract',
+    name: 'Runtime Execute Contract',
+    tools: [
+      {
+        spec: {
+          type: 'function',
+          function: {
+            name: 'contract_runtime_execute',
+            description: 'Exercise runtime-managed tool execution.',
+            parameters: {
+              type: 'object',
+              properties: { value: { type: 'string' } },
+              required: ['value'],
+              additionalProperties: false,
+            },
+          },
+          metadata: {
+            name: 'contract_runtime_execute',
+            readOnly: false,
+            destructive: true,
+            requiresApproval: true,
+            access: ['write'],
+            scope: ['workspace'],
+            allowedProfiles: ['coding'],
+          },
+        },
+        async run(args, ctx) {
+          runnerSawRuntimeContext =
+            args.value === 'runtime' &&
+            ctx.settings === settings &&
+            ctx.conversationId === 'conversation-runtime-tool' &&
+            ctx.messageId === 'assistant-runtime-tool' &&
+            ctx.toolCallId === 'tool-call-runtime-tool'
+          return JSON.stringify({ ok: true, value: args.value })
+        },
+      },
+    ],
+  }
+
+  const runtime = new AgentRuntime({
+    loadSettings: () => {
+      loadSettingsCalled = true
+      return settings
+    },
+    loadToolPacks: async () => [toolPack],
+    onToolPolicy: (request) => {
+      policySawRuntimeRequest =
+        request.name === 'contract_runtime_execute' &&
+        request.conversationId === 'conversation-runtime-tool' &&
+        request.messageId === 'assistant-runtime-tool' &&
+        request.toolCallId === 'tool-call-runtime-tool' &&
+        request.metadata.requiresApproval
+      return { action: 'ask' }
+    },
+    onToolApproval: async (request) => {
+      approvalSawRuntimeRequest =
+        request.name === 'contract_runtime_execute' && request.metadata.destructive
+      return true
+    },
+  })
+
+  const result = await runtime.executeTool({
+    name: 'contract_runtime_execute',
+    args: { value: 'runtime' },
+    profileId: 'coding',
+    conversationId: 'conversation-runtime-tool',
+    messageId: 'assistant-runtime-tool',
+    toolCallId: 'tool-call-runtime-tool',
+  })
+
+  assertEqual(JSON.parse(result).value, 'runtime', 'runtime execute tool result')
+  assertEqual(loadSettingsCalled, true, 'runtime execute should load host settings')
+  assertEqual(policySawRuntimeRequest, true, 'runtime execute should use host tool policy')
+  assertEqual(approvalSawRuntimeRequest, true, 'runtime execute should use host tool approval')
+  assertEqual(runnerSawRuntimeContext, true, 'runtime execute should pass runtime tool context')
+}
+
 async function testGenerateImageToolUsesInjectedImageDependencies(): Promise<void> {
   const imageBlocks: Array<{ url: string; mime: string; prompt: string }> = []
   let generatedPrompt: string | null = null
@@ -4141,6 +4226,7 @@ async function main(): Promise<void> {
   await testInterruptedRecoveryUsesRuntimeReplayForNonTerminalToolFailure()
   await testLegacyPersistenceNormalization()
   await testToolRegistryContract()
+  await testRuntimeExecuteToolUsesHostBoundary()
   await testGenerateImageToolUsesInjectedImageDependencies()
   testToolActivityTargetContract()
   await testFilesystemToolWorkspaceRootsContract()

@@ -6,16 +6,13 @@ import {
   type AgentRuntimeEvent,
   type ConversationSummary,
   configureDataDir,
-  executeTool,
   getDataDir,
   getExtensionReport,
   getProfilesDir,
   getToolPacksDir,
-  loadSettings,
   MODEL_CATALOG,
   type ModelSelection,
   PROVIDER_LABELS,
-  type Settings,
   type ToolApprovalRequest,
 } from '../runtime'
 import {
@@ -674,12 +671,11 @@ class AilaFullScreenApp {
     toolName: 'bash' | 'edit' | 'read' | 'write',
     args: Record<string, unknown>,
   ): Promise<string> {
-    const settings: Settings = loadSettings()
     this.setState({ active: true, status: `running /${toolName}` })
-    return executeTool(toolName, args, {
-      onToolApproval: (request) => this.askToolApproval(request),
+    return this.runtime.executeTool({
+      name: toolName,
+      args,
       profileId: localToolProfile(),
-      settings,
     })
   }
 

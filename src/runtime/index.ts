@@ -94,6 +94,7 @@ export {
   isRuntimeEventType,
   type RuntimeAppendUserMessageInput,
   type RuntimeCreateConversationInput,
+  type RuntimeExecuteToolInput,
   type RuntimeListConversationsInput,
   type RuntimeRecordAgentEventInput,
   type RuntimeRetryLastInput,

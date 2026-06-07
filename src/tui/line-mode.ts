@@ -14,7 +14,6 @@ import {
   configureDataDir,
   configuredProviders,
   type ExtensionReport,
-  executeTool,
   findModel,
   getDataDir,
   getExtensionReport,
@@ -28,7 +27,6 @@ import {
   type PersistedMessage,
   PROVIDER_LABELS,
   type ProviderId,
-  type Settings,
   type ToolApprovalRequest,
 } from '../runtime'
 
@@ -65,6 +63,7 @@ export function createTuiRuntime(input: TuiRuntimeInput = {}): AgentRuntime {
   return new AgentRuntime({
     ...(input.onEvent ? { onEvent: input.onEvent } : {}),
     ...(input.onToolApproval ? { onToolApproval: input.onToolApproval } : {}),
+    loadSettings,
     loadProfiles: async () => (await loadAgentProfilesFromDir()).map((profile) => profile.profile),
     loadToolPacks: async () => (await loadToolPacksFromDir()).map((pack) => pack.toolPack),
   })
@@ -452,16 +451,15 @@ export async function appendLocalContext(input: {
 }
 
 export async function runLocalTool(input: {
+  runtime: AgentRuntime
   toolName: 'read' | 'bash' | 'write' | 'edit'
   args: Record<string, unknown>
   profileId: AgentProfileId
-  settings: Settings
-  prompt: PromptReader
 }): Promise<string> {
-  return executeTool(input.toolName, input.args, {
-    settings: input.settings,
+  return input.runtime.executeTool({
+    name: input.toolName,
+    args: input.args,
     profileId: input.profileId,
-    onToolApproval: (request) => askToolApproval(input.prompt, request),
   })
 }
 
@@ -510,16 +508,14 @@ export async function handleSlashCommand(input: {
   conversationId: string
   runtime: AgentRuntime
   session: TuiSessionState
-  prompt: PromptReader
 }): Promise<'handled' | 'exit' | 'agent'> {
-  const { text, conversationId, runtime, session, prompt } = input
+  const { text, conversationId, runtime, session } = input
   if (!text.startsWith('/')) return 'agent'
 
   const commandText = text.slice(1).trim()
   const command = readShellToken(commandText)
   const name = command?.token.toLowerCase() ?? ''
   const rest = command?.rest ?? ''
-  const settings = loadSettings()
   const localToolProfileId: AgentProfileId = 'coding'
 
   try {
@@ -603,11 +599,10 @@ export async function handleSlashCommand(input: {
         if (!pathArg) throw new Error('usage: /read <path>')
         const path = workspacePath(pathArg)
         const result = await runLocalTool({
+          runtime,
           toolName: 'read',
           args: { path },
           profileId: localToolProfileId,
-          settings,
-          prompt,
         })
         writeLine(`\n[read] ${path}\n${displayPreview(result)}`)
         await appendLocalContext({ runtime, conversationId, command: `/read ${path}`, result })
@@ -616,11 +611,10 @@ export async function handleSlashCommand(input: {
       case 'run': {
         if (!rest) throw new Error('usage: /run <command>')
         const result = await runLocalTool({
+          runtime,
           toolName: 'bash',
           args: { command: rest },
           profileId: localToolProfileId,
-          settings,
-          prompt,
         })
         const display = formatToolResultForDisplay('bash', result)
         writeLine(`\n[run] ${rest}\n${displayPreview(display)}`)
@@ -637,11 +631,10 @@ export async function handleSlashCommand(input: {
         if (!parsed?.rest) throw new Error('usage: /write <path> <content>')
         const path = workspacePath(parsed.token)
         const result = await runLocalTool({
+          runtime,
           toolName: 'write',
           args: { path, content: parsed.rest },
           profileId: localToolProfileId,
-          settings,
-          prompt,
         })
         writeLine(`\n[write] ${path}\n${displayPreview(result)}`)
         await appendLocalContext({ runtime, conversationId, command: `/write ${path}`, result })
@@ -659,11 +652,10 @@ export async function handleSlashCommand(input: {
         }
         const path = workspacePath(parsed.token)
         const result = await runLocalTool({
+          runtime,
           toolName: 'edit',
           args: { path, oldText: oldText.trim(), newText: newText.trim() },
           profileId: localToolProfileId,
-          settings,
-          prompt,
         })
         writeLine(`\n[edit] ${path}\n${displayPreview(result)}`)
         await appendLocalContext({ runtime, conversationId, command: `/edit ${path}`, result })
@@ -809,7 +801,6 @@ export async function runLineMode(argv: string[] = process.argv.slice(2)): Promi
         conversationId,
         runtime,
         session,
-        prompt,
       })
       if (slashResult === 'exit') break
       if (slashResult === 'handled') {

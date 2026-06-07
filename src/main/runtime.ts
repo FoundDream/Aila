@@ -39,9 +39,10 @@ import {
   upsertMessage,
 } from './conversations'
 import { type AgentRuntimeEvent, createRuntimeEvent } from './runtime-events'
-import type { Settings } from './settings'
+import { loadSettings as defaultLoadSettings, type Settings } from './settings'
 import {
   createDefaultToolRegistry,
+  executeTool as executeRegisteredTool,
   type ToolContext,
   type ToolPack,
   type ToolRegistry,
@@ -174,6 +175,16 @@ export interface RuntimeListConversationsInput {
 export interface RuntimeAppendUserMessageInput {
   conversationId: string
   text: string
+}
+
+export interface RuntimeExecuteToolInput {
+  name: string
+  args: Record<string, unknown>
+  profileId: AgentProfileId
+  conversationId?: string
+  messageId?: string
+  toolCallId?: string
+  signal?: AbortSignal
 }
 
 export {
@@ -408,6 +419,30 @@ export class AgentRuntime {
       throw new Error('conversation was deleted')
     }
     return message
+  }
+
+  async executeTool(input: RuntimeExecuteToolInput): Promise<string> {
+    const registry = await this.getToolRegistry()
+    const settings = (await this.resolveSettings()) ?? defaultLoadSettings()
+    return executeRegisteredTool(
+      input.name,
+      input.args,
+      {
+        settings,
+        profileId: input.profileId,
+        ...(input.conversationId && { conversationId: input.conversationId }),
+        ...(input.messageId && { messageId: input.messageId }),
+        ...(input.toolCallId && { toolCallId: input.toolCallId }),
+        ...(input.signal && { signal: input.signal }),
+        workspaceRoots: this.resolveWorkspaceRoots(),
+        shellCwd: this.resolveShellCwd(),
+        onToolPolicy: this.host.onToolPolicy,
+        onToolApproval: this.host.onToolApproval,
+        generateImage: this.host.generateImage,
+        saveImage: this.host.saveImage,
+      },
+      registry,
+    )
   }
 
   async send(input: RuntimeSendInput): Promise<RuntimeSendResult> {
