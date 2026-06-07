@@ -774,6 +774,103 @@ async function testRuntimeDeleteRunsAbortCleanupBeforeWaitingForStream(): Promis
   })
 }
 
+async function testRuntimeDeleteTimesOutStuckStreamAndSuppressesLateEvents(): Promise<void> {
+  await withTempDataDir(async () => {
+    const conversation = await createConversation()
+    const events: AgentRuntimeEvent[] = []
+    let resolveStarted: () => void = () => {}
+    let resolveLateStream: () => void = () => {}
+    const started = new Promise<void>((resolve) => {
+      resolveStarted = resolve
+    })
+    const lateRelease = new Promise<void>((resolve) => {
+      resolveLateStream = resolve
+    })
+    let cleanupReason: string | null = null
+    let lateStreamFinished = false
+
+    const runtime = new AgentRuntime({
+      abortAllCleanupTimeoutMs: 10,
+      onEvent: (event) => events.push(event),
+      logger: { warn() {}, error() {} },
+      onConversationAbort: (_conversationId, reason) => {
+        cleanupReason = reason
+      },
+      streamChat: async (req, handlers) => {
+        req.onAgentEvent?.({
+          timestamp: Date.now(),
+          conversationId: req.conversationId,
+          messageId: req.assistantMessageId,
+          type: 'turn.started',
+          data: { providerId: req.selection.providerId, modelId: req.selection.modelId },
+        })
+        resolveStarted()
+        await lateRelease
+        handlers.onTextDelta({
+          conversationId: req.conversationId,
+          messageId: req.assistantMessageId,
+          delta: 'late text after delete',
+        })
+        req.onAgentEvent?.({
+          timestamp: Date.now(),
+          conversationId: req.conversationId,
+          messageId: req.assistantMessageId,
+          type: 'turn.completed',
+        })
+        await handlers.onDone({
+          conversationId: req.conversationId,
+          messageId: req.assistantMessageId,
+          message: {
+            schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+            id: req.assistantMessageId,
+            role: 'assistant',
+            blocks: [{ type: 'text', content: 'late done after delete' }],
+            status: 'done',
+            model: req.selection,
+          },
+        })
+        lateStreamFinished = true
+      },
+    })
+
+    await runtime.send({
+      conversationId: conversation.id,
+      userText: 'delete stuck stream',
+      selection: { providerId: 'openrouter', modelId: 'contract/mock' },
+      requestedProfileId: 'coding',
+    })
+    await started
+
+    await withTimeout(
+      runtime.deleteConversation(conversation.id),
+      'delete should time out stuck stream cleanup',
+      500,
+    )
+    assertEqual(cleanupReason, 'delete', 'stuck delete cleanup reason')
+    assertEqual(runtime.listActiveStreams().length, 0, 'stuck delete should clear active stream')
+    assert(
+      !(await listConversations()).some((record) => record.id === conversation.id),
+      'stuck delete should remove conversation',
+    )
+
+    resolveLateStream()
+    await waitFor(() => lateStreamFinished, 'late stream should be allowed to finish')
+    assert(
+      !(await listConversations()).some((record) => record.id === conversation.id),
+      'late stream should not recreate deleted conversation',
+    )
+    assertEqual(
+      (await listAgentEvents(conversation.id)).length,
+      0,
+      'late stream should not recreate deleted event log',
+    )
+    assert(
+      !events.some((event) => event.type === 'chat:text-delta' || event.type === 'chat:done'),
+      'late stream should not emit chat events after delete',
+    )
+  })
+}
+
 async function testRuntimeAbortAllWaitsForShutdownCleanup(): Promise<void> {
   await withTempDataDir(async () => {
     const conversation = await createConversation()
@@ -1700,6 +1797,7 @@ async function main(): Promise<void> {
   await testRuntimeSetupFailurePersistsAssistantError()
   await testRuntimeListsActiveAssistantTurns()
   await testRuntimeDeleteRunsAbortCleanupBeforeWaitingForStream()
+  await testRuntimeDeleteTimesOutStuckStreamAndSuppressesLateEvents()
   await testRuntimeAbortAllWaitsForShutdownCleanup()
   await testRuntimeAbortAllTimesOutStuckStreamCleanup()
   await testPersistenceContract()

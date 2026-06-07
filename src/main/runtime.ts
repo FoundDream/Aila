@@ -150,6 +150,7 @@ export interface AgentRuntimeOptions {
 
 export class AgentRuntime {
   private readonly activeStreams = new Map<string, StreamSlot>()
+  private readonly deletedConversations = new Set<string>()
   private readonly logger: Pick<Console, 'error' | 'warn'>
   private readonly staticProfiles: readonly AgentProfile[]
   private readonly staticToolPacks: readonly ToolPack[]
@@ -386,11 +387,18 @@ export class AgentRuntime {
   }
 
   async deleteConversation(conversationId: string): Promise<void> {
+    this.deletedConversations.add(conversationId)
     const slot = this.activeStreams.get(conversationId)
     if (slot) {
       slot.controller.abort()
       await this.notifyConversationAbort(conversationId, 'delete')
-      await slot.cleanup.catch(() => {})
+      const cleanedUp = await this.waitForStreamCleanup(
+        slot,
+        this.options.abortAllCleanupTimeoutMs ?? DEFAULT_ABORT_ALL_CLEANUP_TIMEOUT_MS,
+      )
+      if (!cleanedUp && this.activeStreams.get(conversationId)?.controller === slot.controller) {
+        this.activeStreams.delete(conversationId)
+      }
     } else {
       await this.notifyConversationAbort(conversationId, 'delete')
     }
@@ -415,9 +423,12 @@ export class AgentRuntime {
   private async persistAndAnnounce(
     conversationId: string,
     message: PersistedMessage,
-  ): Promise<void> {
+  ): Promise<boolean> {
+    if (this.deletedConversations.has(conversationId)) return false
     const summary = await upsertMessage(conversationId, message)
+    if (this.deletedConversations.has(conversationId)) return false
     this.emit(createRuntimeEvent('conversations:updated', summary))
+    return true
   }
 
   private async persistSetupFailure(
@@ -435,7 +446,8 @@ export class AgentRuntime {
       error: message,
       model: selection,
     }
-    await this.persistAndAnnounce(conversationId, errored)
+    const persisted = await this.persistAndAnnounce(conversationId, errored)
+    if (!persisted) return
     try {
       await this.recordAgentEvent({
         timestamp: Date.now(),
@@ -461,15 +473,23 @@ export class AgentRuntime {
     this.options.onEvent?.(event)
   }
 
+  private emitConversationEvent(conversationId: string, event: AgentRuntimeEvent): void {
+    if (this.deletedConversations.has(conversationId)) return
+    this.emit(event)
+  }
+
   private async recordAgentEvent(
     event: Parameters<typeof appendAgentEventAndTouchConversation>[1],
-  ): Promise<void> {
+  ): Promise<boolean> {
+    if (this.deletedConversations.has(event.conversationId)) return false
     const { event: persisted, summary } = await appendAgentEventAndTouchConversation(
       event.conversationId,
       event,
     )
+    if (this.deletedConversations.has(event.conversationId)) return false
     this.emit(createRuntimeEvent('agent:event', persisted))
     if (summary) this.emit(createRuntimeEvent('conversations:updated', summary))
+    return true
   }
 
   private resolveWorkspaceRoots(): ToolContext['workspaceRoots'] {
@@ -587,7 +607,9 @@ export class AgentRuntime {
         terminalAgentEventQueued = true
       }
       eventLogChain = eventLogChain
-        .then(() => this.recordAgentEvent(event))
+        .then(async () => {
+          await this.recordAgentEvent(event)
+        })
         .catch((err) => {
           this.logger.warn('[runtime] agent-event append failed:', err)
         })
@@ -609,16 +631,39 @@ export class AgentRuntime {
           toolRegistry,
         },
         {
-          onTextDelta: (event) => this.emit(createRuntimeEvent('chat:text-delta', event)),
-          onReasoningDelta: (event) => this.emit(createRuntimeEvent('chat:reasoning-delta', event)),
-          onToolCallStart: (event) => this.emit(createRuntimeEvent('chat:tool-call-start', event)),
+          onTextDelta: (event) =>
+            this.emitConversationEvent(
+              conversationId,
+              createRuntimeEvent('chat:text-delta', event),
+            ),
+          onReasoningDelta: (event) =>
+            this.emitConversationEvent(
+              conversationId,
+              createRuntimeEvent('chat:reasoning-delta', event),
+            ),
+          onToolCallStart: (event) =>
+            this.emitConversationEvent(
+              conversationId,
+              createRuntimeEvent('chat:tool-call-start', event),
+            ),
           onToolCallArgsDelta: (event) =>
-            this.emit(createRuntimeEvent('chat:tool-call-args-delta', event)),
+            this.emitConversationEvent(
+              conversationId,
+              createRuntimeEvent('chat:tool-call-args-delta', event),
+            ),
           onToolCallResult: (event) =>
-            this.emit(createRuntimeEvent('chat:tool-call-result', event)),
-          onImageBlock: (event) => this.emit(createRuntimeEvent('chat:image-block', event)),
+            this.emitConversationEvent(
+              conversationId,
+              createRuntimeEvent('chat:tool-call-result', event),
+            ),
+          onImageBlock: (event) =>
+            this.emitConversationEvent(
+              conversationId,
+              createRuntimeEvent('chat:image-block', event),
+            ),
           onDone: async (event) => {
-            await this.persistAndAnnounce(conversationId, event.message)
+            const persisted = await this.persistAndAnnounce(conversationId, event.message)
+            if (!persisted) return
             this.emit(createRuntimeEvent('chat:done', event))
             if (event.usage) {
               try {
@@ -630,7 +675,8 @@ export class AgentRuntime {
             }
           },
           onError: async (event) => {
-            await this.persistAndAnnounce(conversationId, event.message)
+            const persisted = await this.persistAndAnnounce(conversationId, event.message)
+            if (!persisted) return
             this.emit(createRuntimeEvent('chat:error', event))
           },
         },
@@ -648,15 +694,17 @@ export class AgentRuntime {
         error: message,
         model: selection,
       }
-      await this.persistAndAnnounce(conversationId, errored).catch(() => {})
-      this.emit(
-        createRuntimeEvent('chat:error', {
-          conversationId,
-          messageId: assistantMessageId,
-          error: message,
-          message: errored,
-        }),
-      )
+      const persisted = await this.persistAndAnnounce(conversationId, errored).catch(() => false)
+      if (persisted) {
+        this.emit(
+          createRuntimeEvent('chat:error', {
+            conversationId,
+            messageId: assistantMessageId,
+            error: message,
+            message: errored,
+          }),
+        )
+      }
       if (!terminalAgentEventQueued) {
         queueAgentEvent({
           timestamp: Date.now(),
