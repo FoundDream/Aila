@@ -528,6 +528,26 @@ function cloneRuntimeToolPack(toolPack: ToolPack): ToolPack {
   }
 }
 
+function cloneRuntimeSettings(settings: Settings): Settings {
+  return cloneRuntimeValue(settings)
+}
+
+function cloneRuntimeWorkspaceRoots(
+  roots: ToolContext['workspaceRoots'],
+): ToolContext['workspaceRoots'] {
+  return roots === undefined ? undefined : cloneRuntimeValue(roots)
+}
+
+function cloneRuntimeChatMessages(
+  messages: readonly ChatMessage[] | undefined,
+): ChatMessage[] | undefined {
+  return messages === undefined ? undefined : cloneRuntimeValue([...messages])
+}
+
+function cloneRuntimeConversationRecord(record: ConversationRecord): ConversationRecord {
+  return cloneRuntimeValue(record)
+}
+
 function resolveStaticProfiles(options: AgentRuntimeOptions): readonly AgentProfile[] {
   return (options.host?.profiles ?? options.profiles ?? []).map(cloneRuntimeProfile)
 }
@@ -773,19 +793,20 @@ export class AgentRuntime {
       const profile = await this.resolveProfile(requestedProfileId)
       profileId = profile.baseProfileId
 
+      const resolvedTransientContext =
+        cloneRuntimeChatMessages(transientContext) ??
+        (await this.resolveTransientContext({
+          conversationId,
+          record,
+          selection,
+          requestedProfileId,
+          source,
+        }))
       const context = buildAgentContext({
-        messages: record.messages,
+        messages: cloneRuntimeValue(record.messages),
         modelInfo: getModelInfo(selection.providerId, selection.modelId),
         profileInstructions: profile.instructions,
-        transientContext:
-          transientContext ??
-          (await this.resolveTransientContext({
-            conversationId,
-            record,
-            selection,
-            requestedProfileId,
-            source,
-          })),
+        transientContext: resolvedTransientContext,
       })
       messages = context.messages
       toolRegistry = await this.getToolRegistry()
@@ -1063,7 +1084,7 @@ export class AgentRuntime {
 
   private resolveWorkspaceRoots(): ToolContext['workspaceRoots'] {
     const roots = this.host.workspaceRoots
-    return typeof roots === 'function' ? roots() : roots
+    return cloneRuntimeWorkspaceRoots(typeof roots === 'function' ? roots() : roots)
   }
 
   private resolveShellCwd(): ToolContext['shellCwd'] {
@@ -1076,7 +1097,7 @@ export class AgentRuntime {
   }
 
   private async resolveSettingsOrDefault(): Promise<Settings> {
-    return (await this.resolveSettings()) ?? { ...EMPTY_RUNTIME_SETTINGS, apiKeys: {} }
+    return cloneRuntimeSettings((await this.resolveSettings()) ?? EMPTY_RUNTIME_SETTINGS)
   }
 
   private async buildToolContext(input: RuntimeToolContextInput): Promise<ToolContext> {
@@ -1099,7 +1120,14 @@ export class AgentRuntime {
   private async resolveTransientContext(
     input: RuntimeTransientContextInput,
   ): Promise<ChatMessage[] | undefined> {
-    return this.host.loadTransientContext?.(input)
+    if (!this.host.loadTransientContext) return undefined
+    return cloneRuntimeChatMessages(
+      await this.host.loadTransientContext({
+        ...input,
+        record: cloneRuntimeConversationRecord(input.record),
+        selection: cloneRuntimeValue(input.selection),
+      }),
+    )
   }
 
   private cleanupTimeoutMs(): number {
@@ -1204,7 +1232,7 @@ export class AgentRuntime {
     if (!this.host.cleanupConversationAssets) return
     try {
       const record = await this.store.getConversation(conversationId)
-      await this.host.cleanupConversationAssets(record)
+      await this.host.cleanupConversationAssets(cloneRuntimeConversationRecord(record))
     } catch (err) {
       this.logger.warn('[runtime] conversation asset cleanup failed:', err)
     }

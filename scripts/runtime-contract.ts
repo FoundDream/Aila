@@ -695,6 +695,7 @@ async function testRuntimeHostTransientContextUsesInjectedRecord(): Promise<void
   }
   let record: ConversationRecord = { meta: summary, messages: [] }
   let streamedContext: string | null = null
+  let streamedUserMessages: string[] = []
 
   const store: AgentRuntimeStore = {
     getConversation: async (id) => {
@@ -728,11 +729,19 @@ async function testRuntimeHostTransientContextUsesInjectedRecord(): Promise<void
   const runtime = new AgentRuntime({
     store,
     loadTransientContext: ({ record: inputRecord, source }) => {
-      calls.push(`context:${source}:${inputRecord.messages.length}`)
+      const messageCount = inputRecord.messages.length
+      calls.push(`context:${source}:${messageCount}`)
+      inputRecord.messages.push({
+        schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+        id: 'host-mutated-record-message',
+        role: 'user',
+        blocks: [{ type: 'text', content: 'host mutated record' }],
+        status: 'done',
+      })
       return [
         {
           role: 'system',
-          content: `host context for ${inputRecord.meta.id} with ${inputRecord.messages.length} messages`,
+          content: `host context for ${inputRecord.meta.id} with ${messageCount} messages`,
         },
       ]
     },
@@ -741,6 +750,9 @@ async function testRuntimeHostTransientContextUsesInjectedRecord(): Promise<void
         req.messages.find(
           (message) => message.role === 'system' && message.content.includes('host context for'),
         )?.content ?? null
+      streamedUserMessages = req.messages
+        .filter((message): message is { role: 'user'; content: string } => message.role === 'user')
+        .map((message) => message.content)
       await handlers.onDone({
         conversationId: req.conversationId,
         messageId: req.assistantMessageId,
@@ -778,6 +790,11 @@ async function testRuntimeHostTransientContextUsesInjectedRecord(): Promise<void
     `host context for ${conversationId} with 1 messages`,
     'host transient context should be passed to streamChat',
   )
+  assert(
+    !streamedUserMessages.includes('host mutated record'),
+    'host transient context should not mutate streamed persisted messages through input record',
+  )
+  assertEqual(record.messages.length, 2, 'host transient context should not mutate store record')
 }
 
 async function testRuntimeConversationStoreFacadeContract(): Promise<void> {
@@ -3982,7 +3999,8 @@ async function testToolRegistryContract(): Promise<void> {
 }
 
 async function testRuntimeExecuteToolUsesHostBoundary(): Promise<void> {
-  const settings: Settings = { apiKeys: {}, defaultModel: null }
+  const settings: Settings = { apiKeys: { openrouter: 'runtime-key' }, defaultModel: null }
+  const workspaceRoots = [{ path: '/contract/runtime-root', label: 'contract' }]
   let loadSettingsCalled = false
   let policySawRuntimeRequest = false
   let approvalSawRuntimeRequest = false
@@ -4016,12 +4034,21 @@ async function testRuntimeExecuteToolUsesHostBoundary(): Promise<void> {
           },
         },
         async run(args, ctx) {
+          const root = ctx.workspaceRoots?.[0]
           runnerSawRuntimeContext =
             args.value === 'runtime' &&
-            ctx.settings === settings &&
+            ctx.settings !== settings &&
+            ctx.settings.apiKeys.openrouter === 'runtime-key' &&
             ctx.conversationId === 'conversation-runtime-tool' &&
             ctx.messageId === 'assistant-runtime-tool' &&
-            ctx.toolCallId === 'tool-call-runtime-tool'
+            ctx.toolCallId === 'tool-call-runtime-tool' &&
+            ctx.workspaceRoots !== workspaceRoots &&
+            typeof root === 'object' &&
+            root.path === '/contract/runtime-root' &&
+            root.label === 'contract' &&
+            root !== workspaceRoots[0]
+          ctx.settings.apiKeys.openrouter = 'mutated'
+          if (root && typeof root !== 'string') root.label = 'mutated'
           return JSON.stringify({ ok: true, value: args.value })
         },
       },
@@ -4034,6 +4061,7 @@ async function testRuntimeExecuteToolUsesHostBoundary(): Promise<void> {
       return settings
     },
     loadToolPacks: async () => [toolPack],
+    workspaceRoots: () => workspaceRoots,
     onToolPolicy: (request) => {
       policySawRuntimeRequest =
         request.name === 'contract_runtime_execute' &&
@@ -4064,6 +4092,16 @@ async function testRuntimeExecuteToolUsesHostBoundary(): Promise<void> {
   assertEqual(policySawRuntimeRequest, true, 'runtime execute should use host tool policy')
   assertEqual(approvalSawRuntimeRequest, true, 'runtime execute should use host tool approval')
   assertEqual(runnerSawRuntimeContext, true, 'runtime execute should pass runtime tool context')
+  assertEqual(
+    settings.apiKeys.openrouter,
+    'runtime-key',
+    'runtime execute should isolate host settings from tool mutation',
+  )
+  assertEqual(
+    workspaceRoots[0]?.label,
+    'contract',
+    'runtime execute should isolate host workspace roots from tool mutation',
+  )
 }
 
 async function testGenerateImageToolUsesInjectedImageDependencies(): Promise<void> {
