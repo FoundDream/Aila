@@ -477,6 +477,7 @@ export class AgentRuntime {
     } catch (error) {
       this.logger.warn('[runtime] setup failure activity append failed:', error)
     }
+    if (this.deletedConversations.has(conversationId)) return
     this.emit(
       createRuntimeEvent('chat:error', {
         conversationId,

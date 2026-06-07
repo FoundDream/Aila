@@ -761,6 +761,68 @@ async function testRuntimeSetupFailureRejectsWhenConversationDeleted(): Promise<
   })
 }
 
+async function testRuntimeSetupFailureSuppressesChatErrorAfterDelete(): Promise<void> {
+  await withTempDataDir(async () => {
+    const conversation = await createConversation()
+    const events: AgentRuntimeEvent[] = []
+    let deleteStarted: Promise<void> | null = null
+    let runtime: AgentRuntime
+
+    runtime = new AgentRuntime({
+      onEvent: (event) => {
+        events.push(event)
+        if (
+          event.type === 'agent:event' &&
+          event.data.type === 'turn.failed' &&
+          event.data.messageId
+        ) {
+          deleteStarted = runtime.deleteConversation(conversation.id)
+        }
+      },
+      logger: { warn() {}, error() {} },
+      workspaceRoots: () => {
+        throw new Error('workspace roots unavailable before delete')
+      },
+      streamChat: async () => {
+        throw new Error('stream should not start after setup failure')
+      },
+    })
+
+    let rejected = false
+    try {
+      await runtime.send({
+        conversationId: conversation.id,
+        userText: 'delete after setup activity',
+        selection: { providerId: 'openrouter', modelId: 'contract/mock' },
+        requestedProfileId: 'coding',
+      })
+    } catch (error) {
+      rejected = error instanceof Error && error.message.includes('deleted')
+    }
+
+    assert(rejected, 'setup failure after activity delete should reject the send')
+    assert(
+      events.some((event) => event.type === 'agent:event' && event.data.type === 'turn.failed'),
+      'setup failure should emit activity before deletion',
+    )
+    assert(
+      !events.some((event) => event.type === 'chat:error'),
+      'setup failure should suppress chat:error after deletion',
+    )
+
+    if (deleteStarted) await deleteStarted
+    assert(
+      !(await listConversations()).some((record) => record.id === conversation.id),
+      'setup failure activity delete should remove conversation',
+    )
+    assertEqual(
+      (await listAgentEvents(conversation.id)).length,
+      0,
+      'setup failure activity delete should remove event log',
+    )
+  })
+}
+
 async function testRuntimeListsActiveAssistantTurns(): Promise<void> {
   await withTempDataDir(async () => {
     const conversation = await createConversation()
@@ -2198,6 +2260,7 @@ async function main(): Promise<void> {
   await testRuntimeUnexpectedStreamErrorPersistsFailureActivity()
   await testRuntimeSetupFailurePersistsAssistantError()
   await testRuntimeSetupFailureRejectsWhenConversationDeleted()
+  await testRuntimeSetupFailureSuppressesChatErrorAfterDelete()
   await testRuntimeListsActiveAssistantTurns()
   await testRuntimeDeleteRunsAbortCleanupBeforeWaitingForStream()
   await testRuntimeDeleteTimesOutStuckStreamAndSuppressesLateEvents()
