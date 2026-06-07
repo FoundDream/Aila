@@ -106,12 +106,14 @@ async function cancelConversationApprovals(conversationId: string): Promise<void
 }
 
 const agentRuntime = new AgentRuntime({
-  onEvent: (event) => send(event.type, event.data),
-  onToolApproval: requestToolApproval,
-  onConversationAbort: cancelConversationApprovals,
-  loadProfiles: async () => (await loadAgentProfilesFromDir()).map((profile) => profile.profile),
-  loadToolPacks: async () => (await loadToolPacksFromDir()).map((pack) => pack.toolPack),
-  workspaceRoots: getDesktopWorkspaceRoots,
+  host: {
+    onEvent: (event) => send(event.type, event.data),
+    onToolApproval: requestToolApproval,
+    onConversationAbort: cancelConversationApprovals,
+    loadProfiles: async () => (await loadAgentProfilesFromDir()).map((profile) => profile.profile),
+    loadToolPacks: async () => (await loadToolPacksFromDir()).map((pack) => pack.toolPack),
+    workspaceRoots: getDesktopWorkspaceRoots,
+  },
 })
 
 async function shutdownRuntimeWorkbench(): Promise<void> {

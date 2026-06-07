@@ -5,6 +5,7 @@ import * as runtimeSdk from '../src/runtime'
 import {
   AgentRuntime,
   type AgentRuntimeEvent,
+  type AgentRuntimeHost,
   AILA_AGENT_EVENT_SCHEMA_VERSION,
   AILA_CONVERSATION_META_SCHEMA_VERSION,
   AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
@@ -137,6 +138,128 @@ async function testRuntimeEmitsVersionedEvents(): Promise<void> {
         process.env.OPENROUTER_API_KEY = previousOpenRouterKey
       }
     }
+  })
+}
+
+async function testRuntimeHostBoundaryContract(): Promise<void> {
+  await withTempDataDir(async () => {
+    const conversation = await createConversation()
+    const events: AgentRuntimeEvent[] = []
+    let streamStarted = false
+    let approvalRequested = false
+    let approvalResult = false
+    let abortConversationId: string | null = null
+    let abortReason: string | null = null
+    let profileId: string | null = null
+    let workspaceRootPath: string | null = null
+    let workspaceRootLabel: string | null = null
+
+    const host: AgentRuntimeHost = {
+      onEvent: (event) => events.push(event),
+      onToolApproval: async (request) => {
+        approvalRequested = request.name === 'write_file'
+        return true
+      },
+      onConversationAbort: (conversationId, reason) => {
+        abortConversationId = conversationId
+        abortReason = reason
+      },
+      loadProfiles: async () => [
+        {
+          id: 'host-coding',
+          label: 'Host Coding',
+          description: 'Runtime host boundary fixture.',
+          baseProfileId: 'coding',
+          instructions: 'Use host-provided profile instructions.',
+        },
+      ],
+      workspaceRoots: () => [{ path: '/host/workspace', label: 'host-root' }],
+      streamChat: async (req, handlers) => {
+        profileId = req.profileId
+        const [root] = req.workspaceRoots ?? []
+        if (root && typeof root !== 'string') {
+          workspaceRootPath = root.path
+          workspaceRootLabel = root.label ?? null
+        }
+        approvalResult =
+          (await req.onToolApproval?.({
+            name: 'write_file',
+            args: { path: '/host/workspace/file.md', content: 'approved' },
+            metadata: {
+              name: 'write_file',
+              readOnly: false,
+              destructive: true,
+              requiresApproval: true,
+              access: ['write'],
+              scope: ['workspace'],
+              allowedProfiles: ['coding'],
+            },
+            conversationId: req.conversationId,
+            messageId: req.assistantMessageId,
+            toolCallId: 'host-tool-call',
+          })) === true
+        req.onAgentEvent?.({
+          timestamp: Date.now(),
+          conversationId: req.conversationId,
+          messageId: req.assistantMessageId,
+          type: 'turn.started',
+          data: { providerId: req.selection.providerId, modelId: req.selection.modelId },
+        })
+        streamStarted = true
+        await new Promise<void>((resolve) => {
+          if (req.signal.aborted) {
+            resolve()
+            return
+          }
+          req.signal.addEventListener('abort', () => resolve(), { once: true })
+        })
+        req.onAgentEvent?.({
+          timestamp: Date.now(),
+          conversationId: req.conversationId,
+          messageId: req.assistantMessageId,
+          type: 'turn.cancelled',
+          data: { phase: 'completed', reason: 'abort_signal' },
+        })
+        await handlers.onError({
+          conversationId: req.conversationId,
+          messageId: req.assistantMessageId,
+          error: 'Aborted',
+          message: {
+            schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+            id: req.assistantMessageId,
+            role: 'assistant',
+            blocks: [],
+            status: 'error',
+            error: 'Aborted',
+            model: req.selection,
+          },
+        })
+      },
+      logger: { warn() {}, error() {} },
+    }
+    const runtime = new AgentRuntime({ host })
+
+    await runtime.send({
+      conversationId: conversation.id,
+      userText: 'exercise host boundary',
+      selection: { providerId: 'openrouter', modelId: 'contract/mock' },
+      requestedProfileId: 'host-coding',
+    })
+    await waitFor(() => streamStarted, 'host streamChat should start')
+    await runtime.abort(conversation.id)
+
+    assertEqual(profileId, 'coding', 'host-loaded profile should resolve to base profile')
+    assertEqual(workspaceRootPath, '/host/workspace', 'host workspace root path')
+    assertEqual(workspaceRootLabel, 'host-root', 'host workspace root label')
+    assertEqual(approvalRequested, true, 'host tool approval should receive tool request')
+    assertEqual(approvalResult, true, 'host tool approval should resolve request')
+    assertEqual(abortConversationId, conversation.id, 'host abort cleanup conversation id')
+    assertEqual(abortReason, 'user', 'host abort cleanup reason')
+    assert(
+      events.some((event) => event.type === 'agent:event' && event.data.type === 'turn.cancelled'),
+      'host onEvent should receive runtime events',
+    )
+    assertEqual(runtime.listActiveStreams().length, 0, 'host aborted stream should settle')
   })
 }
 
@@ -2326,6 +2449,7 @@ export default {
 async function main(): Promise<void> {
   await testRuntimeEventContract()
   await testRuntimeEmitsVersionedEvents()
+  await testRuntimeHostBoundaryContract()
   await testRuntimeRetriesDanglingUserTurn()
   await testRuntimeRetriesFailedAssistantTurn()
   await testRuntimeContextSkipsNonDoneAssistantHistory()

@@ -131,7 +131,7 @@ export {
   isRuntimeEventType,
 } from './runtime-events'
 
-export interface AgentRuntimeOptions {
+export interface AgentRuntimeHost {
   onEvent?: (event: AgentRuntimeEvent) => void
   onToolApproval?: ToolContext['onToolApproval']
   onConversationAbort?: (
@@ -144,13 +144,43 @@ export interface AgentRuntimeOptions {
   loadToolPacks?: () => Promise<readonly ToolPack[]>
   workspaceRoots?: ToolContext['workspaceRoots'] | (() => ToolContext['workspaceRoots'])
   streamChat?: typeof defaultStreamChat
-  abortAllCleanupTimeoutMs?: number
   logger?: Pick<Console, 'error' | 'warn'>
+}
+
+export interface AgentRuntimeOptions extends AgentRuntimeHost {
+  host?: AgentRuntimeHost
+  profiles?: readonly AgentProfile[]
+  toolPacks?: readonly ToolPack[]
+  abortAllCleanupTimeoutMs?: number
+}
+
+function normalizeRuntimeHost(options: AgentRuntimeOptions): AgentRuntimeHost {
+  const host: AgentRuntimeHost = {}
+  if (options.onEvent) host.onEvent = options.onEvent
+  if (options.onToolApproval) host.onToolApproval = options.onToolApproval
+  if (options.onConversationAbort) host.onConversationAbort = options.onConversationAbort
+  if (options.loadProfiles) host.loadProfiles = options.loadProfiles
+  if (options.loadToolPacks) host.loadToolPacks = options.loadToolPacks
+  if (options.workspaceRoots !== undefined) host.workspaceRoots = options.workspaceRoots
+  if (options.streamChat) host.streamChat = options.streamChat
+  if (options.logger) host.logger = options.logger
+
+  if (!options.host) return host
+  if (options.host.onEvent) host.onEvent = options.host.onEvent
+  if (options.host.onToolApproval) host.onToolApproval = options.host.onToolApproval
+  if (options.host.onConversationAbort) host.onConversationAbort = options.host.onConversationAbort
+  if (options.host.loadProfiles) host.loadProfiles = options.host.loadProfiles
+  if (options.host.loadToolPacks) host.loadToolPacks = options.host.loadToolPacks
+  if (options.host.workspaceRoots !== undefined) host.workspaceRoots = options.host.workspaceRoots
+  if (options.host.streamChat) host.streamChat = options.host.streamChat
+  if (options.host.logger) host.logger = options.host.logger
+  return host
 }
 
 export class AgentRuntime {
   private readonly activeStreams = new Map<string, StreamSlot>()
   private readonly deletedConversations = new Set<string>()
+  private readonly host: AgentRuntimeHost
   private readonly logger: Pick<Console, 'error' | 'warn'>
   private readonly staticProfiles: readonly AgentProfile[]
   private readonly staticToolPacks: readonly ToolPack[]
@@ -159,14 +189,15 @@ export class AgentRuntime {
   private toolRegistryLoad: Promise<ToolRegistry> | null = null
 
   constructor(private readonly options: AgentRuntimeOptions = {}) {
-    this.logger = options.logger ?? console
+    this.host = normalizeRuntimeHost(options)
+    this.logger = this.host.logger ?? console
     this.staticProfiles = options.profiles ?? []
     this.staticToolPacks = options.toolPacks ?? []
     this.fallbackToolRegistry = createDefaultToolRegistry(this.staticToolPacks)
   }
 
   async getProfiles(): Promise<Map<string, AgentProfile>> {
-    if (!this.options.loadProfiles) return this.buildProfileMap(this.staticProfiles)
+    if (!this.host.loadProfiles) return this.buildProfileMap(this.staticProfiles)
     if (!this.profileLoad) this.profileLoad = this.loadProfiles()
     return this.profileLoad
   }
@@ -177,7 +208,7 @@ export class AgentRuntime {
   }
 
   async getToolRegistry(): Promise<ToolRegistry> {
-    if (!this.options.loadToolPacks) return this.fallbackToolRegistry
+    if (!this.host.loadToolPacks) return this.fallbackToolRegistry
     if (!this.toolRegistryLoad) this.toolRegistryLoad = this.loadToolRegistry()
     return this.toolRegistryLoad
   }
@@ -495,7 +526,7 @@ export class AgentRuntime {
   }
 
   private emit(event: AgentRuntimeEvent): void {
-    this.options.onEvent?.(event)
+    this.host.onEvent?.(event)
   }
 
   private emitStreamEvent(
@@ -522,7 +553,7 @@ export class AgentRuntime {
   }
 
   private resolveWorkspaceRoots(): ToolContext['workspaceRoots'] {
-    const roots = this.options.workspaceRoots
+    const roots = this.host.workspaceRoots
     return typeof roots === 'function' ? roots() : roots
   }
 
@@ -583,7 +614,7 @@ export class AgentRuntime {
     reason: ConversationAbortReason,
   ): Promise<void> {
     try {
-      await this.options.onConversationAbort?.(conversationId, reason)
+      await this.host.onConversationAbort?.(conversationId, reason)
     } catch (error) {
       this.logger.warn('[runtime] conversation abort cleanup failed:', error)
     }
@@ -612,7 +643,7 @@ export class AgentRuntime {
 
   private async loadProfiles(): Promise<Map<string, AgentProfile>> {
     try {
-      const loaded = await this.options.loadProfiles?.()
+      const loaded = await this.host.loadProfiles?.()
       return this.buildProfileMap([...this.staticProfiles, ...(loaded ?? [])])
     } catch (error) {
       this.logger.warn(
@@ -642,7 +673,7 @@ export class AgentRuntime {
 
   private async loadToolRegistry(): Promise<ToolRegistry> {
     try {
-      const loaded = await this.options.loadToolPacks?.()
+      const loaded = await this.host.loadToolPacks?.()
       return createDefaultToolRegistry([...this.staticToolPacks, ...(loaded ?? [])])
     } catch (error) {
       this.logger.warn(
@@ -698,7 +729,7 @@ export class AgentRuntime {
     }
 
     try {
-      const streamChat = this.options.streamChat ?? defaultStreamChat
+      const streamChat = this.host.streamChat ?? defaultStreamChat
       await streamChat(
         {
           conversationId,
@@ -708,7 +739,7 @@ export class AgentRuntime {
           signal: controller.signal,
           profileId,
           workspaceRoots,
-          onToolApproval: this.options.onToolApproval,
+          onToolApproval: this.host.onToolApproval,
           onAgentEvent: queueAgentEvent,
           toolRegistry,
         },
