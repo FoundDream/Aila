@@ -1,6 +1,5 @@
 #!/usr/bin/env bun
 
-import { randomUUID } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -11,8 +10,6 @@ import {
   type AgentProfileId,
   AgentRuntime,
   type AgentRuntimeEvent,
-  AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
-  appendMessage,
   type ConversationSummary,
   configureDataDir,
   configuredProviders,
@@ -429,21 +426,14 @@ export function formatToolResultForDisplay(toolName: string, result: string): st
 }
 
 export async function appendLocalContext(input: {
+  runtime: AgentRuntime
   conversationId: string
   command: string
   result: string
 }): Promise<void> {
-  await appendMessage(input.conversationId, {
-    schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
-    id: randomUUID(),
-    role: 'user',
-    blocks: [
-      {
-        type: 'text',
-        content: `[local command]\n${input.command}\n\n[result]\n${input.result}`,
-      },
-    ],
-    status: 'done',
+  await input.runtime.appendUserMessage({
+    conversationId: input.conversationId,
+    text: `[local command]\n${input.command}\n\n[result]\n${input.result}`,
   })
 }
 
@@ -606,7 +596,7 @@ export async function handleSlashCommand(input: {
           prompt,
         })
         writeLine(`\n[read] ${path}\n${displayPreview(result)}`)
-        await appendLocalContext({ conversationId, command: `/read ${path}`, result })
+        await appendLocalContext({ runtime, conversationId, command: `/read ${path}`, result })
         return 'handled'
       }
       case 'run': {
@@ -620,7 +610,12 @@ export async function handleSlashCommand(input: {
         })
         const display = formatToolResultForDisplay('bash', result)
         writeLine(`\n[run] ${rest}\n${displayPreview(display)}`)
-        await appendLocalContext({ conversationId, command: `/run ${rest}`, result: display })
+        await appendLocalContext({
+          runtime,
+          conversationId,
+          command: `/run ${rest}`,
+          result: display,
+        })
         return 'handled'
       }
       case 'write': {
@@ -635,7 +630,7 @@ export async function handleSlashCommand(input: {
           prompt,
         })
         writeLine(`\n[write] ${path}\n${displayPreview(result)}`)
-        await appendLocalContext({ conversationId, command: `/write ${path}`, result })
+        await appendLocalContext({ runtime, conversationId, command: `/write ${path}`, result })
         return 'handled'
       }
       case 'edit': {
@@ -657,7 +652,7 @@ export async function handleSlashCommand(input: {
           prompt,
         })
         writeLine(`\n[edit] ${path}\n${displayPreview(result)}`)
-        await appendLocalContext({ conversationId, command: `/edit ${path}`, result })
+        await appendLocalContext({ runtime, conversationId, command: `/edit ${path}`, result })
         return 'handled'
       }
       default:

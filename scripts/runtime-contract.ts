@@ -641,6 +641,65 @@ async function testRuntimeConversationStoreFacadeContract(): Promise<void> {
   )
 }
 
+async function testRuntimeAppendUserMessageUsesInjectedStore(): Promise<void> {
+  const conversationId = 'append-user-message-contract'
+  const calls: string[] = []
+  const emitted: AgentRuntimeEvent[] = []
+  const store: AgentRuntimeStore = {
+    getConversation: async () => {
+      throw new Error('append user message should not read conversation')
+    },
+    upsertMessage: async (id, message) => {
+      calls.push(`upsert:${id}:${message.role}`)
+      const summary: ConversationSummary = {
+        schemaVersion: AILA_CONVERSATION_META_SCHEMA_VERSION,
+        id,
+        title: 'append user message',
+        createdAt: 1,
+        updatedAt: 2,
+      }
+      return summary
+    },
+    appendAgentEventAndTouchConversation: async () => {
+      throw new Error('append user message should not append agent events')
+    },
+    setConversationUsage: async () => {
+      throw new Error('append user message should not persist usage')
+    },
+    deleteConversation: async () => {
+      throw new Error('append user message should not delete conversation')
+    },
+  }
+
+  const runtime = new AgentRuntime({
+    store,
+    onEvent: (event) => emitted.push(event),
+    logger: { warn() {}, error() {} },
+  })
+  const message = await runtime.appendUserMessage({
+    conversationId,
+    text: '[local command]\nresult',
+  })
+
+  assertEqual(message.role, 'user', 'runtime append user message role')
+  assertEqual(
+    message.blocks[0]?.type === 'text' ? message.blocks[0].content : '',
+    '[local command]\nresult',
+    'runtime append user message content',
+  )
+  assertEqual(
+    calls.join(','),
+    `upsert:${conversationId}:user`,
+    'runtime append user message should use injected store',
+  )
+  assert(
+    emitted.some(
+      (event) => event.type === 'conversations:updated' && event.data.id === conversationId,
+    ),
+    'runtime append user message should emit conversation update',
+  )
+}
+
 async function testRuntimeRecoveryDelegatesToInjectedStore(): Promise<void> {
   const summary: ConversationSummary = {
     schemaVersion: AILA_CONVERSATION_META_SCHEMA_VERSION,
@@ -3795,6 +3854,7 @@ async function main(): Promise<void> {
   await testRuntimeHostStaticExtensionContract()
   await testRuntimeInjectableStoreContract()
   await testRuntimeConversationStoreFacadeContract()
+  await testRuntimeAppendUserMessageUsesInjectedStore()
   await testRuntimeRecoveryDelegatesToInjectedStore()
   await testRuntimeRecoveryUsesInjectedStoreReplay()
   await testRuntimeDeleteAssetCleanupHostBoundary()

@@ -613,6 +613,7 @@ class AilaFullScreenApp {
       command: `/read ${path}`,
       conversationId: this.conversationId,
       result,
+      runtime: this.runtime,
     })
   }
 
@@ -625,6 +626,7 @@ class AilaFullScreenApp {
       command: `/run ${rest}`,
       conversationId: this.conversationId,
       result: display,
+      runtime: this.runtime,
     })
   }
 
@@ -638,6 +640,7 @@ class AilaFullScreenApp {
       command: `/write ${path}`,
       conversationId: this.conversationId,
       result,
+      runtime: this.runtime,
     })
   }
 
@@ -658,6 +661,7 @@ class AilaFullScreenApp {
       command: `/edit ${path}`,
       conversationId: this.conversationId,
       result,
+      runtime: this.runtime,
     })
   }
 

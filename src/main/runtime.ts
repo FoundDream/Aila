@@ -158,6 +158,11 @@ export interface RuntimeListConversationsInput {
   docId?: string | null
 }
 
+export interface RuntimeAppendUserMessageInput {
+  conversationId: string
+  text: string
+}
+
 export {
   type AgentRuntimeEvent,
   type AgentRuntimeEventMap,
@@ -355,6 +360,23 @@ export class AgentRuntime {
     const summary = await this.store.renameConversation(conversationId, title)
     this.emit(createRuntimeEvent('conversations:updated', summary))
     return summary
+  }
+
+  async appendUserMessage(input: RuntimeAppendUserMessageInput): Promise<PersistedMessage> {
+    const { conversationId, text } = input
+    this.assertCanStartTurn(conversationId)
+    const message: PersistedMessage = {
+      schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+      id: randomUUID(),
+      role: 'user',
+      blocks: [{ type: 'text', content: text }],
+      status: 'done',
+    }
+    if (!(await this.persistAndAnnounce(conversationId, message))) {
+      this.assertConversationOpen(conversationId)
+      throw new Error('conversation was deleted')
+    }
+    return message
   }
 
   async send(input: RuntimeSendInput): Promise<RuntimeSendResult> {
