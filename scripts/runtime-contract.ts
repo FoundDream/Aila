@@ -18,6 +18,7 @@ import {
   appendAgentEvent,
   appendAgentEventAndTouchConversation,
   appendMessage,
+  type ConversationRecord,
   configureDataDir,
   createConversation,
   createDefaultToolRegistry,
@@ -393,6 +394,101 @@ async function testRuntimeInjectableStoreContract(): Promise<void> {
     assert(
       !(await listConversations()).some((record) => record.id === conversation.id),
       'injected store delete should remove persisted conversation',
+    )
+  })
+}
+
+async function testRuntimeDeleteAssetCleanupHostBoundary(): Promise<void> {
+  await withTempDataDir(async () => {
+    let getCalledWithoutHook = false
+    let deleteCalledWithoutHook = false
+    const withoutCleanupStore: AgentRuntimeStore = {
+      getConversation: async () => {
+        getCalledWithoutHook = true
+        throw new Error('delete without cleanup hook should not read conversation')
+      },
+      upsertMessage: async () => {
+        throw new Error('not used')
+      },
+      appendAgentEventAndTouchConversation: async () => {
+        throw new Error('not used')
+      },
+      setConversationUsage: async () => {
+        throw new Error('not used')
+      },
+      deleteConversation: async () => {
+        deleteCalledWithoutHook = true
+      },
+    }
+    const runtimeWithoutCleanup = new AgentRuntime({
+      store: withoutCleanupStore,
+      logger: { warn() {}, error() {} },
+    })
+
+    await runtimeWithoutCleanup.deleteConversation('delete-without-cleanup-hook')
+    assertEqual(
+      getCalledWithoutHook,
+      false,
+      'runtime delete should not read conversation when no asset cleanup host exists',
+    )
+    assertEqual(
+      deleteCalledWithoutHook,
+      true,
+      'runtime delete should still delete through store without asset cleanup host',
+    )
+
+    const order: string[] = []
+    const record: ConversationRecord = {
+      meta: {
+        schemaVersion: AILA_CONVERSATION_META_SCHEMA_VERSION,
+        id: 'delete-with-cleanup-hook',
+        title: 'cleanup',
+        createdAt: 1,
+        updatedAt: 2,
+      },
+      messages: [
+        {
+          schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+          id: 'assistant-image',
+          role: 'assistant',
+          blocks: [{ type: 'image', url: 'aila-image://i/contract.png', mime: 'image/png' }],
+          status: 'done',
+        },
+      ],
+    }
+    const withCleanupStore: AgentRuntimeStore = {
+      getConversation: async (conversationId) => {
+        order.push(`get:${conversationId}`)
+        return record
+      },
+      upsertMessage: async () => {
+        throw new Error('not used')
+      },
+      appendAgentEventAndTouchConversation: async () => {
+        throw new Error('not used')
+      },
+      setConversationUsage: async () => {
+        throw new Error('not used')
+      },
+      deleteConversation: async (conversationId) => {
+        order.push(`delete:${conversationId}`)
+      },
+    }
+    const runtimeWithCleanup = new AgentRuntime({
+      store: withCleanupStore,
+      host: {
+        cleanupConversationAssets: (cleanupRecord) => {
+          order.push(`cleanup:${cleanupRecord.meta.id}`)
+        },
+      },
+      logger: { warn() {}, error() {} },
+    })
+
+    await runtimeWithCleanup.deleteConversation('delete-with-cleanup-hook')
+    assertEqual(
+      order.join(','),
+      'get:delete-with-cleanup-hook,cleanup:delete-with-cleanup-hook,delete:delete-with-cleanup-hook',
+      'runtime delete should delegate asset cleanup to host before store delete',
     )
   })
 }
@@ -3188,6 +3284,7 @@ async function main(): Promise<void> {
   await testRuntimeEmitsVersionedEvents()
   await testRuntimeHostBoundaryContract()
   await testRuntimeInjectableStoreContract()
+  await testRuntimeDeleteAssetCleanupHostBoundary()
   await testRuntimeRetriesDanglingUserTurn()
   await testRuntimeRetriesFailedAssistantTurn()
   await testRuntimeContextSkipsNonDoneAssistantHistory()

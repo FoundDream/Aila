@@ -1,6 +1,4 @@
 import { randomUUID } from 'node:crypto'
-import { unlink } from 'node:fs/promises'
-import { join } from 'node:path'
 import {
   type ChatMessage,
   streamChat as defaultStreamChat,
@@ -23,15 +21,12 @@ import {
   type ConversationRecord,
   type ConversationSummary,
   getConversation,
-  type PersistedImageBlock,
   type PersistedMessage,
   type PersistedTextBlock,
   deleteConversation as removeConversation,
   setConversationUsage,
   upsertMessage,
 } from './conversations'
-import { imageNameFromUrl } from './image-store'
-import { getImagesDir } from './paths'
 import { type AgentRuntimeEvent, createRuntimeEvent } from './runtime-events'
 import {
   createDefaultToolRegistry,
@@ -141,6 +136,7 @@ export interface AgentRuntimeHost {
     conversationId: string,
     reason: ConversationAbortReason,
   ) => MaybePromise<void>
+  cleanupConversationAssets?: (record: ConversationRecord) => MaybePromise<void>
   profiles?: readonly AgentProfile[]
   loadProfiles?: () => Promise<readonly AgentProfile[]>
   toolPacks?: readonly ToolPack[]
@@ -186,6 +182,9 @@ function normalizeRuntimeHost(options: AgentRuntimeOptions): AgentRuntimeHost {
   if (options.onToolPolicy) host.onToolPolicy = options.onToolPolicy
   if (options.onToolApproval) host.onToolApproval = options.onToolApproval
   if (options.onConversationAbort) host.onConversationAbort = options.onConversationAbort
+  if (options.cleanupConversationAssets) {
+    host.cleanupConversationAssets = options.cleanupConversationAssets
+  }
   if (options.loadProfiles) host.loadProfiles = options.loadProfiles
   if (options.loadToolPacks) host.loadToolPacks = options.loadToolPacks
   if (options.workspaceRoots !== undefined) host.workspaceRoots = options.workspaceRoots
@@ -197,6 +196,9 @@ function normalizeRuntimeHost(options: AgentRuntimeOptions): AgentRuntimeHost {
   if (options.host.onToolPolicy) host.onToolPolicy = options.host.onToolPolicy
   if (options.host.onToolApproval) host.onToolApproval = options.host.onToolApproval
   if (options.host.onConversationAbort) host.onConversationAbort = options.host.onConversationAbort
+  if (options.host.cleanupConversationAssets) {
+    host.cleanupConversationAssets = options.host.cleanupConversationAssets
+  }
   if (options.host.loadProfiles) host.loadProfiles = options.host.loadProfiles
   if (options.host.loadToolPacks) host.loadToolPacks = options.host.loadToolPacks
   if (options.host.workspaceRoots !== undefined) host.workspaceRoots = options.host.workspaceRoots
@@ -492,19 +494,7 @@ export class AgentRuntime {
         await this.notifyConversationAbort(conversationId, 'delete')
       }
 
-      try {
-        const record = await this.store.getConversation(conversationId)
-        const imagesDir = getImagesDir()
-        const filenames = record.messages.flatMap((message) =>
-          message.blocks
-            .filter((block): block is PersistedImageBlock => block.type === 'image')
-            .map((block) => imageNameFromUrl(block.url))
-            .filter((name): name is string => name !== null),
-        )
-        await Promise.all(filenames.map((name) => unlink(join(imagesDir, name)).catch(() => {})))
-      } catch (err) {
-        this.logger.warn('[runtime] conversation image cleanup failed:', err)
-      }
+      await this.cleanupConversationAssets(conversationId)
 
       await this.store.deleteConversation(conversationId)
       removed = true
@@ -660,6 +650,16 @@ export class AgentRuntime {
       await this.host.onConversationAbort?.(conversationId, reason)
     } catch (error) {
       this.logger.warn('[runtime] conversation abort cleanup failed:', error)
+    }
+  }
+
+  private async cleanupConversationAssets(conversationId: string): Promise<void> {
+    if (!this.host.cleanupConversationAssets) return
+    try {
+      const record = await this.store.getConversation(conversationId)
+      await this.host.cleanupConversationAssets(record)
+    } catch (err) {
+      this.logger.warn('[runtime] conversation asset cleanup failed:', err)
     }
   }
 

@@ -28,7 +28,7 @@ import {
   updateDoc,
 } from './docs'
 import { getExtensionReport } from './extensions'
-import { saveImage } from './image-store'
+import { cleanupConversationImages, saveImage } from './image-store'
 import { handleImageProtocol, registerImageProtocolScheme } from './images'
 import { getOpenRouterCatalog } from './openrouter-catalog'
 import { configureDataDir, getDataDir } from './paths'
@@ -110,6 +110,7 @@ const agentRuntime = new AgentRuntime({
     onEvent: (event) => send(event.type, event.data),
     onToolApproval: requestToolApproval,
     onConversationAbort: cancelConversationApprovals,
+    cleanupConversationAssets: cleanupConversationImages,
     loadProfiles: async () => (await loadAgentProfilesFromDir()).map((profile) => profile.profile),
     loadToolPacks: async () => (await loadToolPacksFromDir()).map((pack) => pack.toolPack),
     workspaceRoots: getDesktopWorkspaceRoots,
