@@ -19,7 +19,6 @@ import { buildAgentContext } from './context'
 import {
   AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
   appendAgentEventAndTouchConversation,
-  appendMessage,
   type ConversationRecord,
   getConversation,
   type PersistedImageBlock,
@@ -27,6 +26,7 @@ import {
   type PersistedTextBlock,
   deleteConversation as removeConversation,
   setConversationUsage,
+  upsertMessage,
 } from './conversations'
 import { imageNameFromUrl } from './image-store'
 import { getImagesDir } from './paths'
@@ -372,7 +372,7 @@ export class AgentRuntime {
     conversationId: string,
     message: PersistedMessage,
   ): Promise<void> {
-    const summary = await appendMessage(conversationId, message)
+    const summary = await upsertMessage(conversationId, message)
     this.emit(createRuntimeEvent('conversations:updated', summary))
   }
 
@@ -560,11 +560,15 @@ export class AgentRuntime {
           onImageBlock: (event) => this.emit(createRuntimeEvent('chat:image-block', event)),
           onDone: async (event) => {
             await this.persistAndAnnounce(conversationId, event.message)
-            if (event.usage) {
-              const summary = await setConversationUsage(conversationId, event.usage)
-              this.emit(createRuntimeEvent('conversations:updated', summary))
-            }
             this.emit(createRuntimeEvent('chat:done', event))
+            if (event.usage) {
+              try {
+                const summary = await setConversationUsage(conversationId, event.usage)
+                this.emit(createRuntimeEvent('conversations:updated', summary))
+              } catch (err) {
+                this.logger.warn('[runtime] usage persistence failed:', err)
+              }
+            }
           },
           onError: async (event) => {
             await this.persistAndAnnounce(conversationId, event.message)

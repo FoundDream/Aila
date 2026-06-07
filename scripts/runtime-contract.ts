@@ -33,6 +33,7 @@ import {
   loadToolPacksFromDir,
   type Settings,
   type ToolPack,
+  upsertMessage,
 } from '../src/runtime'
 
 function assert(condition: unknown, message: string): asserts condition {
@@ -759,6 +760,43 @@ async function testPersistenceContract(): Promise<void> {
   })
 }
 
+async function testMessageUpsertPreventsDuplicatePersistedMessages(): Promise<void> {
+  await withTempDataDir(async () => {
+    const conversation = await createConversation()
+    await appendMessage(conversation.id, {
+      schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+      id: 'assistant-message',
+      role: 'assistant',
+      blocks: [{ type: 'text', content: 'first answer' }],
+      status: 'done',
+      model: { providerId: 'openrouter', modelId: 'contract/mock' },
+    })
+    await upsertMessage(conversation.id, {
+      schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+      id: 'assistant-message',
+      role: 'assistant',
+      blocks: [],
+      status: 'error',
+      error: 'replacement error',
+      model: { providerId: 'openrouter', modelId: 'contract/mock' },
+    })
+
+    const record = await getConversation(conversation.id)
+    assertEqual(record.messages.length, 1, 'upsert should not duplicate message ids')
+    assertEqual(record.messages[0]?.id, 'assistant-message', 'upserted message id')
+    assertEqual(record.messages[0]?.status, 'error', 'upserted message status')
+    assertEqual(record.messages[0]?.error, 'replacement error', 'upserted message error')
+
+    const rawMessages = (
+      await readFile(join(getConversationsDir(), `${conversation.id}.jsonl`), 'utf-8')
+    )
+      .trim()
+      .split('\n')
+      .filter(Boolean)
+    assertEqual(rawMessages.length, 1, 'upsert should rewrite duplicate jsonl lines')
+  })
+}
+
 async function testLegacyPersistenceNormalization(): Promise<void> {
   await withTempDataDir(async () => {
     const dir = getConversationsDir()
@@ -1376,6 +1414,7 @@ async function main(): Promise<void> {
   await testRuntimeListsActiveAssistantTurns()
   await testRuntimeDeleteRunsAbortCleanupBeforeWaitingForStream()
   await testPersistenceContract()
+  await testMessageUpsertPreventsDuplicatePersistedMessages()
   await testLegacyPersistenceNormalization()
   await testToolRegistryContract()
   await testFilesystemToolWorkspaceRootsContract()

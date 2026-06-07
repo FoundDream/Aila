@@ -99,6 +99,7 @@ export interface AgentEventAppendResult {
 const DEFAULT_TITLE = '新对话'
 const TITLE_MAX = 40
 const metaWriteChains = new Map<string, Promise<void>>()
+const messageWriteChains = new Map<string, Promise<void>>()
 const CONVERSATION_ACTIVITY_STATES = new Set<ConversationActivityState>([
   'running',
   'approval',
@@ -160,6 +161,20 @@ async function updateMeta(
   metaWriteChains.set(id, guard)
   guard.finally(() => {
     if (metaWriteChains.get(id) === guard) metaWriteChains.delete(id)
+  })
+  return run
+}
+
+async function queueMessageWrite(id: string, writer: () => Promise<void>): Promise<void> {
+  const previous = messageWriteChains.get(id) ?? Promise.resolve()
+  const run = previous.catch(() => {}).then(writer)
+  const guard = run.then(
+    () => undefined,
+    () => undefined,
+  )
+  messageWriteChains.set(id, guard)
+  guard.finally(() => {
+    if (messageWriteChains.get(id) === guard) messageWriteChains.delete(id)
   })
   return run
 }
@@ -483,7 +498,59 @@ export async function appendMessage(
   message: PersistedMessage,
 ): Promise<ConversationSummary> {
   await ensureDir()
-  await appendFile(logPath(id), `${JSON.stringify(preparePersistedMessage(message))}\n`, 'utf-8')
+  await queueMessageWrite(id, () =>
+    appendFile(logPath(id), `${JSON.stringify(preparePersistedMessage(message))}\n`, 'utf-8'),
+  )
+  return touchMetaAfterMessage(id, message)
+}
+
+export async function upsertMessage(
+  id: string,
+  message: PersistedMessage,
+): Promise<ConversationSummary> {
+  await ensureDir()
+  await queueMessageWrite(id, async () => {
+    let raw = ''
+    try {
+      raw = await readFile(logPath(id), 'utf-8')
+    } catch {
+      raw = ''
+    }
+
+    const prepared = preparePersistedMessage(message)
+    const preparedLine = JSON.stringify(prepared)
+    const nextLines: string[] = []
+    let replaced = false
+
+    for (const line of raw.split('\n')) {
+      const trimmed = line.trim()
+      if (!trimmed) continue
+      try {
+        const existing = JSON.parse(trimmed) as Partial<PersistedMessage>
+        if (existing.id === prepared.id) {
+          if (!replaced) {
+            nextLines.push(preparedLine)
+            replaced = true
+          }
+          continue
+        }
+      } catch {
+        nextLines.push(line)
+        continue
+      }
+      nextLines.push(line)
+    }
+
+    if (!replaced) nextLines.push(preparedLine)
+    await writeFile(logPath(id), `${nextLines.join('\n')}\n`, 'utf-8')
+  })
+  return touchMetaAfterMessage(id, message)
+}
+
+function touchMetaAfterMessage(
+  id: string,
+  message: PersistedMessage,
+): Promise<ConversationSummary> {
   return updateMeta(id, (current) => {
     const next: ConversationMeta = {
       ...current,
@@ -567,12 +634,14 @@ export async function setConversationUsage(
 
 export async function deleteConversation(id: string): Promise<void> {
   await metaWriteChains.get(id)?.catch(() => {})
+  await messageWriteChains.get(id)?.catch(() => {})
   await Promise.all([
     rm(metaPath(id), { force: true }),
     rm(logPath(id), { force: true }),
     rm(eventLogPath(id), { force: true }),
   ])
   metaWriteChains.delete(id)
+  messageWriteChains.delete(id)
 }
 
 export interface DocRefRewrite {

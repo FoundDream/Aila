@@ -39,6 +39,7 @@ export {
   recoverInterruptedConversationActivities,
   renameConversation,
   setConversationUsage,
+  upsertMessage,
 } from '../main/conversations'
 export {
   type ExtensionProfileReport,
