@@ -13,14 +13,11 @@ import {
   type ConversationSummary,
   configureDataDir,
   configuredProviders,
-  createConversation,
   findModel,
-  getConversation,
   getDataDir,
   getExtensionReport,
   getProfilesDir,
   getToolPacksDir,
-  listConversations,
   loadAgentProfilesFromDir,
   loadSettings,
   loadToolPacksFromDir,
@@ -256,8 +253,11 @@ function preview(text: string, max = 600): string {
   return `${compact.slice(0, max)}...`
 }
 
-async function printConversationList(input: { limit: number }): Promise<void> {
-  const conversations = await listConversations()
+async function printConversationList(
+  runtime: AgentRuntime,
+  input: { limit: number },
+): Promise<void> {
+  const conversations = await runtime.listConversations()
   const shown = conversations.slice(0, input.limit)
 
   output.write('Aila conversations\n')
@@ -319,11 +319,12 @@ async function printExtensionReport(json: boolean): Promise<boolean> {
 }
 
 async function resolveConversation(input: {
+  runtime: AgentRuntime
   conversationId?: string
   resumeLatest?: boolean
 }): Promise<{ conversationId: string; isExisting: boolean }> {
   if (input.resumeLatest) {
-    const [summary] = await listConversations()
+    const [summary] = await input.runtime.listConversations()
     if (!summary) throw new Error('no conversations found to resume')
     return {
       conversationId: summary.id,
@@ -332,11 +333,11 @@ async function resolveConversation(input: {
   }
 
   if (input.conversationId) {
-    await getConversation(input.conversationId)
+    await input.runtime.getConversation(input.conversationId)
     return { conversationId: input.conversationId, isExisting: true }
   }
 
-  const summary = await createConversation()
+  const summary = await input.runtime.createConversation()
   return { conversationId: summary.id, isExisting: false }
 }
 
@@ -360,7 +361,7 @@ function createRuntime(input: {
   autoApprove: boolean
   events: boolean
   json: boolean
-  onCompletion: (state: CompletionState) => void
+  onCompletion?: (state: CompletionState) => void
 }): AgentRuntime {
   let assistantText = ''
   const toolNames = new Map<string, string>()
@@ -376,7 +377,7 @@ function createRuntime(input: {
         onAssistantText: (delta) => {
           assistantText += delta
         },
-        onCompletion: input.onCompletion,
+        onCompletion: input.onCompletion ?? (() => {}),
       })
     },
     onToolApproval: (request) => approveTool(request, input.autoApprove, input.events),
@@ -481,7 +482,12 @@ async function main(): Promise<void> {
   configureDataDir(options.dataDir ?? defaultDataDir())
 
   if (options.list) {
-    await printConversationList({ limit: options.limit })
+    const runtime = createRuntime({
+      autoApprove: options.autoApprove,
+      events: options.events,
+      json: options.json,
+    })
+    await printConversationList(runtime, { limit: options.limit })
     return
   }
 
@@ -495,11 +501,6 @@ async function main(): Promise<void> {
   if (prompt !== null && !prompt.trim()) throw new Error('prompt is empty')
 
   const selection = resolveSelection(options.model)
-  const { conversationId, isExisting } = await resolveConversation({
-    conversationId: options.conversationId,
-    resumeLatest: options.resumeLatest,
-  })
-
   const completionRef: { current: CompletionState | null } = { current: null }
   let resolveCompletion: () => void = () => {}
   const completionWait = new Promise<void>((resolve) => {
@@ -513,6 +514,11 @@ async function main(): Promise<void> {
       completionRef.current = state
       resolveCompletion()
     },
+  })
+  const { conversationId, isExisting } = await resolveConversation({
+    runtime,
+    conversationId: options.conversationId,
+    resumeLatest: options.resumeLatest,
   })
 
   if (!options.events && !options.json) {
