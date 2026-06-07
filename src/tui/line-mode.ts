@@ -56,6 +56,20 @@ export interface TuiSessionState {
   profileId: AgentProfileId
 }
 
+export interface TuiRuntimeInput {
+  onEvent?: (event: AgentRuntimeEvent) => void
+  onToolApproval?: (request: ToolApprovalRequest) => Promise<boolean>
+}
+
+export function createTuiRuntime(input: TuiRuntimeInput = {}): AgentRuntime {
+  return new AgentRuntime({
+    ...(input.onEvent ? { onEvent: input.onEvent } : {}),
+    ...(input.onToolApproval ? { onToolApproval: input.onToolApproval } : {}),
+    loadProfiles: async () => (await loadAgentProfilesFromDir()).map((profile) => profile.profile),
+    loadToolPacks: async () => (await loadToolPacksFromDir()).map((pack) => pack.toolPack),
+  })
+}
+
 export function usage(): string {
   return [
     'Usage: bun run tui [options]',
@@ -691,13 +705,8 @@ export async function runLineMode(argv: string[] = process.argv.slice(2)): Promi
   const options = parseArgs(argv)
   configureDataDir(options.dataDir ?? defaultDataDir())
 
-  const metadataRuntime = new AgentRuntime({
-    loadProfiles: async () => (await loadAgentProfilesFromDir()).map((profile) => profile.profile),
-    loadToolPacks: async () => (await loadToolPacksFromDir()).map((pack) => pack.toolPack),
-  })
-
   if (options.list) {
-    await printConversationList(metadataRuntime, { limit: options.limit })
+    await printConversationList(createTuiRuntime(), { limit: options.limit })
     return
   }
 
@@ -705,18 +714,13 @@ export async function runLineMode(argv: string[] = process.argv.slice(2)): Promi
     selection: resolveSelection(options.model),
     profileId: options.profileId,
   }
-  const { conversationId, isExisting } = await resolveConversation({
-    runtime: metadataRuntime,
-    conversationId: options.conversationId,
-    resumeLatest: options.resumeLatest,
-  })
 
   let activeConversationId: string | null = null
   const completions = new Map<string, () => void>()
   const toolNames = new Map<string, string>()
   let startedAssistantText = false
   const prompt = createPromptReader()
-  const runtime = new AgentRuntime({
+  const runtime = createTuiRuntime({
     onEvent: (event) => {
       handleRuntimeEvent(event, {
         completions,
@@ -730,8 +734,11 @@ export async function runLineMode(argv: string[] = process.argv.slice(2)): Promi
       })
     },
     onToolApproval: (request) => askToolApproval(prompt, request),
-    loadProfiles: async () => (await loadAgentProfilesFromDir()).map((profile) => profile.profile),
-    loadToolPacks: async () => (await loadToolPacksFromDir()).map((pack) => pack.toolPack),
+  })
+  const { conversationId, isExisting } = await resolveConversation({
+    runtime,
+    conversationId: options.conversationId,
+    resumeLatest: options.resumeLatest,
   })
 
   process.on('SIGINT', () => {

@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import * as dotenv from 'dotenv'
 import {
   type AgentProfileId,
-  AgentRuntime,
+  type AgentRuntime,
   type AgentRuntimeEvent,
   type ConversationSummary,
   configureDataDir,
@@ -11,9 +11,7 @@ import {
   getExtensionReport,
   getProfilesDir,
   getToolPacksDir,
-  loadAgentProfilesFromDir,
   loadSettings,
-  loadToolPacksFromDir,
   MODEL_CATALOG,
   type ModelSelection,
   PROVIDER_LABELS,
@@ -42,6 +40,7 @@ import {
   appendLocalContext,
   blockPreview,
   commandHelp,
+  createTuiRuntime,
   defaultDataDir,
   displayPreview,
   formatDate,
@@ -113,13 +112,9 @@ function localToolProfile(): AgentProfileId {
 export async function runFullScreenTui(argv: string[] = process.argv.slice(2)): Promise<void> {
   const options = parseArgs(argv)
   configureDataDir(options.dataDir ?? defaultDataDir())
-  const metadataRuntime = new AgentRuntime({
-    loadProfiles: async () => (await loadAgentProfilesFromDir()).map((profile) => profile.profile),
-    loadToolPacks: async () => (await loadToolPacksFromDir()).map((pack) => pack.toolPack),
-  })
 
   if (options.list) {
-    await printConversationList(metadataRuntime, { limit: options.limit })
+    await printConversationList(createTuiRuntime(), { limit: options.limit })
     return
   }
 
@@ -127,18 +122,15 @@ export async function runFullScreenTui(argv: string[] = process.argv.slice(2)): 
     profileId: options.profileId,
     selection: resolveSelection(options.model),
   }
-  const resolved = await resolveConversation({
-    runtime: metadataRuntime,
-    conversationId: options.conversationId,
-    resumeLatest: options.resumeLatest,
-  })
 
   const app = new AilaFullScreenApp({
-    conversationId: resolved.conversationId,
-    isExisting: resolved.isExisting,
     retryLast: options.retryLast,
     session,
     showHistory: options.showHistory,
+  })
+  await app.initializeConversation({
+    conversationId: options.conversationId,
+    resumeLatest: options.resumeLatest,
   })
   await app.run()
 }
@@ -167,30 +159,25 @@ class AilaFullScreenApp {
   private state: AilaFrameState
 
   constructor(input: {
-    conversationId: string
-    isExisting: boolean
     retryLast: boolean
     session: SessionState
     showHistory: boolean
   }) {
-    this.conversationId = input.conversationId
+    this.conversationId = ''
     this.session = input.session
     this.state = {
       active: false,
-      conversationId: input.conversationId,
+      conversationId: '',
       dataDir: getDataDir(),
       profileId: input.session.profileId,
       queueCount: 0,
       selection: input.session.selection,
-      status: input.isExisting ? 'resumed conversation' : 'new conversation',
+      status: 'initializing conversation',
     }
     this.frame = new AilaFrameComponent(this.terminal, this.editor, this.state)
-    this.runtime = new AgentRuntime({
+    this.runtime = createTuiRuntime({
       onEvent: (event) => this.handleRuntimeEvent(event),
       onToolApproval: (request) => this.askToolApproval(request),
-      loadProfiles: async () =>
-        (await loadAgentProfilesFromDir()).map((profile) => profile.profile),
-      loadToolPacks: async () => (await loadToolPacksFromDir()).map((pack) => pack.toolPack),
     })
 
     this.editor.onSubmit = (text) => {
@@ -206,7 +193,27 @@ class AilaFullScreenApp {
     this.ui.addChild(this.frame)
     this.ui.setFocus(this.editor)
     this.ui.addInputListener((data) => this.handleGlobalInput(data))
+    this.retryLastOnStart = input.retryLast
+    this.showHistoryOnStart = input.showHistory
+  }
 
+  private readonly retryLastOnStart: boolean
+  private readonly showHistoryOnStart: boolean
+
+  async initializeConversation(input: {
+    conversationId?: string
+    resumeLatest?: boolean
+  }): Promise<void> {
+    const resolved = await resolveConversation({
+      runtime: this.runtime,
+      conversationId: input.conversationId,
+      resumeLatest: input.resumeLatest,
+    })
+    this.conversationId = resolved.conversationId
+    this.setState({
+      conversationId: resolved.conversationId,
+      status: resolved.isExisting ? 'resumed conversation' : 'new conversation',
+    })
     this.addEntry(
       'system',
       'runtime',
@@ -214,20 +221,13 @@ class AilaFullScreenApp {
         `Data: ${getDataDir()}`,
         `Profiles: ${getProfilesDir()}`,
         `Tool packs: ${getToolPacksDir()}`,
-        `Conversation: ${input.conversationId}${input.isExisting ? ' (resumed)' : ''}`,
-        `Model: ${modelLabel(input.session.selection)}`,
-        `Profile: ${input.session.profileId}`,
-      ]
-        .filter(Boolean)
-        .join('\n'),
+        `Conversation: ${resolved.conversationId}${resolved.isExisting ? ' (resumed)' : ''}`,
+        `Model: ${modelLabel(this.session.selection)}`,
+        `Profile: ${this.session.profileId}`,
+      ].join('\n'),
     )
 
-    if (input.showHistory) void this.loadHistory()
-    if (input.retryLast) {
-      queueMicrotask(() => {
-        void this.submit('/retry')
-      })
-    }
+    if (this.showHistoryOnStart) await this.loadHistory()
   }
 
   async run(): Promise<void> {
@@ -235,6 +235,11 @@ class AilaFullScreenApp {
     this.frame.setEntries(this.entries)
     this.ui.start()
     this.ui.requestRender(true)
+    if (this.retryLastOnStart) {
+      queueMicrotask(() => {
+        void this.submit('/retry')
+      })
+    }
     await new Promise<void>((resolve) => {
       this.resolveStopped = resolve
     })
