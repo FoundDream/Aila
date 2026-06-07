@@ -603,6 +603,7 @@ function resolveStaticToolPacks(options: AgentRuntimeOptions): readonly ToolPack
 
 export class AgentRuntime {
   private readonly activeStreams = new Map<string, StreamSlot>()
+  private readonly turnStartLocks = new Map<string, Promise<void>>()
   private readonly deletedConversations = new Set<string>()
   private readonly host: AgentRuntimeHost
   private readonly store: AgentRuntimeStore
@@ -756,67 +757,93 @@ export class AgentRuntime {
   }
 
   async send(input: RuntimeSendInput): Promise<RuntimeSendResult> {
-    const { conversationId, userText, selection, requestedProfileId, transientContext } = input
+    return this.withTurnStartLock(input.conversationId, async () => {
+      const { conversationId, userText, selection, requestedProfileId, transientContext } = input
 
-    this.assertCanStartTurn(conversationId)
+      this.assertCanStartTurn(conversationId)
 
-    // Wait for any prior stream on this conversation to finish its persistence
-    // side-effects before appending the next user message.
-    const previous = this.activeStreams.get(conversationId)
-    if (previous) await this.waitForPriorStreamBeforeNextTurn(conversationId, previous)
-    this.assertCanStartTurn(conversationId)
+      // Wait for any prior stream on this conversation to finish its persistence
+      // side-effects before appending the next user message.
+      const previous = this.activeStreams.get(conversationId)
+      if (previous) await this.waitForPriorStreamBeforeNextTurn(conversationId, previous)
+      this.assertCanStartTurn(conversationId)
 
-    const userMessage: PersistedMessage = {
-      schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
-      id: randomUUID(),
-      role: 'user',
-      blocks: [{ type: 'text', content: userText }],
-      status: 'done',
-    }
-    if (!(await this.persistAndAnnounce(conversationId, userMessage))) {
-      this.assertConversationOpen(conversationId)
-      throw new Error('conversation was deleted')
-    }
-    this.assertCanStartTurn(conversationId)
+      const userMessage: PersistedMessage = {
+        schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+        id: randomUUID(),
+        role: 'user',
+        blocks: [{ type: 'text', content: userText }],
+        status: 'done',
+      }
+      if (!(await this.persistAndAnnounce(conversationId, userMessage))) {
+        this.assertConversationOpen(conversationId)
+        throw new Error('conversation was deleted')
+      }
+      this.assertCanStartTurn(conversationId)
 
-    const record = await this.getConversation(conversationId)
-    this.assertCanStartTurn(conversationId)
-    return this.startAssistantTurn({
-      conversationId,
-      userMessage,
-      record,
-      selection,
-      requestedProfileId,
-      transientContext,
-      source: 'send',
+      const record = await this.getConversation(conversationId)
+      this.assertCanStartTurn(conversationId)
+      return this.startAssistantTurn({
+        conversationId,
+        userMessage,
+        record,
+        selection,
+        requestedProfileId,
+        transientContext,
+        source: 'send',
+      })
     })
   }
 
   async retryLastUserMessage(input: RuntimeRetryLastInput): Promise<RuntimeSendResult> {
-    const { conversationId, selection, requestedProfileId, transientContext } = input
+    return this.withTurnStartLock(input.conversationId, async () => {
+      const { conversationId, selection, requestedProfileId, transientContext } = input
 
-    this.assertCanStartTurn(conversationId)
-    const previous = this.activeStreams.get(conversationId)
-    if (previous) await this.waitForPriorStreamBeforeNextTurn(conversationId, previous)
-    this.assertCanStartTurn(conversationId)
+      this.assertCanStartTurn(conversationId)
+      const previous = this.activeStreams.get(conversationId)
+      if (previous) await this.waitForPriorStreamBeforeNextTurn(conversationId, previous)
+      this.assertCanStartTurn(conversationId)
 
-    const record = await this.getConversation(conversationId)
-    this.assertCanStartTurn(conversationId)
-    const retry = resolveRetryTurn(record)
+      const record = await this.getConversation(conversationId)
+      this.assertCanStartTurn(conversationId)
+      const retry = resolveRetryTurn(record)
 
-    if (!messageText(retry.userMessage).trim()) {
-      throw new Error('cannot retry: last persisted user message has no text content')
-    }
+      if (!messageText(retry.userMessage).trim()) {
+        throw new Error('cannot retry: last persisted user message has no text content')
+      }
 
-    return this.startAssistantTurn({
-      conversationId,
-      userMessage: retry.userMessage,
-      record: retry.record,
-      selection,
-      requestedProfileId,
-      transientContext,
-      source: 'retry',
+      return this.startAssistantTurn({
+        conversationId,
+        userMessage: retry.userMessage,
+        record: retry.record,
+        selection,
+        requestedProfileId,
+        transientContext,
+        source: 'retry',
+      })
     })
+  }
+
+  private async withTurnStartLock<T>(
+    conversationId: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const previous = this.turnStartLocks.get(conversationId)
+    let release: () => void = () => {}
+    const current = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    this.turnStartLocks.set(conversationId, current)
+
+    if (previous) await previous
+    try {
+      return await operation()
+    } finally {
+      release()
+      if (this.turnStartLocks.get(conversationId) === current) {
+        this.turnStartLocks.delete(conversationId)
+      }
+    }
   }
 
   private async startAssistantTurn(input: {
@@ -834,6 +861,20 @@ export class AgentRuntime {
     const assistantMessageId = randomUUID()
     this.assertCanStartTurn(conversationId)
 
+    const controller = new AbortController()
+    let resolveCleanup: () => void = () => {}
+    const cleanup = new Promise<void>((resolve) => {
+      resolveCleanup = resolve
+    })
+    this.activeStreams.set(conversationId, {
+      controller,
+      cleanup,
+      assistantMessageId,
+      selection,
+      abortRecorded: false,
+    })
+
+    let streamStarted = false
     let profileId: AgentProfileId
     let messages: Parameters<typeof defaultStreamChat>[0]['messages']
     let toolContext: ToolContext
@@ -864,30 +905,36 @@ export class AgentRuntime {
         conversationId,
         messageId: assistantMessageId,
       })
+      if (!this.acceptsStreamEvents(conversationId, controller)) {
+        return { userMessage, assistantMessageId }
+      }
+      if (controller.signal.aborted) {
+        await this.persistSetupCancellation(conversationId, assistantMessageId, selection)
+        return { userMessage, assistantMessageId }
+      }
+      this.assertCanStartTurn(conversationId)
+      streamStarted = true
     } catch (error) {
-      await this.persistSetupFailure(
-        conversationId,
-        assistantMessageId,
-        selection,
-        errorMessage(error),
-      )
+      if (controller.signal.aborted) {
+        await this.persistSetupCancellation(conversationId, assistantMessageId, selection)
+      } else {
+        await this.persistSetupFailure(
+          conversationId,
+          assistantMessageId,
+          selection,
+          errorMessage(error),
+        )
+      }
       this.assertConversationOpen(conversationId)
       return { userMessage, assistantMessageId }
+    } finally {
+      if (!streamStarted) {
+        if (this.activeStreams.get(conversationId)?.controller === controller) {
+          this.activeStreams.delete(conversationId)
+        }
+        resolveCleanup()
+      }
     }
-    this.assertCanStartTurn(conversationId)
-
-    const controller = new AbortController()
-    let resolveCleanup: () => void = () => {}
-    const cleanup = new Promise<void>((resolve) => {
-      resolveCleanup = resolve
-    })
-    this.activeStreams.set(conversationId, {
-      controller,
-      cleanup,
-      assistantMessageId,
-      selection,
-      abortRecorded: false,
-    })
 
     void this.runStream({
       conversationId,
@@ -1110,6 +1157,49 @@ export class AgentRuntime {
         conversationId,
         messageId: assistantMessageId,
         error: message,
+        message: errored,
+      }),
+    )
+  }
+
+  private async persistSetupCancellation(
+    conversationId: string,
+    assistantMessageId: string,
+    selection: ModelSelection,
+  ): Promise<void> {
+    const errored: PersistedMessage = {
+      schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+      id: assistantMessageId,
+      role: 'assistant',
+      blocks: [],
+      status: 'error',
+      error: 'Aborted',
+      model: selection,
+    }
+    const persisted = await this.persistAndAnnounce(conversationId, errored)
+    if (!persisted) return
+    try {
+      await this.recordAgentEvent(
+        withTurnSelection(
+          {
+            timestamp: Date.now(),
+            conversationId,
+            messageId: assistantMessageId,
+            type: 'turn.cancelled',
+            data: { phase: 'completed', reason: 'abort_signal' },
+          },
+          selection,
+        ),
+      )
+    } catch (error) {
+      this.logger.warn('[runtime] setup cancellation activity append failed:', error)
+    }
+    if (this.deletedConversations.has(conversationId)) return
+    this.emit(
+      createRuntimeEvent('chat:error', {
+        conversationId,
+        messageId: assistantMessageId,
+        error: 'Aborted',
         message: errored,
       }),
     )

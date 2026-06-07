@@ -1906,6 +1906,236 @@ async function testRuntimeContextSkipsNonDoneAssistantHistory(): Promise<void> {
   })
 }
 
+async function testRuntimeSerializesConcurrentTurnStarts(): Promise<void> {
+  await withTempDataDir(async () => {
+    const conversation = await createConversation()
+    let resolveFirstSetupStarted: () => void = () => {}
+    let releaseFirstSetup: () => void = () => {}
+    let resolveSecondSetupStarted: () => void = () => {}
+    const firstSetupStarted = new Promise<void>((resolve) => {
+      resolveFirstSetupStarted = resolve
+    })
+    const firstSetupRelease = new Promise<void>((resolve) => {
+      releaseFirstSetup = resolve
+    })
+    const secondSetupStarted = new Promise<void>((resolve) => {
+      resolveSecondSetupStarted = resolve
+    })
+    let transientContextCalls = 0
+    let streamCount = 0
+    let secondModelInput = ''
+
+    const runtime = new AgentRuntime({
+      store: createPersistedRuntimeStore(),
+      logger: { warn() {}, error() {} },
+      loadTransientContext: async () => {
+        transientContextCalls += 1
+        if (transientContextCalls === 1) {
+          resolveFirstSetupStarted()
+          await firstSetupRelease
+        } else if (transientContextCalls === 2) {
+          resolveSecondSetupStarted()
+        }
+        return undefined
+      },
+      streamChat: async (req, handlers) => {
+        streamCount += 1
+        const callIndex = streamCount
+        if (callIndex === 2) secondModelInput = JSON.stringify(req.messages)
+        req.onAgentEvent?.({
+          timestamp: Date.now(),
+          conversationId: req.conversationId,
+          messageId: req.assistantMessageId,
+          type: 'turn.started',
+          data: { providerId: req.selection.providerId, modelId: req.selection.modelId },
+        })
+        req.onAgentEvent?.({
+          timestamp: Date.now(),
+          conversationId: req.conversationId,
+          messageId: req.assistantMessageId,
+          type: 'turn.completed',
+          data: { outputBlockCount: 1 },
+        })
+        await handlers.onDone({
+          conversationId: req.conversationId,
+          messageId: req.assistantMessageId,
+          message: {
+            schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+            id: req.assistantMessageId,
+            role: 'assistant',
+            blocks: [
+              {
+                type: 'text',
+                content: callIndex === 1 ? 'first serialized answer' : 'second serialized answer',
+              },
+            ],
+            status: 'done',
+            model: req.selection,
+          },
+        })
+      },
+    })
+
+    const firstSend = runtime.send({
+      conversationId: conversation.id,
+      userText: 'first concurrent turn',
+      selection: { providerId: 'openrouter', modelId: 'contract/mock' },
+      requestedProfileId: 'coding',
+    })
+    await firstSetupStarted
+
+    const secondSend = runtime.send({
+      conversationId: conversation.id,
+      userText: 'second concurrent turn',
+      selection: { providerId: 'openrouter', modelId: 'contract/mock' },
+      requestedProfileId: 'coding',
+    })
+
+    const setupRace = await Promise.race([
+      secondSetupStarted.then(() => 'second-started'),
+      new Promise<'blocked'>((resolve) => setTimeout(() => resolve('blocked'), 30)),
+    ])
+    assertEqual(setupRace, 'blocked', 'second turn setup should wait for first turn registration')
+
+    const duringFirstSetup = await getConversation(conversation.id)
+    assertEqual(
+      duringFirstSetup.messages.filter((message) => message.role === 'user').length,
+      1,
+      'concurrent second send must not append a user message before the first turn is registered',
+    )
+    assert(
+      !JSON.stringify(duringFirstSetup.messages).includes('second concurrent turn'),
+      'concurrent second send should not leak into first turn history',
+    )
+
+    releaseFirstSetup()
+    await firstSend
+    await secondSetupStarted
+    await secondSend
+    await waitFor(
+      () => runtime.listActiveStreams().length === 0,
+      'serialized concurrent turns should both finish',
+    )
+
+    const record = await getConversation(conversation.id)
+    assertEqual(streamCount, 2, 'runtime should still run both serialized turns')
+    assertEqual(record.messages.length, 4, 'serialized sends should persist two full turns')
+    assertEqual(record.messages[0]?.role, 'user', 'first serialized message role')
+    assertEqual(record.messages[1]?.role, 'assistant', 'first serialized answer role')
+    assertEqual(record.messages[2]?.role, 'user', 'second serialized message role')
+    assertEqual(record.messages[3]?.role, 'assistant', 'second serialized answer role')
+    assert(
+      secondModelInput.includes('first serialized answer'),
+      'second turn context should include the completed first assistant turn',
+    )
+    assert(
+      secondModelInput.includes('second concurrent turn'),
+      'second turn context should include the second user request',
+    )
+  })
+}
+
+async function testRuntimeAbortCancelsTurnSetupBeforeStreamStarts(): Promise<void> {
+  await withTempDataDir(async () => {
+    const conversation = await createConversation()
+    const events: AgentRuntimeEvent[] = []
+    let resolveSetupStarted: () => void = () => {}
+    let releaseSetup: () => void = () => {}
+    const setupStarted = new Promise<void>((resolve) => {
+      resolveSetupStarted = resolve
+    })
+    const setupRelease = new Promise<void>((resolve) => {
+      releaseSetup = resolve
+    })
+    let streamStarted = false
+    let cleanupReason: string | null = null
+
+    const runtime = new AgentRuntime({
+      store: createPersistedRuntimeStore(),
+      onEvent: (event) => events.push(event),
+      logger: { warn() {}, error() {} },
+      onConversationAbort: (_conversationId, reason) => {
+        cleanupReason = reason
+      },
+      loadTransientContext: async () => {
+        resolveSetupStarted()
+        await setupRelease
+        return undefined
+      },
+      streamChat: async () => {
+        streamStarted = true
+      },
+    })
+
+    const sending = runtime.send({
+      conversationId: conversation.id,
+      userText: 'abort while setup is loading',
+      selection: { providerId: 'openrouter', modelId: 'contract/mock' },
+      requestedProfileId: 'coding',
+    })
+    await setupStarted
+
+    const [active] = runtime.listActiveStreams()
+    assert(active, 'setup-stage turn should be visible as active')
+    assertEqual(active.conversationId, conversation.id, 'setup-stage active conversation id')
+    assertEqual(active.selection.modelId, 'contract/mock', 'setup-stage active model')
+
+    const aborting = runtime.abort(conversation.id)
+    await waitFor(() => cleanupReason === 'user', 'setup abort should notify host cleanup')
+    releaseSetup()
+    const result = await sending
+    await aborting
+
+    assertEqual(streamStarted, false, 'aborted setup should not start provider stream')
+    assertEqual(runtime.listActiveStreams().length, 0, 'aborted setup should clear active turn')
+    assertEqual(
+      result.assistantMessageId,
+      active.assistantMessageId,
+      'send result should match setup-stage active assistant id',
+    )
+
+    const agentEvents = await listAgentEvents(conversation.id)
+    assert(
+      agentEvents.some(
+        (event) =>
+          event.type === 'turn.cancelled' &&
+          event.data?.phase === 'requested' &&
+          event.data.reason === 'user',
+      ),
+      'setup abort should persist cancellation request',
+    )
+    assert(
+      agentEvents.some(
+        (event) =>
+          event.type === 'turn.cancelled' &&
+          event.data?.phase === 'completed' &&
+          event.messageId === active.assistantMessageId,
+      ),
+      'setup abort should persist completed cancellation',
+    )
+    assert(
+      !agentEvents.some((event) => event.type === 'turn.failed'),
+      'setup abort should not be recorded as a setup failure',
+    )
+    assert(
+      events.some(
+        (event) =>
+          event.type === 'chat:error' &&
+          event.data.messageId === active.assistantMessageId &&
+          event.data.error === 'Aborted',
+      ),
+      'setup abort should emit chat:error for the assistant placeholder',
+    )
+
+    const record = await getConversation(conversation.id)
+    assertEqual(record.messages.length, 2, 'setup abort should persist user and assistant')
+    assertEqual(record.messages[1]?.id, active.assistantMessageId, 'setup abort assistant id')
+    assertEqual(record.messages[1]?.status, 'error', 'setup abort assistant status')
+    assertEqual(record.messages[1]?.error, 'Aborted', 'setup abort assistant error')
+    assertEqual(record.meta.activity?.state, 'cancelled', 'setup abort activity state')
+  })
+}
+
 async function testRuntimeAbortPersistsCancellationActivity(): Promise<void> {
   await withTempDataDir(async () => {
     const conversation = await createConversation()
@@ -5115,6 +5345,8 @@ async function main(): Promise<void> {
   await testRuntimeRetriesDanglingUserTurn()
   await testRuntimeRetriesFailedAssistantTurn()
   await testRuntimeContextSkipsNonDoneAssistantHistory()
+  await testRuntimeSerializesConcurrentTurnStarts()
+  await testRuntimeAbortCancelsTurnSetupBeforeStreamStarts()
   await testRuntimeAbortPersistsCancellationActivity()
   await testRuntimeAbortTimesOutStuckStreamCleanup()
   await testRuntimeUnexpectedStreamErrorPersistsFailureActivity()
