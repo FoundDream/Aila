@@ -5,14 +5,7 @@ import { app, BrowserWindow, ipcMain } from 'electron'
 import type { ProviderId } from '../shared/models'
 import { getModelInfo, type ModelSelection } from './agent'
 import type { AgentProfileId } from './agent-profile'
-import {
-  createConversation,
-  getConversation,
-  listAgentEvents,
-  listChatConversations,
-  listDocConversations,
-  renameConversation,
-} from './conversations'
+import { listDocConversations } from './conversations'
 import { sweepOrphanedDocConversations } from './doc-conversation-cleanup'
 import type { DocPatch } from './docs'
 import {
@@ -236,15 +229,19 @@ function registerIpcHandlers(): void {
     }
   })
 
-  ipcMain.handle('conversations:list', () => listChatConversations())
-  ipcMain.handle('conversations:get', (_event, id: string) => getConversation(id))
-  ipcMain.handle('conversations:list-events', (_event, id: string) => listAgentEvents(id))
-  ipcMain.handle('conversations:create', (_event, docPath?: string) => createConversation(docPath))
+  ipcMain.handle('conversations:list', () => agentRuntime.listConversations({ docId: null }))
+  ipcMain.handle('conversations:get', (_event, id: string) => agentRuntime.getConversation(id))
+  ipcMain.handle('conversations:list-events', (_event, id: string) =>
+    agentRuntime.listAgentEvents(id),
+  )
+  ipcMain.handle('conversations:create', (_event, docPath?: string) =>
+    agentRuntime.createConversation({ docId: docPath ?? null }),
+  )
   ipcMain.handle('conversations:list-for-doc', (_event, docPath: string) =>
     listDocConversations(docPath),
   )
   ipcMain.handle('conversations:rename', (_event, id: string, title: string) =>
-    renameConversation(id, title),
+    agentRuntime.renameConversation(id, title),
   )
   ipcMain.handle('conversations:delete', (_event, id: string) =>
     agentRuntime.deleteConversation(id),
