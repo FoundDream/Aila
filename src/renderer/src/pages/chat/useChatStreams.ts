@@ -422,94 +422,109 @@ function reducer(state: State, action: Action): State {
       })
 
     case 'TEXT_DELTA':
-      return withStream(state, action.conversationId, (current) => ({
-        ...current,
-        messages: patchOrAppendAssistantMessage(current.messages, action.messageId, (m) => ({
-          ...m,
-          blocks: appendDelta(m.blocks, action.kind, action.delta),
-        })),
-        runningMessageId: current.runningMessageId ?? action.messageId,
-      }))
+      return withStream(state, action.conversationId, (current) => {
+        if (hasTerminalMessage(current.messages, action.messageId)) return current
+        return {
+          ...current,
+          messages: patchOrAppendAssistantMessage(current.messages, action.messageId, (m) => ({
+            ...m,
+            blocks: appendDelta(m.blocks, action.kind, action.delta),
+          })),
+          runningMessageId: current.runningMessageId ?? action.messageId,
+        }
+      })
 
     case 'TOOL_CALL_START':
-      return withStream(state, action.conversationId, (current) => ({
-        ...current,
-        messages: patchOrAppendAssistantMessage(current.messages, action.messageId, (m) => ({
-          ...m,
-          blocks: upsertToolCall(
-            m.blocks,
-            action.toolCallId,
-            (b) => ({ ...b, name: action.name, arguments: action.args }),
-            {
-              type: 'tool_call',
-              id: action.toolCallId,
-              name: action.name,
-              arguments: action.args,
-              status: 'running',
-            },
-          ),
-        })),
-        runningMessageId: current.runningMessageId ?? action.messageId,
-      }))
+      return withStream(state, action.conversationId, (current) => {
+        if (hasTerminalMessage(current.messages, action.messageId)) return current
+        return {
+          ...current,
+          messages: patchOrAppendAssistantMessage(current.messages, action.messageId, (m) => ({
+            ...m,
+            blocks: upsertToolCall(
+              m.blocks,
+              action.toolCallId,
+              (b) => ({ ...b, name: action.name, arguments: action.args }),
+              {
+                type: 'tool_call',
+                id: action.toolCallId,
+                name: action.name,
+                arguments: action.args,
+                status: 'running',
+              },
+            ),
+          })),
+          runningMessageId: current.runningMessageId ?? action.messageId,
+        }
+      })
 
     case 'TOOL_CALL_ARGS_DELTA':
       if (!action.delta) return state
-      return withStream(state, action.conversationId, (current) => ({
-        ...current,
-        messages: patchOrAppendAssistantMessage(current.messages, action.messageId, (m) => ({
-          ...m,
-          blocks: upsertToolCall(
-            m.blocks,
-            action.toolCallId,
-            (b) => ({ ...b, arguments: b.arguments + action.delta }),
-            {
-              type: 'tool_call',
-              id: action.toolCallId,
-              name: 'tool',
-              arguments: action.delta,
-              status: 'running',
-            },
-          ),
-        })),
-        runningMessageId: current.runningMessageId ?? action.messageId,
-      }))
+      return withStream(state, action.conversationId, (current) => {
+        if (hasTerminalMessage(current.messages, action.messageId)) return current
+        return {
+          ...current,
+          messages: patchOrAppendAssistantMessage(current.messages, action.messageId, (m) => ({
+            ...m,
+            blocks: upsertToolCall(
+              m.blocks,
+              action.toolCallId,
+              (b) => ({ ...b, arguments: b.arguments + action.delta }),
+              {
+                type: 'tool_call',
+                id: action.toolCallId,
+                name: 'tool',
+                arguments: action.delta,
+                status: 'running',
+              },
+            ),
+          })),
+          runningMessageId: current.runningMessageId ?? action.messageId,
+        }
+      })
 
     case 'TOOL_CALL_RESULT':
-      return withStream(state, action.conversationId, (current) => ({
-        ...current,
-        messages: patchOrAppendAssistantMessage(current.messages, action.messageId, (m) => ({
-          ...m,
-          blocks: upsertToolCall(
-            m.blocks,
-            action.toolCallId,
-            (b) => ({
-              ...b,
-              ...(action.name ? { name: action.name } : {}),
-              status: action.isError ? 'error' : 'done',
-              result: action.result,
-            }),
-            {
-              type: 'tool_call',
-              id: action.toolCallId,
-              name: action.name ?? 'tool',
-              arguments: '',
-              status: action.isError ? 'error' : 'done',
-              result: action.result,
-            },
-          ),
-        })),
-        runningMessageId: current.runningMessageId ?? action.messageId,
-      }))
+      return withStream(state, action.conversationId, (current) => {
+        if (hasTerminalMessage(current.messages, action.messageId)) return current
+        return {
+          ...current,
+          messages: patchOrAppendAssistantMessage(current.messages, action.messageId, (m) => ({
+            ...m,
+            blocks: upsertToolCall(
+              m.blocks,
+              action.toolCallId,
+              (b) => ({
+                ...b,
+                ...(action.name ? { name: action.name } : {}),
+                status: action.isError ? 'error' : 'done',
+                result: action.result,
+              }),
+              {
+                type: 'tool_call',
+                id: action.toolCallId,
+                name: action.name ?? 'tool',
+                arguments: '',
+                status: action.isError ? 'error' : 'done',
+                result: action.result,
+              },
+            ),
+          })),
+          runningMessageId: current.runningMessageId ?? action.messageId,
+        }
+      })
 
     case 'IMAGE_BLOCK':
-      return withStream(state, action.conversationId, (current) => ({
-        ...current,
-        messages: patchOrAppendAssistantMessage(current.messages, action.messageId, (m) => ({
-          ...m,
-          blocks: [...m.blocks, action.block],
-        })),
-        runningMessageId: current.runningMessageId ?? action.messageId,
-      }))
+      return withStream(state, action.conversationId, (current) => {
+        if (hasTerminalMessage(current.messages, action.messageId)) return current
+        return {
+          ...current,
+          messages: patchOrAppendAssistantMessage(current.messages, action.messageId, (m) => ({
+            ...m,
+            blocks: [...m.blocks, action.block],
+          })),
+          runningMessageId: current.runningMessageId ?? action.messageId,
+        }
+      })
 
     case 'FINISH':
       return withStream(state, action.conversationId, (current) => ({
@@ -533,11 +548,13 @@ function reducer(state: State, action: Action): State {
           ...current,
           messages:
             action.event.type === 'turn.started'
-              ? ensureAssistantMessage(
-                  current.messages,
-                  action.event.messageId,
-                  selectionFromAgentEventData(action.event.data),
-                )
+              ? hasTerminalMessage(current.messages, action.event.messageId)
+                ? current.messages
+                : ensureAssistantMessage(
+                    current.messages,
+                    action.event.messageId,
+                    selectionFromAgentEventData(action.event.data),
+                  )
               : terminalError
                 ? finalizeAssistantMessageAsError(
                     current.messages,
@@ -547,7 +564,9 @@ function reducer(state: State, action: Action): State {
                 : current.messages,
           runningMessageId:
             action.event.type === 'turn.started'
-              ? action.event.messageId
+              ? hasTerminalMessage(current.messages, action.event.messageId)
+                ? current.runningMessageId
+                : action.event.messageId
               : shouldClearRunningFromAgentEvent(action.event) &&
                   current.runningMessageId === action.event.messageId
                 ? null

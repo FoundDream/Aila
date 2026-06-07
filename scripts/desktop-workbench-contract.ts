@@ -620,6 +620,83 @@ function testRendererStaleFailureDoesNotDowngradeFinishedMessage(): void {
   assertEqual(stream.events.length, 1, 'stale failure should still append timeline event')
 }
 
+function testRendererLateStartedEventDoesNotReviveFinishedMessage(): void {
+  let state = createChatStreamsStateForTest()
+  state = reduceChatStreamsForTest(state, {
+    type: 'FINISH',
+    conversationId: 'conversation-late-started',
+    messageId: 'assistant-late-started',
+    message: {
+      id: 'assistant-late-started',
+      role: 'assistant',
+      blocks: [{ type: 'text', content: 'already final' }],
+      status: 'done',
+      model: { providerId: 'openrouter', modelId: 'contract/mock' },
+    },
+  })
+  state = reduceChatStreamsForTest(state, {
+    type: 'AGENT_EVENT',
+    event: {
+      schemaVersion: 1,
+      timestamp: 1,
+      conversationId: 'conversation-late-started',
+      messageId: 'assistant-late-started',
+      type: 'turn.started',
+      data: { providerId: 'openrouter', modelId: 'contract/mock' },
+    },
+  })
+
+  const stream = state.streams.get('conversation-late-started')
+  assert(stream, 'late started should keep stream')
+  assertEqual(stream.runningMessageId, null, 'late started should not revive running state')
+  assertEqual(stream.messages.length, 1, 'late started should not append duplicate assistant')
+  assertEqual(stream.messages[0]?.status, 'done', 'late started should keep terminal message')
+  assertEqual(stream.events.length, 1, 'late started should still append timeline event')
+}
+
+function testRendererLateStreamingPatchDoesNotMutateFinishedMessage(): void {
+  let state = createChatStreamsStateForTest()
+  state = reduceChatStreamsForTest(state, {
+    type: 'FINISH',
+    conversationId: 'conversation-late-delta',
+    messageId: 'assistant-late-delta',
+    message: {
+      id: 'assistant-late-delta',
+      role: 'assistant',
+      blocks: [{ type: 'text', content: 'final text' }],
+      status: 'done',
+      model: { providerId: 'openrouter', modelId: 'contract/mock' },
+    },
+  })
+  state = reduceChatStreamsForTest(state, {
+    type: 'TEXT_DELTA',
+    conversationId: 'conversation-late-delta',
+    messageId: 'assistant-late-delta',
+    kind: 'text',
+    delta: ' stale suffix',
+  })
+  state = reduceChatStreamsForTest(state, {
+    type: 'TOOL_CALL_RESULT',
+    conversationId: 'conversation-late-delta',
+    messageId: 'assistant-late-delta',
+    toolCallId: 'late-tool',
+    name: 'read',
+    result: 'late tool result',
+    isError: false,
+  })
+
+  const stream = state.streams.get('conversation-late-delta')
+  assert(stream, 'late patch should keep stream')
+  assertEqual(stream.runningMessageId, null, 'late patch should not revive running state')
+  assertEqual(stream.messages.length, 1, 'late patch should not append duplicate assistant')
+  assertEqual(
+    stream.messages[0]?.blocks[0]?.type === 'text' ? stream.messages[0].blocks[0].content : '',
+    'final text',
+    'late patch should not mutate final content',
+  )
+  assertEqual(stream.messages[0]?.blocks.length, 1, 'late tool result should not append tool block')
+}
+
 function testRendererFinishAppendsMissingAssistantMessage(): void {
   let state = createChatStreamsStateForTest()
   state = reduceChatStreamsForTest(state, {
@@ -1073,6 +1150,8 @@ async function main(): Promise<void> {
   testRendererFailedEventFinalizesStreamingPlaceholder()
   testRendererInterruptedEventFinalizesStreamingPlaceholder()
   testRendererStaleFailureDoesNotDowngradeFinishedMessage()
+  testRendererLateStartedEventDoesNotReviveFinishedMessage()
+  testRendererLateStreamingPatchDoesNotMutateFinishedMessage()
   testRendererFinishAppendsMissingAssistantMessage()
   testRendererRunStartedDoesNotDuplicateFinishedAssistant()
   testRendererToolResultAppendsMissingAssistantMessage()
