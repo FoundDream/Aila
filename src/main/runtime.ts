@@ -214,6 +214,8 @@ export class AgentRuntime {
   private readonly staticProfiles: readonly AgentProfile[]
   private readonly staticToolPacks: readonly ToolPack[]
   private readonly fallbackToolRegistry: ToolRegistry
+  private shutdownPromise: Promise<void> | null = null
+  private shutdownStarted = false
   private profileLoad: Promise<Map<string, AgentProfile>> | null = null
   private toolRegistryLoad: Promise<ToolRegistry> | null = null
 
@@ -251,13 +253,13 @@ export class AgentRuntime {
   async send(input: RuntimeSendInput): Promise<RuntimeSendResult> {
     const { conversationId, userText, selection, requestedProfileId, transientContext } = input
 
-    this.assertConversationOpen(conversationId)
+    this.assertCanStartTurn(conversationId)
 
     // Wait for any prior stream on this conversation to finish its persistence
     // side-effects before appending the next user message.
     const previous = this.activeStreams.get(conversationId)
     if (previous) await this.waitForPriorStreamBeforeNextTurn(conversationId, previous)
-    this.assertConversationOpen(conversationId)
+    this.assertCanStartTurn(conversationId)
 
     const userMessage: PersistedMessage = {
       schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
@@ -270,10 +272,10 @@ export class AgentRuntime {
       this.assertConversationOpen(conversationId)
       throw new Error('conversation was deleted')
     }
-    this.assertConversationOpen(conversationId)
+    this.assertCanStartTurn(conversationId)
 
     const record = await this.store.getConversation(conversationId)
-    this.assertConversationOpen(conversationId)
+    this.assertCanStartTurn(conversationId)
     return this.startAssistantTurn({
       conversationId,
       userMessage,
@@ -287,13 +289,13 @@ export class AgentRuntime {
   async retryLastUserMessage(input: RuntimeRetryLastInput): Promise<RuntimeSendResult> {
     const { conversationId, selection, requestedProfileId, transientContext } = input
 
-    this.assertConversationOpen(conversationId)
+    this.assertCanStartTurn(conversationId)
     const previous = this.activeStreams.get(conversationId)
     if (previous) await this.waitForPriorStreamBeforeNextTurn(conversationId, previous)
-    this.assertConversationOpen(conversationId)
+    this.assertCanStartTurn(conversationId)
 
     const record = await this.store.getConversation(conversationId)
-    this.assertConversationOpen(conversationId)
+    this.assertCanStartTurn(conversationId)
     const retry = resolveRetryTurn(record)
 
     if (!messageText(retry.userMessage).trim()) {
@@ -321,7 +323,7 @@ export class AgentRuntime {
     const { conversationId, userMessage, record, selection, requestedProfileId, transientContext } =
       input
     const assistantMessageId = randomUUID()
-    this.assertConversationOpen(conversationId)
+    this.assertCanStartTurn(conversationId)
 
     let profileId: AgentProfileId
     let messages: Parameters<typeof defaultStreamChat>[0]['messages']
@@ -350,7 +352,7 @@ export class AgentRuntime {
       this.assertConversationOpen(conversationId)
       return { userMessage, assistantMessageId }
     }
-    this.assertConversationOpen(conversationId)
+    this.assertCanStartTurn(conversationId)
 
     const controller = new AbortController()
     let resolveCleanup: () => void = () => {}
@@ -463,6 +465,12 @@ export class AgentRuntime {
         }
       }),
     )
+  }
+
+  shutdown(reason: ConversationAbortReason = 'shutdown'): Promise<void> {
+    this.shutdownStarted = true
+    if (!this.shutdownPromise) this.shutdownPromise = this.abortAll(reason)
+    return this.shutdownPromise
   }
 
   async deleteConversation(conversationId: string): Promise<void> {
@@ -595,6 +603,11 @@ export class AgentRuntime {
     if (this.deletedConversations.has(conversationId)) {
       throw new Error('conversation was deleted')
     }
+  }
+
+  private assertCanStartTurn(conversationId: string): void {
+    if (this.shutdownStarted) throw new Error('runtime is shut down')
+    this.assertConversationOpen(conversationId)
   }
 
   private async waitForPriorStreamBeforeNextTurn(

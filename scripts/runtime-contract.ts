@@ -1782,6 +1782,115 @@ async function testRuntimeAbortAllTimesOutStuckStreamCleanup(): Promise<void> {
   })
 }
 
+async function testRuntimeShutdownRejectsNewTurns(): Promise<void> {
+  await withTempDataDir(async () => {
+    const conversation = await createConversation()
+    let resolveStarted: () => void = () => {}
+    const started = new Promise<void>((resolve) => {
+      resolveStarted = resolve
+    })
+    let streamCount = 0
+    let streamFinished = false
+
+    const runtime = new AgentRuntime({
+      logger: { warn() {}, error() {} },
+      streamChat: async (req, handlers) => {
+        streamCount += 1
+        req.onAgentEvent?.({
+          timestamp: Date.now(),
+          conversationId: req.conversationId,
+          messageId: req.assistantMessageId,
+          type: 'turn.started',
+          data: { providerId: req.selection.providerId, modelId: req.selection.modelId },
+        })
+        resolveStarted()
+        await new Promise<void>((resolve) => {
+          if (req.signal.aborted) {
+            resolve()
+            return
+          }
+          req.signal.addEventListener('abort', () => resolve(), { once: true })
+        })
+        req.onAgentEvent?.({
+          timestamp: Date.now(),
+          conversationId: req.conversationId,
+          messageId: req.assistantMessageId,
+          type: 'turn.cancelled',
+          data: { phase: 'completed', reason: 'abort_signal' },
+        })
+        await handlers.onError({
+          conversationId: req.conversationId,
+          messageId: req.assistantMessageId,
+          error: 'Aborted',
+          message: {
+            schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+            id: req.assistantMessageId,
+            role: 'assistant',
+            blocks: [],
+            status: 'error',
+            error: 'Aborted',
+            model: req.selection,
+          },
+        })
+        streamFinished = true
+      },
+    })
+
+    await runtime.send({
+      conversationId: conversation.id,
+      userText: 'start before shutdown',
+      selection: { providerId: 'openrouter', modelId: 'contract/mock' },
+      requestedProfileId: 'coding',
+    })
+    await started
+
+    const firstShutdown = runtime.shutdown()
+    const secondShutdown = runtime.shutdown()
+    assertEqual(firstShutdown, secondShutdown, 'shutdown should be idempotent')
+
+    for (const operation of ['send', 'retry'] as const) {
+      let rejected = false
+      try {
+        if (operation === 'send') {
+          await runtime.send({
+            conversationId: conversation.id,
+            userText: 'send after shutdown starts',
+            selection: { providerId: 'openrouter', modelId: 'contract/mock' },
+            requestedProfileId: 'coding',
+          })
+        } else {
+          await runtime.retryLastUserMessage({
+            conversationId: conversation.id,
+            selection: { providerId: 'openrouter', modelId: 'contract/mock' },
+            requestedProfileId: 'coding',
+          })
+        }
+      } catch (error) {
+        rejected = error instanceof Error && error.message.includes('shut down')
+      }
+      assert(rejected, `${operation} should reject after shutdown starts`)
+    }
+
+    await withTimeout(firstShutdown, 'shutdown should settle active stream')
+    assertEqual(streamFinished, true, 'shutdown should wait for active stream cleanup')
+    assertEqual(runtime.listActiveStreams().length, 0, 'shutdown should clear active streams')
+    assertEqual(streamCount, 1, 'shutdown should not start replacement streams')
+
+    let rejectedAfterShutdown = false
+    try {
+      await runtime.send({
+        conversationId: conversation.id,
+        userText: 'send after shutdown finishes',
+        selection: { providerId: 'openrouter', modelId: 'contract/mock' },
+        requestedProfileId: 'coding',
+      })
+    } catch (error) {
+      rejectedAfterShutdown = error instanceof Error && error.message.includes('shut down')
+    }
+    assert(rejectedAfterShutdown, 'send should reject after shutdown finishes')
+  })
+}
+
 async function testPersistenceContract(): Promise<void> {
   await withTempDataDir(async () => {
     const conversation = await createConversation('docs/runtime-contract')
@@ -2780,6 +2889,7 @@ async function main(): Promise<void> {
   await testRuntimeSendRecoversAbortedStuckPreviousStream()
   await testRuntimeAbortAllWaitsForShutdownCleanup()
   await testRuntimeAbortAllTimesOutStuckStreamCleanup()
+  await testRuntimeShutdownRejectsNewTurns()
   await testPersistenceContract()
   await testMessageUpsertPreventsDuplicatePersistedMessages()
   await testAgentEventReplayDeduplicatesExactDuplicates()
