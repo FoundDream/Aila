@@ -16,13 +16,13 @@ export function createPersistedRuntimeStore(): AgentRuntimeStore {
   return {
     createConversation,
     getConversation,
-    upsertMessage,
+    saveMessage: upsertMessage,
     recordAgentEvent: appendAgentEventAndTouchConversation,
     listConversations,
     listAgentEvents,
     recoverInterruptedActivities: recoverInterruptedConversationActivities,
     renameConversation,
-    setConversationUsage,
+    recordUsage: setConversationUsage,
     deleteConversation,
   }
 }

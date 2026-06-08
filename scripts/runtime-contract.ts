@@ -466,7 +466,7 @@ async function testRuntimeStreamAndModelInfoUseHostBoundary(): Promise<void> {
   const runtime = new AgentRuntime({
     store: {
       getConversation: async () => record,
-      upsertMessage: async (_id, message) => {
+      saveMessage: async (_id, message) => {
         const index = record.messages.findIndex((current) => current.id === message.id)
         record =
           index >= 0
@@ -486,7 +486,7 @@ async function testRuntimeStreamAndModelInfoUseHostBoundary(): Promise<void> {
         },
         summary: { ...summary, updatedAt: summary.updatedAt + record.messages.length + 1 },
       }),
-      setConversationUsage: async () => {
+      recordUsage: async () => {
         throw new Error('stream model-info host boundary should not persist usage')
       },
       deleteConversation: async () => {
@@ -582,7 +582,7 @@ async function testRuntimeAttachmentPersistenceUsesHostBoundary(): Promise<void>
       if (id !== conversationId) throw new Error(`unexpected conversation: ${id}`)
       return record
     },
-    upsertMessage: async (_id, message) => {
+    saveMessage: async (_id, message) => {
       const index = record.messages.findIndex((current) => current.id === message.id)
       record =
         index >= 0
@@ -602,7 +602,7 @@ async function testRuntimeAttachmentPersistenceUsesHostBoundary(): Promise<void>
       },
       summary: { ...summary, updatedAt: summary.updatedAt + record.messages.length + 1 },
     }),
-    setConversationUsage: async () => {
+    recordUsage: async () => {
       throw new Error('attachment host boundary should not persist usage')
     },
     deleteConversation: async () => {
@@ -703,7 +703,7 @@ async function testRuntimeTextAttachmentFallbackIsHostAgnostic(): Promise<void> 
 
   const store: AgentRuntimeStore = {
     getConversation: async () => record,
-    upsertMessage: async (_id, message) => {
+    saveMessage: async (_id, message) => {
       record = { ...record, messages: [...record.messages, message] }
       return { ...summary, updatedAt: summary.updatedAt + record.messages.length }
     },
@@ -711,7 +711,7 @@ async function testRuntimeTextAttachmentFallbackIsHostAgnostic(): Promise<void> 
       event: { ...event, schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION },
       summary,
     }),
-    setConversationUsage: async () => {
+    recordUsage: async () => {
       throw new Error('text attachment fallback should not persist usage')
     },
     deleteConversation: async () => {
@@ -785,7 +785,7 @@ async function testRuntimeImageAttachmentRequiresHostBoundary(): Promise<void> {
   const runtime = new AgentRuntime({
     store: {
       getConversation: async () => record,
-      upsertMessage: async (_id, message) => {
+      saveMessage: async (_id, message) => {
         record = { ...record, messages: [...record.messages, message] }
         return { ...summary, updatedAt: summary.updatedAt + record.messages.length }
       },
@@ -793,7 +793,7 @@ async function testRuntimeImageAttachmentRequiresHostBoundary(): Promise<void> {
         event: { ...event, schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION },
         summary,
       }),
-      setConversationUsage: async () => {
+      recordUsage: async () => {
         throw new Error('image attachment boundary should not persist usage')
       },
       deleteConversation: async () => {
@@ -846,7 +846,7 @@ async function testRuntimeRejectsInvalidHostAttachmentBlocks(): Promise<void> {
   const runtime = new AgentRuntime({
     store: {
       getConversation: async () => record,
-      upsertMessage: async (_id, message) => {
+      saveMessage: async (_id, message) => {
         record = { ...record, messages: [...record.messages, message] }
         return { ...summary, updatedAt: summary.updatedAt + record.messages.length }
       },
@@ -854,7 +854,7 @@ async function testRuntimeRejectsInvalidHostAttachmentBlocks(): Promise<void> {
         event: { ...event, schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION },
         summary,
       }),
-      setConversationUsage: async () => {
+      recordUsage: async () => {
         throw new Error('invalid attachment block should not persist usage')
       },
       deleteConversation: async () => {
@@ -1049,7 +1049,7 @@ async function testRuntimeInjectableStoreContract(): Promise<void> {
         calls.push(`get:${conversationId}`)
         return getConversation(conversationId)
       },
-      upsertMessage: async (conversationId, message) => {
+      saveMessage: async (conversationId, message) => {
         calls.push(`upsert:${message.role}:${message.id}`)
         return upsertMessage(conversationId, message)
       },
@@ -1057,7 +1057,7 @@ async function testRuntimeInjectableStoreContract(): Promise<void> {
         calls.push(`event:${event.type}`)
         return appendAgentEventAndTouchConversation(conversationId, event)
       },
-      setConversationUsage: async (conversationId, usage) => {
+      recordUsage: async (conversationId, usage) => {
         calls.push(`usage:${usage.totalTokens}`)
         return setConversationUsage(conversationId, usage)
       },
@@ -1161,7 +1161,7 @@ async function testRuntimeHostTransientContextUsesInjectedRecord(): Promise<void
       if (id !== conversationId) throw new Error(`unexpected conversation: ${id}`)
       return record
     },
-    upsertMessage: async (_id, message) => {
+    saveMessage: async (_id, message) => {
       calls.push(`upsert:${message.role}`)
       record = { ...record, messages: [...record.messages, message] }
       return { ...summary, updatedAt: summary.updatedAt + record.messages.length }
@@ -1176,7 +1176,7 @@ async function testRuntimeHostTransientContextUsesInjectedRecord(): Promise<void
         summary: { ...summary, updatedAt: summary.updatedAt + record.messages.length + 1 },
       }
     },
-    setConversationUsage: async () => {
+    recordUsage: async () => {
       throw new Error('transient context contract should not persist usage')
     },
     deleteConversation: async () => {
@@ -1275,7 +1275,7 @@ async function testRuntimeStreamHandlerSnapshots(): Promise<void> {
       if (id !== conversationId) throw new Error(`unexpected conversation: ${id}`)
       return record
     },
-    upsertMessage: async (_id, message) => {
+    saveMessage: async (_id, message) => {
       await Promise.resolve()
       const index = record.messages.findIndex((current) => current.id === message.id)
       record =
@@ -1296,7 +1296,7 @@ async function testRuntimeStreamHandlerSnapshots(): Promise<void> {
       },
       summary: { ...record.meta, updatedAt: record.meta.updatedAt + record.messages.length + 1 },
     }),
-    setConversationUsage: async (_id, usage) => {
+    recordUsage: async (_id, usage) => {
       storedUsageTotal = usage.totalTokens
       return {
         ...record.meta,
@@ -1403,7 +1403,7 @@ async function testRuntimeConversationStoreFacadeContract(): Promise<void> {
       if (!record) throw new Error(`missing record: ${conversationId}`)
       return record
     },
-    upsertMessage: async () => {
+    saveMessage: async () => {
       throw new Error('conversation facade should not upsert messages')
     },
     recordAgentEvent: async () => {
@@ -1427,7 +1427,7 @@ async function testRuntimeConversationStoreFacadeContract(): Promise<void> {
       if (record) records.set(conversationId, { ...record, meta: renamed })
       return renamed
     },
-    setConversationUsage: async () => {
+    recordUsage: async () => {
       throw new Error('conversation facade should not persist usage')
     },
     deleteConversation: async () => {
@@ -1671,7 +1671,7 @@ async function testRuntimeAppendUserMessageUsesInjectedStore(): Promise<void> {
     getConversation: async () => {
       throw new Error('append user message should not read conversation')
     },
-    upsertMessage: async (id, message) => {
+    saveMessage: async (id, message) => {
       calls.push(`upsert:${id}:${message.role}`)
       const [block] = message.blocks
       if (block?.type === 'text') block.content = 'store-mutated-message'
@@ -1687,7 +1687,7 @@ async function testRuntimeAppendUserMessageUsesInjectedStore(): Promise<void> {
     recordAgentEvent: async () => {
       throw new Error('append user message should not append agent events')
     },
-    setConversationUsage: async () => {
+    recordUsage: async () => {
       throw new Error('append user message should not persist usage')
     },
     deleteConversation: async () => {
@@ -1734,7 +1734,7 @@ async function testRuntimeRecordAgentEventUsesInjectedStore(): Promise<void> {
     getConversation: async () => {
       throw new Error('record agent event should not read conversation')
     },
-    upsertMessage: async () => {
+    saveMessage: async () => {
       throw new Error('record agent event should not upsert messages')
     },
     recordAgentEvent: async (id, event) => {
@@ -1756,7 +1756,7 @@ async function testRuntimeRecordAgentEventUsesInjectedStore(): Promise<void> {
         summary: summaryFromStore,
       }
     },
-    setConversationUsage: async () => {
+    recordUsage: async () => {
       throw new Error('record agent event should not persist usage')
     },
     deleteConversation: async () => {
@@ -1838,7 +1838,7 @@ async function testRuntimeRecoveryDelegatesToInjectedStore(): Promise<void> {
     getConversation: async () => {
       throw new Error('delegated recovery should not read conversations directly')
     },
-    upsertMessage: async () => {
+    saveMessage: async () => {
       throw new Error('delegated recovery should not upsert messages')
     },
     recordAgentEvent: async () => {
@@ -1848,7 +1848,7 @@ async function testRuntimeRecoveryDelegatesToInjectedStore(): Promise<void> {
       delegatedReason = reason
       return [summary]
     },
-    setConversationUsage: async () => {
+    recordUsage: async () => {
       throw new Error('delegated recovery should not persist usage')
     },
     deleteConversation: async () => {
@@ -1921,7 +1921,7 @@ async function testRuntimeRecoveryUsesInjectedStoreReplay(): Promise<void> {
     getConversation: async () => {
       throw new Error('injected replay recovery should not read a conversation record')
     },
-    upsertMessage: async () => {
+    saveMessage: async () => {
       throw new Error('injected replay recovery should not upsert messages')
     },
     listConversations: async () => {
@@ -1946,7 +1946,7 @@ async function testRuntimeRecoveryUsesInjectedStoreReplay(): Promise<void> {
       }
       return { event: appendedEvent, summary }
     },
-    setConversationUsage: async () => {
+    recordUsage: async () => {
       throw new Error('injected replay recovery should not persist usage')
     },
     deleteConversation: async () => {
@@ -2000,13 +2000,13 @@ async function testRuntimeDeleteAssetCleanupHostBoundary(): Promise<void> {
         getCalledWithoutHook = true
         throw new Error('delete without cleanup hook should not read conversation')
       },
-      upsertMessage: async () => {
+      saveMessage: async () => {
         throw new Error('not used')
       },
       recordAgentEvent: async () => {
         throw new Error('not used')
       },
-      setConversationUsage: async () => {
+      recordUsage: async () => {
         throw new Error('not used')
       },
       deleteConversation: async () => {
@@ -2054,13 +2054,13 @@ async function testRuntimeDeleteAssetCleanupHostBoundary(): Promise<void> {
         order.push(`get:${conversationId}`)
         return record
       },
-      upsertMessage: async () => {
+      saveMessage: async () => {
         throw new Error('not used')
       },
       recordAgentEvent: async () => {
         throw new Error('not used')
       },
-      setConversationUsage: async () => {
+      recordUsage: async () => {
         throw new Error('not used')
       },
       deleteConversation: async (conversationId) => {
@@ -5694,7 +5694,11 @@ async function testRuntimeSdkDoesNotExportDocsContract(): Promise<void> {
   )
   const store = runtimeSdk.createPersistedRuntimeStore()
   assertEqual(typeof store.getConversation, 'function', 'persisted store should read records')
-  assertEqual(typeof store.upsertMessage, 'function', 'persisted store should persist messages')
+  assertEqual(typeof store.saveMessage, 'function', 'persisted store should persist messages')
+  assert(
+    !('upsertMessage' in store),
+    'persisted runtime store adapter should not expose raw persisted message helper names',
+  )
   assertEqual(
     typeof store.recordAgentEvent,
     'function',
@@ -5712,6 +5716,11 @@ async function testRuntimeSdkDoesNotExportDocsContract(): Promise<void> {
   assert(
     !('recoverInterruptedConversationActivities' in store),
     'persisted runtime store adapter should not expose raw persisted recovery helper names',
+  )
+  assertEqual(typeof store.recordUsage, 'function', 'persisted store should persist usage')
+  assert(
+    !('setConversationUsage' in store),
+    'persisted runtime store adapter should not expose raw persisted usage helper names',
   )
 
   assertEqual(
@@ -5815,6 +5824,18 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
     'AgentRuntime store contract should use host-agnostic recovery naming, not persisted helper names',
   )
   assert(
+    runtimeSource.includes('saveMessage:') &&
+      runtimeSource.includes('this.store.saveMessage') &&
+      !runtimeSource.includes('this.store.upsertMessage'),
+    'AgentRuntime store contract should use host-agnostic message persistence naming',
+  )
+  assert(
+    runtimeSource.includes('recordUsage:') &&
+      runtimeSource.includes('this.store.recordUsage') &&
+      !runtimeSource.includes('this.store.setConversationUsage'),
+    'AgentRuntime store contract should use host-agnostic usage persistence naming',
+  )
+  assert(
     runtimeSource.includes("from './agent-protocol'"),
     'AgentRuntime core should depend on the host-agnostic agent protocol types',
   )
@@ -5872,6 +5893,11 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
       'recoverInterruptedActivities: recoverInterruptedConversationActivities',
     ),
     'persisted runtime store adapter should map persisted recovery into runtime recoverInterruptedActivities',
+  )
+  assert(
+    runtimeStoreSource.includes('saveMessage: upsertMessage') &&
+      runtimeStoreSource.includes('recordUsage: setConversationUsage'),
+    'persisted runtime store adapter should map persisted message and usage helpers into runtime names',
   )
 
   const runtimeSdkSource = await readFile(join(process.cwd(), 'src/runtime/index.ts'), 'utf-8')

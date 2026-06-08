@@ -290,13 +290,13 @@ export interface AgentRuntimeOptions extends AgentRuntimeHost {
 export interface AgentRuntimeStore {
   createConversation?: (docId?: string) => Promise<ConversationSummary>
   getConversation: (conversationId: string) => Promise<ConversationRecord>
-  upsertMessage: (conversationId: string, message: PersistedMessage) => Promise<ConversationSummary>
+  saveMessage: (conversationId: string, message: PersistedMessage) => Promise<ConversationSummary>
   recordAgentEvent: (conversationId: string, event: AgentEvent) => Promise<AgentEventAppendResult>
   listConversations?: () => Promise<readonly ConversationSummary[]>
   listAgentEvents?: (conversationId: string) => Promise<readonly PersistedAgentEvent[]>
   recoverInterruptedActivities?: (reason?: string) => Promise<ConversationSummary[]>
   renameConversation?: (conversationId: string, title: string) => Promise<ConversationSummary>
-  setConversationUsage: (
+  recordUsage: (
     conversationId: string,
     usage: { promptTokens: number; completionTokens: number; totalTokens: number },
   ) => Promise<ConversationSummary>
@@ -409,7 +409,7 @@ export function createInMemoryRuntimeStore(
     async getConversation(conversationId): Promise<ConversationRecord> {
       return cloneRuntimeValue(requireRecord(conversationId))
     },
-    async upsertMessage(conversationId, message): Promise<ConversationSummary> {
+    async saveMessage(conversationId, message): Promise<ConversationSummary> {
       const record = requireRecord(conversationId)
       const prepared = cloneRuntimeValue(message)
       const index = record.messages.findIndex((current) => current.id === prepared.id)
@@ -471,7 +471,7 @@ export function createInMemoryRuntimeStore(
         updatedAt: nextRuntimeUpdatedAt(current, now()),
       }))
     },
-    async setConversationUsage(conversationId, usage): Promise<ConversationSummary> {
+    async recordUsage(conversationId, usage): Promise<ConversationSummary> {
       return updateMeta(conversationId, (current) => ({
         ...current,
         updatedAt: nextRuntimeUpdatedAt(current, now()),
@@ -1191,7 +1191,7 @@ export class AgentRuntime {
   ): Promise<boolean> {
     if (this.deletedConversations.has(conversationId)) return false
     const summary = cloneRuntimeConversationSummary(
-      await this.store.upsertMessage(conversationId, cloneRuntimePersistedMessage(message)),
+      await this.store.saveMessage(conversationId, cloneRuntimePersistedMessage(message)),
     )
     if (this.deletedConversations.has(conversationId)) return false
     this.emit(createRuntimeEvent('conversations:updated', summary))
@@ -1665,10 +1665,7 @@ export class AgentRuntime {
             if (doneEvent.usage) {
               try {
                 const summary = cloneRuntimeConversationSummary(
-                  await this.store.setConversationUsage(
-                    conversationId,
-                    cloneRuntimeValue(doneEvent.usage),
-                  ),
+                  await this.store.recordUsage(conversationId, cloneRuntimeValue(doneEvent.usage)),
                 )
                 this.emit(createRuntimeEvent('conversations:updated', summary))
               } catch (err) {
