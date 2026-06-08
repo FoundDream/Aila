@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -41,6 +41,7 @@ import {
   executeTool,
   getConversationsDir,
   getExtensionReport,
+  getImagesDir,
   getSkillsDir,
   getToolDefinitions,
   getToolPacksDir,
@@ -49,6 +50,8 @@ import {
   loadSkillsFromDir,
   loadToolPacksFromDir,
   parseSkillDocument,
+  type RuntimeAttachmentBlock,
+  type RuntimePersistAttachmentInput,
   type RuntimeRecordAgentEventInput,
   replayConversationActivity,
   replayConversationRuntimeState,
@@ -380,6 +383,340 @@ async function testRuntimeSettingsFallbackIsHostAgnostic(): Promise<void> {
       }
     }
   })
+}
+
+async function testRuntimeAttachmentPersistenceUsesHostBoundary(): Promise<void> {
+  const conversationId = 'attachment-host-boundary'
+  const summary: ConversationSummary = {
+    schemaVersion: AILA_CONVERSATION_META_SCHEMA_VERSION,
+    id: conversationId,
+    title: 'attachment host boundary',
+    createdAt: 1,
+    updatedAt: 1,
+  }
+  let record: ConversationRecord = { meta: summary, messages: [] }
+  let streamedUserContent: unknown = null
+  const persistedInputs: RuntimePersistAttachmentInput[] = []
+  const attachments = [
+    {
+      kind: 'text' as const,
+      name: 'notes.txt',
+      mime: 'text/plain',
+      data: 'hello from the text attachment',
+    },
+    {
+      kind: 'image' as const,
+      name: 'screen.png',
+      mime: 'image/png',
+      data: Buffer.from('host-boundary-image').toString('base64'),
+    },
+  ]
+
+  const store: AgentRuntimeStore = {
+    getConversation: async (id) => {
+      if (id !== conversationId) throw new Error(`unexpected conversation: ${id}`)
+      return record
+    },
+    upsertMessage: async (_id, message) => {
+      const index = record.messages.findIndex((current) => current.id === message.id)
+      record =
+        index >= 0
+          ? {
+              ...record,
+              messages: record.messages.map((current, currentIndex) =>
+                currentIndex === index ? message : current,
+              ),
+            }
+          : { ...record, messages: [...record.messages, message] }
+      return { ...summary, updatedAt: summary.updatedAt + record.messages.length }
+    },
+    appendAgentEventAndTouchConversation: async (_id, event) => ({
+      event: {
+        ...event,
+        schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+      },
+      summary: { ...summary, updatedAt: summary.updatedAt + record.messages.length + 1 },
+    }),
+    setConversationUsage: async () => {
+      throw new Error('attachment host boundary should not persist usage')
+    },
+    deleteConversation: async () => {
+      throw new Error('attachment host boundary should not delete conversation')
+    },
+  }
+
+  const runtime = new AgentRuntime({
+    store,
+    persistAttachment: async (input) => {
+      persistedInputs.push({ ...input })
+      input.name = 'host-mutated-name'
+      if (input.kind === 'image') {
+        return {
+          type: 'image',
+          url: `aila-image://i/host-${input.conversationId}.png`,
+          mime: input.mime,
+        }
+      }
+      return { type: 'file', name: 'host-notes.txt', content: `${input.data}\nfrom host` }
+    },
+    streamChat: async (req, handlers) => {
+      for (const message of req.messages) {
+        if (message.role === 'user') streamedUserContent = message.content
+      }
+      await handlers.onDone({
+        conversationId: req.conversationId,
+        messageId: req.assistantMessageId,
+        message: {
+          schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+          id: req.assistantMessageId,
+          role: 'assistant',
+          blocks: [{ type: 'text', content: 'attachment host boundary done' }],
+          status: 'done',
+          model: req.selection,
+        },
+      })
+    },
+    logger: { warn() {}, error() {} },
+  })
+
+  await runtime.send({
+    conversationId,
+    userText: 'send attachments through host',
+    selection: { providerId: 'openrouter', modelId: 'contract/mock' },
+    attachments,
+  })
+  await waitFor(() => runtime.listActiveStreams().length === 0, 'attachment stream should settle')
+
+  assertEqual(
+    attachments[0]?.name,
+    'notes.txt',
+    'runtime should isolate caller attachments from host mutation',
+  )
+  assertEqual(persistedInputs.length, 2, 'host should receive every attachment')
+  assertEqual(
+    persistedInputs.map((input) => `${input.conversationId}:${input.kind}`).join(','),
+    `${conversationId}:text,${conversationId}:image`,
+    'host attachment inputs should include conversation id and preserve order',
+  )
+
+  const userMessage = record.messages.find((message) => message.role === 'user')
+  assert(userMessage, 'runtime should persist the user message with attachments')
+  assertEqual(userMessage.blocks.length, 3, 'persisted user should include text and attachments')
+  assertEqual(userMessage.blocks[1]?.type, 'file', 'text attachment becomes file block')
+  assertEqual(
+    userMessage.blocks[1]?.type === 'file' ? userMessage.blocks[1].name : '',
+    'host-notes.txt',
+    'runtime should persist the host-returned file block',
+  )
+  assertEqual(userMessage.blocks[2]?.type, 'image', 'image attachment becomes image block')
+  assertEqual(
+    userMessage.blocks[2]?.type === 'image' ? userMessage.blocks[2].url : '',
+    `aila-image://i/host-${conversationId}.png`,
+    'runtime should persist the host-returned image block',
+  )
+
+  assert(Array.isArray(streamedUserContent), 'image attachments should produce multimodal content')
+  const streamedJson = JSON.stringify(streamedUserContent)
+  assert(
+    streamedJson.includes('hello from the text attachment') &&
+      streamedJson.includes(`aila-image://i/host-${conversationId}.png`),
+    'streamed context should include host-persisted file text and image url',
+  )
+}
+
+async function testRuntimeTextAttachmentFallbackIsHostAgnostic(): Promise<void> {
+  const conversationId = 'text-attachment-fallback'
+  const summary: ConversationSummary = {
+    schemaVersion: AILA_CONVERSATION_META_SCHEMA_VERSION,
+    id: conversationId,
+    title: 'text attachment fallback',
+    createdAt: 1,
+    updatedAt: 1,
+  }
+  let record: ConversationRecord = { meta: summary, messages: [] }
+  let streamedUserContent = ''
+
+  const store: AgentRuntimeStore = {
+    getConversation: async () => record,
+    upsertMessage: async (_id, message) => {
+      record = { ...record, messages: [...record.messages, message] }
+      return { ...summary, updatedAt: summary.updatedAt + record.messages.length }
+    },
+    appendAgentEventAndTouchConversation: async (_id, event) => ({
+      event: { ...event, schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION },
+      summary,
+    }),
+    setConversationUsage: async () => {
+      throw new Error('text attachment fallback should not persist usage')
+    },
+    deleteConversation: async () => {
+      throw new Error('text attachment fallback should not delete conversation')
+    },
+  }
+
+  const runtime = new AgentRuntime({
+    store,
+    streamChat: async (req, handlers) => {
+      const user = req.messages.find(
+        (message): message is { role: 'user'; content: string } =>
+          message.role === 'user' && typeof message.content === 'string',
+      )
+      streamedUserContent = user?.content ?? ''
+      await handlers.onDone({
+        conversationId: req.conversationId,
+        messageId: req.assistantMessageId,
+        message: {
+          schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+          id: req.assistantMessageId,
+          role: 'assistant',
+          blocks: [{ type: 'text', content: 'text fallback done' }],
+          status: 'done',
+          model: req.selection,
+        },
+      })
+    },
+    logger: { warn() {}, error() {} },
+  })
+
+  await runtime.send({
+    conversationId,
+    userText: 'plain text with attachment',
+    selection: { providerId: 'openrouter', modelId: 'contract/mock' },
+    attachments: [
+      { kind: 'text', name: 'plain.txt', mime: 'text/plain', data: 'fallback attachment content' },
+    ],
+  })
+  await waitFor(
+    () => runtime.listActiveStreams().length === 0,
+    'text fallback attachment stream should settle',
+  )
+
+  const userMessage = record.messages.find((message) => message.role === 'user')
+  assert(userMessage, 'runtime should persist text attachment fallback user message')
+  assertEqual(userMessage.blocks[1]?.type, 'file', 'text attachments should not require a host')
+  assertEqual(
+    userMessage.blocks[1]?.type === 'file' ? userMessage.blocks[1].content : '',
+    'fallback attachment content',
+    'text attachment fallback should persist file content',
+  )
+  assert(
+    streamedUserContent.includes('fallback attachment content'),
+    'text attachment fallback should be present in streamed context',
+  )
+}
+
+async function testRuntimeImageAttachmentRequiresHostBoundary(): Promise<void> {
+  const conversationId = 'image-attachment-requires-host'
+  const summary: ConversationSummary = {
+    schemaVersion: AILA_CONVERSATION_META_SCHEMA_VERSION,
+    id: conversationId,
+    title: 'image attachment requires host',
+    createdAt: 1,
+    updatedAt: 1,
+  }
+  let record: ConversationRecord = { meta: summary, messages: [] }
+  let streamReached = false
+
+  const runtime = new AgentRuntime({
+    store: {
+      getConversation: async () => record,
+      upsertMessage: async (_id, message) => {
+        record = { ...record, messages: [...record.messages, message] }
+        return { ...summary, updatedAt: summary.updatedAt + record.messages.length }
+      },
+      appendAgentEventAndTouchConversation: async (_id, event) => ({
+        event: { ...event, schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION },
+        summary,
+      }),
+      setConversationUsage: async () => {
+        throw new Error('image attachment boundary should not persist usage')
+      },
+      deleteConversation: async () => {
+        throw new Error('image attachment boundary should not delete conversation')
+      },
+    },
+    streamChat: async () => {
+      streamReached = true
+    },
+    logger: { warn() {}, error() {} },
+  })
+
+  try {
+    await runtime.send({
+      conversationId,
+      userText: 'image without host',
+      selection: { providerId: 'openrouter', modelId: 'contract/mock' },
+      attachments: [
+        {
+          kind: 'image',
+          name: 'missing-host.png',
+          mime: 'image/png',
+          data: Buffer.from('missing-host').toString('base64'),
+        },
+      ],
+    })
+    throw new Error('image attachment without host unexpectedly succeeded')
+  } catch (error) {
+    assert(
+      error instanceof Error && error.message.includes('runtime host cannot persist image'),
+      'runtime should reject image attachments when no host persistence boundary exists',
+    )
+  }
+
+  assertEqual(streamReached, false, 'image attachment rejection should not start streamChat')
+  assertEqual(record.messages.length, 0, 'image attachment rejection should not persist user input')
+}
+
+async function testRuntimeRejectsInvalidHostAttachmentBlocks(): Promise<void> {
+  const conversationId = 'invalid-host-attachment-block'
+  const summary: ConversationSummary = {
+    schemaVersion: AILA_CONVERSATION_META_SCHEMA_VERSION,
+    id: conversationId,
+    title: 'invalid host attachment block',
+    createdAt: 1,
+    updatedAt: 1,
+  }
+  let record: ConversationRecord = { meta: summary, messages: [] }
+
+  const runtime = new AgentRuntime({
+    store: {
+      getConversation: async () => record,
+      upsertMessage: async (_id, message) => {
+        record = { ...record, messages: [...record.messages, message] }
+        return { ...summary, updatedAt: summary.updatedAt + record.messages.length }
+      },
+      appendAgentEventAndTouchConversation: async (_id, event) => ({
+        event: { ...event, schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION },
+        summary,
+      }),
+      setConversationUsage: async () => {
+        throw new Error('invalid attachment block should not persist usage')
+      },
+      deleteConversation: async () => {
+        throw new Error('invalid attachment block should not delete conversation')
+      },
+    },
+    persistAttachment: async () =>
+      ({ type: 'tool_call', id: 'bad-block' }) as unknown as RuntimeAttachmentBlock,
+    logger: { warn() {}, error() {} },
+  })
+
+  try {
+    await runtime.send({
+      conversationId,
+      userText: 'invalid host block',
+      selection: { providerId: 'openrouter', modelId: 'contract/mock' },
+      attachments: [{ kind: 'text', name: 'bad.txt', mime: 'text/plain', data: 'bad block' }],
+    })
+    throw new Error('invalid host attachment block unexpectedly succeeded')
+  } catch (error) {
+    assert(
+      error instanceof Error && error.message.includes('unsupported attachment block'),
+      'runtime should reject unsupported host attachment block types',
+    )
+  }
+
+  assertEqual(record.messages.length, 0, 'invalid host block should not persist user input')
 }
 
 async function testRuntimeHostStaticExtensionContract(): Promise<void> {
@@ -5044,6 +5381,57 @@ async function testRuntimeSdkDoesNotExportDocsContract(): Promise<void> {
   )
 }
 
+async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
+  const runtimeSource = await readFile(join(process.cwd(), 'src/main/runtime.ts'), 'utf-8')
+  assert(
+    !runtimeSource.includes("from './image-store'") && !runtimeSource.includes('saveImage('),
+    'AgentRuntime core must not import or call the Desktop image store',
+  )
+  assert(
+    runtimeSource.includes('persistAttachment?:'),
+    'AgentRuntime host boundary should expose attachment persistence',
+  )
+
+  const hostSource = await readFile(join(process.cwd(), 'src/main/runtime-host.ts'), 'utf-8')
+  assert(
+    hostSource.includes("from './image-store'") &&
+      hostSource.includes('persistAttachment: persistRuntimeAttachment'),
+    'default runtime host should own image attachment persistence',
+  )
+
+  const skillCoreSource = await readFile(join(process.cwd(), 'src/main/skills.ts'), 'utf-8')
+  for (const forbidden of [
+    "from 'node:fs'",
+    "from 'node:fs/promises'",
+    "from 'node:path'",
+    'getSkillsDir',
+    'loadSkillFromDir',
+    'loadSkillsFromDir',
+  ]) {
+    assert(
+      !skillCoreSource.includes(forbidden),
+      `skills core must not depend on filesystem loading: ${forbidden}`,
+    )
+  }
+
+  const skillLoaderSource = await readFile(join(process.cwd(), 'src/main/skill-loader.ts'), 'utf-8')
+  assert(
+    skillLoaderSource.includes('loadSkillsFromDir') && skillLoaderSource.includes('getSkillsDir'),
+    'filesystem skill loading should live in the host loader module',
+  )
+
+  assertEqual(
+    typeof (runtimeSdk as Record<string, unknown>).createSkillToolPack,
+    'function',
+    'runtime SDK should expose the host-agnostic skill tool pack builder',
+  )
+  assertEqual(
+    typeof (runtimeSdk as Record<string, unknown>).loadSkillsFromDir,
+    'function',
+    'runtime SDK should still expose the filesystem skill loader adapter',
+  )
+}
+
 async function testPersistedAgentRuntimeFactoryContract(): Promise<void> {
   await withTempDataDir(async () => {
     const toolPacksDir = getToolPacksDir()
@@ -5122,6 +5510,60 @@ export default {
       ),
       'persisted runtime factory should preserve host event overrides',
     )
+  })
+}
+
+async function testPersistedRuntimeFactoryPersistsImageAttachmentsThroughDefaultHost(): Promise<void> {
+  await withTempDataDir(async () => {
+    const runtime = runtimeSdk.createPersistedAgentRuntime({
+      host: {
+        streamChat: async (req, handlers) => {
+          await handlers.onDone({
+            conversationId: req.conversationId,
+            messageId: req.assistantMessageId,
+            message: {
+              schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+              id: req.assistantMessageId,
+              role: 'assistant',
+              blocks: [{ type: 'text', content: 'default host image attachment done' }],
+              status: 'done',
+              model: req.selection,
+            },
+          })
+        },
+      },
+    })
+    const conversation = await runtime.createConversation()
+
+    await runtime.send({
+      conversationId: conversation.id,
+      userText: 'default host should persist image attachments',
+      selection: { providerId: 'openrouter', modelId: 'contract/mock' },
+      attachments: [
+        {
+          kind: 'image',
+          name: 'default-host.png',
+          mime: 'image/png',
+          data: Buffer.from('default-host-image').toString('base64'),
+        },
+      ],
+    })
+    await waitFor(
+      () => runtime.listActiveStreams().length === 0,
+      'default host image attachment stream should settle',
+    )
+
+    const record = await runtime.getConversation(conversation.id)
+    const imageBlock = record.messages
+      .flatMap((message) => message.blocks)
+      .find((block) => block.type === 'image')
+    assert(imageBlock, 'default host should persist an image block')
+    assert(
+      imageBlock.type === 'image' && imageBlock.url.startsWith('aila-image://i/'),
+      'default host image block should use the Desktop image protocol',
+    )
+    const imageFiles = await readdir(getImagesDir())
+    assertEqual(imageFiles.length, 1, 'default host should write one image asset')
   })
 }
 
@@ -5631,6 +6073,10 @@ async function main(): Promise<void> {
   await testRuntimeEmitsVersionedEvents()
   await testRuntimeHostBoundaryContract()
   await testRuntimeSettingsFallbackIsHostAgnostic()
+  await testRuntimeAttachmentPersistenceUsesHostBoundary()
+  await testRuntimeTextAttachmentFallbackIsHostAgnostic()
+  await testRuntimeImageAttachmentRequiresHostBoundary()
+  await testRuntimeRejectsInvalidHostAttachmentBlocks()
   await testRuntimeHostStaticExtensionContract()
   await testRuntimeDynamicExtensionLoaderSnapshots()
   await testRuntimeInjectableStoreContract()
@@ -5686,7 +6132,9 @@ async function main(): Promise<void> {
   await testBashToolShellCwdContract()
   await testRuntimeCoreHasNoDocToolContract()
   await testRuntimeSdkDoesNotExportDocsContract()
+  await testRuntimeCoreHostBoundarySourceContract()
   await testPersistedAgentRuntimeFactoryContract()
+  await testPersistedRuntimeFactoryPersistsImageAttachmentsThroughDefaultHost()
   await testToolPackManifestLoader()
   await testToolPackReloadsChangedEntry()
   await testExtensionReportContract()

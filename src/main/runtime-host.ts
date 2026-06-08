@@ -1,12 +1,15 @@
+import { saveImage } from './image-store'
 import {
   AgentRuntime,
   type AgentRuntimeHost,
   type AgentRuntimeOptions,
   type AgentRuntimeStore,
+  type RuntimeAttachmentBlock,
+  type RuntimePersistAttachmentInput,
 } from './runtime'
 import { createPersistedRuntimeStore } from './runtime-store'
 import { loadSettings } from './settings'
-import { loadSkillsFromDir } from './skills'
+import { loadSkillsFromDir } from './skill-loader'
 import { loadToolPacksFromDir } from './tool-pack-loader'
 
 export interface CreatePersistedAgentRuntimeInput {
@@ -15,11 +18,23 @@ export interface CreatePersistedAgentRuntimeInput {
   store?: AgentRuntimeStore
 }
 
+async function persistRuntimeAttachment(
+  input: RuntimePersistAttachmentInput,
+): Promise<RuntimeAttachmentBlock> {
+  if (input.kind === 'image') {
+    const bytes = Buffer.from(input.data, 'base64')
+    const { url } = await saveImage(bytes, input.name)
+    return { type: 'image', url, mime: input.mime }
+  }
+  return { type: 'file', name: input.name, content: input.data }
+}
+
 export function createDefaultRuntimeHost(overrides: AgentRuntimeHost = {}): AgentRuntimeHost {
   return {
     loadSettings,
     loadToolPacks: async () => (await loadToolPacksFromDir()).map((pack) => pack.toolPack),
     loadSkills: async () => (await loadSkillsFromDir()).skills,
+    persistAttachment: persistRuntimeAttachment,
     ...overrides,
   }
 }

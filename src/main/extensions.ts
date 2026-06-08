@@ -1,5 +1,5 @@
 import { getDataDir, getSkillsDir, getToolPacksDir } from './paths'
-import { loadSkillsFromDir } from './skills'
+import { loadSkillsFromDir } from './skill-loader'
 import { loadToolPacksFromDir } from './tool-pack-loader'
 
 export type ExtensionReportErrorKind = 'toolPacks' | 'skills'

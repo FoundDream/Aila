@@ -23,7 +23,6 @@ import {
   type PersistedTextBlock,
   replayConversationActivity,
 } from './conversations'
-import { saveImage } from './image-store'
 import { type AgentRuntimeEvent, createRuntimeEvent } from './runtime-events'
 import type { Settings } from './settings'
 import { createSkillToolPack, type LoadedSkill } from './skills'
@@ -143,6 +142,12 @@ export interface ChatAttachmentInput {
   data: string
 }
 
+export interface RuntimePersistAttachmentInput extends ChatAttachmentInput {
+  conversationId: string
+}
+
+export type RuntimeAttachmentBlock = Extract<PersistedBlock, { type: 'file' | 'image' }>
+
 export interface RuntimeSendInput {
   conversationId: string
   userText: string
@@ -228,6 +233,7 @@ export interface AgentRuntimeHost {
     reason: ConversationAbortReason,
   ) => MaybePromise<void>
   cleanupConversationAssets?: (record: ConversationRecord) => MaybePromise<void>
+  persistAttachment?: (input: RuntimePersistAttachmentInput) => MaybePromise<RuntimeAttachmentBlock>
   toolPacks?: readonly ToolPack[]
   loadToolPacks?: () => Promise<readonly ToolPack[]>
   skills?: readonly LoadedSkill[]
@@ -489,6 +495,7 @@ function normalizeRuntimeHost(options: AgentRuntimeOptions): AgentRuntimeHost {
   if (options.cleanupConversationAssets) {
     host.cleanupConversationAssets = options.cleanupConversationAssets
   }
+  if (options.persistAttachment) host.persistAttachment = options.persistAttachment
   if (options.loadToolPacks) host.loadToolPacks = options.loadToolPacks
   if (options.loadSkills) host.loadSkills = options.loadSkills
   if (options.loadSettings) host.loadSettings = options.loadSettings
@@ -508,6 +515,7 @@ function normalizeRuntimeHost(options: AgentRuntimeOptions): AgentRuntimeHost {
   if (options.host.cleanupConversationAssets) {
     host.cleanupConversationAssets = options.host.cleanupConversationAssets
   }
+  if (options.host.persistAttachment) host.persistAttachment = options.host.persistAttachment
   if (options.host.loadToolPacks) host.loadToolPacks = options.host.loadToolPacks
   if (options.host.loadSkills) host.loadSkills = options.host.loadSkills
   if (options.host.loadSettings) host.loadSettings = options.host.loadSettings
@@ -539,6 +547,25 @@ function cloneRuntimeToolRegistry(registry: ToolRegistry): ToolRegistry {
 
 function cloneRuntimeSettings(settings: Settings): Settings {
   return cloneRuntimeValue(settings)
+}
+
+function assertRuntimeAttachmentBlock(block: RuntimeAttachmentBlock): RuntimeAttachmentBlock {
+  if (!block || typeof block !== 'object') {
+    throw new Error('runtime host returned an invalid attachment block')
+  }
+  if (block.type === 'file') {
+    if (typeof block.name !== 'string' || typeof block.content !== 'string') {
+      throw new Error('runtime host returned an invalid file attachment block')
+    }
+    return block
+  }
+  if (block.type === 'image') {
+    if (typeof block.url !== 'string' || typeof block.mime !== 'string') {
+      throw new Error('runtime host returned an invalid image attachment block')
+    }
+    return block
+  }
+  throw new Error('runtime host returned an unsupported attachment block')
 }
 
 function cloneRuntimeWorkspaceRoots(
@@ -795,16 +822,10 @@ export class AgentRuntime {
       if (previous) await this.waitForPriorStreamBeforeNextTurn(conversationId, previous)
       this.assertCanStartTurn(conversationId)
 
-      const blocks: PersistedBlock[] = [{ type: 'text', content: userText }]
-      for (const attachment of attachments ?? []) {
-        if (attachment.kind === 'image') {
-          const bytes = Buffer.from(attachment.data, 'base64')
-          const { url } = await saveImage(bytes, attachment.name)
-          blocks.push({ type: 'image', url, mime: attachment.mime })
-        } else {
-          blocks.push({ type: 'file', name: attachment.name, content: attachment.data })
-        }
-      }
+      const blocks: PersistedBlock[] = [
+        { type: 'text', content: userText },
+        ...(await this.persistAttachments(conversationId, attachments ?? [])),
+      ]
 
       const userMessage: PersistedMessage = {
         schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
@@ -1172,6 +1193,26 @@ export class AgentRuntime {
     if (this.deletedConversations.has(conversationId)) return false
     this.emit(createRuntimeEvent('conversations:updated', summary))
     return true
+  }
+
+  private async persistAttachments(
+    conversationId: string,
+    attachments: readonly ChatAttachmentInput[],
+  ): Promise<RuntimeAttachmentBlock[]> {
+    const blocks: RuntimeAttachmentBlock[] = []
+    for (const attachment of attachments) {
+      const input = cloneRuntimeValue({ ...attachment, conversationId })
+      if (this.host.persistAttachment) {
+        blocks.push(
+          assertRuntimeAttachmentBlock(cloneRuntimeValue(await this.host.persistAttachment(input))),
+        )
+      } else if (input.kind === 'text') {
+        blocks.push({ type: 'file', name: input.name, content: input.data })
+      } else {
+        throw new Error('runtime host cannot persist image attachments')
+      }
+    }
+    return blocks
   }
 
   private async persistSetupFailure(

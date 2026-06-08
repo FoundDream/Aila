@@ -70,14 +70,17 @@ export {
   AILA_RUNTIME_EVENT_SCHEMA_VERSION,
   AILA_RUNTIME_EVENT_TYPES,
   type AilaRuntimeEventType,
+  type ChatAttachmentInput,
   type ConversationAbortReason,
   createInMemoryRuntimeStore,
   createRuntimeEvent,
   isRuntimeEventType,
   type RuntimeAppendUserMessageInput,
+  type RuntimeAttachmentBlock,
   type RuntimeCreateConversationInput,
   type RuntimeExecuteToolInput,
   type RuntimeListConversationsInput,
+  type RuntimePersistAttachmentInput,
   type RuntimeRecordAgentEventInput,
   type RuntimeResolveConversationInput,
   type RuntimeResolveConversationResult,
@@ -100,17 +103,19 @@ export {
   saveSettings,
 } from '../main/settings'
 export {
+  loadSkillFromDir,
+  loadSkillsFromDir,
+  type SkillLoadError,
+  type SkillLoadResult,
+} from '../main/skill-loader'
+export {
   AILA_SKILL_FILE,
   createSkillToolPack,
   type LoadedSkill,
-  loadSkillFromDir,
-  loadSkillsFromDir,
   type ParsedSkillDocument,
   parseSkillDocument,
   SKILL_TOOL_NAME,
   type SkillDefinition,
-  type SkillLoadError,
-  type SkillLoadResult,
 } from '../main/skills'
 export {
   AILA_TOOL_PACK_MANIFEST_FILE,
