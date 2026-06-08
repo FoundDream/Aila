@@ -10,6 +10,7 @@
     "src/tui/**/*",
     "scripts/**/*"
   ],
+  "exclude": ["scripts/runtime-package-consumer-contract.ts"],
   "compilerOptions": {
     "composite": true,
     "tsBuildInfoFile": "out/tsconfig.node.tsbuildinfo",

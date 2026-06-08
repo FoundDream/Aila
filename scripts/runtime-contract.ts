@@ -6489,9 +6489,15 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
     'tsc --noEmit -p tsconfig.runtime.json --composite false',
     'package scripts should expose a runtime-only compile contract',
   )
+  assertEqual(
+    packageJson.scripts?.['typecheck:runtime-package'],
+    'tsc --noEmit -p tsconfig.runtime-package.json --composite false',
+    'package scripts should expose a simulated package compile contract',
+  )
   assert(
-    packageJson.scripts?.typecheck?.startsWith('bun run typecheck:runtime &&') === true,
-    'full typecheck should run the runtime-only compile contract first',
+    packageJson.scripts?.typecheck ===
+      'bun run typecheck:runtime && bun run typecheck:runtime-package && bun run typecheck:node && bun run typecheck:web',
+    'full typecheck should run runtime core, simulated package, node, and web compile contracts',
   )
   const runtimeTsconfig = JSON.parse(
     await readFile(join(process.cwd(), 'tsconfig.runtime.json'), 'utf-8'),
@@ -6507,6 +6513,70 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
     !JSON.stringify(runtimeTsconfig).includes('src/main'),
     'runtime-only tsconfig must not include Desktop/main adapter sources',
   )
+  const runtimePackageTsconfig = JSON.parse(
+    await readFile(join(process.cwd(), 'tsconfig.runtime-package.json'), 'utf-8'),
+  ) as {
+    compilerOptions?: {
+      paths?: Record<string, string[]>
+    }
+    include?: string[]
+  }
+  assertEqual(
+    JSON.stringify(runtimePackageTsconfig.include),
+    JSON.stringify(['scripts/runtime-package-consumer-contract.ts']),
+    'runtime package dry-run tsconfig should compile the simulated package consumer fixture only',
+  )
+  assertEqual(
+    JSON.stringify(runtimePackageTsconfig.compilerOptions?.paths),
+    JSON.stringify({
+      '@aila/runtime': ['./src/runtime/index.ts'],
+      '@aila/runtime/core': ['./src/runtime/core.ts'],
+      '@aila/runtime/node': ['./src/runtime/node.ts'],
+      '@shared/*': ['./src/shared/*'],
+    }),
+    'runtime package dry-run aliases should model only the intended package entrypoints',
+  )
+  assert(
+    !Object.keys(runtimePackageTsconfig.compilerOptions?.paths ?? {}).some(
+      (path) => path === '@aila/runtime/internal' || path === '@aila/runtime/*',
+    ),
+    'runtime package dry-run must not expose an internal package alias',
+  )
+  const nodeTsconfig = JSON.parse(
+    await readFile(join(process.cwd(), 'tsconfig.node.json'), 'utf-8'),
+  ) as {
+    exclude?: string[]
+  }
+  assert(
+    nodeTsconfig.exclude?.includes('scripts/runtime-package-consumer-contract.ts'),
+    'node tsconfig should leave the package dry-run fixture to the package compile contract',
+  )
+  const runtimePackageConsumerSource = await readFile(
+    join(process.cwd(), 'scripts/runtime-package-consumer-contract.ts'),
+    'utf-8',
+  )
+  for (const expected of [
+    "from '@aila/runtime/core'",
+    "from '@aila/runtime/node'",
+    "from '@aila/runtime'",
+  ]) {
+    assert(
+      runtimePackageConsumerSource.includes(expected),
+      `runtime package dry-run should consume package entrypoint: ${expected}`,
+    )
+  }
+  for (const expectedError of [
+    "typeof import('@aila/runtime/internal')",
+    'runtimeCore.executeTool',
+    'runtimePackage.createConversation',
+    'runtimeNode.createDoc',
+  ]) {
+    assert(
+      runtimePackageConsumerSource.includes('@ts-expect-error') &&
+        runtimePackageConsumerSource.includes(expectedError),
+      `runtime package dry-run should assert unavailable package API: ${expectedError}`,
+    )
+  }
 
   const runtimeCoreSdkSource = await readFile(join(process.cwd(), 'src/runtime/core.ts'), 'utf-8')
   for (const expected of [
