@@ -2994,6 +2994,89 @@ async function testRuntimeAbortTimesOutStuckStreamCleanup(): Promise<void> {
   })
 }
 
+async function testRuntimeRepeatedAbortWaitsForSameCleanup(): Promise<void> {
+  await withTempDataDir(async () => {
+    const conversation = await createConversation()
+    let resolveStarted: () => void = () => {}
+    const started = new Promise<void>((resolve) => {
+      resolveStarted = resolve
+    })
+    let cleanupCalls = 0
+
+    const runtime = new AgentRuntime({
+      store: createPersistedRuntimeStore(),
+      abortAllCleanupTimeoutMs: 50,
+      logger: { warn() {}, error() {} },
+      onConversationAbort: () => {
+        cleanupCalls += 1
+      },
+      streamChat: async (req) => {
+        req.onAgentEvent?.({
+          timestamp: Date.now(),
+          conversationId: req.conversationId,
+          messageId: req.assistantMessageId,
+          type: 'turn.started',
+          data: { providerId: req.selection.providerId, modelId: req.selection.modelId },
+        })
+        resolveStarted()
+        await new Promise<void>(() => {})
+      },
+    })
+
+    await runtime.send({
+      conversationId: conversation.id,
+      userText: 'repeated abort stuck stream',
+      selection: { providerId: 'openrouter', modelId: 'contract/mock' },
+    })
+    await started
+
+    const firstAbort = runtime.abort(conversation.id)
+    await waitFor(() => cleanupCalls === 1, 'first repeated abort should notify cleanup')
+
+    let secondAbortSettled = false
+    const secondAbort = runtime.abort(conversation.id).then(
+      () => {
+        secondAbortSettled = true
+      },
+      () => {
+        secondAbortSettled = true
+      },
+    )
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    assertEqual(
+      secondAbortSettled,
+      false,
+      'repeated abort should wait for the already-aborted stream cleanup',
+    )
+
+    await withTimeout(firstAbort, 'first repeated abort should time out cleanup', 500)
+    await withTimeout(secondAbort, 'second repeated abort should share cleanup timeout', 500)
+    assertEqual(runtime.listActiveStreams().length, 0, 'repeated abort should clear active stream')
+
+    const agentEvents = await listAgentEvents(conversation.id)
+    const requestedCancellations = agentEvents.filter(
+      (event) =>
+        event.type === 'turn.cancelled' &&
+        event.data?.phase === 'requested' &&
+        event.data.reason === 'user',
+    )
+    const interrupted = agentEvents.filter(
+      (event) =>
+        event.type === 'turn.interrupted' && event.data?.reason === 'user cleanup timed out',
+    )
+    assertEqual(
+      requestedCancellations.length,
+      1,
+      'repeated abort should persist one cancellation request',
+    )
+    assertEqual(
+      interrupted.length,
+      1,
+      'repeated abort should persist one interrupted cleanup event',
+    )
+  })
+}
+
 async function testRuntimeUnexpectedStreamErrorPersistsFailureActivity(): Promise<void> {
   await withTempDataDir(async () => {
     const conversation = await createConversation()
@@ -6847,6 +6930,7 @@ async function main(): Promise<void> {
   await testRuntimeSendRecoversTimedOutTurnSetupLock()
   await testRuntimeAbortPersistsCancellationActivity()
   await testRuntimeAbortTimesOutStuckStreamCleanup()
+  await testRuntimeRepeatedAbortWaitsForSameCleanup()
   await testRuntimeUnexpectedStreamErrorPersistsFailureActivity()
   await testRuntimeSetupFailurePersistsAssistantError()
   await testRuntimeSetupFailureRejectsWhenConversationDeleted()

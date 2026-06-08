@@ -41,6 +41,7 @@ interface StreamSlot {
   assistantMessageId: string
   selection: ModelSelection
   abortRecorded: boolean
+  cleanupInterruptedRecorded: boolean
   turnStartLock: TurnStartLockSlot
 }
 
@@ -974,6 +975,7 @@ export class AgentRuntime {
       assistantMessageId,
       selection,
       abortRecorded: false,
+      cleanupInterruptedRecorded: false,
       turnStartLock,
     })
 
@@ -1052,20 +1054,12 @@ export class AgentRuntime {
     if (!slot) return
     slot.controller.abort()
     const abortCleanup = this.notifyConversationAbort(conversationId, 'user')
-    if (slot.abortRecorded) {
-      await abortCleanup
-      return
-    }
     await this.recordCancellationRequest(conversationId, slot, 'user')
     await abortCleanup
-    const cleanedUp = await this.waitForStreamCleanup(slot, this.cleanupTimeoutMs())
-    if (!cleanedUp) {
-      this.clearTimedOutStreamSlot(conversationId, slot)
-      try {
-        await this.recordInterruptedStreamCleanup(conversationId, slot, 'user cleanup timed out')
-      } catch (err) {
-        this.logger.warn('[runtime] interrupted abort activity append failed:', err)
-      }
+    try {
+      await this.waitForAbortedStreamCleanup(conversationId, slot, 'user cleanup timed out')
+    } catch (err) {
+      this.logger.warn('[runtime] interrupted abort activity append failed:', err)
     }
   }
 
@@ -1129,18 +1123,15 @@ export class AgentRuntime {
         const abortCleanup = this.notifyConversationAbort(conversationId, reason)
         await this.recordCancellationRequest(conversationId, slot, reason)
         await abortCleanup
-        const cleanedUp = await this.waitForStreamCleanup(slot, cleanupTimeoutMs)
-        if (!cleanedUp) {
-          this.clearTimedOutStreamSlot(conversationId, slot)
-          try {
-            await this.recordInterruptedStreamCleanup(
-              conversationId,
-              slot,
-              `${reason} cleanup timed out`,
-            )
-          } catch (err) {
-            this.logger.warn('[runtime] interrupted shutdown activity append failed:', err)
-          }
+        try {
+          await this.waitForAbortedStreamCleanup(
+            conversationId,
+            slot,
+            `${reason} cleanup timed out`,
+            cleanupTimeoutMs,
+          )
+        } catch (err) {
+          this.logger.warn('[runtime] interrupted shutdown activity append failed:', err)
         }
       }),
     )
@@ -1450,6 +1441,19 @@ export class AgentRuntime {
     await this.recordInterruptedStreamCleanup(conversationId, slot, 'aborted cleanup timed out')
   }
 
+  private async waitForAbortedStreamCleanup(
+    conversationId: string,
+    slot: StreamSlot,
+    interruptedReason: string,
+    timeoutMs = this.cleanupTimeoutMs(),
+  ): Promise<void> {
+    const cleanedUp = await this.waitForStreamCleanup(slot, timeoutMs)
+    if (cleanedUp) return
+
+    this.clearTimedOutStreamSlot(conversationId, slot)
+    await this.recordInterruptedStreamCleanup(conversationId, slot, interruptedReason)
+  }
+
   private async recordCancellationRequest(
     conversationId: string,
     slot: StreamSlot,
@@ -1480,6 +1484,8 @@ export class AgentRuntime {
     slot: StreamSlot,
     reason: string,
   ): Promise<void> {
+    if (slot.cleanupInterruptedRecorded) return
+    slot.cleanupInterruptedRecorded = true
     await this.recordAgentEvent(
       withTurnSelection(
         {
