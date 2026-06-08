@@ -179,6 +179,10 @@ async function testCliUsesSharedRuntimeFactory(): Promise<void> {
     'CLI adapter should not import the mixed compatibility runtime barrel',
   )
   assert(
+    !source.includes("from '../runtime/internal'"),
+    'CLI adapter should not import runtime implementation internals',
+  )
+  assert(
     source.includes('createPersistedAgentRuntime'),
     'CLI adapter should use the shared persisted runtime factory',
   )

@@ -33,17 +33,14 @@ import {
   AILA_TOOL_PACK_MANIFEST_FILE,
   AILA_TOOL_PACK_MANIFEST_SCHEMA_VERSION,
   configureDataDir,
-  createDefaultToolRegistry,
   createInMemoryRuntimeStore,
   createInterruptedConversationRecoveryEvent,
   createPersistedRuntimeStore,
   createRuntimeEvent,
-  executeTool,
   getConversationsDir,
   getExtensionReport,
   getImagesDir,
   getSkillsDir,
-  getToolDefinitions,
   getToolPacksDir,
   isRuntimeEventType,
   loadSkillFromDir,
@@ -58,7 +55,6 @@ import {
   requestToolApprovalWithActivity,
   type Settings,
   SKILL_TOOL_NAME,
-  summarizeToolTarget,
   type ToolApprovalRequest,
   type ToolFileSystem,
   type ToolPack,
@@ -66,6 +62,13 @@ import {
   type ToolWebSearchRequest,
 } from '../src/runtime'
 import * as runtimeCoreSdk from '../src/runtime/core'
+import * as runtimeInternalSdk from '../src/runtime/internal'
+import {
+  createDefaultToolRegistry,
+  executeTool,
+  getToolDefinitions,
+  summarizeToolTarget,
+} from '../src/runtime/internal'
 import * as runtimeNodeSdk from '../src/runtime/node'
 
 function assert(condition: unknown, message: string): asserts condition {
@@ -6158,6 +6161,21 @@ async function testRuntimeSdkDoesNotExportDocsContract(): Promise<void> {
   ]) {
     assert(!(name in sdk), `runtime SDK must not export raw persistence helper: ${name}`)
   }
+  for (const name of [
+    'BUILTIN_TOOL_PACKS',
+    'TOOL_DEFINITIONS',
+    'TOOL_SPECS',
+    'applyFindReplace',
+    'createDefaultToolRegistry',
+    'createToolRegistry',
+    'evaluateToolPolicy',
+    'executeTool',
+    'formatFindReplaceErrors',
+    'getToolDefinitions',
+    'summarizeToolTarget',
+  ]) {
+    assert(!(name in sdk), `runtime SDK must not export internal helper: ${name}`)
+  }
 
   assertEqual(
     typeof runtimeSdk.createPersistedRuntimeStore,
@@ -6244,11 +6262,34 @@ async function testRuntimeSdkDoesNotExportDocsContract(): Promise<void> {
     'function',
     'runtime core SDK should export in-memory store',
   )
-  assertEqual(
-    typeof coreSdk.createDefaultToolRegistry,
-    'function',
-    'runtime core SDK should export tool registry helpers',
-  )
+  for (const name of [
+    'BUILTIN_TOOL_PACKS',
+    'TOOL_DEFINITIONS',
+    'TOOL_SPECS',
+    'applyFindReplace',
+    'createDefaultToolRegistry',
+    'createToolRegistry',
+    'evaluateToolPolicy',
+    'executeTool',
+    'formatFindReplaceErrors',
+    'getToolDefinitions',
+    'summarizeToolTarget',
+  ]) {
+    assert(!(name in coreSdk), `runtime core SDK must not export internal helper: ${name}`)
+  }
+  const internalSdk = runtimeInternalSdk as Record<string, unknown>
+  for (const name of [
+    'applyFindReplace',
+    'createDefaultToolRegistry',
+    'createToolRegistry',
+    'evaluateToolPolicy',
+    'executeTool',
+    'formatFindReplaceErrors',
+    'getToolDefinitions',
+    'summarizeToolTarget',
+  ]) {
+    assert(name in internalSdk, `runtime internal SDK should export helper: ${name}`)
+  }
   assertEqual(
     typeof coreSdk.requestToolApprovalWithActivity,
     'function',
@@ -6471,7 +6512,6 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
   for (const expected of [
     "'./agent-protocol'",
     "'./conversation-core'",
-    "'./find-replace'",
     "'./runtime'",
     "'./settings-types'",
     "'./skills'",
@@ -6481,6 +6521,25 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
     assert(
       runtimeCoreSdkSource.includes(expected),
       `runtime core SDK should directly export runtime module: ${expected}`,
+    )
+  }
+  for (const forbidden of [
+    "'./find-replace'",
+    'BUILTIN_TOOL_PACKS',
+    'TOOL_DEFINITIONS',
+    'TOOL_SPECS',
+    'applyFindReplace',
+    'createDefaultToolRegistry',
+    'createToolRegistry',
+    'evaluateToolPolicy',
+    'executeTool',
+    'formatFindReplaceErrors',
+    'getToolDefinitions',
+    'summarizeToolTarget',
+  ]) {
+    assert(
+      !runtimeCoreSdkSource.includes(forbidden),
+      `runtime core SDK source must not expose internal helper: ${forbidden}`,
     )
   }
   for (const forbidden of [
@@ -6507,6 +6566,17 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
       `runtime core SDK must not re-export node adapter module: ${forbidden}`,
     )
   }
+  const runtimeInternalSdkSource = await readFile(
+    join(process.cwd(), 'src/runtime/internal.ts'),
+    'utf-8',
+  )
+  assert(
+    runtimeInternalSdkSource.includes("from './find-replace'") &&
+      runtimeInternalSdkSource.includes("from './tools'") &&
+      runtimeInternalSdkSource.includes('executeTool') &&
+      runtimeInternalSdkSource.includes('summarizeToolTarget'),
+    'runtime internal SDK should own implementation helper exports',
+  )
   for (const [mainFile, runtimeFile] of [
     ['agent-protocol.ts', 'agent-protocol'],
     ['conversation-core.ts', 'conversation-core'],

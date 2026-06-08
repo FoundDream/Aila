@@ -168,6 +168,10 @@ async function testDesktopUsesSharedRuntimeFactory(): Promise<void> {
       !workbenchSource.includes("from './tools'"),
     'Desktop runtime workbench should import runtime contracts from the public core surface',
   )
+  assert(
+    !workbenchSource.includes("from '../runtime/internal'"),
+    'Desktop runtime workbench should not import runtime implementation internals',
+  )
 }
 
 async function testDesktopExposesRuntimeStateApi(): Promise<void> {

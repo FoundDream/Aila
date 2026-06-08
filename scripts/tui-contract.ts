@@ -269,6 +269,11 @@ async function testTuiUsesSharedRuntimeFactory(): Promise<void> {
     'TUI adapter should not import the mixed compatibility runtime barrel',
   )
   assert(
+    !source.includes("from '../runtime/internal'") &&
+      !fullscreenSource.includes("from '../runtime/internal'"),
+    'TUI adapters should not import runtime implementation internals',
+  )
+  assert(
     source.includes('createPersistedAgentRuntime'),
     'TUI adapter should use the shared persisted runtime factory',
   )

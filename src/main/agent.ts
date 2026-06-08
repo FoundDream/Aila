@@ -16,8 +16,6 @@ import {
   type AgentEventType,
   AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
   type ChatMessage,
-  executeTool,
-  getToolDefinitions,
   type ImageSideChannelBlock,
   type ModelInfo,
   type ModelSelection,
@@ -26,13 +24,13 @@ import {
   type PersistedMessage,
   type PersistedToolCallBlock,
   type RuntimeStreamChat,
-  summarizeToolTarget,
   type ToolActivityTarget,
   type ToolContext,
   type ToolRegistry,
   type UsageInfo,
   type UserContentPart,
 } from '../runtime/core'
+import { executeTool, getToolDefinitions, summarizeToolTarget } from '../runtime/internal'
 import { findModel, type ProviderId } from '../shared/models'
 import { imageNameFromUrl } from './image-store'
 import { getImagesDir } from './paths'
