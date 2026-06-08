@@ -7,7 +7,7 @@
 
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
-import type { ProviderId, Settings } from '@aila/agent'
+import { normalizeToolApprovalMode, type ProviderId, type Settings } from '@aila/agent'
 import { getDataDir, getSettingsPath } from './paths'
 
 export type { Settings } from '@aila/agent'
@@ -20,7 +20,7 @@ const ENV_KEY_BY_PROVIDER: Record<ProviderId, string> = {
 }
 
 function emptySettings(): Settings {
-  return { apiKeys: {}, defaultModel: null }
+  return { apiKeys: {}, defaultModel: null, approvalMode: 'safe' }
 }
 
 export function loadSettings(): Settings {
@@ -31,6 +31,7 @@ export function loadSettings(): Settings {
       apiKeys: parsed.apiKeys ?? {},
       defaultModel: parsed.defaultModel ?? null,
       defaultImageModel: parsed.defaultImageModel ?? null,
+      approvalMode: normalizeToolApprovalMode(parsed.approvalMode),
       recentOpenRouterModels: parsed.recentOpenRouterModels ?? [],
     }
   } catch {

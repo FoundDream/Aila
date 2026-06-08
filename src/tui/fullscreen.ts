@@ -6,6 +6,7 @@ import {
   MODEL_CATALOG,
   type ModelSelection,
   PROVIDER_LABELS,
+  type ToolApprovalMode,
   type ToolApprovalRequest,
 } from '@aila/agent'
 import * as dotenv from 'dotenv'
@@ -107,7 +108,9 @@ export async function runFullScreenTui(argv: string[] = process.argv.slice(2)): 
   configureDataDir(options.dataDir ?? defaultDataDir())
 
   if (options.list) {
-    await printConversationList(createTuiRuntime(), { limit: options.limit })
+    await printConversationList(createTuiRuntime({ approvalMode: options.approvalMode }), {
+      limit: options.limit,
+    })
     return
   }
 
@@ -116,6 +119,7 @@ export async function runFullScreenTui(argv: string[] = process.argv.slice(2)): 
   }
 
   const app = new AilaFullScreenApp({
+    approvalMode: options.approvalMode,
     retryLast: options.retryLast,
     session,
     showHistory: options.showHistory,
@@ -151,6 +155,7 @@ class AilaFullScreenApp {
   private state: AilaFrameState
 
   constructor(input: {
+    approvalMode: ToolApprovalMode
     retryLast: boolean
     session: SessionState
     showHistory: boolean
@@ -167,6 +172,7 @@ class AilaFullScreenApp {
     }
     this.frame = new AilaFrameComponent(this.terminal, this.editor, this.state)
     this.runtime = createTuiRuntime({
+      approvalMode: input.approvalMode,
       onEvent: (event) => this.handleRuntimeEvent(event),
       onToolApproval: (request) => this.askToolApproval(request),
     })

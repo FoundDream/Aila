@@ -9,13 +9,16 @@ import {
   type AgentRuntimeApi,
   type AgentRuntimeEvent,
   type ConversationSummary,
+  createToolPolicy,
   findModel,
+  isToolApprovalMode,
   MODEL_CATALOG,
   type ModelSelection,
   type PersistedMessage,
   PROVIDER_LABELS,
   type ProviderId,
   requestToolApprovalWithActivity,
+  type ToolApprovalMode,
   type ToolApprovalRequest,
 } from '@aila/agent'
 import * as dotenv from 'dotenv'
@@ -32,7 +35,7 @@ import {
 dotenv.config()
 
 interface CliOptions {
-  autoApprove: boolean
+  approvalMode: ToolApprovalMode
   conversationId?: string
   dataDir?: string
   events: boolean
@@ -75,14 +78,16 @@ function usage(): string {
     '  --retry-last            Retry the last failed or dangling user turn without duplicating it',
     '  --json                  Print a final JSON result instead of streaming text',
     '  --events                Print runtime events as NDJSON instead of streaming text',
-    '  --yes                   Auto-approve tool executions that request approval',
+    '  --approval-mode <mode>  Tool execution mode: safe or yolo (default: safe)',
+    '  --safe                  Use safe tool mode',
+    '  --yolo, --yes           Run tools without approval prompts',
     '  -h, --help              Show this help',
   ].join('\n')
 }
 
 function parseArgs(argv: string[]): CliOptions {
   const options: CliOptions = {
-    autoApprove: false,
+    approvalMode: 'safe',
     events: false,
     extensions: false,
     json: false,
@@ -129,6 +134,9 @@ function parseArgs(argv: string[]): CliOptions {
       case '--model':
         options.model = parseModel(requireValue(argv, ++i, arg))
         break
+      case '--approval-mode':
+        options.approvalMode = parseApprovalMode(requireValue(argv, ++i, arg))
+        break
       case '--prompt':
         options.prompt = requireValue(argv, ++i, arg)
         break
@@ -138,8 +146,12 @@ function parseArgs(argv: string[]): CliOptions {
       case '--retry-last':
         options.retryLast = true
         break
+      case '--safe':
+        options.approvalMode = 'safe'
+        break
+      case '--yolo':
       case '--yes':
-        options.autoApprove = true
+        options.approvalMode = 'yolo'
         break
       default:
         if (arg.startsWith('-')) throw new Error(`unknown option: ${arg}`)
@@ -189,6 +201,11 @@ function parseLimit(value: string): number {
     throw new Error('--limit must be a positive integer')
   }
   return limit
+}
+
+function parseApprovalMode(value: string): ToolApprovalMode {
+  if (isToolApprovalMode(value)) return value
+  throw new Error('--approval-mode must be safe or yolo')
 }
 
 function parseModel(value: string): ModelSelection {
@@ -330,7 +347,7 @@ function messageToText(message: PersistedMessage | null): string {
 }
 
 function createRuntime(input: {
-  autoApprove: boolean
+  approvalMode: ToolApprovalMode
   events: boolean
   json: boolean
   onCompletion?: (state: CompletionState) => void
@@ -354,11 +371,12 @@ function createRuntime(input: {
           onCompletion: input.onCompletion ?? (() => {}),
         })
       },
+      onToolPolicy: createToolPolicy(input.approvalMode),
       onToolApproval: (request) =>
         requestToolApprovalWithActivity({
           request,
           approve: (approvalRequest) =>
-            approveTool(approvalRequest, input.autoApprove, input.events),
+            approveTool(approvalRequest, input.approvalMode, input.events),
           recordAgentEvent: async (_conversationId, event) => {
             await runtime.recordAgentEvent(event)
           },
@@ -369,14 +387,18 @@ function createRuntime(input: {
   return runtime
 }
 
-async function approveTool(request: ToolApprovalRequest, autoApprove: boolean, events: boolean) {
-  if (autoApprove) {
+async function approveTool(
+  request: ToolApprovalRequest,
+  approvalMode: ToolApprovalMode,
+  events: boolean,
+) {
+  if (approvalMode === 'yolo') {
     if (!events) stderr.write(`[approval] approved ${request.name}\n`)
     return true
   }
   if (!events) {
     stderr.write(
-      `[approval] denied ${request.name}; pass --yes to approve requested tool executions\n`,
+      `[approval] denied ${request.name}; pass --approval-mode yolo to run without approval\n`,
     )
   }
   return false
@@ -466,7 +488,7 @@ async function main(): Promise<void> {
 
   if (options.list) {
     const runtime = createRuntime({
-      autoApprove: options.autoApprove,
+      approvalMode: options.approvalMode,
       events: options.events,
       json: options.json,
     })
@@ -490,7 +512,7 @@ async function main(): Promise<void> {
     resolveCompletion = resolve
   })
   const runtime = createRuntime({
-    autoApprove: options.autoApprove,
+    approvalMode: options.approvalMode,
     events: options.events,
     json: options.json,
     onCompletion: (state) => {
@@ -508,6 +530,7 @@ async function main(): Promise<void> {
     stderr.write(`Tool packs: ${getToolPacksDir()}\n`)
     stderr.write(`Conversation: ${conversationId}${isExisting ? ' (resumed)' : ''}\n`)
     stderr.write(`Model: ${modelLabel(selection)}\n`)
+    stderr.write(`Tool mode: ${options.approvalMode}\n`)
   }
 
   try {

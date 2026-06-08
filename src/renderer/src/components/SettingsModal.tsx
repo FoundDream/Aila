@@ -1,5 +1,13 @@
 import { IMAGE_MODEL_CATALOG, MODEL_CATALOG, PROVIDER_LABELS, PROVIDER_ORDER } from '@shared/models'
-import { BoxIcon, EyeIcon, EyeOffIcon, KeyRoundIcon, SearchIcon, XIcon } from 'lucide-react'
+import {
+  BoxIcon,
+  EyeIcon,
+  EyeOffIcon,
+  KeyRoundIcon,
+  SearchIcon,
+  ShieldIcon,
+  XIcon,
+} from 'lucide-react'
 import { Dialog as DialogPrimitive } from 'radix-ui'
 import { type ReactElement, type ReactNode, useEffect, useMemo, useState } from 'react'
 import type { ModelSelection, OrCatalog, ProviderId, Settings } from '../types'
@@ -19,11 +27,18 @@ const API_KEY_PLACEHOLDERS: Record<ProviderId, string> = {
   openrouter: 'sk-or-...',
 }
 
-type SettingsTab = 'provider' | 'models'
+type SettingsTab = 'provider' | 'models' | 'tools'
+type ApprovalMode = NonNullable<Settings['approvalMode']>
 
 const TABS: Array<{ id: SettingsTab; label: string; icon: typeof KeyRoundIcon }> = [
   { id: 'provider', label: 'Provider', icon: KeyRoundIcon },
   { id: 'models', label: 'Default Models', icon: BoxIcon },
+  { id: 'tools', label: 'Tools', icon: ShieldIcon },
+]
+
+const APPROVAL_MODES: Array<{ id: ApprovalMode; label: string; description: string }> = [
+  { id: 'safe', label: 'Safe', description: 'Ask before write, edit, and shell tools.' },
+  { id: 'yolo', label: 'Yolo', description: 'Run tools without approval prompts.' },
 ]
 
 function formatContext(tokens: number): string {
@@ -110,6 +125,10 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
 
   const setDefaultImageModel = (selection: ModelSelection | null): void => {
     setDraft((prev) => ({ ...prev, defaultImageModel: selection }))
+  }
+
+  const setApprovalMode = (approvalMode: ApprovalMode): void => {
+    setDraft((prev) => ({ ...prev, approvalMode }))
   }
 
   const configuredInDraft = PROVIDER_ORDER.filter((p) => Boolean(draft.apiKeys[p]?.trim()))
@@ -507,6 +526,38 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
                     </div>
                   </div>
                 </div>
+              </div>
+            )}
+
+            {tab === 'tools' && (
+              <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+                <section>
+                  <SectionTitle>Execution Mode</SectionTitle>
+                  <div className="grid gap-2">
+                    {APPROVAL_MODES.map((mode) => {
+                      const selected = (draft.approvalMode ?? 'safe') === mode.id
+                      return (
+                        <button
+                          key={mode.id}
+                          type="button"
+                          onClick={() => setApprovalMode(mode.id)}
+                          className={`rounded-md border px-3 py-2 text-left transition-colors ${
+                            selected
+                              ? 'border-[var(--border-strong)] bg-[var(--surface-hover)]'
+                              : 'border-[var(--border)] bg-[var(--bg-soft)] hover:bg-[var(--surface-hover)]'
+                          }`}
+                        >
+                          <span className="block text-[12px] font-medium text-[var(--text)]">
+                            {mode.label}
+                          </span>
+                          <span className="mt-0.5 block text-[11px] text-[var(--text-dim)]">
+                            {mode.description}
+                          </span>
+                        </button>
+                      )
+                    })}
+                  </div>
+                </section>
               </div>
             )}
 

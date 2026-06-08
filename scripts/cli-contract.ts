@@ -192,6 +192,12 @@ async function testCliUsesSharedRuntimeFactory(): Promise<void> {
     'CLI adapter should record approval activity through the shared helper',
   )
   assert(
+    source.includes('createToolPolicy') &&
+      source.includes('--approval-mode <mode>') &&
+      source.includes('--yolo, --yes'),
+    'CLI adapter should expose safe/yolo tool execution modes through the shared policy helper',
+  )
+  assert(
     !source.includes('createPersistedRuntimeStore'),
     'CLI adapter should not wire the persisted store directly',
   )

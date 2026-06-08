@@ -117,6 +117,14 @@ export {
   ToolApprovalStore,
   type ToolApprovalStoreOptions,
 } from './tool-approvals'
+export {
+  createToolPolicy,
+  evaluateToolApprovalMode,
+  isToolApprovalMode,
+  normalizeToolApprovalMode,
+  TOOL_APPROVAL_MODES,
+  type ToolApprovalMode,
+} from './tool-policy'
 export type {
   ImageGenerateRequest,
   ImageResult,

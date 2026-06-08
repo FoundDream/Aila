@@ -9,13 +9,16 @@ import {
   type AgentRuntimeApi,
   type AgentRuntimeEvent,
   type ConversationSummary,
+  createToolPolicy,
   findModel,
+  isToolApprovalMode,
   MODEL_CATALOG,
   type ModelSelection,
   type PersistedMessage,
   PROVIDER_LABELS,
   type ProviderId,
   requestToolApprovalWithActivity,
+  type ToolApprovalMode,
   type ToolApprovalRequest,
 } from '@aila/agent'
 import * as dotenv from 'dotenv'
@@ -38,6 +41,7 @@ export interface CliOptions {
   list: boolean
   limit: number
   model?: ModelSelection
+  approvalMode: ToolApprovalMode
   retryLast: boolean
   resumeLatest: boolean
   showHistory: boolean
@@ -53,6 +57,7 @@ export interface TuiSessionState {
 }
 
 export interface TuiRuntimeInput {
+  approvalMode?: ToolApprovalMode
   onEvent?: (event: AgentRuntimeEvent) => void
   onToolApproval?: (request: ToolApprovalRequest) => Promise<boolean>
 }
@@ -61,6 +66,7 @@ export function createTuiRuntime(input: TuiRuntimeInput = {}): AgentRuntimeApi {
   let runtime: AgentRuntimeApi
   runtime = createPersistedAgentRuntime({
     host: {
+      onToolPolicy: createToolPolicy(input.approvalMode ?? 'safe'),
       ...(input.onEvent ? { onEvent: input.onEvent } : {}),
       ...(input.onToolApproval
         ? {
@@ -90,6 +96,9 @@ export function usage(): string {
     '  --list                  List saved conversations and exit',
     '  --limit <n>             Limit rows for --list (default: 20)',
     '  --model <provider:id>   Override model, e.g. openai:gpt-5.4',
+    '  --approval-mode <mode>  Tool execution mode: safe or yolo (default: safe)',
+    '  --safe                  Use safe tool mode',
+    '  --yolo                  Run tools without approval prompts',
     '  --resume                Continue the most recently updated conversation',
     '  --retry-last            Retry the last failed or dangling user turn without duplicating it',
     '  --no-history            Do not print recent history when resuming',
@@ -127,6 +136,7 @@ export function parseModel(value: string): ModelSelection {
 
 export function parseArgs(argv: string[]): CliOptions {
   const options: CliOptions = {
+    approvalMode: 'safe',
     list: false,
     limit: 20,
     retryLast: false,
@@ -157,8 +167,17 @@ export function parseArgs(argv: string[]): CliOptions {
       case '--model':
         options.model = parseModel(requireValue(argv, ++i, arg))
         break
+      case '--approval-mode':
+        options.approvalMode = parseApprovalMode(requireValue(argv, ++i, arg))
+        break
       case '--no-history':
         options.showHistory = false
+        break
+      case '--safe':
+        options.approvalMode = 'safe'
+        break
+      case '--yolo':
+        options.approvalMode = 'yolo'
         break
       case '--resume':
         options.resumeLatest = true
@@ -193,6 +212,11 @@ function parseLimit(value: string): number {
     throw new Error('--limit must be a positive integer')
   }
   return limit
+}
+
+function parseApprovalMode(value: string): ToolApprovalMode {
+  if (isToolApprovalMode(value)) return value
+  throw new Error('--approval-mode must be safe or yolo')
 }
 
 export function resolveSelection(explicit?: ModelSelection): ModelSelection {
@@ -632,7 +656,9 @@ export async function runLineMode(argv: string[] = process.argv.slice(2)): Promi
   configureDataDir(options.dataDir ?? defaultDataDir())
 
   if (options.list) {
-    await printConversationList(createTuiRuntime(), { limit: options.limit })
+    await printConversationList(createTuiRuntime({ approvalMode: options.approvalMode }), {
+      limit: options.limit,
+    })
     return
   }
 
@@ -646,6 +672,7 @@ export async function runLineMode(argv: string[] = process.argv.slice(2)): Promi
   let startedAssistantText = false
   const prompt = createPromptReader()
   const runtime = createTuiRuntime({
+    approvalMode: options.approvalMode,
     onEvent: (event) => {
       handleRuntimeEvent(event, {
         completions,

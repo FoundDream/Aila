@@ -21,6 +21,7 @@ export type AgentPackageConsumerContract = {
   event: agent.AgentRuntimeEvent
   host: agent.AgentRuntimeHost
   model: agent.ModelSelection
+  approvalMode: agent.ToolApprovalMode
   provider: agent.ProviderId
   settings: agent.Settings
   store: agent.AgentRuntimeStore
@@ -33,6 +34,7 @@ export const agentPackageValueContract = {
   ToolApprovalStore: agent.ToolApprovalStore,
   createInMemoryRuntimeStore: agent.createInMemoryRuntimeStore,
   createRuntimeEvent: agent.createRuntimeEvent,
+  createToolPolicy: agent.createToolPolicy,
   createSkillToolPack: agent.createSkillToolPack,
   findModel: agent.findModel,
   isRuntimeEventType: agent.isRuntimeEventType,

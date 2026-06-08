@@ -19,6 +19,7 @@ import {
   createInMemoryRuntimeStore,
   createRuntimeEvent,
   createSkillToolPack,
+  createToolPolicy,
   findModel,
   type ImageGenerateRequest,
   type ImageResult,
@@ -31,6 +32,7 @@ import {
   type RuntimeStreamChat,
   requestToolApprovalWithActivity,
   type Settings,
+  type ToolApprovalMode,
   type ToolApprovalRequest,
   type ToolApprovalRequestPayload,
   ToolApprovalStore,
@@ -64,6 +66,7 @@ export type RuntimeCorePublicSurfaceContract = {
   store: AgentRuntimeStore
   streamChat: RuntimeStreamChat
   toolApprovalPayload: ToolApprovalRequestPayload
+  toolApprovalMode: ToolApprovalMode
   toolApprovalRequest: ToolApprovalRequest
   toolContext: ToolContext
   toolPack: ToolPack
@@ -82,6 +85,7 @@ export const runtimeCorePublicValueSurfaceContract = {
   runtimeEvent: createRuntimeEvent,
   sdkVersion: AILA_RUNTIME_SDK_VERSION,
   toolApprovalStore: ToolApprovalStore,
+  createToolPolicy,
   createInMemoryRuntimeStore,
   createSkillToolPack,
   parseSkillDocument,

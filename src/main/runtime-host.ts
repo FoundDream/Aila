@@ -3,6 +3,7 @@ import {
   type AgentRuntimeHost,
   type AgentRuntimeOptions,
   type AgentRuntimeStore,
+  createToolPolicy,
   type RuntimeAttachmentBlock,
   type RuntimePersistAttachmentInput,
 } from '@aila/agent'
@@ -37,6 +38,7 @@ async function persistRuntimeAttachment(
 export function createDefaultRuntimeHost(overrides: AgentRuntimeHost = {}): AgentRuntimeHost {
   return {
     loadSettings,
+    onToolPolicy: (request) => createToolPolicy(loadSettings().approvalMode)(request),
     loadToolPacks: async () => (await loadToolPacksFromDir()).map((pack) => pack.toolPack),
     loadSkills: async () => (await loadSkillsFromDir()).skills,
     persistAttachment: persistRuntimeAttachment,

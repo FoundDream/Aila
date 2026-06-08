@@ -6308,6 +6308,33 @@ async function testRuntimeSdkDoesNotExportDocsContract(): Promise<void> {
     'function',
     'runtime core SDK should export the host-agnostic approval store',
   )
+  assertEqual(
+    typeof coreSdk.createToolPolicy,
+    'function',
+    'runtime core SDK should export tool approval mode policy helper',
+  )
+  const writePolicyRequest = {
+    name: 'write',
+    args: { path: '/workspace/file.txt' },
+    metadata: {
+      name: 'write',
+      readOnly: false,
+      destructive: true,
+      requiresApproval: true,
+      access: ['write'],
+      scope: ['workspace'],
+    },
+  } satisfies runtimeSdk.ToolPolicyRequest
+  assertEqual(
+    (await runtimeSdk.createToolPolicy('safe')(writePolicyRequest))?.action,
+    'ask',
+    'safe tool policy should ask before destructive writes',
+  )
+  assertEqual(
+    (await runtimeSdk.createToolPolicy('yolo')(writePolicyRequest))?.action,
+    'allow',
+    'yolo tool policy should allow destructive writes without approval',
+  )
   const runtimeCoreSurfaceSource = await readFile(
     join(process.cwd(), 'scripts/runtime-core-surface-contract.ts'),
     'utf-8',
@@ -6320,6 +6347,7 @@ async function testRuntimeSdkDoesNotExportDocsContract(): Promise<void> {
     'RuntimeModelInfoResolver',
     'Settings',
     'ToolPack',
+    'ToolApprovalMode',
     'ToolApprovalRequest',
     'ToolApprovalRequestPayload',
     'ConversationRecord',
@@ -6457,6 +6485,12 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
       hostSource.includes('fileSystem') &&
       hostSource.includes('workspaceRoots'),
     'default runtime host should own filesystem and default workspace root wiring',
+  )
+  assert(
+    hostSource.includes('createToolPolicy') &&
+      hostSource.includes('onToolPolicy:') &&
+      hostSource.includes('loadSettings().approvalMode'),
+    'default runtime host should wire safe/yolo tool policy from settings',
   )
 
   const runtimeStoreSource = await readFile(
@@ -6599,6 +6633,7 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
     "'./settings-types'",
     "'./skills'",
     "'./tool-approvals'",
+    "'./tool-policy'",
     "'./tools'",
   ]) {
     assert(

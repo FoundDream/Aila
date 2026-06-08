@@ -206,6 +206,7 @@ export interface Settings {
   }
   defaultModel: ModelSelection | null
   defaultImageModel?: ModelSelection | null
+  approvalMode?: 'safe' | 'yolo'
   recentOpenRouterModels?: string[]
 }
 
