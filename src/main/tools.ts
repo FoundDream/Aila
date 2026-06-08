@@ -174,7 +174,7 @@ const BUILTIN_TOOL_SPECS: ToolSpec[] = [
     function: {
       name: 'web_search',
       description:
-        'Search the web via Tavily and return ranked results. Use for fresh information, current events, or facts that may have changed since training. Returns an optional LLM-written `answer` plus a list of `{title, url, content}` snippets.',
+        'Search the web through the configured host search provider and return ranked results. Use for fresh information, current events, or facts that may have changed since training. Returns an optional `answer` plus a list of `{title, url, content}` snippets.',
       parameters: {
         type: 'object',
         properties: {
@@ -279,7 +279,7 @@ const BUILTIN_TOOL_HANDLERS: Record<string, ToolHandler> = {
   read: (args, ctx) => runRead(args, ctx),
   write: (args, ctx) => runWrite(args, ctx),
   edit: (args, ctx) => runEdit(args, ctx),
-  web_search: (args) => runWebSearch(args),
+  web_search: (args, ctx) => runWebSearch(args, ctx),
   generate_image: (args, ctx) => runGenerateImage(args, ctx),
   bash: (args, ctx) => runBash(args, ctx),
 }
@@ -607,58 +607,72 @@ async function runEdit(
   return `Replaced ${occurrences} occurrence${occurrences === 1 ? '' : 's'} in ${path}`
 }
 
-interface TavilyResult {
+export interface ToolWebSearchResultItem {
   title?: string
   url?: string
   content?: string
 }
 
-interface TavilyResponse {
+export interface ToolWebSearchResult {
   answer?: string
-  results?: TavilyResult[]
+  results?: ToolWebSearchResultItem[]
 }
 
-async function runWebSearch(args: {
-  query?: unknown
-  search_depth?: unknown
-  topic?: unknown
-  time_range?: unknown
-  max_results?: unknown
-}): Promise<string> {
-  const apiKey = process.env.TAVILY_API_KEY
-  if (!apiKey) {
-    throw new Error('TAVILY_API_KEY is not set. Add it to .env and restart the app.')
-  }
+export interface ToolWebSearchRequest {
+  query: string
+  searchDepth: 'basic' | 'advanced'
+  topic: 'general' | 'news' | 'finance'
+  timeRange?: 'day' | 'week' | 'month' | 'year'
+  maxResults: number
+  signal?: AbortSignal
+}
 
+export type ToolWebSearcher = (request: ToolWebSearchRequest) => Promise<ToolWebSearchResult>
+
+function webSearchStringOption<T extends string>(
+  value: unknown,
+  allowed: readonly T[],
+  fallback: T,
+): T {
+  if (typeof value !== 'string') return fallback
+  return allowed.find((candidate) => candidate === value) ?? fallback
+}
+
+async function runWebSearch(
+  args: {
+    query?: unknown
+    search_depth?: unknown
+    topic?: unknown
+    time_range?: unknown
+    max_results?: unknown
+  },
+  ctx: ToolContext,
+): Promise<string> {
   const query = args.query
   if (typeof query !== 'string' || query.trim().length === 0) {
     throw new Error('`query` must be a non-empty string')
   }
+  if (!ctx.webSearch) {
+    throw new Error('web search host is not available')
+  }
 
-  const body: Record<string, unknown> = {
+  const maxResults =
+    typeof args.max_results === 'number' && Number.isFinite(args.max_results)
+      ? Math.max(1, Math.min(10, Math.floor(args.max_results)))
+      : 5
+  const request: ToolWebSearchRequest = {
     query,
-    search_depth: args.search_depth ?? 'basic',
-    topic: args.topic ?? 'general',
-    max_results: typeof args.max_results === 'number' ? args.max_results : 5,
-    include_answer: true,
-  }
-  if (typeof args.time_range === 'string') body.time_range = args.time_range
-
-  const response = await fetch('https://api.tavily.com/search', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(body),
-  })
-
-  if (!response.ok) {
-    const text = await response.text().catch(() => '')
-    throw new Error(`Tavily ${response.status}: ${text || response.statusText}`)
+    searchDepth: webSearchStringOption(args.search_depth, ['basic', 'advanced'], 'basic'),
+    topic: webSearchStringOption(args.topic, ['general', 'news', 'finance'], 'general'),
+    maxResults,
+    ...(typeof args.time_range === 'string' &&
+      ['day', 'week', 'month', 'year'].includes(args.time_range) && {
+        timeRange: args.time_range as 'day' | 'week' | 'month' | 'year',
+      }),
+    ...(ctx.signal && { signal: ctx.signal }),
   }
 
-  const data = (await response.json()) as TavilyResponse
+  const data = await ctx.webSearch(request)
   const compact = {
     answer: data.answer,
     results: (data.results ?? []).map((r) => ({
@@ -774,6 +788,7 @@ export interface ToolContext {
   signal?: AbortSignal
   onToolPolicy?: ToolPolicyEvaluator
   onToolApproval?: (request: ToolApprovalRequest) => Promise<boolean>
+  webSearch?: ToolWebSearcher
   generateImage?: ToolImageGenerator
   saveImage?: ToolImageSaver
   onImage?: (block: ImageSideChannelBlock) => void

@@ -13,6 +13,7 @@ import { createPersistedRuntimeStore } from './runtime-store'
 import { loadSettings } from './settings'
 import { loadSkillsFromDir } from './skill-loader'
 import { loadToolPacksFromDir } from './tool-pack-loader'
+import { webSearch } from './web-search'
 
 export interface CreatePersistedAgentRuntimeInput {
   host?: AgentRuntimeHost
@@ -37,6 +38,7 @@ export function createDefaultRuntimeHost(overrides: AgentRuntimeHost = {}): Agen
     loadToolPacks: async () => (await loadToolPacksFromDir()).map((pack) => pack.toolPack),
     loadSkills: async () => (await loadSkillsFromDir()).skills,
     persistAttachment: persistRuntimeAttachment,
+    webSearch,
     generateImage,
     saveImage,
     getModelInfo: (selection) => getModelInfo(selection.providerId, selection.modelId),

@@ -137,6 +137,7 @@ export interface StreamRequest {
   onToolPolicy?: ToolContext['onToolPolicy']
   onToolApproval?: ToolContext['onToolApproval']
   settings?: Settings
+  webSearch?: ToolContext['webSearch']
   generateImage?: ToolContext['generateImage']
   saveImage?: ToolContext['saveImage']
   toolRegistry?: ToolRegistry

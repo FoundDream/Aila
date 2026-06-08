@@ -59,6 +59,7 @@ import {
   SKILL_TOOL_NAME,
   summarizeToolTarget,
   type ToolPack,
+  type ToolWebSearchRequest,
 } from '../src/runtime'
 
 function assert(condition: unknown, message: string): asserts condition {
@@ -5261,6 +5262,82 @@ async function testGenerateImageToolRequiresHostImageDependencies(): Promise<voi
   }
 }
 
+async function testWebSearchToolUsesInjectedHostDependency(): Promise<void> {
+  const settings: Settings = { apiKeys: {}, defaultModel: null }
+  const abortController = new AbortController()
+  const requestSeen: { current?: ToolWebSearchRequest } = {}
+
+  const result = await executeTool(
+    'web_search',
+    {
+      query: 'Aila runtime',
+      search_depth: 'advanced',
+      topic: 'news',
+      time_range: 'week',
+      max_results: 99,
+    },
+    {
+      settings,
+      signal: abortController.signal,
+      webSearch: async (request) => {
+        requestSeen.current = { ...request }
+        return {
+          answer: 'Injected search answer',
+          results: [
+            {
+              title: 'Injected result',
+              url: 'https://example.com/runtime',
+              content: 'Injected snippet',
+            },
+          ],
+        }
+      },
+    },
+  )
+
+  const parsed = JSON.parse(result) as {
+    answer?: unknown
+    results?: Array<{ title?: unknown; url?: unknown; content?: unknown }>
+  }
+  const firstResult = parsed.results?.[0]
+  assertEqual(parsed.answer, 'Injected search answer', 'web_search injected dependency answer')
+  assert(firstResult, 'web_search injected dependency should return a result')
+  assertEqual(firstResult.title, 'Injected result', 'web_search injected dependency result title')
+  assertEqual(firstResult.url, 'https://example.com/runtime', 'web_search injected dependency url')
+  assertEqual(firstResult.content, 'Injected snippet', 'web_search injected dependency content')
+
+  const seenRequest = requestSeen.current
+  assert(seenRequest, 'web_search should call the injected host dependency')
+  assertEqual(seenRequest.query, 'Aila runtime', 'web_search request query')
+  assertEqual(seenRequest.searchDepth, 'advanced', 'web_search request search depth')
+  assertEqual(seenRequest.topic, 'news', 'web_search request topic')
+  assertEqual(seenRequest.timeRange, 'week', 'web_search request time range')
+  assertEqual(seenRequest.maxResults, 10, 'web_search request max results should be clamped')
+  assertEqual(seenRequest.signal, abortController.signal, 'web_search request abort signal')
+}
+
+async function testWebSearchToolRequiresHostDependency(): Promise<void> {
+  const settings: Settings = { apiKeys: {}, defaultModel: null }
+  const originalTavilyApiKey = process.env.TAVILY_API_KEY
+
+  try {
+    process.env.TAVILY_API_KEY = 'contract-env-key-must-not-leak-into-tools'
+    await executeTool('web_search', { query: 'Aila runtime' }, { settings })
+    throw new Error('web_search unexpectedly succeeded without a host dependency')
+  } catch (error) {
+    assert(
+      error instanceof Error && error.message.includes('web search host is not available'),
+      'web_search should fail closed without an injected host dependency',
+    )
+  } finally {
+    if (originalTavilyApiKey === undefined) {
+      delete process.env.TAVILY_API_KEY
+    } else {
+      process.env.TAVILY_API_KEY = originalTavilyApiKey
+    }
+  }
+}
+
 function testToolActivityTargetContract(): void {
   assertEqual(
     summarizeToolTarget('read', { path: '/workspace/src/app.ts' })?.preview,
@@ -5518,6 +5595,10 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
       hostSource.includes('saveImage'),
     'default runtime host should own image tool generation and storage dependencies',
   )
+  assert(
+    hostSource.includes("from './web-search'") && hostSource.includes('webSearch'),
+    'default runtime host should own web search provider wiring',
+  )
 
   const runtimeStoreSource = await readFile(
     join(process.cwd(), 'src/main/runtime-store.ts'),
@@ -5548,10 +5629,29 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
     'image tool should fail closed when host image dependencies are absent',
   )
   assert(
+    !toolsSource.includes('TAVILY_API_KEY') &&
+      !toolsSource.includes('https://api.tavily.com/search') &&
+      !toolsSource.includes('fetch(') &&
+      !toolsSource.includes('Tavily'),
+    'builtin tool core must not own web search provider HTTP wiring',
+  )
+  assert(
+    toolsSource.includes('web search host is not available'),
+    'web search tool should fail closed when host search dependency is absent',
+  )
+  assert(
     hostSource.includes("from './agent'") &&
       hostSource.includes('getModelInfo:') &&
       hostSource.includes('streamChat'),
     'default runtime host should own provider stream and model metadata wiring',
+  )
+
+  const webSearchSource = await readFile(join(process.cwd(), 'src/main/web-search.ts'), 'utf-8')
+  assert(
+    webSearchSource.includes('TAVILY_API_KEY') &&
+      webSearchSource.includes('https://api.tavily.com/search') &&
+      webSearchSource.includes('fetch('),
+    'default web search adapter should own Tavily HTTP wiring',
   )
 
   const protocolSource = await readFile(join(process.cwd(), 'src/main/agent-protocol.ts'), 'utf-8')
@@ -6292,6 +6392,8 @@ async function main(): Promise<void> {
   await testRuntimeExecuteToolUsesHostBoundary()
   await testGenerateImageToolUsesInjectedImageDependencies()
   await testGenerateImageToolRequiresHostImageDependencies()
+  await testWebSearchToolUsesInjectedHostDependency()
+  await testWebSearchToolRequiresHostDependency()
   testToolActivityTargetContract()
   await testFilesystemToolWorkspaceRootsContract()
   await testBashToolShellCwdContract()

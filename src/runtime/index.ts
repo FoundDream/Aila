@@ -158,6 +158,10 @@ export {
   type ToolRegistry,
   type ToolScope,
   type ToolSpec,
+  type ToolWebSearcher,
+  type ToolWebSearchRequest,
+  type ToolWebSearchResult,
+  type ToolWebSearchResultItem,
   type ToolWorkspaceRoot,
 } from '../main/tools'
 export {

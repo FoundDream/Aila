@@ -243,6 +243,7 @@ export interface AgentRuntimeHost {
   loadTransientContext?: (
     input: RuntimeTransientContextInput,
   ) => MaybePromise<ChatMessage[] | undefined>
+  webSearch?: ToolContext['webSearch']
   generateImage?: ToolContext['generateImage']
   saveImage?: ToolContext['saveImage']
   workspaceRoots?: ToolContext['workspaceRoots'] | (() => ToolContext['workspaceRoots'])
@@ -471,6 +472,7 @@ function normalizeRuntimeHost(options: AgentRuntimeOptions): AgentRuntimeHost {
   if (options.loadSkills) host.loadSkills = options.loadSkills
   if (options.loadSettings) host.loadSettings = options.loadSettings
   if (options.loadTransientContext) host.loadTransientContext = options.loadTransientContext
+  if (options.webSearch) host.webSearch = options.webSearch
   if (options.generateImage) host.generateImage = options.generateImage
   if (options.saveImage) host.saveImage = options.saveImage
   if (options.workspaceRoots !== undefined) host.workspaceRoots = options.workspaceRoots
@@ -494,6 +496,7 @@ function normalizeRuntimeHost(options: AgentRuntimeOptions): AgentRuntimeHost {
   if (options.host.loadTransientContext) {
     host.loadTransientContext = options.host.loadTransientContext
   }
+  if (options.host.webSearch) host.webSearch = options.host.webSearch
   if (options.host.generateImage) host.generateImage = options.host.generateImage
   if (options.host.saveImage) host.saveImage = options.host.saveImage
   if (options.host.workspaceRoots !== undefined) host.workspaceRoots = options.host.workspaceRoots
@@ -1347,6 +1350,7 @@ export class AgentRuntime {
       shellCwd: this.resolveShellCwd(),
       onToolPolicy: this.host.onToolPolicy,
       onToolApproval: this.host.onToolApproval,
+      webSearch: this.host.webSearch,
       generateImage: this.host.generateImage,
       saveImage: this.host.saveImage,
     }
@@ -1569,6 +1573,7 @@ export class AgentRuntime {
           workspaceRoots: cloneRuntimeWorkspaceRoots(toolContext.workspaceRoots),
           shellCwd: toolContext.shellCwd,
           settings: cloneRuntimeSettings(toolContext.settings),
+          webSearch: toolContext.webSearch,
           generateImage: toolContext.generateImage,
           saveImage: toolContext.saveImage,
           onToolPolicy: toolContext.onToolPolicy,
