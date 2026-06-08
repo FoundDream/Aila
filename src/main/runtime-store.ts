@@ -7,7 +7,6 @@ import {
   listConversations,
   recoverInterruptedConversationActivities,
   renameConversation,
-  rewriteDocRefs,
   setConversationUsage,
   upsertMessage,
 } from './conversations'
@@ -23,7 +22,6 @@ export function createPersistedRuntimeStore(): AgentRuntimeStore {
     listAgentEvents,
     recoverInterruptedConversationActivities,
     renameConversation,
-    rewriteDocRefs: (rewrites) => rewriteDocRefs(rewrites.map((rewrite) => ({ ...rewrite }))),
     setConversationUsage,
     deleteConversation,
   }

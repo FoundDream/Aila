@@ -1747,87 +1747,6 @@ async function testRuntimeRecordAgentEventUsesInjectedStore(): Promise<void> {
   )
 }
 
-async function testRuntimeRewriteDocRefsUsesInjectedStore(): Promise<void> {
-  const emitted: AgentRuntimeEvent[] = []
-  const calls: string[] = []
-  let summaryFromStore: ConversationSummary | undefined
-  const store: AgentRuntimeStore = {
-    getConversation: async () => {
-      throw new Error('rewrite doc refs should not read conversation')
-    },
-    upsertMessage: async () => {
-      throw new Error('rewrite doc refs should not upsert messages')
-    },
-    appendAgentEventAndTouchConversation: async () => {
-      throw new Error('rewrite doc refs should not append agent events')
-    },
-    rewriteDocRefs: async (rewrites) => {
-      calls.push(
-        rewrites
-          .map((rewrite) => `${rewrite.oldPath}->${rewrite.newPath}:${rewrite.isFolder === true}`)
-          .join(','),
-      )
-      if (rewrites[0]) rewrites[0].oldPath = 'store-mutated-old-path'
-      summaryFromStore = {
-        schemaVersion: AILA_CONVERSATION_META_SCHEMA_VERSION,
-        id: 'doc-bound-conversation',
-        title: 'doc-bound',
-        createdAt: 1,
-        updatedAt: 2,
-        docId: 'docs/new',
-      }
-      return [summaryFromStore]
-    },
-    setConversationUsage: async () => {
-      throw new Error('rewrite doc refs should not persist usage')
-    },
-    deleteConversation: async () => {
-      throw new Error('rewrite doc refs should not delete conversation')
-    },
-  }
-
-  const runtime = new AgentRuntime({
-    store,
-    onEvent: (event) => {
-      if (event.type === 'conversations:updated') event.data.docId = 'event-mutated-doc'
-      emitted.push(event)
-    },
-    logger: { warn() {}, error() {} },
-  })
-  const rewrites = [{ oldPath: 'docs/old', newPath: 'docs/new', isFolder: true }]
-  const summaries = await runtime.rewriteDocRefs(rewrites)
-
-  assertEqual(
-    calls.join(','),
-    'docs/old->docs/new:true',
-    'runtime rewrite doc refs should use injected store',
-  )
-  assertEqual(
-    rewrites[0]?.oldPath,
-    'docs/old',
-    'runtime rewrite doc refs should isolate caller rewrites from store mutation',
-  )
-  assertEqual(summaries[0]?.docId, 'docs/new', 'runtime rewrite doc refs summary')
-  assertEqual(
-    summaryFromStore?.docId,
-    'docs/new',
-    'runtime rewrite doc refs should isolate store summary from onEvent mutation',
-  )
-  if (summaries[0]) summaries[0].docId = 'caller-mutated-doc'
-  assertEqual(
-    summaryFromStore?.docId,
-    'docs/new',
-    'runtime rewrite doc refs should isolate store summary from caller mutation',
-  )
-  assert(
-    emitted.some(
-      (event) =>
-        event.type === 'conversations:updated' && event.data.id === 'doc-bound-conversation',
-    ),
-    'runtime rewrite doc refs should emit conversation updates',
-  )
-}
-
 async function testRuntimeRecoveryDelegatesToInjectedStore(): Promise<void> {
   const summary: ConversationSummary = {
     schemaVersion: AILA_CONVERSATION_META_SCHEMA_VERSION,
@@ -5535,6 +5454,10 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
     'AgentRuntime core must not import the provider-backed agent loop',
   )
   assert(
+    !runtimeSource.includes('DocRefRewrite') && !runtimeSource.includes('rewriteDocRefs'),
+    'AgentRuntime core must not own Desktop document ref rewrites',
+  )
+  assert(
     runtimeSource.includes("from './agent-protocol'"),
     'AgentRuntime core should depend on the host-agnostic agent protocol types',
   )
@@ -5553,6 +5476,21 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
     hostSource.includes("from './image-store'") &&
       hostSource.includes('persistAttachment: persistRuntimeAttachment'),
     'default runtime host should own image attachment persistence',
+  )
+
+  const runtimeStoreSource = await readFile(
+    join(process.cwd(), 'src/main/runtime-store.ts'),
+    'utf-8',
+  )
+  assert(
+    !runtimeStoreSource.includes('rewriteDocRefs'),
+    'persisted runtime store adapter must not expose Desktop doc ref rewrites',
+  )
+
+  const runtimeSdkSource = await readFile(join(process.cwd(), 'src/runtime/index.ts'), 'utf-8')
+  assert(
+    !runtimeSdkSource.includes('DocRefRewrite'),
+    'runtime SDK must not expose Desktop doc ref rewrite types',
   )
   assert(
     hostSource.includes("from './agent'") &&
@@ -6258,7 +6196,6 @@ async function main(): Promise<void> {
   await testInMemoryRuntimeStoreEventListContract()
   await testRuntimeAppendUserMessageUsesInjectedStore()
   await testRuntimeRecordAgentEventUsesInjectedStore()
-  await testRuntimeRewriteDocRefsUsesInjectedStore()
   await testRuntimeRecoveryDelegatesToInjectedStore()
   await testRuntimeRecoveryUsesInjectedStoreReplay()
   await testRuntimeDeleteAssetCleanupHostBoundary()

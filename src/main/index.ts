@@ -4,6 +4,7 @@ import * as dotenv from 'dotenv'
 import { app, BrowserWindow, ipcMain, nativeTheme } from 'electron'
 import type { ProviderId } from '../shared/models'
 import { getModelInfo, type ModelSelection } from './agent'
+import { rewriteDocRefs as rewritePersistedDocRefs } from './conversations'
 import { sweepOrphanedDocConversations } from './doc-conversation-cleanup'
 import type { DocPatch } from './docs'
 import {
@@ -119,7 +120,11 @@ const agentRuntime = createPersistedAgentRuntime({
     workspaceRoots: getDesktopWorkspaceRoots,
   },
 })
-configureDocConversationRefRewriter((rewrites) => agentRuntime.rewriteDocRefs(rewrites))
+configureDocConversationRefRewriter(async (rewrites) => {
+  const summaries = await rewritePersistedDocRefs(rewrites.map((rewrite) => ({ ...rewrite })))
+  for (const summary of summaries) send('conversations:updated', summary)
+  return summaries
+})
 
 async function shutdownRuntimeWorkbench(): Promise<void> {
   await agentRuntime.abortAll('shutdown')

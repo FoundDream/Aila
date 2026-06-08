@@ -30,7 +30,6 @@ export {
   type ConversationSummary,
   type ConversationUsage,
   createInterruptedConversationRecoveryEvent,
-  type DocRefRewrite,
   type PersistedAgentEvent,
   type PersistedBlock,
   type PersistedImageBlock,

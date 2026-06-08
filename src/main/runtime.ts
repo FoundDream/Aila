@@ -16,7 +16,6 @@ import {
   type ConversationRecord,
   type ConversationSummary,
   createInterruptedConversationRecoveryEvent,
-  type DocRefRewrite,
   orderedUniqueAgentEvents,
   type PersistedAgentEvent,
   type PersistedBlock,
@@ -273,7 +272,6 @@ export interface AgentRuntimeStore {
   listAgentEvents?: (conversationId: string) => Promise<readonly PersistedAgentEvent[]>
   recoverInterruptedConversationActivities?: (reason?: string) => Promise<ConversationSummary[]>
   renameConversation?: (conversationId: string, title: string) => Promise<ConversationSummary>
-  rewriteDocRefs?: (rewrites: readonly DocRefRewrite[]) => Promise<readonly ConversationSummary[]>
   setConversationUsage: (
     conversationId: string,
     usage: { promptTokens: number; completionTokens: number; totalTokens: number },
@@ -310,19 +308,6 @@ function sameConversationActivity(
     left?.detail === right?.detail &&
     left?.toolName === right?.toolName
   )
-}
-
-function rewriteRuntimeDocId(docId: string, rewrites: readonly DocRefRewrite[]): string | null {
-  for (const rewrite of rewrites) {
-    if (rewrite.isFolder) {
-      if (docId === rewrite.oldPath || docId.startsWith(`${rewrite.oldPath}/`)) {
-        return `${rewrite.newPath}${docId.slice(rewrite.oldPath.length)}`
-      }
-    } else if (docId === rewrite.oldPath) {
-      return rewrite.newPath
-    }
-  }
-  return null
 }
 
 export function createInMemoryRuntimeStore(): AgentRuntimeStore {
@@ -457,23 +442,6 @@ export function createInMemoryRuntimeStore(): AgentRuntimeStore {
         title: title.trim() || DEFAULT_CONVERSATION_TITLE,
         updatedAt: nextRuntimeUpdatedAt(current),
       }))
-    },
-    async rewriteDocRefs(rewrites): Promise<readonly ConversationSummary[]> {
-      if (rewrites.length === 0) return []
-      const updated: ConversationSummary[] = []
-      for (const [conversationId, record] of records) {
-        const docId = record.meta.docId
-        if (!docId) continue
-        const nextDocId = rewriteRuntimeDocId(docId, rewrites)
-        if (nextDocId === null) continue
-        updated.push(
-          updateMeta(conversationId, (current) => ({
-            ...current,
-            docId: nextDocId,
-          })),
-        )
-      }
-      return updated
     },
     async setConversationUsage(conversationId, usage): Promise<ConversationSummary> {
       return updateMeta(conversationId, (current) => ({
@@ -770,17 +738,6 @@ export class AgentRuntime {
     )
     this.emit(createRuntimeEvent('conversations:updated', summary))
     return summary
-  }
-
-  async rewriteDocRefs(rewrites: readonly DocRefRewrite[]): Promise<ConversationSummary[]> {
-    if (!this.store.rewriteDocRefs) throw new Error('runtime store cannot rewrite doc refs')
-    const summaries = cloneRuntimeConversationSummaries(
-      await this.store.rewriteDocRefs(cloneRuntimeValue([...rewrites])),
-    )
-    for (const summary of summaries) {
-      this.emit(createRuntimeEvent('conversations:updated', summary))
-    }
-    return summaries
   }
 
   async appendUserMessage(input: RuntimeAppendUserMessageInput): Promise<PersistedMessage> {
