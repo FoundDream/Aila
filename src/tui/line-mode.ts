@@ -16,6 +16,7 @@ import {
   type PersistedMessage,
   PROVIDER_LABELS,
   type ProviderId,
+  requestToolApprovalWithActivity,
   type ToolApprovalRequest,
 } from '../runtime/core'
 import {
@@ -57,12 +58,26 @@ export interface TuiRuntimeInput {
 }
 
 export function createTuiRuntime(input: TuiRuntimeInput = {}): AgentRuntime {
-  return createPersistedAgentRuntime({
+  let runtime: AgentRuntime
+  runtime = createPersistedAgentRuntime({
     host: {
       ...(input.onEvent ? { onEvent: input.onEvent } : {}),
-      ...(input.onToolApproval ? { onToolApproval: input.onToolApproval } : {}),
+      ...(input.onToolApproval
+        ? {
+            onToolApproval: (request: ToolApprovalRequest) =>
+              requestToolApprovalWithActivity({
+                request,
+                approve: input.onToolApproval ?? (() => false),
+                recordAgentEvent: async (_conversationId, event) => {
+                  await runtime.recordAgentEvent(event)
+                },
+                logger: console,
+              }),
+          }
+        : {}),
     },
   })
+  return runtime
 }
 
 export function usage(): string {

@@ -272,6 +272,10 @@ async function testTuiUsesSharedRuntimeFactory(): Promise<void> {
     'TUI adapter should use the shared persisted runtime factory',
   )
   assert(
+    source.includes('requestToolApprovalWithActivity'),
+    'TUI adapter should record approval activity through the shared helper',
+  )
+  assert(
     !source.includes('createPersistedRuntimeStore'),
     'TUI adapter should not wire the persisted store directly',
   )

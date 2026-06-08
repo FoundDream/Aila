@@ -55,9 +55,11 @@ import {
   type RuntimeRecordAgentEventInput,
   replayConversationActivity,
   replayConversationRuntimeState,
+  requestToolApprovalWithActivity,
   type Settings,
   SKILL_TOOL_NAME,
   summarizeToolTarget,
+  type ToolApprovalRequest,
   type ToolFileSystem,
   type ToolPack,
   type ToolShellRequest,
@@ -5083,6 +5085,120 @@ async function testLegacyPersistenceNormalization(): Promise<void> {
   })
 }
 
+async function testImmediateToolApprovalActivityHelper(): Promise<void> {
+  const recorded: AgentEvent[] = []
+  const request: ToolApprovalRequest = {
+    name: 'write',
+    args: {
+      path: '/workspace/contract.md',
+      content: 'approval helper',
+      nested: { value: 'original' },
+    },
+    metadata: {
+      name: 'write',
+      readOnly: false,
+      destructive: true,
+      requiresApproval: true,
+      access: ['write'],
+      scope: ['workspace'],
+    },
+    conversationId: 'conversation-approval-helper',
+    messageId: 'assistant-approval-helper',
+    toolCallId: 'tool-call-approval-helper',
+  }
+
+  let approveSawOriginal = false
+  const approved = await requestToolApprovalWithActivity({
+    request,
+    approve: async (approvalRequest) => {
+      approveSawOriginal =
+        approvalRequest.args.path === '/workspace/contract.md' &&
+        (approvalRequest.args.nested as { value?: unknown }).value === 'original' &&
+        approvalRequest.metadata.access.includes('write')
+      approvalRequest.args.path = '/workspace/approval-mutated.md'
+      const nested = approvalRequest.args.nested as { value?: string }
+      nested.value = 'approval-mutated'
+      approvalRequest.metadata.access.push('shell')
+      return true
+    },
+    recordAgentEvent: async (_conversationId, event) => {
+      recorded.push(event)
+    },
+  })
+
+  assertEqual(approved, true, 'approval helper should return host approval result')
+  assertEqual(approveSawOriginal, true, 'approval helper should pass an approval snapshot')
+  assertEqual(request.args.path, '/workspace/contract.md', 'approval helper should isolate args')
+  assertEqual(
+    (request.args.nested as { value?: unknown }).value,
+    'original',
+    'approval helper should isolate nested args',
+  )
+  assertEqual(
+    request.metadata.access.includes('shell'),
+    false,
+    'approval helper should isolate metadata',
+  )
+  assertEqual(recorded.length, 2, 'approval helper should record requested and resolved events')
+  assertEqual(recorded[0]?.type, 'tool.approval.requested', 'approval helper requested event')
+  assertEqual(recorded[1]?.type, 'tool.approval.resolved', 'approval helper resolved event')
+  assertEqual(
+    recorded[0]?.conversationId,
+    'conversation-approval-helper',
+    'approval helper requested conversation',
+  )
+  assertEqual(recorded[0]?.messageId, 'assistant-approval-helper', 'approval helper message id')
+  assertEqual(recorded[0]?.data?.toolCallId, 'tool-call-approval-helper', 'approval helper call id')
+  assertEqual(recorded[0]?.data?.toolName, 'write', 'approval helper tool name')
+  assertEqual(recorded[0]?.data?.risk, 'destructive write', 'approval helper risk')
+  assertEqual(
+    (recorded[0]?.data?.target as { preview?: unknown } | undefined)?.preview,
+    '/workspace/contract.md',
+    'approval helper target snapshot',
+  )
+  assertEqual(recorded[1]?.data?.approved, true, 'approval helper resolved approved flag')
+  assertEqual(recorded[1]?.data?.reason, 'user', 'approval helper resolved reason')
+
+  const failedRecorded: AgentEvent[] = []
+  try {
+    await requestToolApprovalWithActivity({
+      request,
+      approve: async () => {
+        throw new Error('approval prompt failed')
+      },
+      recordAgentEvent: async (_conversationId, event) => {
+        failedRecorded.push(event)
+      },
+    })
+    throw new Error('failed approval unexpectedly succeeded')
+  } catch (error) {
+    assert(
+      error instanceof Error && error.message.includes('approval prompt failed'),
+      'approval helper should rethrow prompt failures',
+    )
+  }
+  assertEqual(
+    failedRecorded[0]?.type,
+    'tool.approval.requested',
+    'failed approval helper requested event',
+  )
+  assertEqual(
+    failedRecorded[1]?.type,
+    'tool.approval.resolved',
+    'failed approval helper resolved event',
+  )
+  assertEqual(
+    failedRecorded[1]?.data?.approved,
+    false,
+    'failed approval helper resolved should deny',
+  )
+  assertEqual(
+    failedRecorded[1]?.data?.reason,
+    'cancelled',
+    'failed approval helper resolved reason',
+  )
+}
+
 async function testToolRegistryContract(): Promise<void> {
   const settings: Settings = { apiKeys: {}, defaultModel: null }
   let ran = false
@@ -7102,6 +7218,7 @@ async function main(): Promise<void> {
   await testInterruptedRecoveryFallsBackToLegacyMetaActivity()
   await testInterruptedRecoveryUsesRuntimeReplayForNonTerminalToolFailure()
   await testLegacyPersistenceNormalization()
+  await testImmediateToolApprovalActivityHelper()
   await testToolRegistryContract()
   await testRuntimeExecuteToolUsesHostBoundary()
   await testGenerateImageToolUsesInjectedImageDependencies()

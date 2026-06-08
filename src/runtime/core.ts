@@ -90,6 +90,12 @@ export {
   type SkillDefinition,
 } from '../main/skills'
 export {
+  type ImmediateToolApprovalActivityInput,
+  requestToolApprovalWithActivity,
+  type ToolApprovalActivityRecorder,
+  type ToolApprovalResolutionReason,
+} from '../main/tool-approvals'
+export {
   BUILTIN_TOOL_PACKS,
   createDefaultToolRegistry,
   createToolRegistry,

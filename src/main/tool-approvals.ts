@@ -43,6 +43,13 @@ export interface ToolApprovalStoreOptions {
   logger?: Pick<Console, 'warn'>
 }
 
+export interface ImmediateToolApprovalActivityInput {
+  request: ToolApprovalRequest
+  approve: (request: ToolApprovalRequest) => MaybePromise<boolean>
+  recordAgentEvent?: ToolApprovalActivityRecorder
+  logger?: Pick<Console, 'warn'>
+}
+
 function cloneApprovalValue<T>(value: T): T {
   return structuredClone(value)
 }
@@ -124,6 +131,22 @@ async function recordToolApprovalActivity(
     await callbacks.recordAgentEvent?.(req.conversationId, event)
   } catch (error) {
     callbacks.logger?.warn('[activity] tool approval event append failed:', error)
+  }
+}
+
+export async function requestToolApprovalWithActivity(
+  input: ImmediateToolApprovalActivityInput,
+): Promise<boolean> {
+  const request = cloneToolApprovalRequest(input.request)
+  const requestId = randomUUID()
+  await recordToolApprovalActivity(request, requestId, 'requested', input)
+  try {
+    const approved = (await input.approve(cloneToolApprovalRequest(request))) === true
+    await recordToolApprovalActivity(request, requestId, 'resolved', input, approved, 'user')
+    return approved
+  } catch (error) {
+    await recordToolApprovalActivity(request, requestId, 'resolved', input, false, 'cancelled')
+    throw error
   }
 }
 

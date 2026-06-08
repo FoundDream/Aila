@@ -183,6 +183,10 @@ async function testCliUsesSharedRuntimeFactory(): Promise<void> {
     'CLI adapter should use the shared persisted runtime factory',
   )
   assert(
+    source.includes('requestToolApprovalWithActivity'),
+    'CLI adapter should record approval activity through the shared helper',
+  )
+  assert(
     !source.includes('createPersistedRuntimeStore'),
     'CLI adapter should not wire the persisted store directly',
   )

@@ -16,6 +16,7 @@ import {
   type PersistedMessage,
   PROVIDER_LABELS,
   type ProviderId,
+  requestToolApprovalWithActivity,
   type ToolApprovalRequest,
 } from '../runtime/core'
 import {
@@ -336,8 +337,9 @@ function createRuntime(input: {
 }): AgentRuntime {
   let assistantText = ''
   const toolNames = new Map<string, string>()
+  let runtime: AgentRuntime
 
-  return createPersistedAgentRuntime({
+  runtime = createPersistedAgentRuntime({
     host: {
       onEvent: (event) => {
         if (input.events) output.write(`${JSON.stringify(event)}\n`)
@@ -352,9 +354,19 @@ function createRuntime(input: {
           onCompletion: input.onCompletion ?? (() => {}),
         })
       },
-      onToolApproval: (request) => approveTool(request, input.autoApprove, input.events),
+      onToolApproval: (request) =>
+        requestToolApprovalWithActivity({
+          request,
+          approve: (approvalRequest) =>
+            approveTool(approvalRequest, input.autoApprove, input.events),
+          recordAgentEvent: async (_conversationId, event) => {
+            await runtime.recordAgentEvent(event)
+          },
+          logger: console,
+        }),
     },
   })
+  return runtime
 }
 
 async function approveTool(request: ToolApprovalRequest, autoApprove: boolean, events: boolean) {
