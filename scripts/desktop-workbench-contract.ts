@@ -150,8 +150,14 @@ async function testDesktopUsesSharedRuntimeFactory(): Promise<void> {
   assert(
     workbenchSource.includes('createPersistedAgentRuntime') &&
       workbenchSource.includes('ToolApprovalStore') &&
+      workbenchSource.includes('AgentRuntimeApi') &&
       workbenchSource.includes('registerRuntimeWorkbenchIpcHandlers'),
-    'Desktop runtime workbench should own runtime construction, approvals, and IPC registration',
+    'Desktop runtime workbench should own runtime construction, approvals, typed runtime API, and IPC registration',
+  )
+  assert(
+    workbenchSource.includes('let runtime: AgentRuntimeApi') &&
+      !workbenchSource.includes('ReturnType<typeof createPersistedAgentRuntime>'),
+    'Desktop runtime workbench should depend on the host-facing runtime API type',
   )
 }
 
@@ -175,7 +181,9 @@ async function testDesktopExposesRuntimeStateApi(): Promise<void> {
   )
   assert(
     workbenchSource.includes("'runtime:list-active-turns'") &&
-      workbenchSource.includes('workbench.listActiveTurns()'),
+      workbenchSource.includes('workbench.listActiveTurns()') &&
+      workbenchSource.includes('return runtime.listActiveTurns()') &&
+      !workbenchSource.includes('runtime.listActiveStreams()'),
     'Desktop runtime workbench should expose live active turns through the runtime namespace',
   )
   assert(

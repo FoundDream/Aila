@@ -7,7 +7,7 @@ import { join, resolve } from 'node:path'
 import { stdin as input, stdout as output, stderr } from 'node:process'
 import * as dotenv from 'dotenv'
 import {
-  type AgentRuntime,
+  type AgentRuntimeApi,
   type AgentRuntimeEvent,
   type ConversationSummary,
   findModel,
@@ -248,7 +248,7 @@ function preview(text: string, max = 600): string {
 }
 
 async function printConversationList(
-  runtime: AgentRuntime,
+  runtime: AgentRuntimeApi,
   input: { limit: number },
 ): Promise<void> {
   const conversations = await runtime.listConversations()
@@ -334,10 +334,10 @@ function createRuntime(input: {
   events: boolean
   json: boolean
   onCompletion?: (state: CompletionState) => void
-}): AgentRuntime {
+}): AgentRuntimeApi {
   let assistantText = ''
   const toolNames = new Map<string, string>()
-  let runtime: AgentRuntime
+  let runtime: AgentRuntimeApi
 
   runtime = createPersistedAgentRuntime({
     host: {

@@ -4,6 +4,7 @@ import type { ConversationRecord, ConversationSummary } from './conversation-cor
 import { cleanupConversationImages } from './image-store'
 import type {
   ActiveAssistantTurn,
+  AgentRuntimeApi,
   ChatAttachmentInput,
   ConversationRuntimeHydration,
   ConversationRuntimeStateSnapshot,
@@ -71,7 +72,7 @@ export function createDesktopRuntimeWorkbench(
   input: CreateDesktopRuntimeWorkbenchInput,
 ): DesktopRuntimeWorkbench {
   const logger = input.logger ?? console
-  let runtime: ReturnType<typeof createPersistedAgentRuntime>
+  let runtime: AgentRuntimeApi
 
   const toolApprovals = new ToolApprovalStore({
     timeoutMs: TOOL_APPROVAL_TIMEOUT_MS,
@@ -123,7 +124,7 @@ export function createDesktopRuntimeWorkbench(
       return runtime.abort(conversationId)
     },
     listActiveTurns() {
-      return runtime.listActiveStreams()
+      return runtime.listActiveTurns()
     },
     recoverInterruptedActivities(reason) {
       return runtime.recoverInterruptedActivities(reason)

@@ -6335,6 +6335,19 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
       runtimeSource.includes('runtime host cannot stream chat'),
     'AgentRuntime host boundary should expose model metadata and stream ownership',
   )
+  assert(
+    runtimeSource.includes('export interface AgentRuntimeApi') &&
+      runtimeSource.includes('export interface AgentRuntimeConversationApi') &&
+      runtimeSource.includes('export interface AgentRuntimeTurnApi') &&
+      runtimeSource.includes('export interface AgentRuntimeExtensionApi') &&
+      runtimeSource.includes('export class AgentRuntime implements AgentRuntimeApi'),
+    'AgentRuntime core should expose a typed host-facing API surface',
+  )
+  assert(
+    runtimeSource.includes('listActiveTurns(): ActiveAssistantTurn[]') &&
+      runtimeSource.includes('return this.listActiveStreams()'),
+    'AgentRuntime should expose active turns through the host-facing API while keeping stream alias compatibility',
+  )
 
   const hostSource = await readFile(join(process.cwd(), 'src/main/runtime-host.ts'), 'utf-8')
   assert(

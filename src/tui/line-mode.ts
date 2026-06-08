@@ -7,7 +7,7 @@ import { stdin as input, stdout as output } from 'node:process'
 import { createInterface } from 'node:readline/promises'
 import * as dotenv from 'dotenv'
 import {
-  type AgentRuntime,
+  type AgentRuntimeApi,
   type AgentRuntimeEvent,
   type ConversationSummary,
   findModel,
@@ -57,8 +57,8 @@ export interface TuiRuntimeInput {
   onToolApproval?: (request: ToolApprovalRequest) => Promise<boolean>
 }
 
-export function createTuiRuntime(input: TuiRuntimeInput = {}): AgentRuntime {
-  let runtime: AgentRuntime
+export function createTuiRuntime(input: TuiRuntimeInput = {}): AgentRuntimeApi {
+  let runtime: AgentRuntimeApi
   runtime = createPersistedAgentRuntime({
     host: {
       ...(input.onEvent ? { onEvent: input.onEvent } : {}),
@@ -283,7 +283,7 @@ export function conversationScope(summary: ConversationSummary): string {
 }
 
 export async function printConversationList(
-  runtime: AgentRuntime,
+  runtime: AgentRuntimeApi,
   input: { limit: number },
 ): Promise<void> {
   const conversations = await runtime.listConversations()
@@ -418,7 +418,7 @@ export function formatToolResultForDisplay(toolName: string, result: string): st
 }
 
 export async function appendLocalContext(input: {
-  runtime: AgentRuntime
+  runtime: AgentRuntimeApi
   conversationId: string
   command: string
   result: string
@@ -430,7 +430,7 @@ export async function appendLocalContext(input: {
 }
 
 export async function runLocalTool(input: {
-  runtime: AgentRuntime
+  runtime: AgentRuntimeApi
   toolName: 'read' | 'bash' | 'write' | 'edit'
   args: Record<string, unknown>
 }): Promise<string> {
@@ -473,7 +473,7 @@ export function writeExtensionReport(report: ExtensionReport): void {
 export async function handleSlashCommand(input: {
   text: string
   conversationId: string
-  runtime: AgentRuntime
+  runtime: AgentRuntimeApi
   session: TuiSessionState
 }): Promise<'handled' | 'exit' | 'agent'> {
   const { text, conversationId, runtime, session } = input
@@ -607,7 +607,7 @@ export async function handleSlashCommand(input: {
 }
 
 export async function printRecentHistory(
-  runtime: AgentRuntime,
+  runtime: AgentRuntimeApi,
   conversationId: string,
   maxMessages = 6,
 ): Promise<void> {

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import * as dotenv from 'dotenv'
 import {
-  type AgentRuntime,
+  type AgentRuntimeApi,
   type AgentRuntimeEvent,
   type ConversationSummary,
   MODEL_CATALOG,
@@ -129,7 +129,7 @@ class AilaFullScreenApp {
     autocompleteMaxVisible: 8,
     paddingX: 2,
   })
-  private readonly runtime: AgentRuntime
+  private readonly runtime: AgentRuntimeApi
   private readonly frame: AilaFrameComponent
   private readonly completions = new Map<string, () => void>()
   private readonly toolNames = new Map<string, string>()

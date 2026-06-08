@@ -318,6 +318,47 @@ export interface AgentRuntimeStore {
   deleteConversation: (conversationId: string) => Promise<void>
 }
 
+export interface AgentRuntimeConversationApi {
+  createConversation(input?: RuntimeCreateConversationInput): Promise<ConversationSummary>
+  listConversations(input?: RuntimeListConversationsInput): Promise<ConversationSummary[]>
+  getConversation(conversationId: string): Promise<ConversationRecord>
+  resolveConversation(
+    input?: RuntimeResolveConversationInput,
+  ): Promise<RuntimeResolveConversationResult>
+  hydrateConversation(conversationId: string): Promise<ConversationRuntimeHydration>
+  getConversationRuntimeState(conversationId: string): Promise<ConversationRuntimeReplayState>
+  listConversationRuntimeStates(
+    input?: RuntimeListConversationsInput,
+  ): Promise<ConversationRuntimeStateSnapshot[]>
+  listAgentEvents(conversationId: string): Promise<PersistedAgentEvent[]>
+  appendUserMessage(input: RuntimeAppendUserMessageInput): Promise<PersistedMessage>
+  recordAgentEvent(event: RuntimeRecordAgentEventInput): Promise<boolean>
+  renameConversation(conversationId: string, title: string): Promise<ConversationSummary>
+  deleteConversation(conversationId: string): Promise<void>
+}
+
+export interface AgentRuntimeTurnApi {
+  send(input: RuntimeSendInput): Promise<RuntimeSendResult>
+  retryLastUserMessage(input: RuntimeRetryLastInput): Promise<RuntimeSendResult>
+  abort(conversationId: string): Promise<void>
+  abortAll(reason?: ConversationAbortReason): Promise<void>
+  shutdown(reason?: ConversationAbortReason): Promise<void>
+  listActiveTurns(): ActiveAssistantTurn[]
+  recoverInterruptedActivities(reason?: string): Promise<ConversationSummary[]>
+}
+
+export interface AgentRuntimeExtensionApi {
+  getToolRegistry(): Promise<ToolRegistry>
+  getSkills(): Promise<LoadedSkill[]>
+  reloadToolPacks(): Promise<ToolRegistry>
+  executeTool(input: RuntimeExecuteToolInput): Promise<string>
+}
+
+export interface AgentRuntimeApi
+  extends AgentRuntimeConversationApi,
+    AgentRuntimeTurnApi,
+    AgentRuntimeExtensionApi {}
+
 function cloneRuntimeValue<T>(value: T): T {
   return structuredClone(value)
 }
@@ -685,7 +726,7 @@ function createRuntimeSkillToolPacks(skills: readonly LoadedSkill[]): ToolPack[]
   return pack ? [pack] : []
 }
 
-export class AgentRuntime {
+export class AgentRuntime implements AgentRuntimeApi {
   private readonly activeStreams = new Map<string, StreamSlot>()
   private readonly turnStartLocks = new Map<string, TurnStartLockSlot>()
   private readonly deletedConversations = new Set<string>()
@@ -1105,6 +1146,10 @@ export class AgentRuntime {
     } catch (err) {
       this.logger.warn('[runtime] interrupted abort activity append failed:', err)
     }
+  }
+
+  listActiveTurns(): ActiveAssistantTurn[] {
+    return this.listActiveStreams()
   }
 
   listActiveStreams(): ActiveAssistantTurn[] {

@@ -259,6 +259,7 @@ function testInterruptedAgentEventCompletesLineModeAdapter(): void {
 
 async function testTuiUsesSharedRuntimeFactory(): Promise<void> {
   const source = await readFile(join(process.cwd(), 'src/tui/line-mode.ts'), 'utf-8')
+  const fullscreenSource = await readFile(join(process.cwd(), 'src/tui/fullscreen.ts'), 'utf-8')
   assert(
     source.includes("from '../runtime/core'") && source.includes("from '../runtime/node'"),
     'TUI adapter should import explicit runtime core and node adapter surfaces',
@@ -270,6 +271,13 @@ async function testTuiUsesSharedRuntimeFactory(): Promise<void> {
   assert(
     source.includes('createPersistedAgentRuntime'),
     'TUI adapter should use the shared persisted runtime factory',
+  )
+  assert(
+    source.includes('type AgentRuntimeApi') &&
+      fullscreenSource.includes('type AgentRuntimeApi') &&
+      !source.includes('type AgentRuntime,') &&
+      !fullscreenSource.includes('type AgentRuntime,'),
+    'TUI adapters should depend on the host-facing runtime API type, not the concrete runtime class',
   )
   assert(
     source.includes('requestToolApprovalWithActivity'),

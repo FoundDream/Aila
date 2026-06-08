@@ -183,6 +183,10 @@ async function testCliUsesSharedRuntimeFactory(): Promise<void> {
     'CLI adapter should use the shared persisted runtime factory',
   )
   assert(
+    source.includes('type AgentRuntimeApi') && !source.includes('type AgentRuntime,'),
+    'CLI adapter should depend on the host-facing runtime API type, not the concrete runtime class',
+  )
+  assert(
     source.includes('requestToolApprovalWithActivity'),
     'CLI adapter should record approval activity through the shared helper',
   )
