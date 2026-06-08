@@ -1561,6 +1561,109 @@ async function testRuntimeConversationStoreFacadeContract(): Promise<void> {
   )
 }
 
+async function testRuntimeConversationRuntimeStateApiUsesEventReplay(): Promise<void> {
+  const runtime = new AgentRuntime({
+    store: createInMemoryRuntimeStore(),
+    logger: { warn() {}, error() {} },
+  })
+  const chat = await runtime.createConversation()
+  const docChat = await runtime.createConversation({ docId: 'docs/runtime-state.md' })
+
+  await runtime.recordAgentEvent({
+    timestamp: 10,
+    conversationId: chat.id,
+    messageId: 'assistant-runtime-state',
+    type: 'turn.started',
+    data: {
+      providerId: 'openrouter',
+      modelId: 'contract/mock',
+      inputMessageCount: 1,
+    },
+  })
+  await runtime.recordAgentEvent({
+    timestamp: 20,
+    conversationId: chat.id,
+    messageId: 'assistant-runtime-state',
+    type: 'tool.approval.requested',
+    data: {
+      requestId: 'approval-runtime-state',
+      toolCallId: 'tool-call-runtime-state',
+      toolName: 'write',
+    },
+  })
+  await runtime.recordAgentEvent({
+    timestamp: 20,
+    conversationId: chat.id,
+    messageId: 'assistant-runtime-state',
+    type: 'tool.approval.requested',
+    data: {
+      requestId: 'approval-runtime-state',
+      toolCallId: 'tool-call-runtime-state',
+      toolName: 'write',
+    },
+  })
+  await runtime.recordAgentEvent({
+    timestamp: 30,
+    conversationId: docChat.id,
+    messageId: 'assistant-doc-runtime-state',
+    type: 'turn.completed',
+    data: { outputBlockCount: 1 },
+  })
+
+  const state = await runtime.getConversationRuntimeState(chat.id)
+  assertEqual(state.phase, 'approval', 'runtime state API should replay pending approval phase')
+  assertEqual(state.active, true, 'runtime state API should report active replay state')
+  assertEqual(
+    state.turn?.assistantMessageId,
+    'assistant-runtime-state',
+    'runtime state API should expose assistant turn id',
+  )
+  assertEqual(
+    state.turn?.selection?.modelId,
+    'contract/mock',
+    'runtime state API should preserve replayed model selection',
+  )
+  assertEqual(
+    state.turn?.pendingApproval?.requestId,
+    'approval-runtime-state',
+    'runtime state API should preserve pending approval details',
+  )
+
+  if (state.turn?.pendingApproval) state.turn.pendingApproval.requestId = 'caller-mutated'
+  const stateAgain = await runtime.getConversationRuntimeState(chat.id)
+  assertEqual(
+    stateAgain.turn?.pendingApproval?.requestId,
+    'approval-runtime-state',
+    'runtime state API should isolate replay state from caller mutation',
+  )
+
+  const chatStates = await runtime.listConversationRuntimeStates({ docId: null })
+  assertEqual(chatStates.length, 1, 'runtime state list should respect chat conversation filter')
+  assertEqual(
+    chatStates[0]?.conversationId,
+    chat.id,
+    'runtime state list should include the filtered chat conversation',
+  )
+  assertEqual(
+    chatStates[0]?.state.phase,
+    'approval',
+    'runtime state list should include replay state snapshots',
+  )
+
+  const docStates = await runtime.listConversationRuntimeStates({ docId: 'docs/runtime-state.md' })
+  assertEqual(docStates.length, 1, 'runtime state list should respect doc conversation filter')
+  assertEqual(
+    docStates[0]?.conversationId,
+    docChat.id,
+    'runtime state list should include the filtered doc conversation',
+  )
+  assertEqual(
+    docStates[0]?.state.phase,
+    'completed',
+    'runtime state list should replay terminal doc conversation state',
+  )
+}
+
 async function testRuntimeOptionalStoreCapabilitiesFailClosed(): Promise<void> {
   const summary: ConversationSummary = {
     schemaVersion: AILA_CONVERSATION_META_SCHEMA_VERSION,
@@ -1610,6 +1713,20 @@ async function testRuntimeOptionalStoreCapabilitiesFailClosed(): Promise<void> {
   await expectCapabilityError(
     'event list without store capability',
     () => runtime.listAgentEvents(summary.id),
+    'runtime store cannot list agent events',
+  )
+  await expectCapabilityError(
+    'runtime state without event store capability',
+    () => runtime.getConversationRuntimeState(summary.id),
+    'runtime store cannot list agent events',
+  )
+  const listOnlyRuntime = new AgentRuntime({
+    store: { ...store, listConversations: async () => [summary] },
+    logger: { warn() {}, error() {} },
+  })
+  await expectCapabilityError(
+    'runtime state list without event store capability',
+    () => listOnlyRuntime.listConversationRuntimeStates(),
     'runtime store cannot list agent events',
   )
   await expectCapabilityError(
@@ -6914,6 +7031,7 @@ async function main(): Promise<void> {
   await testRuntimeHostTransientContextUsesInjectedRecord()
   await testRuntimeStreamHandlerSnapshots()
   await testRuntimeConversationStoreFacadeContract()
+  await testRuntimeConversationRuntimeStateApiUsesEventReplay()
   await testRuntimeOptionalStoreCapabilitiesFailClosed()
   await testInMemoryRuntimeStoreEventListContract()
   await testRuntimeEnvironmentContract()

@@ -60,6 +60,7 @@ export {
   type AilaRuntimeEventType,
   type ChatAttachmentInput,
   type ConversationAbortReason,
+  type ConversationRuntimeStateSnapshot,
   type CreateInMemoryRuntimeStoreInput,
   createInMemoryRuntimeStore,
   createRuntimeEvent,

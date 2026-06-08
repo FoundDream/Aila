@@ -13,6 +13,7 @@ import {
   AILA_CONVERSATION_META_SCHEMA_VERSION,
   AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
   type ConversationRecord,
+  type ConversationRuntimeReplayState,
   type ConversationSummary,
   createInterruptedConversationRecoveryEvent,
   orderedUniqueAgentEvents,
@@ -21,6 +22,7 @@ import {
   type PersistedMessage,
   type PersistedTextBlock,
   replayConversationActivity,
+  replayConversationRuntimeState,
 } from './conversation-core'
 import { type AgentRuntimeEvent, createRuntimeEvent } from './runtime-events'
 import type { Settings } from './settings-types'
@@ -210,6 +212,11 @@ export interface RuntimeCreateConversationInput {
 
 export interface RuntimeListConversationsInput {
   docId?: string | null
+}
+
+export interface ConversationRuntimeStateSnapshot {
+  conversationId: string
+  state: ConversationRuntimeReplayState
 }
 
 export interface RuntimeResolveConversationInput {
@@ -783,6 +790,25 @@ export class AgentRuntime {
   async listAgentEvents(conversationId: string): Promise<PersistedAgentEvent[]> {
     if (!this.store.listAgentEvents) throw new Error('runtime store cannot list agent events')
     return cloneRuntimePersistedAgentEvents(await this.store.listAgentEvents(conversationId))
+  }
+
+  async getConversationRuntimeState(
+    conversationId: string,
+  ): Promise<ConversationRuntimeReplayState> {
+    const events = await this.listAgentEvents(conversationId)
+    return cloneRuntimeValue(replayConversationRuntimeState(events))
+  }
+
+  async listConversationRuntimeStates(
+    input: RuntimeListConversationsInput = {},
+  ): Promise<ConversationRuntimeStateSnapshot[]> {
+    const conversations = await this.listConversations(input)
+    return Promise.all(
+      conversations.map(async (summary) => ({
+        conversationId: summary.id,
+        state: await this.getConversationRuntimeState(summary.id),
+      })),
+    )
   }
 
   async renameConversation(conversationId: string, title: string): Promise<ConversationSummary> {
