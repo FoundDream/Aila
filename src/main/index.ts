@@ -3,7 +3,7 @@ import { is } from '@electron-toolkit/utils'
 import * as dotenv from 'dotenv'
 import { app, BrowserWindow, ipcMain, nativeTheme } from 'electron'
 import type { ProviderId } from '../shared/models'
-import { getModelInfo, type ModelSelection } from './agent'
+import { getModelInfo } from './agent'
 import { rewriteDocRefs as rewritePersistedDocRefs } from './conversations'
 import { sweepOrphanedDocConversations } from './doc-conversation-cleanup'
 import type { DocPatch } from './docs'
@@ -20,19 +20,15 @@ import {
   updateDoc,
 } from './docs'
 import { getExtensionReport } from './extensions'
-import { cleanupConversationImages, saveImage } from './image-store'
+import { saveImage } from './image-store'
 import { handleImageProtocol, registerImageProtocolScheme } from './images'
 import { getOpenRouterCatalog } from './openrouter-catalog'
 import { configureDataDir, getDataDir } from './paths'
-import type { ChatAttachmentInput } from './runtime'
-import { createPersistedAgentRuntime } from './runtime-host'
-import { configuredProviders, loadSettings, type Settings, saveSettings } from './settings'
-import { ToolApprovalStore } from './tool-approvals'
-import type { ToolApprovalRequest } from './tools'
 import {
-  buildDesktopWorkspaceContextFromRecord,
-  getDesktopWorkspaceRoots,
-} from './workspace-context'
+  createDesktopRuntimeWorkbench,
+  registerRuntimeWorkbenchIpcHandlers,
+} from './runtime-workbench'
+import { configuredProviders, loadSettings, type Settings, saveSettings } from './settings'
 
 dotenv.config()
 
@@ -47,8 +43,6 @@ const DEV_RENDERER_URL = process.env.ELECTRON_RENDERER_URL ?? 'http://localhost:
 let mainWindow: BrowserWindow | null = null
 let gracefulShutdownStarted = false
 let gracefulShutdownComplete = false
-
-const TOOL_APPROVAL_TIMEOUT_MS = 60_000
 
 function createWindow(): void {
   // The renderer is light-only; pin the native appearance so the sidebar
@@ -90,36 +84,7 @@ function send(channel: string, data?: unknown): void {
   }
 }
 
-const toolApprovals = new ToolApprovalStore({
-  timeoutMs: TOOL_APPROVAL_TIMEOUT_MS,
-  recordAgentEvent: async (_conversationId, event) => {
-    await agentRuntime.recordAgentEvent(event)
-    return undefined
-  },
-  onRequest: (payload) => send('tools:approval-request', payload),
-  onResolved: (payload) => send('tools:approval-resolved', payload),
-  logger: console,
-})
-
-function requestToolApproval(req: ToolApprovalRequest): Promise<boolean> {
-  return toolApprovals.request(req)
-}
-
-async function cancelConversationApprovals(conversationId: string): Promise<void> {
-  const resolved = toolApprovals.resolveForConversation(conversationId, false, 'cancelled')
-  if (resolved > 0) await toolApprovals.flushActivity()
-}
-
-const agentRuntime = createPersistedAgentRuntime({
-  host: {
-    onEvent: (event) => send(event.type, event.data),
-    onToolApproval: requestToolApproval,
-    onConversationAbort: cancelConversationApprovals,
-    cleanupConversationAssets: cleanupConversationImages,
-    loadTransientContext: ({ record }) => buildDesktopWorkspaceContextFromRecord(record),
-    workspaceRoots: getDesktopWorkspaceRoots,
-  },
-})
+const runtimeWorkbench = createDesktopRuntimeWorkbench({ emit: send, logger: console })
 configureDocConversationRefRewriter(async (rewrites) => {
   const summaries = await rewritePersistedDocRefs(rewrites.map((rewrite) => ({ ...rewrite })))
   for (const summary of summaries) send('conversations:updated', summary)
@@ -127,43 +92,11 @@ configureDocConversationRefRewriter(async (rewrites) => {
 })
 
 async function shutdownRuntimeWorkbench(): Promise<void> {
-  await agentRuntime.abortAll('shutdown')
-  await toolApprovals.shutdown()
+  await runtimeWorkbench.shutdown()
 }
 
 function registerIpcHandlers(): void {
-  ipcMain.handle(
-    'chat:send',
-    async (
-      _event,
-      conversationId: string,
-      userText: string,
-      selection: ModelSelection,
-      attachments?: ChatAttachmentInput[],
-    ) => {
-      return agentRuntime.send({
-        conversationId,
-        userText,
-        selection,
-        ...(attachments && attachments.length > 0 && { attachments }),
-      })
-    },
-  )
-
-  ipcMain.handle(
-    'chat:retry-last',
-    async (_event, conversationId: string, selection: ModelSelection) => {
-      return agentRuntime.retryLastUserMessage({
-        conversationId,
-        selection,
-      })
-    },
-  )
-
-  ipcMain.handle('chat:abort', (_event, conversationId: string) =>
-    agentRuntime.abort(conversationId),
-  )
-  ipcMain.handle('chat:list-active-streams', () => agentRuntime.listActiveStreams())
+  registerRuntimeWorkbenchIpcHandlers(ipcMain, runtimeWorkbench)
 
   ipcMain.handle('docs:list', () => listAll())
   ipcMain.handle('docs:get', (_event, docPath: string) => getDoc(docPath))
@@ -183,27 +116,20 @@ function registerIpcHandlers(): void {
   ipcMain.handle('folders:move', (_event, path: string, newParentPath: string | null) =>
     moveFolder(path, newParentPath),
   )
-  ipcMain.on(
-    'tools:approval-response',
-    (_event, payload: { requestId: string; approved: boolean }) => {
-      toolApprovals.resolve(payload.requestId, payload.approved, 'user')
-    },
-  )
-  ipcMain.handle('tools:list-pending-approvals', () => toolApprovals.list())
 
   ipcMain.handle('docs:delete', async (_event, docPath: string) => {
     await deleteDoc(docPath)
     await sweepOrphanedDocConversations({
-      listConversations: () => agentRuntime.listConversations(),
-      deleteConversation: (id) => agentRuntime.deleteConversation(id),
+      listConversations: () => runtimeWorkbench.listConversations(),
+      deleteConversation: (id) => runtimeWorkbench.deleteConversation(id),
     })
   })
 
   ipcMain.handle('folders:delete', async (_event, path: string) => {
     await deleteFolder(path)
     await sweepOrphanedDocConversations({
-      listConversations: () => agentRuntime.listConversations(),
-      deleteConversation: (id) => agentRuntime.deleteConversation(id),
+      listConversations: () => runtimeWorkbench.listConversations(),
+      deleteConversation: (id) => runtimeWorkbench.deleteConversation(id),
     })
   })
 
@@ -226,50 +152,23 @@ function registerIpcHandlers(): void {
   ipcMain.handle('openrouter:list-models', () => getOpenRouterCatalog())
   ipcMain.handle('extensions:report', () => getExtensionReport())
   ipcMain.handle('extensions:reload', async () => {
-    const [registry, report] = await Promise.all([
-      agentRuntime.reloadToolPacks(),
+    const [runtimeReload, report] = await Promise.all([
+      runtimeWorkbench.reloadExtensions(),
       getExtensionReport(),
     ])
     return {
-      toolPackCount: registry.toolPacks.length,
-      toolCount: registry.specs.length,
+      toolPackCount: runtimeReload.toolPackCount,
+      toolCount: runtimeReload.toolCount,
       skillCount: report.skills.length,
       report,
     }
   })
-
-  ipcMain.handle('conversations:list', () => agentRuntime.listConversations({ docId: null }))
-  ipcMain.handle('conversations:get', (_event, id: string) => agentRuntime.getConversation(id))
-  ipcMain.handle('conversations:list-events', (_event, id: string) =>
-    agentRuntime.listAgentEvents(id),
-  )
-  ipcMain.handle('conversations:get-runtime-state', (_event, id: string) =>
-    agentRuntime.getConversationRuntimeState(id),
-  )
-  ipcMain.handle('conversations:list-runtime-states', () =>
-    agentRuntime.listConversationRuntimeStates({ docId: null }),
-  )
-  ipcMain.handle('conversations:create', (_event, docPath?: string) =>
-    agentRuntime.createConversation({ docId: docPath ?? null }),
-  )
-  ipcMain.handle('conversations:list-for-doc', (_event, docPath: string) =>
-    agentRuntime.listConversations({ docId: docPath }),
-  )
-  ipcMain.handle('conversations:list-runtime-states-for-doc', (_event, docPath: string) =>
-    agentRuntime.listConversationRuntimeStates({ docId: docPath }),
-  )
-  ipcMain.handle('conversations:rename', (_event, id: string, title: string) =>
-    agentRuntime.renameConversation(id, title),
-  )
-  ipcMain.handle('conversations:delete', (_event, id: string) =>
-    agentRuntime.deleteConversation(id),
-  )
 }
 
 app.whenReady().then(async () => {
   configureDataDir(is.dev ? join(app.getAppPath(), '.dev-data') : app.getPath('userData'))
   console.log('[storage] data dir =', getDataDir())
-  const recovered = await agentRuntime
+  const recovered = await runtimeWorkbench
     .recoverInterruptedActivities('app restarted before this turn finished')
     .catch((error) => {
       console.warn('[startup] interrupted activity recovery failed:', error)

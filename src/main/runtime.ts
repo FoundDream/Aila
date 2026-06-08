@@ -219,6 +219,13 @@ export interface ConversationRuntimeStateSnapshot {
   state: ConversationRuntimeReplayState
 }
 
+export interface ConversationRuntimeHydration {
+  record: ConversationRecord
+  events: PersistedAgentEvent[]
+  runtimeState: ConversationRuntimeReplayState
+  activeTurn: ActiveAssistantTurn | null
+}
+
 export interface RuntimeResolveConversationInput {
   conversationId?: string
   resumeLatest?: boolean
@@ -797,6 +804,17 @@ export class AgentRuntime {
   ): Promise<ConversationRuntimeReplayState> {
     const events = await this.listAgentEvents(conversationId)
     return cloneRuntimeValue(replayConversationRuntimeState(events))
+  }
+
+  async hydrateConversation(conversationId: string): Promise<ConversationRuntimeHydration> {
+    const [record, events] = await Promise.all([
+      this.getConversation(conversationId),
+      this.listAgentEvents(conversationId),
+    ])
+    const runtimeState = replayConversationRuntimeState(events)
+    const activeTurn =
+      this.listActiveStreams().find((turn) => turn.conversationId === conversationId) ?? null
+    return cloneRuntimeValue({ record, events, runtimeState, activeTurn })
   }
 
   async listConversationRuntimeStates(

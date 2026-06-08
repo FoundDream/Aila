@@ -88,10 +88,14 @@ async function withTempDataDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
   }
 }
 
-async function waitFor(predicate: () => boolean, message: string, timeoutMs = 1500): Promise<void> {
+async function waitFor(
+  predicate: () => boolean | Promise<boolean>,
+  message: string,
+  timeoutMs = 1500,
+): Promise<void> {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
-    if (predicate()) return
+    if (await predicate()) return
     await new Promise((resolve) => setTimeout(resolve, 10))
   }
   throw new Error(message)
@@ -1637,6 +1641,43 @@ async function testRuntimeConversationRuntimeStateApiUsesEventReplay(): Promise<
     stateAgain.turn?.pendingApproval?.requestId,
     'approval-runtime-state',
     'runtime state API should isolate replay state from caller mutation',
+  )
+
+  const hydration = await runtime.hydrateConversation(chat.id)
+  assertEqual(
+    hydration.record.meta.id,
+    chat.id,
+    'runtime hydrate should include the conversation record',
+  )
+  assertEqual(hydration.events.length, 2, 'runtime hydrate should include replay events')
+  assertEqual(
+    hydration.runtimeState.phase,
+    'approval',
+    'runtime hydrate should include replayed lifecycle state',
+  )
+  assertEqual(hydration.activeTurn, null, 'runtime hydrate should report no live active turn')
+  hydration.record.meta.title = 'caller-mutated-hydration'
+  const firstHydrationEvent = hydration.events[0]
+  assert(firstHydrationEvent, 'runtime hydrate should include first event')
+  firstHydrationEvent.data = { providerId: 'mutated', modelId: 'mutated' }
+  const pendingApproval = hydration.runtimeState.turn?.pendingApproval
+  assert(pendingApproval, 'runtime hydrate should include pending approval')
+  pendingApproval.requestId = 'mutated-hydration'
+  const hydratedAgain = await runtime.hydrateConversation(chat.id)
+  assertEqual(
+    hydratedAgain.record.meta.title,
+    '新对话',
+    'runtime hydrate should isolate records from caller mutation',
+  )
+  assertEqual(
+    hydratedAgain.events[0]?.data?.modelId,
+    'contract/mock',
+    'runtime hydrate should isolate events from caller mutation',
+  )
+  assertEqual(
+    hydratedAgain.runtimeState.turn?.pendingApproval?.requestId,
+    'approval-runtime-state',
+    'runtime hydrate should isolate replay state from caller mutation',
   )
 
   const chatStates = await runtime.listConversationRuntimeStates({ docId: null })
@@ -3526,6 +3567,22 @@ async function testRuntimeListsActiveAssistantTurns(): Promise<void> {
       'active turn assistant message id',
     )
     assertEqual(active.selection.modelId, 'contract/mock', 'active turn model id')
+
+    let hydration = await runtime.hydrateConversation(conversation.id)
+    assertEqual(
+      hydration.activeTurn?.assistantMessageId,
+      result.assistantMessageId,
+      'runtime hydrate should include the live active assistant turn',
+    )
+    await waitFor(async () => {
+      hydration = await runtime.hydrateConversation(conversation.id)
+      return hydration.runtimeState.phase === 'running'
+    }, 'runtime hydrate should replay active turn state')
+    assertEqual(
+      hydration.runtimeState.phase,
+      'running',
+      'runtime hydrate should include replay state while the turn is active',
+    )
 
     resolveStream()
     await waitFor(

@@ -123,13 +123,21 @@ async function testDesktopWorkspaceRoots(): Promise<void> {
 
 async function testDesktopUsesSharedRuntimeFactory(): Promise<void> {
   const source = await readFile(join(process.cwd(), 'src/main/index.ts'), 'utf-8')
+  const workbenchSource = await readFile(
+    join(process.cwd(), 'src/main/runtime-workbench.ts'),
+    'utf-8',
+  )
   assert(
-    source.includes('createPersistedAgentRuntime'),
-    'Desktop main process should use the shared persisted runtime factory',
+    source.includes('createDesktopRuntimeWorkbench'),
+    'Desktop main process should use the runtime workbench adapter',
   )
   assert(
     !source.includes('new AgentRuntime'),
     'Desktop main process should not construct AgentRuntime directly',
+  )
+  assert(
+    !source.includes('createPersistedAgentRuntime'),
+    'Desktop main process should not wire the persisted runtime factory directly',
   )
   assert(
     !source.includes('createPersistedRuntimeStore'),
@@ -139,35 +147,67 @@ async function testDesktopUsesSharedRuntimeFactory(): Promise<void> {
     !source.includes('loadToolPacksFromDir'),
     'Desktop main process should not wire tool-pack loaders directly',
   )
+  assert(
+    workbenchSource.includes('createPersistedAgentRuntime') &&
+      workbenchSource.includes('ToolApprovalStore') &&
+      workbenchSource.includes('registerRuntimeWorkbenchIpcHandlers'),
+    'Desktop runtime workbench should own runtime construction, approvals, and IPC registration',
+  )
 }
 
 async function testDesktopExposesRuntimeStateApi(): Promise<void> {
   const mainSource = await readFile(join(process.cwd(), 'src/main/index.ts'), 'utf-8')
+  const workbenchSource = await readFile(
+    join(process.cwd(), 'src/main/runtime-workbench.ts'),
+    'utf-8',
+  )
   const preloadSource = await readFile(join(process.cwd(), 'src/preload/index.ts'), 'utf-8')
   assert(
-    mainSource.includes("'conversations:get-runtime-state'") &&
-      mainSource.includes('agentRuntime.getConversationRuntimeState(id)'),
-    'Desktop main should expose single conversation runtime state through IPC',
+    mainSource.includes('registerRuntimeWorkbenchIpcHandlers(ipcMain, runtimeWorkbench)') &&
+      !mainSource.includes("'conversations:get-runtime-state'") &&
+      !mainSource.includes("'chat:list-active-streams'"),
+    'Desktop main should delegate runtime IPC to the runtime workbench',
   )
   assert(
-    mainSource.includes("'conversations:list-runtime-states'") &&
-      mainSource.includes('agentRuntime.listConversationRuntimeStates({ docId: null })'),
-    'Desktop main should expose chat runtime state snapshots through IPC',
+    workbenchSource.includes("'runtime:hydrate-conversation'") &&
+      workbenchSource.includes('workbench.hydrateConversation(conversationId)'),
+    'Desktop runtime workbench should expose conversation hydration through IPC',
   )
   assert(
-    mainSource.includes("'conversations:list-runtime-states-for-doc'") &&
-      mainSource.includes('agentRuntime.listConversationRuntimeStates({ docId: docPath })'),
-    'Desktop main should expose doc runtime state snapshots through IPC',
+    workbenchSource.includes("'runtime:list-active-turns'") &&
+      workbenchSource.includes('workbench.listActiveTurns()'),
+    'Desktop runtime workbench should expose live active turns through the runtime namespace',
   )
   assert(
-    preloadSource.includes('getRuntimeState:') &&
-      preloadSource.includes("'conversations:get-runtime-state'") &&
-      preloadSource.includes('listRuntimeStates:') &&
-      preloadSource.includes("'conversations:list-runtime-states'") &&
-      preloadSource.includes('listRuntimeStatesForDoc:') &&
-      preloadSource.includes("'conversations:list-runtime-states-for-doc'"),
-    'Desktop preload should expose runtime state APIs to renderer',
+    preloadSource.includes('runtime: {') &&
+      preloadSource.includes('hydrateConversation:') &&
+      preloadSource.includes("'runtime:hydrate-conversation'") &&
+      preloadSource.includes('listActiveTurns:') &&
+      preloadSource.includes("'runtime:list-active-turns'"),
+    'Desktop preload should expose a runtime namespace to renderer',
   )
+}
+
+async function testRendererUsesRuntimeHydrationApi(): Promise<void> {
+  const streamSource = await readFile(
+    join(process.cwd(), 'src/renderer/src/pages/chat/useChatStreams.ts'),
+    'utf-8',
+  )
+  assert(
+    streamSource.includes('window.api.runtime.hydrateConversation(id)'),
+    'chat streams should hydrate from the runtime lifecycle API',
+  )
+  for (const forbidden of [
+    'window.api.conversations.get',
+    'window.api.conversations.listEvents',
+    'window.api.conversations.getRuntimeState',
+    'window.api.listActiveStreams',
+  ]) {
+    assert(
+      !streamSource.includes(forbidden),
+      `chat streams should not rebuild runtime hydration from scattered IPC: ${forbidden}`,
+    )
+  }
 }
 
 async function testConversationPartitionContract(): Promise<void> {
@@ -1946,6 +1986,7 @@ async function main(): Promise<void> {
   await testDesktopWorkspaceRoots()
   await testDesktopUsesSharedRuntimeFactory()
   await testDesktopExposesRuntimeStateApi()
+  await testRendererUsesRuntimeHydrationApi()
   await testConversationPartitionContract()
   await testDocConversationFollowsDocRename()
   await testDocRenameUsesInjectedConversationRefRewriter()

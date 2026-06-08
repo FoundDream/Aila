@@ -66,7 +66,7 @@ export function useDocConversation(docPath: string | null): DocConversationApi {
     void (async () => {
       try {
         const list = visibleDocConversationSummaries(
-          await window.api.conversations.listForDoc(docPath),
+          await window.api.runtime.conversations.listForDoc(docPath),
           removedSessionIdsRef.current,
         )
         if (cancelled) return
@@ -87,7 +87,7 @@ export function useDocConversation(docPath: string | null): DocConversationApi {
   // message lands) so the picker reflects the latest state without a refetch.
   useEffect(() => {
     if (!docPath) return
-    return window.api.conversations.onUpdated((summary) => {
+    return window.api.runtime.conversations.onUpdated((summary) => {
       setSessions((prev) =>
         mergeDocConversationSummaryUpdate(prev, summary, docPath, removedSessionIdsRef.current),
       )
@@ -106,7 +106,7 @@ export function useDocConversation(docPath: string | null): DocConversationApi {
   }, [])
 
   const renameSession = useCallback(async (id: string, title: string): Promise<void> => {
-    const updated = await window.api.conversations.rename(id, title)
+    const updated = await window.api.runtime.conversations.rename(id, title)
     setSessions((prev) => {
       const next = prev.map((session) => (session.id === updated.id ? updated : session))
       next.sort((a, b) => b.updatedAt - a.updatedAt)
@@ -122,12 +122,12 @@ export function useDocConversation(docPath: string | null): DocConversationApi {
       setActiveId((current) => (current === id ? (next[0]?.id ?? null) : current))
 
       try {
-        await window.api.conversations.delete(id)
+        await window.api.runtime.conversations.delete(id)
       } catch (error) {
         removedSessionIdsRef.current.delete(id)
         if (docPath) {
           const list = visibleDocConversationSummaries(
-            await window.api.conversations.listForDoc(docPath),
+            await window.api.runtime.conversations.listForDoc(docPath),
             removedSessionIdsRef.current,
           )
           setSessions(list)
@@ -142,7 +142,7 @@ export function useDocConversation(docPath: string | null): DocConversationApi {
   const ensureActiveSession = useCallback(async (): Promise<string | null> => {
     if (activeId) return activeId
     if (!docPath) return null
-    const fresh = await window.api.conversations.create(docPath)
+    const fresh = await window.api.runtime.conversations.create(docPath)
     removedSessionIdsRef.current.delete(fresh.id)
     setSessions((prev) => [fresh, ...prev])
     setActiveId(fresh.id)

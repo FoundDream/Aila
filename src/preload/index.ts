@@ -311,6 +311,18 @@ export interface SendResult {
   assistantMessageId: string
 }
 
+export interface RuntimeSendRequest {
+  conversationId: string
+  userText: string
+  selection: ModelSelection
+  attachments?: ChatAttachmentInput[]
+}
+
+export interface RuntimeRetryLastRequest {
+  conversationId: string
+  selection: ModelSelection
+}
+
 export interface ActiveAssistantTurn {
   conversationId: string
   assistantMessageId: string
@@ -327,6 +339,13 @@ export interface ConversationRecord {
   messages: PersistedMessage[]
 }
 
+export interface RuntimeConversationHydration {
+  record: ConversationRecord
+  events: PersistedAgentEvent[]
+  runtimeState: ConversationRuntimeReplayState
+  activeTurn: ActiveAssistantTurn | null
+}
+
 function on<T>(channel: string, callback: (data: T) => void): () => void {
   const handler = (_event: Electron.IpcRendererEvent, data: T): void => callback(data)
   ipcRenderer.on(channel, handler)
@@ -334,34 +353,50 @@ function on<T>(channel: string, callback: (data: T) => void): () => void {
 }
 
 const api = {
-  send: (
-    conversationId: string,
-    userText: string,
-    selection: ModelSelection,
-    attachments?: ChatAttachmentInput[],
-  ): Promise<SendResult> =>
-    ipcRenderer.invoke('chat:send', conversationId, userText, selection, attachments ?? []),
-  retryLast: (conversationId: string, selection: ModelSelection): Promise<SendResult> =>
-    ipcRenderer.invoke('chat:retry-last', conversationId, selection),
-  abort: (conversationId: string): Promise<void> =>
-    ipcRenderer.invoke('chat:abort', conversationId),
-  listActiveStreams: (): Promise<ActiveAssistantTurn[]> =>
-    ipcRenderer.invoke('chat:list-active-streams'),
-  onTextDelta: (cb: (event: TextDeltaEvent) => void) => on<TextDeltaEvent>('chat:text-delta', cb),
-  onReasoningDelta: (cb: (event: ReasoningDeltaEvent) => void) =>
-    on<ReasoningDeltaEvent>('chat:reasoning-delta', cb),
-  onToolCallStart: (cb: (event: ToolCallStartEvent) => void) =>
-    on<ToolCallStartEvent>('chat:tool-call-start', cb),
-  onToolCallArgsDelta: (cb: (event: ToolCallArgsDeltaEvent) => void) =>
-    on<ToolCallArgsDeltaEvent>('chat:tool-call-args-delta', cb),
-  onToolCallResult: (cb: (event: ToolCallResultEvent) => void) =>
-    on<ToolCallResultEvent>('chat:tool-call-result', cb),
-  onImageBlock: (cb: (event: ImageBlockEvent) => void) =>
-    on<ImageBlockEvent>('chat:image-block', cb),
-  onDone: (cb: (event: ChatDoneEvent) => void) => on<ChatDoneEvent>('chat:done', cb),
-  onError: (cb: (event: ChatErrorEvent) => void) => on<ChatErrorEvent>('chat:error', cb),
-  onAgentEvent: (cb: (event: PersistedAgentEvent) => void) =>
-    on<PersistedAgentEvent>('agent:event', cb),
+  runtime: {
+    send: (request: RuntimeSendRequest): Promise<SendResult> =>
+      ipcRenderer.invoke('runtime:send', request),
+    retryLast: (request: RuntimeRetryLastRequest): Promise<SendResult> =>
+      ipcRenderer.invoke('runtime:retry-last', request),
+    abort: (conversationId: string): Promise<void> =>
+      ipcRenderer.invoke('runtime:abort', conversationId),
+    listActiveTurns: (): Promise<ActiveAssistantTurn[]> =>
+      ipcRenderer.invoke('runtime:list-active-turns'),
+    hydrateConversation: (conversationId: string): Promise<RuntimeConversationHydration> =>
+      ipcRenderer.invoke('runtime:hydrate-conversation', conversationId),
+    listRuntimeStates: (docId: string | null = null): Promise<ConversationRuntimeStateSnapshot[]> =>
+      ipcRenderer.invoke('runtime:conversations:list-runtime-states', docId),
+    onTextDelta: (cb: (event: TextDeltaEvent) => void) => on<TextDeltaEvent>('chat:text-delta', cb),
+    onReasoningDelta: (cb: (event: ReasoningDeltaEvent) => void) =>
+      on<ReasoningDeltaEvent>('chat:reasoning-delta', cb),
+    onToolCallStart: (cb: (event: ToolCallStartEvent) => void) =>
+      on<ToolCallStartEvent>('chat:tool-call-start', cb),
+    onToolCallArgsDelta: (cb: (event: ToolCallArgsDeltaEvent) => void) =>
+      on<ToolCallArgsDeltaEvent>('chat:tool-call-args-delta', cb),
+    onToolCallResult: (cb: (event: ToolCallResultEvent) => void) =>
+      on<ToolCallResultEvent>('chat:tool-call-result', cb),
+    onImageBlock: (cb: (event: ImageBlockEvent) => void) =>
+      on<ImageBlockEvent>('chat:image-block', cb),
+    onDone: (cb: (event: ChatDoneEvent) => void) => on<ChatDoneEvent>('chat:done', cb),
+    onError: (cb: (event: ChatErrorEvent) => void) => on<ChatErrorEvent>('chat:error', cb),
+    onAgentEvent: (cb: (event: PersistedAgentEvent) => void) =>
+      on<PersistedAgentEvent>('agent:event', cb),
+    conversations: {
+      list: (): Promise<ConversationSummary[]> =>
+        ipcRenderer.invoke('runtime:conversations:list', null),
+      get: (id: string): Promise<ConversationRecord> =>
+        ipcRenderer.invoke('runtime:conversations:get', id),
+      create: (docPath?: string): Promise<ConversationSummary> =>
+        ipcRenderer.invoke('runtime:conversations:create', docPath ?? null),
+      listForDoc: (docPath: string): Promise<ConversationSummary[]> =>
+        ipcRenderer.invoke('runtime:conversations:list', docPath),
+      rename: (id: string, title: string): Promise<ConversationSummary> =>
+        ipcRenderer.invoke('runtime:conversations:rename', id, title),
+      delete: (id: string): Promise<void> => ipcRenderer.invoke('runtime:conversations:delete', id),
+      onUpdated: (cb: (summary: ConversationSummary) => void) =>
+        on<ConversationSummary>('conversations:updated', cb),
+    },
+  },
   getModelInfo: (providerId: ProviderId, modelId: string): Promise<ModelInfo> =>
     ipcRenderer.invoke('chat:get-model-info', providerId, modelId),
   settings: {
@@ -404,27 +439,6 @@ const api = {
   images: {
     save: (bytes: ArrayBuffer, filename: string): Promise<{ url: string }> =>
       ipcRenderer.invoke('images:save', bytes, filename),
-  },
-  conversations: {
-    list: (): Promise<ConversationSummary[]> => ipcRenderer.invoke('conversations:list'),
-    get: (id: string): Promise<ConversationRecord> => ipcRenderer.invoke('conversations:get', id),
-    listEvents: (id: string): Promise<PersistedAgentEvent[]> =>
-      ipcRenderer.invoke('conversations:list-events', id),
-    getRuntimeState: (id: string): Promise<ConversationRuntimeReplayState> =>
-      ipcRenderer.invoke('conversations:get-runtime-state', id),
-    listRuntimeStates: (): Promise<ConversationRuntimeStateSnapshot[]> =>
-      ipcRenderer.invoke('conversations:list-runtime-states'),
-    create: (docPath?: string): Promise<ConversationSummary> =>
-      ipcRenderer.invoke('conversations:create', docPath),
-    listForDoc: (docPath: string): Promise<ConversationSummary[]> =>
-      ipcRenderer.invoke('conversations:list-for-doc', docPath),
-    listRuntimeStatesForDoc: (docPath: string): Promise<ConversationRuntimeStateSnapshot[]> =>
-      ipcRenderer.invoke('conversations:list-runtime-states-for-doc', docPath),
-    rename: (id: string, title: string): Promise<ConversationSummary> =>
-      ipcRenderer.invoke('conversations:rename', id, title),
-    delete: (id: string): Promise<void> => ipcRenderer.invoke('conversations:delete', id),
-    onUpdated: (cb: (summary: ConversationSummary) => void) =>
-      on<ConversationSummary>('conversations:updated', cb),
   },
 }
 

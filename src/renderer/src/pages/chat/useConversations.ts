@@ -47,7 +47,7 @@ export function useConversations(): ConversationsState {
 
   const refreshList = useCallback(async (): Promise<ConversationSummary[]> => {
     const list = visibleConversationSummaries(
-      await window.api.conversations.list(),
+      await window.api.runtime.conversations.list(),
       removedConversationIdsRef.current,
     )
     setConversations(list)
@@ -79,7 +79,7 @@ export function useConversations(): ConversationsState {
     let cancelled = false
     void (async () => {
       try {
-        const record = await window.api.conversations.get(activeId)
+        const record = await window.api.runtime.conversations.get(activeId)
         if (!cancelled) setActiveRecord(record)
       } catch (error) {
         console.warn('[conversations] failed to hydrate active conversation:', error)
@@ -96,7 +96,7 @@ export function useConversations(): ConversationsState {
   }, [activeId, refreshList])
 
   const create = useCallback(async (): Promise<ConversationSummary> => {
-    const summary = await window.api.conversations.create()
+    const summary = await window.api.runtime.conversations.create()
     await refreshList()
     setActiveId(summary.id)
     setActiveRecord({ meta: summary, messages: [] })
@@ -111,7 +111,7 @@ export function useConversations(): ConversationsState {
       setActiveRecord((current) => (current?.meta.id === id ? null : current))
 
       try {
-        await window.api.conversations.delete(id)
+        await window.api.runtime.conversations.delete(id)
         await refreshList()
       } catch (error) {
         removedConversationIdsRef.current.delete(id)
@@ -123,7 +123,7 @@ export function useConversations(): ConversationsState {
   )
 
   const rename = useCallback(async (id: string, title: string) => {
-    const updated = await window.api.conversations.rename(id, title)
+    const updated = await window.api.runtime.conversations.rename(id, title)
     setConversations((prev) => {
       const next = prev.map((c) => (c.id === updated.id ? updated : c))
       next.sort((a, b) => b.updatedAt - a.updatedAt)

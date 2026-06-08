@@ -5,7 +5,7 @@
  * out into an app-level hook so multiple conversations can stream in parallel:
  * switching the active sidebar entry is purely a view change.
  *
- * Concurrency: at most one in-flight chat:send per conversation. Additional
+ * Concurrency: at most one in-flight runtime send per conversation. Additional
  * sends pile into a per-conversation queue and fire after the previous done.
  *
  * IPC events from main are tagged with conversationId/messageId; the reducer
@@ -703,12 +703,20 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
 
   const startRun = useCallback(async (id: string, queued: QueuedRun): Promise<void> => {
     dispatch({ type: 'POP_QUEUE_HEAD', conversationId: id })
-    let result: Awaited<ReturnType<typeof window.api.send>>
+    let result: Awaited<ReturnType<typeof window.api.runtime.send>>
     try {
       result =
         queued.kind === 'send'
-          ? await window.api.send(id, queued.text, queued.selection, queued.attachments)
-          : await window.api.retryLast(id, queued.selection)
+          ? await window.api.runtime.send({
+              conversationId: id,
+              userText: queued.text,
+              selection: queued.selection,
+              attachments: queued.attachments,
+            })
+          : await window.api.runtime.retryLast({
+              conversationId: id,
+              selection: queued.selection,
+            })
     } catch (err) {
       const errorText = err instanceof Error ? err.message : String(err)
       // Surface as a synthetic error message in the conversation so it isn't lost.
@@ -835,12 +843,8 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
 
   const hydrate = useCallback(async (id: string): Promise<void> => {
     if (stateRef.current.streams.get(id)?.isHydrated) return
-    const [record, events, runtimeState, activeTurns] = await Promise.all([
-      window.api.conversations.get(id),
-      window.api.conversations.listEvents(id),
-      window.api.conversations.getRuntimeState(id),
-      window.api.listActiveStreams(),
-    ])
+    const { record, events, runtimeState, activeTurn } =
+      await window.api.runtime.hydrateConversation(id)
     if (stateRef.current.streams.get(id)?.isHydrated) return
     const messages = record.messages.map(persistedToMessage)
     const usage = record.meta.usage
@@ -857,13 +861,13 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
       usage,
       events,
       runtimeState,
-      activeTurn: activeTurns.find((turn) => turn.conversationId === id) ?? null,
+      activeTurn,
     })
   }, [])
 
   // Mark a freshly-created conversation as hydrated without a disk read. Used
   // when the renderer just created the conversation so we know it's empty —
-  // skips the await window.api.conversations.get round-trip and prevents a race
+  // skips the runtime hydrate round-trip and prevents a race
   // with an immediate enqueueSend.
   const markHydrated = useCallback((id: string): void => {
     if (stateRef.current.streams.get(id)?.isHydrated) return
@@ -872,7 +876,7 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
 
   const abort = useCallback((id: string): void => {
     dispatch({ type: 'CLEAR_QUEUE', conversationId: id })
-    void window.api.abort(id)
+    void window.api.runtime.abort(id)
   }, [])
 
   const drop = useCallback((id: string): void => {
@@ -883,7 +887,7 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
   // every payload.
   useEffect(() => {
     const cleanups = [
-      window.api.onTextDelta((event: TextDeltaEvent) =>
+      window.api.runtime.onTextDelta((event: TextDeltaEvent) =>
         dispatch({
           type: 'TEXT_DELTA',
           conversationId: event.conversationId,
@@ -892,7 +896,7 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
           delta: event.delta,
         }),
       ),
-      window.api.onReasoningDelta((event: ReasoningDeltaEvent) =>
+      window.api.runtime.onReasoningDelta((event: ReasoningDeltaEvent) =>
         dispatch({
           type: 'TEXT_DELTA',
           conversationId: event.conversationId,
@@ -901,7 +905,7 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
           delta: event.delta,
         }),
       ),
-      window.api.onToolCallStart((event: ToolCallStartEvent) =>
+      window.api.runtime.onToolCallStart((event: ToolCallStartEvent) =>
         dispatch({
           type: 'TOOL_CALL_START',
           conversationId: event.conversationId,
@@ -911,7 +915,7 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
           args: event.arguments,
         }),
       ),
-      window.api.onToolCallArgsDelta((event: ToolCallArgsDeltaEvent) =>
+      window.api.runtime.onToolCallArgsDelta((event: ToolCallArgsDeltaEvent) =>
         dispatch({
           type: 'TOOL_CALL_ARGS_DELTA',
           conversationId: event.conversationId,
@@ -920,7 +924,7 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
           delta: event.delta,
         }),
       ),
-      window.api.onToolCallResult((event: ToolCallResultEvent) =>
+      window.api.runtime.onToolCallResult((event: ToolCallResultEvent) =>
         dispatch({
           type: 'TOOL_CALL_RESULT',
           conversationId: event.conversationId,
@@ -931,7 +935,7 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
           isError: event.isError,
         }),
       ),
-      window.api.onImageBlock((event: ImageBlockEvent) =>
+      window.api.runtime.onImageBlock((event: ImageBlockEvent) =>
         dispatch({
           type: 'IMAGE_BLOCK',
           conversationId: event.conversationId,
@@ -944,7 +948,7 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
           },
         }),
       ),
-      window.api.onDone((event: ChatDoneEvent) => {
+      window.api.runtime.onDone((event: ChatDoneEvent) => {
         dispatch({
           type: 'FINISH',
           conversationId: event.conversationId,
@@ -954,7 +958,7 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
         })
         // Drain effect picks up the next queued send after FINISH commits.
       }),
-      window.api.onError((event: ChatErrorEvent) => {
+      window.api.runtime.onError((event: ChatErrorEvent) => {
         dispatch({
           type: 'FINISH',
           conversationId: event.conversationId,
@@ -962,10 +966,10 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
           message: persistedToMessage(event.message),
         })
       }),
-      window.api.onAgentEvent((event) => {
+      window.api.runtime.onAgentEvent((event) => {
         dispatch({ type: 'AGENT_EVENT', event })
       }),
-      window.api.conversations.onUpdated((summary) => {
+      window.api.runtime.conversations.onUpdated((summary) => {
         onConversationUpdatedRef.current?.(summary)
       }),
     ]
