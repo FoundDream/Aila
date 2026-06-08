@@ -1,4 +1,4 @@
-import type { ReactElement } from 'react'
+import { type ReactElement, useEffect, useRef, useState } from 'react'
 import type { ConversationSummary } from '../../../../preload/index'
 import { type ConversationStatusTone, getConversationStatus } from './conversationStatus'
 
@@ -85,6 +85,8 @@ export function ConversationList({
   onRename,
   onDelete,
 }: ConversationListProps): ReactElement {
+  const [renamingId, setRenamingId] = useState<string | null>(null)
+
   return (
     <div className="flex h-full flex-col">
       <div className="group/header flex h-7 shrink-0 items-center px-2">
@@ -124,6 +126,7 @@ export function ConversationList({
                 needsApproval: pendingApprovalIds.has(conversation.id),
               })
               const title = conversation.title || '新对话'
+              const isRenaming = conversation.id === renamingId
               return (
                 <li
                   key={conversation.id}
@@ -131,56 +134,67 @@ export function ConversationList({
                     isActive ? 'bg-[var(--surface-hover)]' : 'hover:bg-[var(--surface-hover)]'
                   }`}
                 >
-                  <button
-                    type="button"
-                    onClick={() => onSelect(conversation.id)}
-                    className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 px-2.5 text-left"
-                  >
-                    <span
-                      className={`min-w-0 flex-1 truncate text-[13px] ${
-                        isActive ? 'text-[var(--text)]' : 'text-[var(--text-soft)]'
-                      }`}
-                    >
-                      {title}
-                    </span>
-                    {status && (
-                      <span
-                        role="status"
-                        aria-label={status.ariaLabel}
-                        title={status.title}
-                        className={`mr-1 shrink-0 rounded-full px-1.5 py-0.5 text-[10px] leading-none ${statusClassName(
-                          status.tone,
-                        )}`}
+                  {isRenaming ? (
+                    <ConversationRenameInput
+                      initialTitle={conversation.title || ''}
+                      onSubmit={(next) => {
+                        setRenamingId(null)
+                        if (next && next !== conversation.title) onRename(conversation.id, next)
+                      }}
+                      onCancel={() => setRenamingId(null)}
+                    />
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => onSelect(conversation.id)}
+                        onDoubleClick={() => setRenamingId(conversation.id)}
+                        className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 px-2.5 text-left"
                       >
-                        {status.label}
-                      </span>
-                    )}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const next = window.prompt('Rename conversation', title)
-                      if (next !== null) onRename(conversation.id, next)
-                    }}
-                    aria-label="Rename conversation"
-                    title="Rename"
-                    className="flex h-5 w-5 shrink-0 cursor-pointer items-center justify-center rounded text-[var(--text-dim)] opacity-0 transition group-hover:opacity-100 hover:bg-[var(--surface)] hover:text-[var(--text)]"
-                  >
-                    <PencilIcon />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (window.confirm(`Delete "${title}"?`)) {
-                        onDelete(conversation.id)
-                      }
-                    }}
-                    aria-label="Delete conversation"
-                    title="Delete"
-                    className="mr-1 flex h-5 w-5 shrink-0 cursor-pointer items-center justify-center rounded text-[var(--text-dim)] opacity-0 transition group-hover:opacity-100 hover:bg-[var(--surface)] hover:text-[var(--error)]"
-                  >
-                    <TrashIcon />
-                  </button>
+                        <span
+                          className={`min-w-0 flex-1 truncate text-[13px] ${
+                            isActive ? 'text-[var(--text)]' : 'text-[var(--text-soft)]'
+                          }`}
+                        >
+                          {title}
+                        </span>
+                        {status && (
+                          <span
+                            role="status"
+                            aria-label={status.ariaLabel}
+                            title={status.title}
+                            className={`mr-1 shrink-0 rounded-full px-1.5 py-0.5 text-[10px] leading-none ${statusClassName(
+                              status.tone,
+                            )}`}
+                          >
+                            {status.label}
+                          </span>
+                        )}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setRenamingId(conversation.id)}
+                        aria-label="Rename conversation"
+                        title="Rename"
+                        className="flex h-5 w-5 shrink-0 cursor-pointer items-center justify-center rounded text-[var(--text-dim)] opacity-0 transition group-hover:opacity-100 hover:bg-[var(--surface)] hover:text-[var(--text)]"
+                      >
+                        <PencilIcon />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (window.confirm(`Delete "${title}"?`)) {
+                            onDelete(conversation.id)
+                          }
+                        }}
+                        aria-label="Delete conversation"
+                        title="Delete"
+                        className="mr-1 flex h-5 w-5 shrink-0 cursor-pointer items-center justify-center rounded text-[var(--text-dim)] opacity-0 transition group-hover:opacity-100 hover:bg-[var(--surface)] hover:text-[var(--error)]"
+                      >
+                        <TrashIcon />
+                      </button>
+                    </>
+                  )}
                 </li>
               )
             })}
@@ -200,5 +214,43 @@ export function ConversationList({
         )}
       </div>
     </div>
+  )
+}
+
+function ConversationRenameInput({
+  initialTitle,
+  onSubmit,
+  onCancel,
+}: {
+  initialTitle: string
+  onSubmit: (title: string) => void
+  onCancel: () => void
+}): ReactElement {
+  const [value, setValue] = useState(initialTitle)
+  const inputRef = useRef<HTMLInputElement | null>(null)
+
+  useEffect(() => {
+    inputRef.current?.focus()
+    inputRef.current?.select()
+  }, [])
+
+  return (
+    <input
+      ref={inputRef}
+      value={value}
+      placeholder="新对话"
+      onChange={(event) => setValue(event.target.value)}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter') {
+          event.preventDefault()
+          onSubmit(value.trim())
+        } else if (event.key === 'Escape') {
+          event.preventDefault()
+          onCancel()
+        }
+      }}
+      onBlur={() => onSubmit(value.trim())}
+      className="h-7 min-w-0 flex-1 rounded-lg bg-transparent px-2.5 text-[13px] text-[var(--text)] outline-none placeholder:text-[var(--text-dim)]"
+    />
   )
 }
