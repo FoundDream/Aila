@@ -176,8 +176,18 @@ export async function listChatConversations(): Promise<ConversationSummary[]> {
 export async function recoverInterruptedConversationActivities(
   reason = 'runtime restarted before this turn finished',
 ): Promise<ConversationSummary[]> {
+  const results = await recoverInterruptedConversationActivityResults(reason)
+  return results
+    .map((result) => result.summary)
+    .filter((summary): summary is ConversationSummary => summary !== undefined)
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+}
+
+export async function recoverInterruptedConversationActivityResults(
+  reason = 'runtime restarted before this turn finished',
+): Promise<AgentEventAppendResult[]> {
   const list = await listConversations()
-  const recovered: ConversationSummary[] = []
+  const recovered: AgentEventAppendResult[] = []
   await Promise.all(
     list.map(async (meta) => {
       const events = await listAgentEvents(meta.id)
@@ -203,11 +213,13 @@ export async function recoverInterruptedConversationActivities(
           reason,
         )
       if (!recoveryEvent) return
-      const { summary } = await appendAgentEventAndTouchConversation(meta.id, recoveryEvent)
-      if (summary) recovered.push(summary)
+      recovered.push(await appendAgentEventAndTouchConversation(meta.id, recoveryEvent))
     }),
   )
-  return recovered.sort((a, b) => b.updatedAt - a.updatedAt)
+  return recovered.sort(
+    (a, b) =>
+      (b.summary?.updatedAt ?? b.event.timestamp) - (a.summary?.updatedAt ?? a.event.timestamp),
+  )
 }
 
 export async function getConversation(id: string): Promise<ConversationRecord> {

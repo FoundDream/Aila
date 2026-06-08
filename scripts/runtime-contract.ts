@@ -1896,6 +1896,14 @@ async function testRuntimeRecoveryDelegatesToInjectedStore(): Promise<void> {
     createdAt: 1,
     updatedAt: 2,
   }
+  const recoveredEvent: PersistedAgentEvent = {
+    schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+    timestamp: 2,
+    conversationId: summary.id,
+    messageId: 'delegated-assistant',
+    type: 'turn.interrupted',
+    data: { reason: 'delegated' },
+  }
   let delegatedReason: string | undefined
   const events: AgentRuntimeEvent[] = []
   const store: AgentRuntimeStore = {
@@ -1910,7 +1918,7 @@ async function testRuntimeRecoveryDelegatesToInjectedStore(): Promise<void> {
     },
     recoverInterruptedActivities: async (reason) => {
       delegatedReason = reason
-      return [summary]
+      return [{ event: recoveredEvent, summary }]
     },
     recordUsage: async () => {
       throw new Error('delegated recovery should not persist usage')
@@ -1948,6 +1956,12 @@ async function testRuntimeRecoveryDelegatesToInjectedStore(): Promise<void> {
       (event) => event.type === 'conversations:updated' && event.data.id === 'delegated-recovery',
     ),
     'delegated recovery should emit conversation update',
+  )
+  assert(
+    events.some(
+      (event) => event.type === 'agent:event' && event.data.conversationId === 'delegated-recovery',
+    ),
+    'delegated recovery should emit recovered agent event',
   )
 }
 
@@ -5734,6 +5748,7 @@ async function testRuntimeSdkDoesNotExportDocsContract(): Promise<void> {
     'listChatConversations',
     'listConversations',
     'recoverInterruptedConversationActivities',
+    'recoverInterruptedConversationActivityResults',
     'renameConversation',
     'setConversationUsage',
     'upsertMessage',
@@ -5954,9 +5969,9 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
   )
   assert(
     runtimeStoreSource.includes(
-      'recoverInterruptedActivities: recoverInterruptedConversationActivities',
+      'recoverInterruptedActivities: recoverInterruptedConversationActivityResults',
     ),
-    'persisted runtime store adapter should map persisted recovery into runtime recoverInterruptedActivities',
+    'persisted runtime store adapter should map persisted recovery results into runtime recoverInterruptedActivities',
   )
   assert(
     runtimeStoreSource.includes('saveMessage: upsertMessage') &&
