@@ -1844,7 +1844,7 @@ async function testRuntimeRecoveryDelegatesToInjectedStore(): Promise<void> {
     recordAgentEvent: async () => {
       throw new Error('delegated recovery should not append directly')
     },
-    recoverInterruptedConversationActivities: async (reason) => {
+    recoverInterruptedActivities: async (reason) => {
       delegatedReason = reason
       return [summary]
     },
@@ -5704,6 +5704,15 @@ async function testRuntimeSdkDoesNotExportDocsContract(): Promise<void> {
     !('appendAgentEventAndTouchConversation' in store),
     'persisted runtime store adapter should not expose raw persisted event helper names',
   )
+  assertEqual(
+    typeof store.recoverInterruptedActivities,
+    'function',
+    'persisted store should expose runtime-facing interrupted recovery',
+  )
+  assert(
+    !('recoverInterruptedConversationActivities' in store),
+    'persisted runtime store adapter should not expose raw persisted recovery helper names',
+  )
 
   assertEqual(
     typeof runtimeSdk.createInMemoryRuntimeStore,
@@ -5800,6 +5809,12 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
     'AgentRuntime store contract should use host-agnostic agent event recording, not persisted helper names',
   )
   assert(
+    runtimeSource.includes('recoverInterruptedActivities?:') &&
+      runtimeSource.includes('this.store.recoverInterruptedActivities') &&
+      !runtimeSource.includes('recoverInterruptedConversationActivities'),
+    'AgentRuntime store contract should use host-agnostic recovery naming, not persisted helper names',
+  )
+  assert(
     runtimeSource.includes("from './agent-protocol'"),
     'AgentRuntime core should depend on the host-agnostic agent protocol types',
   )
@@ -5851,6 +5866,12 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
   assert(
     runtimeStoreSource.includes('recordAgentEvent: appendAgentEventAndTouchConversation'),
     'persisted runtime store adapter should map persisted event append into runtime recordAgentEvent',
+  )
+  assert(
+    runtimeStoreSource.includes(
+      'recoverInterruptedActivities: recoverInterruptedConversationActivities',
+    ),
+    'persisted runtime store adapter should map persisted recovery into runtime recoverInterruptedActivities',
   )
 
   const runtimeSdkSource = await readFile(join(process.cwd(), 'src/runtime/index.ts'), 'utf-8')

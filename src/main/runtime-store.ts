@@ -20,7 +20,7 @@ export function createPersistedRuntimeStore(): AgentRuntimeStore {
     recordAgentEvent: appendAgentEventAndTouchConversation,
     listConversations,
     listAgentEvents,
-    recoverInterruptedConversationActivities,
+    recoverInterruptedActivities: recoverInterruptedConversationActivities,
     renameConversation,
     setConversationUsage,
     deleteConversation,

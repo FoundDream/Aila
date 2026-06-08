@@ -294,7 +294,7 @@ export interface AgentRuntimeStore {
   recordAgentEvent: (conversationId: string, event: AgentEvent) => Promise<AgentEventAppendResult>
   listConversations?: () => Promise<readonly ConversationSummary[]>
   listAgentEvents?: (conversationId: string) => Promise<readonly PersistedAgentEvent[]>
-  recoverInterruptedConversationActivities?: (reason?: string) => Promise<ConversationSummary[]>
+  recoverInterruptedActivities?: (reason?: string) => Promise<ConversationSummary[]>
   renameConversation?: (conversationId: string, title: string) => Promise<ConversationSummary>
   setConversationUsage: (
     conversationId: string,
@@ -438,7 +438,7 @@ export function createInMemoryRuntimeStore(
     async listAgentEvents(conversationId): Promise<readonly PersistedAgentEvent[]> {
       return cloneRuntimeValue(orderedUniqueAgentEvents(agentEvents.get(conversationId) ?? []))
     },
-    async recoverInterruptedConversationActivities(reason): Promise<ConversationSummary[]> {
+    async recoverInterruptedActivities(reason): Promise<ConversationSummary[]> {
       const recovered: ConversationSummary[] = []
       for (const [conversationId, record] of records) {
         const events = agentEvents.get(conversationId) ?? []
@@ -1070,9 +1070,9 @@ export class AgentRuntime {
   async recoverInterruptedActivities(
     reason = 'runtime restarted before this turn finished',
   ): Promise<ConversationSummary[]> {
-    if (this.store.recoverInterruptedConversationActivities) {
+    if (this.store.recoverInterruptedActivities) {
       const recovered = cloneRuntimeConversationSummaries(
-        await this.store.recoverInterruptedConversationActivities(reason),
+        await this.store.recoverInterruptedActivities(reason),
       )
       for (const summary of recovered) {
         this.emit(createRuntimeEvent('conversations:updated', summary))
