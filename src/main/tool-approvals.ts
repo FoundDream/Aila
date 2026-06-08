@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto'
 import type { AgentEvent } from './agent-protocol'
 import { summarizeToolTarget, type ToolApprovalRequest } from './tools'
 
@@ -29,6 +28,7 @@ interface PendingToolApproval {
 }
 
 type MaybePromise<T> = T | Promise<T>
+export type ToolApprovalIdFactory = () => string
 
 export type ToolApprovalActivityRecorder = (
   conversationId: string,
@@ -37,6 +37,7 @@ export type ToolApprovalActivityRecorder = (
 
 export interface ToolApprovalStoreOptions {
   timeoutMs: number
+  createId?: ToolApprovalIdFactory
   recordAgentEvent?: ToolApprovalActivityRecorder
   onRequest?: (payload: ToolApprovalRequestPayload) => void
   onResolved?: (payload: ToolApprovalResolvedPayload) => void
@@ -46,8 +47,21 @@ export interface ToolApprovalStoreOptions {
 export interface ImmediateToolApprovalActivityInput {
   request: ToolApprovalRequest
   approve: (request: ToolApprovalRequest) => MaybePromise<boolean>
+  createId?: ToolApprovalIdFactory
   recordAgentEvent?: ToolApprovalActivityRecorder
   logger?: Pick<Console, 'warn'>
+}
+
+function createApprovalId(): string {
+  const cryptoLike = (
+    globalThis as typeof globalThis & {
+      crypto?: { randomUUID?: () => string }
+    }
+  ).crypto
+  return (
+    cryptoLike?.randomUUID?.() ??
+    `approval-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
+  )
 }
 
 function cloneApprovalValue<T>(value: T): T {
@@ -138,7 +152,7 @@ export async function requestToolApprovalWithActivity(
   input: ImmediateToolApprovalActivityInput,
 ): Promise<boolean> {
   const request = cloneToolApprovalRequest(input.request)
-  const requestId = randomUUID()
+  const requestId = (input.createId ?? createApprovalId)()
   await recordToolApprovalActivity(request, requestId, 'requested', input)
   try {
     const approved = (await input.approve(cloneToolApprovalRequest(request))) === true
@@ -159,7 +173,7 @@ export class ToolApprovalStore {
   request(req: ToolApprovalRequest): Promise<boolean> {
     return new Promise<boolean>((resolve) => {
       const request = cloneToolApprovalRequest(req)
-      const requestId = randomUUID()
+      const requestId = (this.options.createId ?? createApprovalId)()
       const requestedAt = Date.now()
       const payload: ToolApprovalRequestPayload = {
         requestId,

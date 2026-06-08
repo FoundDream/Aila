@@ -93,6 +93,7 @@ export {
   type ImmediateToolApprovalActivityInput,
   requestToolApprovalWithActivity,
   type ToolApprovalActivityRecorder,
+  type ToolApprovalIdFactory,
   type ToolApprovalResolutionReason,
 } from '../main/tool-approvals'
 export {

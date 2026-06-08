@@ -1463,6 +1463,7 @@ async function testToolApprovalsCanHydrateAndResolvePendingRequests(): Promise<v
     const resolved: ToolApprovalResolvedPayload[] = []
     const store = new ToolApprovalStore({
       timeoutMs: 1000,
+      createId: () => 'approval-store-contract-id',
       recordAgentEvent: appendAgentEventAndTouchConversation,
       onRequest: (payload) => requested.push(payload),
       onResolved: (payload) => resolved.push(payload),
@@ -1485,6 +1486,11 @@ async function testToolApprovalsCanHydrateAndResolvePendingRequests(): Promise<v
     })
 
     assertEqual(requested.length, 1, 'approval store should emit request payload')
+    assertEqual(
+      requested[0]?.requestId,
+      'approval-store-contract-id',
+      'approval store should use injected request id',
+    )
     const pending = store.list()
     assertEqual(pending.length, 1, 'approval store should list pending request')
     assertEqual(

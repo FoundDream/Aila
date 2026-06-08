@@ -5110,6 +5110,7 @@ async function testImmediateToolApprovalActivityHelper(): Promise<void> {
   let approveSawOriginal = false
   const approved = await requestToolApprovalWithActivity({
     request,
+    createId: () => 'approval-contract-id',
     approve: async (approvalRequest) => {
       approveSawOriginal =
         approvalRequest.args.path === '/workspace/contract.md' &&
@@ -5150,6 +5151,7 @@ async function testImmediateToolApprovalActivityHelper(): Promise<void> {
   assertEqual(recorded[0]?.messageId, 'assistant-approval-helper', 'approval helper message id')
   assertEqual(recorded[0]?.data?.toolCallId, 'tool-call-approval-helper', 'approval helper call id')
   assertEqual(recorded[0]?.data?.toolName, 'write', 'approval helper tool name')
+  assertEqual(recorded[0]?.data?.requestId, 'approval-contract-id', 'approval helper request id')
   assertEqual(recorded[0]?.data?.risk, 'destructive write', 'approval helper risk')
   assertEqual(
     (recorded[0]?.data?.target as { preview?: unknown } | undefined)?.preview,
@@ -5163,6 +5165,7 @@ async function testImmediateToolApprovalActivityHelper(): Promise<void> {
   try {
     await requestToolApprovalWithActivity({
       request,
+      createId: () => 'approval-failed-contract-id',
       approve: async () => {
         throw new Error('approval prompt failed')
       },
@@ -6189,6 +6192,11 @@ async function testRuntimeSdkDoesNotExportDocsContract(): Promise<void> {
     'function',
     'runtime core SDK should export tool registry helpers',
   )
+  assertEqual(
+    typeof coreSdk.requestToolApprovalWithActivity,
+    'function',
+    'runtime core SDK should export host-agnostic approval activity helper',
+  )
 
   const nodeSdk = runtimeNodeSdk as Record<string, unknown>
   for (const name of [
@@ -6388,6 +6396,17 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
       `runtime node SDK should re-export adapter module: ${expected}`,
     )
   }
+
+  const approvalSource = await readFile(join(process.cwd(), 'src/main/tool-approvals.ts'), 'utf-8')
+  assert(
+    !approvalSource.includes("from 'node:") &&
+      !approvalSource.includes("from './runtime-host'") &&
+      !approvalSource.includes("from './runtime-store'") &&
+      !approvalSource.includes("from './conversations'") &&
+      !approvalSource.includes('ipcMain') &&
+      !approvalSource.includes('BrowserWindow'),
+    'tool approval activity helpers must stay host-agnostic and free of Desktop/Node adapter wiring',
+  )
 
   const toolsSource = await readFile(join(process.cwd(), 'src/main/tools.ts'), 'utf-8')
   assert(
