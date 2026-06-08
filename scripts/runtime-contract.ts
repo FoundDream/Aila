@@ -5785,6 +5785,11 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
     'AgentRuntime core must not own Desktop document ref rewrites',
   )
   assert(
+    !runtimeSource.includes("from './conversations'") &&
+      runtimeSource.includes("from './conversation-core'"),
+    'AgentRuntime core should import pure conversation contracts instead of persisted conversation IO',
+  )
+  assert(
     runtimeSource.includes("from './agent-protocol'"),
     'AgentRuntime core should depend on the host-agnostic agent protocol types',
   )
@@ -5847,6 +5852,7 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
   const runtimeCoreSdkSource = await readFile(join(process.cwd(), 'src/runtime/core.ts'), 'utf-8')
   for (const forbidden of [
     "'../main/agent'",
+    "'../main/conversations'",
     "'../main/extensions'",
     "'../main/paths'",
     "'../main/runtime-host'",
@@ -5860,6 +5866,30 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
       `runtime core SDK must not re-export node adapter module: ${forbidden}`,
     )
   }
+
+  const conversationCoreSource = await readFile(
+    join(process.cwd(), 'src/main/conversation-core.ts'),
+    'utf-8',
+  )
+  assert(
+    !conversationCoreSource.includes("from 'node:") &&
+      !conversationCoreSource.includes('getConversationsDir') &&
+      !conversationCoreSource.includes('appendFile(') &&
+      !conversationCoreSource.includes('writeFile(') &&
+      !conversationCoreSource.includes('readFile('),
+    'conversation core must keep schema, normalization, and replay free of persisted filesystem IO',
+  )
+
+  const conversationsSource = await readFile(
+    join(process.cwd(), 'src/main/conversations.ts'),
+    'utf-8',
+  )
+  assert(
+    conversationsSource.includes("from 'node:fs/promises'") &&
+      conversationsSource.includes("from './conversation-core'") &&
+      conversationsSource.includes('getConversationsDir'),
+    'persisted conversations module should own filesystem IO and reuse pure conversation core contracts',
+  )
 
   const runtimeNodeSdkSource = await readFile(join(process.cwd(), 'src/runtime/node.ts'), 'utf-8')
   for (const expected of [

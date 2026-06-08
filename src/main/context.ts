@@ -5,7 +5,7 @@ import type {
   PersistedMessage,
   PersistedTextBlock,
   PersistedToolCallBlock,
-} from './conversations'
+} from './conversation-core'
 
 const APPROX_CHARS_PER_TOKEN = 4
 const DEFAULT_CONTEXT_TOKENS = 32_000

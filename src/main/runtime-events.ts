@@ -7,7 +7,7 @@ import type {
   ToolCallEvent,
   ToolResultEvent,
 } from './agent-protocol'
-import type { ConversationSummary, PersistedAgentEvent } from './conversations'
+import type { ConversationSummary, PersistedAgentEvent } from './conversation-core'
 
 export const AILA_RUNTIME_EVENT_SCHEMA_VERSION = 1
 

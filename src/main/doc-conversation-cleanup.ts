@@ -1,7 +1,5 @@
-import {
-  type ConversationSummary,
-  listConversations as listPersistedConversations,
-} from './conversations'
+import type { ConversationSummary } from './conversation-core'
+import { listConversations as listPersistedConversations } from './conversations'
 import { listAll } from './docs'
 
 export interface DocConversationCleanupRuntime {

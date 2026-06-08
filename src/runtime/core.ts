@@ -37,7 +37,7 @@ export {
   type PersistedToolCallBlock,
   replayConversationActivity,
   replayConversationRuntimeState,
-} from '../main/conversations'
+} from '../main/conversation-core'
 export {
   applyFindReplace,
   type FindReplaceEdit,

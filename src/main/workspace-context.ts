@@ -1,5 +1,5 @@
 import type { ChatMessage } from './agent-protocol'
-import type { ConversationRecord } from './conversations'
+import type { ConversationRecord } from './conversation-core'
 import { getDoc, getDocFilePath } from './docs'
 import { getDocumentsDir } from './paths'
 import type { ToolContext } from './tools'

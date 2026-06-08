@@ -28,7 +28,7 @@ import {
   type PersistedImageBlock,
   type PersistedMessage,
   type PersistedToolCallBlock,
-} from './conversations'
+} from './conversation-core'
 import { imageNameFromUrl } from './image-store'
 import { getImagesDir } from './paths'
 import { MissingApiKeyError, resolveModel } from './providers'

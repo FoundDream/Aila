@@ -1,5 +1,5 @@
 import type { ProviderId } from '../shared/models'
-import type { PersistedImageBlock, PersistedMessage } from './conversations'
+import type { PersistedImageBlock, PersistedMessage } from './conversation-core'
 import type { Settings } from './settings-types'
 import type { ToolContext, ToolRegistry } from './tools'
 

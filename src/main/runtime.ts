@@ -21,7 +21,7 @@ import {
   type PersistedMessage,
   type PersistedTextBlock,
   replayConversationActivity,
-} from './conversations'
+} from './conversation-core'
 import { type AgentRuntimeEvent, createRuntimeEvent } from './runtime-events'
 import type { Settings } from './settings-types'
 import { createSkillToolPack, type LoadedSkill } from './skills'
