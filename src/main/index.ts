@@ -228,6 +228,7 @@ function registerIpcHandlers(): void {
     return {
       toolPackCount: registry.toolPacks.length,
       toolCount: registry.specs.length,
+      skillCount: report.skills.length,
       report,
     }
   })

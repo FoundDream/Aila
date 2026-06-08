@@ -275,7 +275,12 @@ export default function App(): ReactElement {
                 <SidebarButton
                   key={item.id}
                   active={tab === item.id}
-                  onClick={() => setTab(item.id)}
+                  onClick={() => {
+                    // Chat is an entry point, not a session: clicking it always
+                    // lands on the new-chat empty state.
+                    if (item.id === 'chat') conversationsState.deselect()
+                    setTab(item.id)
+                  }}
                   label={item.label}
                   icon={item.icon}
                 />

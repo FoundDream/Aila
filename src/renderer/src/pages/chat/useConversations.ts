@@ -7,6 +7,7 @@ export interface ConversationsState {
   activeRecord: ConversationRecord | null
   isReady: boolean
   select: (id: string) => void
+  deselect: () => void
   create: () => Promise<ConversationSummary>
   remove: (id: string) => Promise<void>
   rename: (id: string, title: string) => Promise<void>
@@ -53,18 +54,21 @@ export function useConversations(): ConversationsState {
     return list
   }, [])
 
+  // No auto-select: the chat tab opens on the new-chat empty state until the
+  // user explicitly picks a conversation from the list.
   useEffect(() => {
     void (async () => {
-      const list = await refreshList()
-      if (list.length > 0) setActiveId(list[0].id)
+      await refreshList()
       setIsReady(true)
     })()
   }, [refreshList])
 
   useEffect(() => {
-    if (!isReady) return
-    if (activeId && conversations.some((conversation) => conversation.id === activeId)) return
-    setActiveId(conversations[0]?.id ?? null)
+    if (!isReady || !activeId) return
+    if (conversations.some((conversation) => conversation.id === activeId)) return
+    // Active conversation disappeared (deleted / moved to a doc) — back to the
+    // empty state rather than jumping to another session.
+    setActiveId(null)
   }, [activeId, conversations, isReady])
 
   useEffect(() => {
@@ -147,12 +151,15 @@ export function useConversations(): ConversationsState {
     )
   }, [])
 
+  const deselect = useCallback(() => setActiveId(null), [])
+
   return {
     conversations,
     activeId,
     activeRecord,
     isReady,
     select: setActiveId,
+    deselect,
     create,
     remove,
     rename,
