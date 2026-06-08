@@ -5126,6 +5126,33 @@ async function testToolRegistryContract(): Promise<void> {
     getToolDefinitions(registry).some((definition) => definition.function.name === 'contract_echo'),
     'custom tool should be exposed in tool definitions',
   )
+  const callerDefinitions = getToolDefinitions(registry)
+  const callerDefinition = callerDefinitions.find(
+    (definition) => definition.function.name === 'contract_echo',
+  )
+  assert(callerDefinition, 'custom tool definition should be listed')
+  callerDefinition.function.description = 'caller-mutated definition'
+  assertEqual(
+    getToolDefinitions(registry).find((definition) => definition.function.name === 'contract_echo')
+      ?.function.description,
+    'Echo contract smoke input.',
+    'tool definitions should be isolated from caller mutation',
+  )
+  const sourceEntry = projectToolPack.tools[0]
+  assert(sourceEntry, 'custom tool source entry should exist')
+  sourceEntry.spec.metadata.requiresApproval = true
+  sourceEntry.spec.function.description = 'source-mutated definition'
+  assertEqual(
+    registry.specsByName.get('contract_echo')?.metadata.requiresApproval,
+    false,
+    'tool registry should snapshot source metadata at registration',
+  )
+  assertEqual(
+    getToolDefinitions(registry).find((definition) => definition.function.name === 'contract_echo')
+      ?.function.description,
+    'Echo contract smoke input.',
+    'tool registry should snapshot source definitions at registration',
+  )
   const result = await executeTool('contract_echo', { value: 'hello' }, { settings }, registry)
   assert(ran, 'custom tool runner should execute')
   assertEqual(JSON.parse(result).value, 'hello', 'custom tool result')

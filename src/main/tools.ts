@@ -327,15 +327,41 @@ function createBuiltinToolPack(
 export const BUILTIN_TOOL_PACKS: ToolPack[] =
   BUILTIN_TOOL_PACK_DEFINITIONS.map(createBuiltinToolPack)
 
+function snapshotToolDefinition(definition: ToolDefinition): ToolDefinition {
+  return {
+    type: definition.type,
+    function: structuredClone(definition.function),
+  }
+}
+
+function snapshotToolSpec(spec: ToolSpec): ToolSpec {
+  return {
+    type: spec.type,
+    function: structuredClone(spec.function),
+    metadata: structuredClone(spec.metadata),
+  }
+}
+
+function snapshotToolPack(toolPack: ToolPack): ToolPack {
+  return {
+    ...toolPack,
+    tools: toolPack.tools.map((entry) => ({
+      spec: snapshotToolSpec(entry.spec),
+      run: entry.run,
+    })),
+  }
+}
+
 export function createToolRegistry(
   toolPacks: readonly ToolPack[] = BUILTIN_TOOL_PACKS,
 ): ToolRegistry {
+  const registryToolPacks = toolPacks.map(snapshotToolPack)
   const specs: ToolSpec[] = []
   const definitions: ToolDefinition[] = []
   const specsByName = new Map<string, ToolSpec>()
   const runnersByName = new Map<string, ToolHandler>()
 
-  for (const pack of toolPacks) {
+  for (const pack of registryToolPacks) {
     for (const entry of pack.tools) {
       const name = entry.spec.function.name
       if (entry.spec.metadata.name !== name) {
@@ -346,14 +372,14 @@ export function createToolRegistry(
       }
 
       specs.push(entry.spec)
-      definitions.push({ type: entry.spec.type, function: entry.spec.function })
+      definitions.push(snapshotToolDefinition(entry.spec))
       specsByName.set(name, entry.spec)
       runnersByName.set(name, entry.run)
     }
   }
 
   return {
-    toolPacks: [...toolPacks],
+    toolPacks: registryToolPacks,
     specs,
     definitions,
     specsByName,
@@ -374,7 +400,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = DEFAULT_TOOL_REGISTRY.definiti
 export function getToolDefinitions(
   registry: ToolRegistry = DEFAULT_TOOL_REGISTRY,
 ): ToolDefinition[] {
-  return registry.specs.map(({ type, function: fn }) => ({ type, function: fn }))
+  return registry.specs.map(snapshotToolDefinition)
 }
 
 const MAX_OUTPUT_BYTES = 64 * 1024
