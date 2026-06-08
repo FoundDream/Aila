@@ -19,6 +19,7 @@ import type {
   ChatAttachmentInput,
   ChatDoneEvent,
   ChatErrorEvent,
+  ConversationRuntimeReplayState,
   ConversationSummary,
   ImageBlockEvent,
   ModelSelection,
@@ -76,6 +77,7 @@ type Action =
       usage: UsageInfo | null
       events: PersistedAgentEvent[]
       activeTurn?: ActiveAssistantTurn | null
+      runtimeState?: ConversationRuntimeReplayState
     }
   | { type: 'ENQUEUE'; conversationId: string; queued: QueuedRun }
   | { type: 'POP_QUEUE_HEAD'; conversationId: string }
@@ -232,14 +234,20 @@ function finalizeAssistantMessageAsError(
   messages: Message[],
   messageId: string,
   error: string,
+  selection?: ModelSelection,
 ): Message[] {
   const current = messages.find((message) => message.id === messageId)
   if (current && current.status !== 'streaming') return messages
-  return patchOrAppendAssistantMessage(messages, messageId, (message) => ({
-    ...message,
-    status: 'error',
-    error,
-  }))
+  return patchOrAppendAssistantMessage(
+    messages,
+    messageId,
+    (message) => ({
+      ...message,
+      status: 'error',
+      error,
+    }),
+    selection,
+  )
 }
 
 function insertMissingMessageBefore(
@@ -326,6 +334,33 @@ function assistantErrorFromAgentEvent(event: PersistedAgentEvent): string | null
   return null
 }
 
+function assistantErrorFromRuntimeState(
+  runtimeState: ConversationRuntimeReplayState | undefined,
+  events: PersistedAgentEvent[],
+): string | null {
+  if (!runtimeState?.turn || runtimeState.active) return null
+  if (
+    runtimeState.phase !== 'failed' &&
+    runtimeState.phase !== 'cancelled' &&
+    runtimeState.phase !== 'interrupted'
+  ) {
+    return null
+  }
+
+  const replayEvent = [...events]
+    .reverse()
+    .find(
+      (event) =>
+        event.messageId === runtimeState.turn?.assistantMessageId &&
+        event.type === runtimeState.turn.eventType,
+    )
+  const eventError = replayEvent ? assistantErrorFromAgentEvent(replayEvent) : null
+  if (eventError) return eventError
+  if (runtimeState.phase === 'failed') return 'Turn failed'
+  if (runtimeState.phase === 'cancelled') return 'Cancelled'
+  return 'Interrupted'
+}
+
 function shouldClearRunningFromAgentEvent(event: PersistedAgentEvent): boolean {
   return (
     event.type === 'turn.failed' ||
@@ -367,12 +402,27 @@ function reducer(state: State, action: Action): State {
   switch (action.type) {
     case 'HYDRATE':
       return withStream(state, action.conversationId, (current) => {
-        const messages = mergeHydratedMessages(current.messages, action.messages, action.activeTurn)
+        const events = mergeAgentEvents(current.events, action.events)
+        const hydratedMessages = mergeHydratedMessages(
+          current.messages,
+          action.messages,
+          action.activeTurn,
+        )
+        const terminalError = assistantErrorFromRuntimeState(action.runtimeState, events)
+        const messages =
+          terminalError && action.runtimeState?.turn
+            ? finalizeAssistantMessageAsError(
+                hydratedMessages,
+                action.runtimeState.turn.assistantMessageId,
+                terminalError,
+                action.runtimeState.turn.selection,
+              )
+            : hydratedMessages
         return {
           ...current,
           messages,
           usage: action.usage,
-          events: mergeAgentEvents(current.events, action.events),
+          events,
           runningMessageId:
             action.activeTurn?.assistantMessageId ??
             (hasTerminalMessage(messages, current.runningMessageId)
@@ -785,9 +835,10 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
 
   const hydrate = useCallback(async (id: string): Promise<void> => {
     if (stateRef.current.streams.get(id)?.isHydrated) return
-    const [record, events, activeTurns] = await Promise.all([
+    const [record, events, runtimeState, activeTurns] = await Promise.all([
       window.api.conversations.get(id),
       window.api.conversations.listEvents(id),
+      window.api.conversations.getRuntimeState(id),
       window.api.listActiveStreams(),
     ])
     if (stateRef.current.streams.get(id)?.isHydrated) return
@@ -805,6 +856,7 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
       messages,
       usage,
       events,
+      runtimeState,
       activeTurn: activeTurns.find((turn) => turn.conversationId === id) ?? null,
     })
   }, [])

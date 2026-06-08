@@ -239,6 +239,44 @@ export interface ConversationActivity {
   toolName?: string
 }
 
+export type ConversationRuntimeStatePhase =
+  | 'idle'
+  | 'running'
+  | 'approval'
+  | 'cancelling'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  | 'interrupted'
+
+export interface ConversationRuntimePendingApproval {
+  requestedAt: number
+  requestId?: string
+  toolCallId?: string
+  toolName?: string
+}
+
+export interface ConversationRuntimeReplayTurn {
+  conversationId: string
+  assistantMessageId: string
+  updatedAt: number
+  eventType: AgentEventType
+  startedAt?: number
+  selection?: ModelSelection
+  pendingApproval?: ConversationRuntimePendingApproval
+}
+
+export interface ConversationRuntimeReplayState {
+  phase: ConversationRuntimeStatePhase
+  active: boolean
+  turn?: ConversationRuntimeReplayTurn
+}
+
+export interface ConversationRuntimeStateSnapshot {
+  conversationId: string
+  state: ConversationRuntimeReplayState
+}
+
 export interface ConversationSummary {
   schemaVersion: typeof AILA_CONVERSATION_META_SCHEMA_VERSION
   id: string
@@ -372,10 +410,16 @@ const api = {
     get: (id: string): Promise<ConversationRecord> => ipcRenderer.invoke('conversations:get', id),
     listEvents: (id: string): Promise<PersistedAgentEvent[]> =>
       ipcRenderer.invoke('conversations:list-events', id),
+    getRuntimeState: (id: string): Promise<ConversationRuntimeReplayState> =>
+      ipcRenderer.invoke('conversations:get-runtime-state', id),
+    listRuntimeStates: (): Promise<ConversationRuntimeStateSnapshot[]> =>
+      ipcRenderer.invoke('conversations:list-runtime-states'),
     create: (docPath?: string): Promise<ConversationSummary> =>
       ipcRenderer.invoke('conversations:create', docPath),
     listForDoc: (docPath: string): Promise<ConversationSummary[]> =>
       ipcRenderer.invoke('conversations:list-for-doc', docPath),
+    listRuntimeStatesForDoc: (docPath: string): Promise<ConversationRuntimeStateSnapshot[]> =>
+      ipcRenderer.invoke('conversations:list-runtime-states-for-doc', docPath),
     rename: (id: string, title: string): Promise<ConversationSummary> =>
       ipcRenderer.invoke('conversations:rename', id, title),
     delete: (id: string): Promise<void> => ipcRenderer.invoke('conversations:delete', id),

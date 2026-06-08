@@ -141,6 +141,35 @@ async function testDesktopUsesSharedRuntimeFactory(): Promise<void> {
   )
 }
 
+async function testDesktopExposesRuntimeStateApi(): Promise<void> {
+  const mainSource = await readFile(join(process.cwd(), 'src/main/index.ts'), 'utf-8')
+  const preloadSource = await readFile(join(process.cwd(), 'src/preload/index.ts'), 'utf-8')
+  assert(
+    mainSource.includes("'conversations:get-runtime-state'") &&
+      mainSource.includes('agentRuntime.getConversationRuntimeState(id)'),
+    'Desktop main should expose single conversation runtime state through IPC',
+  )
+  assert(
+    mainSource.includes("'conversations:list-runtime-states'") &&
+      mainSource.includes('agentRuntime.listConversationRuntimeStates({ docId: null })'),
+    'Desktop main should expose chat runtime state snapshots through IPC',
+  )
+  assert(
+    mainSource.includes("'conversations:list-runtime-states-for-doc'") &&
+      mainSource.includes('agentRuntime.listConversationRuntimeStates({ docId: docPath })'),
+    'Desktop main should expose doc runtime state snapshots through IPC',
+  )
+  assert(
+    preloadSource.includes('getRuntimeState:') &&
+      preloadSource.includes("'conversations:get-runtime-state'") &&
+      preloadSource.includes('listRuntimeStates:') &&
+      preloadSource.includes("'conversations:list-runtime-states'") &&
+      preloadSource.includes('listRuntimeStatesForDoc:') &&
+      preloadSource.includes("'conversations:list-runtime-states-for-doc'"),
+    'Desktop preload should expose runtime state APIs to renderer',
+  )
+}
+
 async function testConversationPartitionContract(): Promise<void> {
   await withTempDataDir(async () => {
     const chat = await createConversation()
@@ -488,6 +517,118 @@ function testRendererHydratesActiveAssistantTurn(): void {
   assertEqual(assistant?.role, 'assistant', 'active hydrate assistant role')
   assertEqual(assistant?.status, 'streaming', 'active hydrate assistant status')
   assertEqual(assistant?.model?.modelId, 'contract/mock', 'active hydrate assistant model')
+}
+
+function testRendererHydratesTerminalRuntimeReplayState(): void {
+  let state = createChatStreamsStateForTest()
+  state = reduceChatStreamsForTest(state, {
+    type: 'HYDRATE',
+    conversationId: 'conversation-runtime-terminal',
+    messages: [
+      {
+        id: 'user-runtime-terminal',
+        role: 'user',
+        blocks: [{ type: 'text', content: 'recover terminal replay' }],
+        status: 'done',
+      },
+    ],
+    usage: null,
+    events: [
+      {
+        schemaVersion: 1,
+        timestamp: 10,
+        conversationId: 'conversation-runtime-terminal',
+        messageId: 'assistant-runtime-terminal',
+        type: 'turn.started',
+        data: { providerId: 'openrouter', modelId: 'contract/mock' },
+      },
+      {
+        schemaVersion: 1,
+        timestamp: 20,
+        conversationId: 'conversation-runtime-terminal',
+        messageId: 'assistant-runtime-terminal',
+        type: 'turn.interrupted',
+        data: { reason: 'runtime replay recovered terminal state' },
+      },
+    ],
+    runtimeState: {
+      phase: 'interrupted',
+      active: false,
+      turn: {
+        conversationId: 'conversation-runtime-terminal',
+        assistantMessageId: 'assistant-runtime-terminal',
+        updatedAt: 20,
+        eventType: 'turn.interrupted',
+        startedAt: 10,
+        selection: { providerId: 'openrouter', modelId: 'contract/mock' },
+      },
+    },
+  })
+
+  const stream = state.streams.get('conversation-runtime-terminal')
+  assert(stream, 'terminal runtime replay hydrate should create a stream')
+  assertEqual(stream.runningMessageId, null, 'terminal runtime replay hydrate should not be busy')
+  const assistant = stream.messages.find((message) => message.id === 'assistant-runtime-terminal')
+  assert(assistant, 'terminal runtime replay should create assistant message')
+  assertEqual(assistant.status, 'error', 'terminal runtime replay assistant status')
+  assertEqual(
+    assistant.error,
+    'runtime replay recovered terminal state',
+    'terminal runtime replay should preserve interrupted reason',
+  )
+  assertEqual(assistant.model?.modelId, 'contract/mock', 'terminal runtime replay assistant model')
+}
+
+function testRendererDoesNotTreatStaleActiveRuntimeReplayAsLive(): void {
+  let state = createChatStreamsStateForTest()
+  state = reduceChatStreamsForTest(state, {
+    type: 'HYDRATE',
+    conversationId: 'conversation-stale-runtime-active',
+    messages: [
+      {
+        id: 'user-stale-runtime-active',
+        role: 'user',
+        blocks: [{ type: 'text', content: 'stale active replay' }],
+        status: 'done',
+      },
+    ],
+    usage: null,
+    events: [
+      {
+        schemaVersion: 1,
+        timestamp: 10,
+        conversationId: 'conversation-stale-runtime-active',
+        messageId: 'assistant-stale-runtime-active',
+        type: 'turn.started',
+        data: { providerId: 'openrouter', modelId: 'contract/mock' },
+      },
+    ],
+    runtimeState: {
+      phase: 'running',
+      active: true,
+      turn: {
+        conversationId: 'conversation-stale-runtime-active',
+        assistantMessageId: 'assistant-stale-runtime-active',
+        updatedAt: 10,
+        eventType: 'turn.started',
+        startedAt: 10,
+        selection: { providerId: 'openrouter', modelId: 'contract/mock' },
+      },
+    },
+  })
+
+  const stream = state.streams.get('conversation-stale-runtime-active')
+  assert(stream, 'stale active runtime replay hydrate should create a stream')
+  assertEqual(
+    stream.runningMessageId,
+    null,
+    'stale active runtime replay should not be treated as a live stream',
+  )
+  assertEqual(
+    stream.messages.some((message) => message.id === 'assistant-stale-runtime-active'),
+    false,
+    'stale active runtime replay without active stream should not create streaming assistant',
+  )
 }
 
 function testRendererHydratePreservesLocalStreamingMessages(): void {
@@ -1798,6 +1939,7 @@ async function main(): Promise<void> {
   await testDocConversationWorkspaceContext()
   await testDesktopWorkspaceRoots()
   await testDesktopUsesSharedRuntimeFactory()
+  await testDesktopExposesRuntimeStateApi()
   await testConversationPartitionContract()
   await testDocConversationFollowsDocRename()
   await testDocRenameUsesInjectedConversationRefRewriter()
@@ -1809,6 +1951,8 @@ async function main(): Promise<void> {
   await testStaleActivityDoesNotOverwriteNewerSummary()
   await testToolResultActivityKeepsToolName()
   testRendererHydratesActiveAssistantTurn()
+  testRendererHydratesTerminalRuntimeReplayState()
+  testRendererDoesNotTreatStaleActiveRuntimeReplayAsLive()
   testRendererHydratePreservesLocalStreamingMessages()
   testRendererHydrateReplacesStreamingWithPersistedTerminal()
   testRendererCompletedEventWaitsForFinishMessage()

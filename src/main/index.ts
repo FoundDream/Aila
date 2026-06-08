@@ -243,11 +243,20 @@ function registerIpcHandlers(): void {
   ipcMain.handle('conversations:list-events', (_event, id: string) =>
     agentRuntime.listAgentEvents(id),
   )
+  ipcMain.handle('conversations:get-runtime-state', (_event, id: string) =>
+    agentRuntime.getConversationRuntimeState(id),
+  )
+  ipcMain.handle('conversations:list-runtime-states', () =>
+    agentRuntime.listConversationRuntimeStates({ docId: null }),
+  )
   ipcMain.handle('conversations:create', (_event, docPath?: string) =>
     agentRuntime.createConversation({ docId: docPath ?? null }),
   )
   ipcMain.handle('conversations:list-for-doc', (_event, docPath: string) =>
     agentRuntime.listConversations({ docId: docPath }),
+  )
+  ipcMain.handle('conversations:list-runtime-states-for-doc', (_event, docPath: string) =>
+    agentRuntime.listConversationRuntimeStates({ docId: docPath }),
   )
   ipcMain.handle('conversations:rename', (_event, id: string, title: string) =>
     agentRuntime.renameConversation(id, title),
