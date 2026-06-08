@@ -291,10 +291,7 @@ export interface AgentRuntimeStore {
   createConversation?: (docId?: string) => Promise<ConversationSummary>
   getConversation: (conversationId: string) => Promise<ConversationRecord>
   upsertMessage: (conversationId: string, message: PersistedMessage) => Promise<ConversationSummary>
-  appendAgentEventAndTouchConversation: (
-    conversationId: string,
-    event: AgentEvent,
-  ) => Promise<AgentEventAppendResult>
+  recordAgentEvent: (conversationId: string, event: AgentEvent) => Promise<AgentEventAppendResult>
   listConversations?: () => Promise<readonly ConversationSummary[]>
   listAgentEvents?: (conversationId: string) => Promise<readonly PersistedAgentEvent[]>
   recoverInterruptedConversationActivities?: (reason?: string) => Promise<ConversationSummary[]>
@@ -364,7 +361,7 @@ export function createInMemoryRuntimeStore(
     return summary(record)
   }
 
-  async function appendAgentEventAndTouchConversation(
+  async function recordAgentEvent(
     conversationId: string,
     event: AgentEvent,
   ): Promise<AgentEventAppendResult> {
@@ -432,7 +429,7 @@ export function createInMemoryRuntimeStore(
       }
       return summary(record)
     },
-    appendAgentEventAndTouchConversation,
+    recordAgentEvent,
     async listConversations(): Promise<readonly ConversationSummary[]> {
       return [...records.values()]
         .map((record) => summary(record))
@@ -462,7 +459,7 @@ export function createInMemoryRuntimeStore(
           activity: replayedActivity ?? record.meta.activity,
         })
         if (!recoveryEvent) continue
-        const result = await appendAgentEventAndTouchConversation(conversationId, recoveryEvent)
+        const result = await recordAgentEvent(conversationId, recoveryEvent)
         if (result.summary) recovered.push(result.summary)
       }
       return recovered.sort((left, right) => right.updatedAt - left.updatedAt)
@@ -1098,10 +1095,7 @@ export class AgentRuntime {
         })
         if (!recoveryEvent) return
         const { event, summary: nextSummary } = cloneRuntimeAgentEventAppendResult(
-          await this.store.appendAgentEventAndTouchConversation(
-            summary.id,
-            cloneRuntimeValue(recoveryEvent),
-          ),
+          await this.store.recordAgentEvent(summary.id, cloneRuntimeValue(recoveryEvent)),
         )
         this.emit(createRuntimeEvent('agent:event', event))
         if (!nextSummary) return
@@ -1327,10 +1321,7 @@ export class AgentRuntime {
   async recordAgentEvent(event: RuntimeRecordAgentEventInput): Promise<boolean> {
     if (this.deletedConversations.has(event.conversationId)) return false
     const { event: persisted, summary } = cloneRuntimeAgentEventAppendResult(
-      await this.store.appendAgentEventAndTouchConversation(
-        event.conversationId,
-        cloneRuntimeValue(event),
-      ),
+      await this.store.recordAgentEvent(event.conversationId, cloneRuntimeValue(event)),
     )
     if (this.deletedConversations.has(event.conversationId)) return false
     this.emit(createRuntimeEvent('agent:event', persisted))

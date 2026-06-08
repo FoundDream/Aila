@@ -479,7 +479,7 @@ async function testRuntimeStreamAndModelInfoUseHostBoundary(): Promise<void> {
             : { ...record, messages: [...record.messages, message] }
         return { ...summary, updatedAt: summary.updatedAt + record.messages.length }
       },
-      appendAgentEventAndTouchConversation: async (_id, event) => ({
+      recordAgentEvent: async (_id, event) => ({
         event: {
           ...event,
           schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
@@ -595,7 +595,7 @@ async function testRuntimeAttachmentPersistenceUsesHostBoundary(): Promise<void>
           : { ...record, messages: [...record.messages, message] }
       return { ...summary, updatedAt: summary.updatedAt + record.messages.length }
     },
-    appendAgentEventAndTouchConversation: async (_id, event) => ({
+    recordAgentEvent: async (_id, event) => ({
       event: {
         ...event,
         schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
@@ -707,7 +707,7 @@ async function testRuntimeTextAttachmentFallbackIsHostAgnostic(): Promise<void> 
       record = { ...record, messages: [...record.messages, message] }
       return { ...summary, updatedAt: summary.updatedAt + record.messages.length }
     },
-    appendAgentEventAndTouchConversation: async (_id, event) => ({
+    recordAgentEvent: async (_id, event) => ({
       event: { ...event, schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION },
       summary,
     }),
@@ -789,7 +789,7 @@ async function testRuntimeImageAttachmentRequiresHostBoundary(): Promise<void> {
         record = { ...record, messages: [...record.messages, message] }
         return { ...summary, updatedAt: summary.updatedAt + record.messages.length }
       },
-      appendAgentEventAndTouchConversation: async (_id, event) => ({
+      recordAgentEvent: async (_id, event) => ({
         event: { ...event, schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION },
         summary,
       }),
@@ -850,7 +850,7 @@ async function testRuntimeRejectsInvalidHostAttachmentBlocks(): Promise<void> {
         record = { ...record, messages: [...record.messages, message] }
         return { ...summary, updatedAt: summary.updatedAt + record.messages.length }
       },
-      appendAgentEventAndTouchConversation: async (_id, event) => ({
+      recordAgentEvent: async (_id, event) => ({
         event: { ...event, schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION },
         summary,
       }),
@@ -1053,7 +1053,7 @@ async function testRuntimeInjectableStoreContract(): Promise<void> {
         calls.push(`upsert:${message.role}:${message.id}`)
         return upsertMessage(conversationId, message)
       },
-      appendAgentEventAndTouchConversation: async (conversationId, event) => {
+      recordAgentEvent: async (conversationId, event) => {
         calls.push(`event:${event.type}`)
         return appendAgentEventAndTouchConversation(conversationId, event)
       },
@@ -1166,7 +1166,7 @@ async function testRuntimeHostTransientContextUsesInjectedRecord(): Promise<void
       record = { ...record, messages: [...record.messages, message] }
       return { ...summary, updatedAt: summary.updatedAt + record.messages.length }
     },
-    appendAgentEventAndTouchConversation: async (_id, event) => {
+    recordAgentEvent: async (_id, event) => {
       calls.push(`event:${event.type}`)
       return {
         event: {
@@ -1289,7 +1289,7 @@ async function testRuntimeStreamHandlerSnapshots(): Promise<void> {
           : { ...record, messages: [...record.messages, message] }
       return { ...record.meta, updatedAt: record.meta.updatedAt + record.messages.length }
     },
-    appendAgentEventAndTouchConversation: async (_id, event) => ({
+    recordAgentEvent: async (_id, event) => ({
       event: {
         ...event,
         schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
@@ -1406,7 +1406,7 @@ async function testRuntimeConversationStoreFacadeContract(): Promise<void> {
     upsertMessage: async () => {
       throw new Error('conversation facade should not upsert messages')
     },
-    appendAgentEventAndTouchConversation: async () => {
+    recordAgentEvent: async () => {
       throw new Error('conversation facade should not append events')
     },
     listConversations: async () => {
@@ -1583,9 +1583,9 @@ async function testInMemoryRuntimeStoreEventListContract(): Promise<void> {
     data: { providerId: 'openrouter', modelId: 'contract/mock' },
   }
 
-  await store.appendAgentEventAndTouchConversation(summary.id, laterEvent)
-  await store.appendAgentEventAndTouchConversation(summary.id, earlierEvent)
-  await store.appendAgentEventAndTouchConversation(summary.id, earlierEvent)
+  await store.recordAgentEvent(summary.id, laterEvent)
+  await store.recordAgentEvent(summary.id, earlierEvent)
+  await store.recordAgentEvent(summary.id, earlierEvent)
 
   const listed = [...((await store.listAgentEvents?.(summary.id)) ?? [])]
   assertEqual(listed.length, 2, 'in-memory event list should deduplicate replay events')
@@ -1684,7 +1684,7 @@ async function testRuntimeAppendUserMessageUsesInjectedStore(): Promise<void> {
       }
       return summary
     },
-    appendAgentEventAndTouchConversation: async () => {
+    recordAgentEvent: async () => {
       throw new Error('append user message should not append agent events')
     },
     setConversationUsage: async () => {
@@ -1737,7 +1737,7 @@ async function testRuntimeRecordAgentEventUsesInjectedStore(): Promise<void> {
     upsertMessage: async () => {
       throw new Error('record agent event should not upsert messages')
     },
-    appendAgentEventAndTouchConversation: async (id, event) => {
+    recordAgentEvent: async (id, event) => {
       calls.push(`event:${id}:${event.type}`)
       if (event.data) event.data.requestId = 'store-mutated-request'
       persistedFromStore = {
@@ -1841,7 +1841,7 @@ async function testRuntimeRecoveryDelegatesToInjectedStore(): Promise<void> {
     upsertMessage: async () => {
       throw new Error('delegated recovery should not upsert messages')
     },
-    appendAgentEventAndTouchConversation: async () => {
+    recordAgentEvent: async () => {
       throw new Error('delegated recovery should not append directly')
     },
     recoverInterruptedConversationActivities: async (reason) => {
@@ -1932,7 +1932,7 @@ async function testRuntimeRecoveryUsesInjectedStoreReplay(): Promise<void> {
       calls.push(`list-events:${id}`)
       return storedEvents
     },
-    appendAgentEventAndTouchConversation: async (id, event) => {
+    recordAgentEvent: async (id, event) => {
       calls.push(`append:${event.type}:${id}`)
       appendedEvent = {
         schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
@@ -2003,7 +2003,7 @@ async function testRuntimeDeleteAssetCleanupHostBoundary(): Promise<void> {
       upsertMessage: async () => {
         throw new Error('not used')
       },
-      appendAgentEventAndTouchConversation: async () => {
+      recordAgentEvent: async () => {
         throw new Error('not used')
       },
       setConversationUsage: async () => {
@@ -2057,7 +2057,7 @@ async function testRuntimeDeleteAssetCleanupHostBoundary(): Promise<void> {
       upsertMessage: async () => {
         throw new Error('not used')
       },
-      appendAgentEventAndTouchConversation: async () => {
+      recordAgentEvent: async () => {
         throw new Error('not used')
       },
       setConversationUsage: async () => {
@@ -5696,9 +5696,13 @@ async function testRuntimeSdkDoesNotExportDocsContract(): Promise<void> {
   assertEqual(typeof store.getConversation, 'function', 'persisted store should read records')
   assertEqual(typeof store.upsertMessage, 'function', 'persisted store should persist messages')
   assertEqual(
-    typeof store.appendAgentEventAndTouchConversation,
+    typeof store.recordAgentEvent,
     'function',
     'persisted store should persist agent events',
+  )
+  assert(
+    !('appendAgentEventAndTouchConversation' in store),
+    'persisted runtime store adapter should not expose raw persisted event helper names',
   )
 
   assertEqual(
@@ -5790,6 +5794,12 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
     'AgentRuntime core should import pure conversation contracts instead of persisted conversation IO',
   )
   assert(
+    runtimeSource.includes('recordAgentEvent:') &&
+      runtimeSource.includes('this.store.recordAgentEvent') &&
+      !runtimeSource.includes('appendAgentEventAndTouchConversation'),
+    'AgentRuntime store contract should use host-agnostic agent event recording, not persisted helper names',
+  )
+  assert(
     runtimeSource.includes("from './agent-protocol'"),
     'AgentRuntime core should depend on the host-agnostic agent protocol types',
   )
@@ -5837,6 +5847,10 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
   assert(
     !runtimeStoreSource.includes('rewriteDocRefs'),
     'persisted runtime store adapter must not expose Desktop doc ref rewrites',
+  )
+  assert(
+    runtimeStoreSource.includes('recordAgentEvent: appendAgentEventAndTouchConversation'),
+    'persisted runtime store adapter should map persisted event append into runtime recordAgentEvent',
   )
 
   const runtimeSdkSource = await readFile(join(process.cwd(), 'src/runtime/index.ts'), 'utf-8')
