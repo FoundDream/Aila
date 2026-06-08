@@ -1,4 +1,4 @@
-import { findModel, MODEL_CATALOG, PROVIDER_LABELS } from '@aila/agent'
+import { findModel, MODEL_CATALOG, PROVIDER_LABELS } from '@shared/models'
 import {
   ArrowLeftIcon,
   CheckIcon,

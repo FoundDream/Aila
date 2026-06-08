@@ -32,6 +32,7 @@
         "streamdown": "^2.5.0",
         "tailwind-merge": "^3.5.0",
         "tailwind-scrollbar-hide": "^4.0.0",
+        "unified": "^11.0.5",
         "use-stick-to-bottom": "^1.1.4",
         "zod": "^4.4.3",
       },

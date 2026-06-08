@@ -31,10 +31,10 @@
     "test": "bun run test:runtime && bun run test:desktop && bun run test:cli && bun run test:tui"
   },
   "dependencies": {
-    "@aila/agent": "workspace:*",
     "@ai-sdk/anthropic": "^3.0.74",
     "@ai-sdk/google": "^3.0.67",
     "@ai-sdk/openai": "^3.0.58",
+    "@aila/agent": "workspace:*",
     "@codemirror/commands": "^6.10.3",
     "@codemirror/lang-markdown": "^6.5.0",
     "@codemirror/language": "^6.12.3",
@@ -58,6 +58,7 @@
     "streamdown": "^2.5.0",
     "tailwind-merge": "^3.5.0",
     "tailwind-scrollbar-hide": "^4.0.0",
+    "unified": "^11.0.5",
     "use-stick-to-bottom": "^1.1.4",
     "zod": "^4.4.3"
   },

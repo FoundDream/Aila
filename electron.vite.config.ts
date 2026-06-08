@@ -13,7 +13,7 @@ export default defineConfig({
     resolve: { alias: sharedAlias },
     build: {
       externalizeDeps: {
-        exclude: ['@sinclair/typebox'],
+        exclude: ['@aila/agent', '@sinclair/typebox'],
       },
       rollupOptions: {
         external: ['bufferutil', 'utf-8-validate'],
