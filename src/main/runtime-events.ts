@@ -6,7 +6,7 @@ import type {
   ToolCallArgsDeltaEvent,
   ToolCallEvent,
   ToolResultEvent,
-} from './agent'
+} from './agent-protocol'
 import type { ConversationSummary, PersistedAgentEvent } from './conversations'
 
 export const AILA_RUNTIME_EVENT_SCHEMA_VERSION = 1

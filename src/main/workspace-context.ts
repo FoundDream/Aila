@@ -1,4 +1,4 @@
-import type { ChatMessage } from './agent'
+import type { ChatMessage } from './agent-protocol'
 import type { ConversationRecord } from './conversations'
 import { getDoc, getDocFilePath } from './docs'
 import { getDocumentsDir } from './paths'

@@ -1,13 +1,19 @@
 export const AILA_RUNTIME_SDK_VERSION = 1
 
-export {
-  type AgentEvent,
-  type AgentEventSink,
-  type AgentEventType,
-  getModelInfo,
-  type ModelSelection,
-  type UsageInfo,
-} from '../main/agent'
+export { getModelInfo } from '../main/agent'
+export type {
+  AgentEvent,
+  AgentEventSink,
+  AgentEventType,
+  ChatMessage,
+  ModelInfo,
+  ModelSelection,
+  RuntimeModelInfoResolver,
+  RuntimeStreamChat,
+  StreamHandlers,
+  StreamRequest,
+  UsageInfo,
+} from '../main/agent-protocol'
 export {
   type AgentEventAppendResult,
   AILA_AGENT_EVENT_SCHEMA_VERSION,

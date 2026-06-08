@@ -1,11 +1,12 @@
 import { randomUUID } from 'node:crypto'
-import {
-  type AgentEvent,
-  type ChatMessage,
-  streamChat as defaultStreamChat,
-  getModelInfo,
-  type ModelSelection,
-} from './agent'
+import type {
+  AgentEvent,
+  ChatMessage,
+  ModelInfo,
+  ModelSelection,
+  RuntimeModelInfoResolver,
+  RuntimeStreamChat,
+} from './agent-protocol'
 import { buildAgentContext } from './context'
 import {
   type AgentEventAppendResult,
@@ -68,6 +69,7 @@ const DEFAULT_ABORT_ALL_CLEANUP_TIMEOUT_MS = 5_000
 const DEFAULT_CONVERSATION_TITLE = '新对话'
 const CONVERSATION_TITLE_MAX = 40
 const EMPTY_RUNTIME_SETTINGS: Settings = { apiKeys: {}, defaultModel: null }
+const FALLBACK_MODEL_CONTEXT: ModelInfo = { model: 'unknown', contextLength: null }
 const TURN_LIFECYCLE_EVENTS = new Set<AgentEvent['type']>([
   'turn.started',
   'turn.completed',
@@ -246,7 +248,8 @@ export interface AgentRuntimeHost {
   saveImage?: ToolContext['saveImage']
   workspaceRoots?: ToolContext['workspaceRoots'] | (() => ToolContext['workspaceRoots'])
   shellCwd?: ToolContext['shellCwd'] | (() => ToolContext['shellCwd'])
-  streamChat?: typeof defaultStreamChat
+  getModelInfo?: RuntimeModelInfoResolver
+  streamChat?: RuntimeStreamChat
   logger?: Pick<Console, 'error' | 'warn'>
 }
 
@@ -504,6 +507,7 @@ function normalizeRuntimeHost(options: AgentRuntimeOptions): AgentRuntimeHost {
   if (options.saveImage) host.saveImage = options.saveImage
   if (options.workspaceRoots !== undefined) host.workspaceRoots = options.workspaceRoots
   if (options.shellCwd !== undefined) host.shellCwd = options.shellCwd
+  if (options.getModelInfo) host.getModelInfo = options.getModelInfo
   if (options.streamChat) host.streamChat = options.streamChat
   if (options.logger) host.logger = options.logger
 
@@ -526,6 +530,7 @@ function normalizeRuntimeHost(options: AgentRuntimeOptions): AgentRuntimeHost {
   if (options.host.saveImage) host.saveImage = options.host.saveImage
   if (options.host.workspaceRoots !== undefined) host.workspaceRoots = options.host.workspaceRoots
   if (options.host.shellCwd !== undefined) host.shellCwd = options.host.shellCwd
+  if (options.host.getModelInfo) host.getModelInfo = options.host.getModelInfo
   if (options.host.streamChat) host.streamChat = options.host.streamChat
   if (options.host.logger) host.logger = options.host.logger
   return host
@@ -963,10 +968,11 @@ export class AgentRuntime {
     })
 
     let streamStarted = false
-    let messages: Parameters<typeof defaultStreamChat>[0]['messages']
+    let messages: ChatMessage[]
     let toolContext: ToolContext
     let toolRegistry: ToolRegistry
     try {
+      if (!this.host.streamChat) throw new Error('runtime host cannot stream chat')
       const resolvedTransientContext =
         cloneRuntimeChatMessages(transientContext) ??
         (await this.resolveTransientContext({
@@ -977,7 +983,7 @@ export class AgentRuntime {
         }))
       const context = buildAgentContext({
         messages: cloneRuntimeValue(record.messages),
-        modelInfo: getModelInfo(selection.providerId, selection.modelId),
+        modelInfo: await this.resolveModelInfo(selection),
         transientContext: resolvedTransientContext,
       })
       messages = context.messages
@@ -1357,6 +1363,20 @@ export class AgentRuntime {
     return cloneRuntimeSettings((await this.resolveSettings()) ?? EMPTY_RUNTIME_SETTINGS)
   }
 
+  private async resolveModelInfo(selection: ModelSelection): Promise<ModelInfo> {
+    const resolved = await this.host.getModelInfo?.(cloneRuntimeValue(selection))
+    const modelInfo = cloneRuntimeValue(
+      resolved ?? { ...FALLBACK_MODEL_CONTEXT, model: selection.modelId },
+    )
+    return {
+      model: typeof modelInfo.model === 'string' ? modelInfo.model : selection.modelId,
+      contextLength:
+        typeof modelInfo.contextLength === 'number' && modelInfo.contextLength > 0
+          ? modelInfo.contextLength
+          : null,
+    }
+  }
+
   private async buildToolContext(input: RuntimeToolContextInput): Promise<ToolContext> {
     const hostRoots = this.resolveWorkspaceRoots()
     const skillRoots = await this.resolveSkillWorkspaceRoots()
@@ -1543,7 +1563,7 @@ export class AgentRuntime {
     selection: ModelSelection
     controller: AbortController
     resolveCleanup: () => void
-    messages: Parameters<typeof defaultStreamChat>[0]['messages']
+    messages: ChatMessage[]
     toolContext: ToolContext
     toolRegistry: ToolRegistry
   }): Promise<void> {
@@ -1580,7 +1600,8 @@ export class AgentRuntime {
     }
 
     try {
-      const streamChat = this.host.streamChat ?? defaultStreamChat
+      const streamChat = this.host.streamChat
+      if (!streamChat) throw new Error('runtime host cannot stream chat')
       await streamChat(
         {
           conversationId,

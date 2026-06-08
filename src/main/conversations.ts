@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { appendFile, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { ProviderId } from '../shared/models'
-import type { AgentEvent } from './agent'
+import type { AgentEvent } from './agent-protocol'
 import { getConversationsDir } from './paths'
 
 export const AILA_CONVERSATION_META_SCHEMA_VERSION = 1

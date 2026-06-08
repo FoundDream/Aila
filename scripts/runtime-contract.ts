@@ -126,40 +126,82 @@ async function testRuntimeEventContract(): Promise<void> {
 
 async function testRuntimeEmitsVersionedEvents(): Promise<void> {
   await withTempDataDir(async () => {
-    const previousOpenRouterKey = process.env.OPENROUTER_API_KEY
-    process.env.OPENROUTER_API_KEY = ''
-    try {
-      const events: AgentRuntimeEvent[] = []
-      const runtime = new AgentRuntime({
-        onEvent: (event) => events.push(event),
-        logger: { warn() {}, error() {} },
-      })
-      const conversation = await runtime.createConversation()
+    const events: AgentRuntimeEvent[] = []
+    const runtime = new AgentRuntime({
+      onEvent: (event) => events.push(event),
+      logger: { warn() {}, error() {} },
+    })
+    const conversation = await runtime.createConversation()
 
-      await runtime.send({
-        conversationId: conversation.id,
-        userText: 'runtime contract smoke',
-        selection: { providerId: 'openrouter', modelId: 'minimax/minimax-m3' },
-      })
+    await runtime.send({
+      conversationId: conversation.id,
+      userText: 'runtime contract smoke',
+      selection: { providerId: 'openrouter', modelId: 'minimax/minimax-m3' },
+    })
 
-      await waitFor(
-        () => events.some((event) => event.type === 'chat:error'),
-        'runtime did not emit expected no-key error event',
-      )
-      await runtime.abortAll()
+    await waitFor(
+      () => events.some((event) => event.type === 'chat:error'),
+      'runtime did not emit expected hostless stream error event',
+    )
+    await runtime.abortAll()
 
-      assert(events.length >= 2, 'runtime should emit persistence and error events')
-      for (const event of events) {
-        assertEqual(event.schemaVersion, AILA_RUNTIME_EVENT_SCHEMA_VERSION, 'runtime event version')
-        assert(isRuntimeEventType(event.type), `runtime emitted unknown event type: ${event.type}`)
-      }
-    } finally {
-      if (previousOpenRouterKey === undefined) {
-        delete process.env.OPENROUTER_API_KEY
-      } else {
-        process.env.OPENROUTER_API_KEY = previousOpenRouterKey
-      }
+    assert(events.length >= 2, 'runtime should emit persistence and error events')
+    for (const event of events) {
+      assertEqual(event.schemaVersion, AILA_RUNTIME_EVENT_SCHEMA_VERSION, 'runtime event version')
+      assert(isRuntimeEventType(event.type), `runtime emitted unknown event type: ${event.type}`)
     }
+  })
+}
+
+async function testRuntimeWithoutStreamHostFailsAtSetupBoundary(): Promise<void> {
+  await withTempDataDir(async () => {
+    const events: AgentRuntimeEvent[] = []
+    const runtime = new AgentRuntime({
+      store: createPersistedRuntimeStore(),
+      onEvent: (event) => events.push(event),
+      logger: { warn() {}, error() {} },
+    })
+    const conversation = await createConversation()
+
+    const result = await runtime.send({
+      conversationId: conversation.id,
+      userText: 'stream host missing',
+      selection: { providerId: 'openrouter', modelId: 'contract/mock' },
+    })
+    await waitFor(
+      () => runtime.listActiveStreams().length === 0,
+      'hostless setup failure should settle',
+    )
+
+    const record = await getConversation(conversation.id)
+    assertEqual(record.messages.length, 2, 'hostless runtime should persist user and assistant')
+    assertEqual(record.messages[0]?.role, 'user', 'hostless setup user role')
+    assertEqual(record.messages[1]?.id, result.assistantMessageId, 'hostless setup assistant id')
+    assertEqual(record.messages[1]?.status, 'error', 'hostless setup assistant status')
+    assertEqual(
+      record.messages[1]?.error,
+      'runtime host cannot stream chat',
+      'hostless setup assistant error',
+    )
+    assert(
+      events.some(
+        (event) =>
+          event.type === 'agent:event' &&
+          event.data.type === 'turn.failed' &&
+          event.data.data?.phase === 'setup' &&
+          event.data.data.error === 'runtime host cannot stream chat',
+      ),
+      'hostless runtime should record a setup failure activity',
+    )
+    assert(
+      events.some(
+        (event) =>
+          event.type === 'chat:error' &&
+          event.data.messageId === result.assistantMessageId &&
+          event.data.error === 'runtime host cannot stream chat',
+      ),
+      'hostless runtime should emit a setup chat:error',
+    )
   })
 }
 
@@ -383,6 +425,107 @@ async function testRuntimeSettingsFallbackIsHostAgnostic(): Promise<void> {
       }
     }
   })
+}
+
+async function testRuntimeStreamAndModelInfoUseHostBoundary(): Promise<void> {
+  const conversationId = 'stream-model-info-host-boundary'
+  const summary: ConversationSummary = {
+    schemaVersion: AILA_CONVERSATION_META_SCHEMA_VERSION,
+    id: conversationId,
+    title: 'stream model info host boundary',
+    createdAt: 1,
+    updatedAt: 1,
+  }
+  let record: ConversationRecord = { meta: summary, messages: [] }
+  let modelInfoSelectionModel: string | null = null
+  let streamSelectionModel: string | null = null
+  let streamReached = false
+
+  const runtime = new AgentRuntime({
+    store: {
+      getConversation: async () => record,
+      upsertMessage: async (_id, message) => {
+        const index = record.messages.findIndex((current) => current.id === message.id)
+        record =
+          index >= 0
+            ? {
+                ...record,
+                messages: record.messages.map((current, currentIndex) =>
+                  currentIndex === index ? message : current,
+                ),
+              }
+            : { ...record, messages: [...record.messages, message] }
+        return { ...summary, updatedAt: summary.updatedAt + record.messages.length }
+      },
+      appendAgentEventAndTouchConversation: async (_id, event) => ({
+        event: {
+          ...event,
+          schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+        },
+        summary: { ...summary, updatedAt: summary.updatedAt + record.messages.length + 1 },
+      }),
+      setConversationUsage: async () => {
+        throw new Error('stream model-info host boundary should not persist usage')
+      },
+      deleteConversation: async () => {
+        throw new Error('stream model-info host boundary should not delete conversation')
+      },
+    },
+    getModelInfo: (selection) => {
+      modelInfoSelectionModel = selection.modelId
+      selection.modelId = 'host-mutated-model-info-selection'
+      return { model: 'Host Model Fixture', contextLength: 8_000 }
+    },
+    streamChat: async (req, handlers) => {
+      streamReached = true
+      streamSelectionModel = req.selection.modelId
+      req.selection.modelId = 'host-mutated-stream-selection'
+      await handlers.onDone({
+        conversationId: req.conversationId,
+        messageId: req.assistantMessageId,
+        message: {
+          schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+          id: req.assistantMessageId,
+          role: 'assistant',
+          blocks: [{ type: 'text', content: 'streamed through injected host boundary' }],
+          status: 'done',
+          model: req.selection,
+        },
+      })
+    },
+    logger: { warn() {}, error() {} },
+  })
+
+  const result = await runtime.send({
+    conversationId,
+    userText: 'use host stream and model info',
+    selection: { providerId: 'openrouter', modelId: 'contract/mock' },
+  })
+  await waitFor(() => runtime.listActiveStreams().length === 0, 'host stream should settle')
+
+  assertEqual(streamReached, true, 'runtime should use injected host streamChat')
+  assertEqual(
+    modelInfoSelectionModel,
+    'contract/mock',
+    'runtime should resolve model info through host',
+  )
+  assertEqual(
+    streamSelectionModel,
+    'contract/mock',
+    'host model-info mutation must not affect stream selection',
+  )
+  assertEqual(
+    runtime.listActiveStreams().length,
+    0,
+    'host stream mutation must not leave active streams behind',
+  )
+  const assistant = record.messages.find((message) => message.id === result.assistantMessageId)
+  assertEqual(assistant?.status, 'done', 'host stream should persist assistant completion')
+  assertEqual(
+    result.userMessage.blocks[0]?.type === 'text' ? result.userMessage.blocks[0].content : '',
+    'use host stream and model info',
+    'runtime should return a user message snapshot',
+  )
 }
 
 async function testRuntimeAttachmentPersistenceUsesHostBoundary(): Promise<void> {
@@ -5388,8 +5531,21 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
     'AgentRuntime core must not import or call the Desktop image store',
   )
   assert(
+    !runtimeSource.includes("from './agent'") && !runtimeSource.includes('defaultStreamChat'),
+    'AgentRuntime core must not import the provider-backed agent loop',
+  )
+  assert(
+    runtimeSource.includes("from './agent-protocol'"),
+    'AgentRuntime core should depend on the host-agnostic agent protocol types',
+  )
+  assert(
     runtimeSource.includes('persistAttachment?:'),
     'AgentRuntime host boundary should expose attachment persistence',
+  )
+  assert(
+    runtimeSource.includes('getModelInfo?:') &&
+      runtimeSource.includes('runtime host cannot stream chat'),
+    'AgentRuntime host boundary should expose model metadata and stream ownership',
   )
 
   const hostSource = await readFile(join(process.cwd(), 'src/main/runtime-host.ts'), 'utf-8')
@@ -5397,6 +5553,20 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
     hostSource.includes("from './image-store'") &&
       hostSource.includes('persistAttachment: persistRuntimeAttachment'),
     'default runtime host should own image attachment persistence',
+  )
+  assert(
+    hostSource.includes("from './agent'") &&
+      hostSource.includes('getModelInfo:') &&
+      hostSource.includes('streamChat'),
+    'default runtime host should own provider stream and model metadata wiring',
+  )
+
+  const protocolSource = await readFile(join(process.cwd(), 'src/main/agent-protocol.ts'), 'utf-8')
+  assert(
+    protocolSource.includes('export interface StreamRequest') &&
+      protocolSource.includes('export type RuntimeStreamChat') &&
+      protocolSource.includes('export type RuntimeModelInfoResolver'),
+    'agent protocol should define stream and model-info host contracts',
   )
 
   const skillCoreSource = await readFile(join(process.cwd(), 'src/main/skills.ts'), 'utf-8')
@@ -6071,8 +6241,10 @@ async function testSkillExtensionReportContract(): Promise<void> {
 async function main(): Promise<void> {
   await testRuntimeEventContract()
   await testRuntimeEmitsVersionedEvents()
+  await testRuntimeWithoutStreamHostFailsAtSetupBoundary()
   await testRuntimeHostBoundaryContract()
   await testRuntimeSettingsFallbackIsHostAgnostic()
+  await testRuntimeStreamAndModelInfoUseHostBoundary()
   await testRuntimeAttachmentPersistenceUsesHostBoundary()
   await testRuntimeTextAttachmentFallbackIsHostAgnostic()
   await testRuntimeImageAttachmentRequiresHostBoundary()

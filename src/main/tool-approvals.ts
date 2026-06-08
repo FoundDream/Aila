@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import type { AgentEvent } from './agent'
+import type { AgentEvent } from './agent-protocol'
 import { summarizeToolTarget, type ToolApprovalRequest } from './tools'
 
 export type ToolApprovalResolutionReason = 'user' | 'timeout' | 'shutdown' | 'cancelled'

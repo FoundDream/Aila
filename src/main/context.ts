@@ -1,4 +1,4 @@
-import type { ChatMessage, ModelInfo, ToolCall, UserContentPart } from './agent'
+import type { ChatMessage, ModelInfo, ToolCall, UserContentPart } from './agent-protocol'
 import type {
   PersistedFileBlock,
   PersistedImageBlock,
