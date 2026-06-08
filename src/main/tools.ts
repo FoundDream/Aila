@@ -10,8 +10,7 @@ import { exec } from 'node:child_process'
 import { readFile, writeFile } from 'node:fs/promises'
 import { basename, isAbsolute, relative, resolve, sep } from 'node:path'
 import { promisify } from 'node:util'
-import { generateImage as defaultGenerateImage } from './image'
-import { saveImage as defaultSaveImage } from './image-store'
+import type { ImageGenerateRequest, ImageResult } from './image/types'
 import type { Settings } from './settings'
 
 const execAsync = promisify(exec)
@@ -680,8 +679,15 @@ export interface ImageSideChannelBlock {
   prompt: string
 }
 
-export type ToolImageGenerator = typeof defaultGenerateImage
-export type ToolImageSaver = typeof defaultSaveImage
+export type ToolImageGenerator = (
+  request: ImageGenerateRequest,
+  settings: Settings,
+) => Promise<ImageResult>
+
+export type ToolImageSaver = (
+  bytes: ArrayBuffer | Uint8Array,
+  filename: string,
+) => Promise<{ url: string }>
 
 export interface ToolApprovalRequest {
   name: string
@@ -785,10 +791,14 @@ async function runGenerateImage(args: { prompt?: unknown }, ctx: ToolContext): P
     )
   }
 
-  const generateImage = ctx.generateImage ?? defaultGenerateImage
-  const saveImage = ctx.saveImage ?? defaultSaveImage
+  if (!ctx.generateImage) {
+    throw new Error('image generation host is not available')
+  }
+  if (!ctx.saveImage) {
+    throw new Error('image storage host is not available')
+  }
 
-  const { bytes, mime } = await generateImage(
+  const { bytes, mime } = await ctx.generateImage(
     {
       providerId: selection.providerId,
       modelId: selection.modelId,
@@ -799,7 +809,7 @@ async function runGenerateImage(args: { prompt?: unknown }, ctx: ToolContext): P
   )
 
   const ext = mime === 'image/jpeg' ? '.jpg' : mime === 'image/webp' ? '.webp' : '.png'
-  const { url } = await saveImage(bytes, `image${ext}`)
+  const { url } = await ctx.saveImage(bytes, `image${ext}`)
   ctx.onImage?.({ type: 'image', url, mime, prompt })
 
   return JSON.stringify({

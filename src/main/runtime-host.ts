@@ -1,4 +1,5 @@
 import { getModelInfo, streamChat } from './agent'
+import { generateImage } from './image'
 import { saveImage } from './image-store'
 import {
   AgentRuntime,
@@ -36,6 +37,8 @@ export function createDefaultRuntimeHost(overrides: AgentRuntimeHost = {}): Agen
     loadToolPacks: async () => (await loadToolPacksFromDir()).map((pack) => pack.toolPack),
     loadSkills: async () => (await loadSkillsFromDir()).skills,
     persistAttachment: persistRuntimeAttachment,
+    generateImage,
+    saveImage,
     getModelInfo: (selection) => getModelInfo(selection.providerId, selection.modelId),
     streamChat,
     ...overrides,

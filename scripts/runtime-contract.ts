@@ -5226,6 +5226,41 @@ async function testGenerateImageToolUsesInjectedImageDependencies(): Promise<voi
   assertEqual(imageBlocks[0]?.prompt, 'contract image', 'image side channel prompt')
 }
 
+async function testGenerateImageToolRequiresHostImageDependencies(): Promise<void> {
+  const settings: Settings = {
+    apiKeys: {},
+    defaultModel: null,
+    defaultImageModel: { providerId: 'openrouter', modelId: 'openai/gpt-image-1' },
+  }
+
+  try {
+    await executeTool('generate_image', { prompt: 'missing image host' }, { settings })
+    throw new Error('generate_image unexpectedly succeeded without image host')
+  } catch (error) {
+    assert(
+      error instanceof Error && error.message.includes('image generation host is not available'),
+      'generate_image should fail closed without an injected image generator',
+    )
+  }
+
+  try {
+    await executeTool(
+      'generate_image',
+      { prompt: 'missing image storage host' },
+      {
+        settings,
+        generateImage: async () => ({ bytes: Buffer.from([1, 2, 3]), mime: 'image/png' }),
+      },
+    )
+    throw new Error('generate_image unexpectedly succeeded without image storage host')
+  } catch (error) {
+    assert(
+      error instanceof Error && error.message.includes('image storage host is not available'),
+      'generate_image should fail closed without an injected image saver',
+    )
+  }
+}
+
 function testToolActivityTargetContract(): void {
   assertEqual(
     summarizeToolTarget('read', { path: '/workspace/src/app.ts' })?.preview,
@@ -5477,6 +5512,12 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
       hostSource.includes('persistAttachment: persistRuntimeAttachment'),
     'default runtime host should own image attachment persistence',
   )
+  assert(
+    hostSource.includes("from './image'") &&
+      hostSource.includes('generateImage') &&
+      hostSource.includes('saveImage'),
+    'default runtime host should own image tool generation and storage dependencies',
+  )
 
   const runtimeStoreSource = await readFile(
     join(process.cwd(), 'src/main/runtime-store.ts'),
@@ -5491,6 +5532,20 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
   assert(
     !runtimeSdkSource.includes('DocRefRewrite'),
     'runtime SDK must not expose Desktop doc ref rewrite types',
+  )
+
+  const toolsSource = await readFile(join(process.cwd(), 'src/main/tools.ts'), 'utf-8')
+  assert(
+    !toolsSource.includes("from './image'") &&
+      !toolsSource.includes("from './image-store'") &&
+      !toolsSource.includes('defaultGenerateImage') &&
+      !toolsSource.includes('defaultSaveImage'),
+    'builtin tool core must not import provider image generation or Desktop image storage',
+  )
+  assert(
+    toolsSource.includes('image generation host is not available') &&
+      toolsSource.includes('image storage host is not available'),
+    'image tool should fail closed when host image dependencies are absent',
   )
   assert(
     hostSource.includes("from './agent'") &&
@@ -6236,6 +6291,7 @@ async function main(): Promise<void> {
   await testToolRegistryContract()
   await testRuntimeExecuteToolUsesHostBoundary()
   await testGenerateImageToolUsesInjectedImageDependencies()
+  await testGenerateImageToolRequiresHostImageDependencies()
   testToolActivityTargetContract()
   await testFilesystemToolWorkspaceRootsContract()
   await testBashToolShellCwdContract()
