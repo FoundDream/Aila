@@ -140,6 +140,7 @@ export interface StreamRequest {
   webSearch?: ToolContext['webSearch']
   generateImage?: ToolContext['generateImage']
   saveImage?: ToolContext['saveImage']
+  runShell?: ToolContext['runShell']
   toolRegistry?: ToolRegistry
 }
 

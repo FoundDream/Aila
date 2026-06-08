@@ -11,6 +11,7 @@ import {
 } from './runtime'
 import { createPersistedRuntimeStore } from './runtime-store'
 import { loadSettings } from './settings'
+import { runShell } from './shell'
 import { loadSkillsFromDir } from './skill-loader'
 import { loadToolPacksFromDir } from './tool-pack-loader'
 import { webSearch } from './web-search'
@@ -41,6 +42,7 @@ export function createDefaultRuntimeHost(overrides: AgentRuntimeHost = {}): Agen
     webSearch,
     generateImage,
     saveImage,
+    runShell,
     getModelInfo: (selection) => getModelInfo(selection.providerId, selection.modelId),
     streamChat,
     ...overrides,

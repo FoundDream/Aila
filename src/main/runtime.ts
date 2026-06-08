@@ -246,6 +246,7 @@ export interface AgentRuntimeHost {
   webSearch?: ToolContext['webSearch']
   generateImage?: ToolContext['generateImage']
   saveImage?: ToolContext['saveImage']
+  runShell?: ToolContext['runShell']
   workspaceRoots?: ToolContext['workspaceRoots'] | (() => ToolContext['workspaceRoots'])
   shellCwd?: ToolContext['shellCwd'] | (() => ToolContext['shellCwd'])
   getModelInfo?: RuntimeModelInfoResolver
@@ -475,6 +476,7 @@ function normalizeRuntimeHost(options: AgentRuntimeOptions): AgentRuntimeHost {
   if (options.webSearch) host.webSearch = options.webSearch
   if (options.generateImage) host.generateImage = options.generateImage
   if (options.saveImage) host.saveImage = options.saveImage
+  if (options.runShell) host.runShell = options.runShell
   if (options.workspaceRoots !== undefined) host.workspaceRoots = options.workspaceRoots
   if (options.shellCwd !== undefined) host.shellCwd = options.shellCwd
   if (options.getModelInfo) host.getModelInfo = options.getModelInfo
@@ -499,6 +501,7 @@ function normalizeRuntimeHost(options: AgentRuntimeOptions): AgentRuntimeHost {
   if (options.host.webSearch) host.webSearch = options.host.webSearch
   if (options.host.generateImage) host.generateImage = options.host.generateImage
   if (options.host.saveImage) host.saveImage = options.host.saveImage
+  if (options.host.runShell) host.runShell = options.host.runShell
   if (options.host.workspaceRoots !== undefined) host.workspaceRoots = options.host.workspaceRoots
   if (options.host.shellCwd !== undefined) host.shellCwd = options.host.shellCwd
   if (options.host.getModelInfo) host.getModelInfo = options.host.getModelInfo
@@ -1353,6 +1356,7 @@ export class AgentRuntime {
       webSearch: this.host.webSearch,
       generateImage: this.host.generateImage,
       saveImage: this.host.saveImage,
+      runShell: this.host.runShell,
     }
   }
 
@@ -1576,6 +1580,7 @@ export class AgentRuntime {
           webSearch: toolContext.webSearch,
           generateImage: toolContext.generateImage,
           saveImage: toolContext.saveImage,
+          runShell: toolContext.runShell,
           onToolPolicy: toolContext.onToolPolicy,
           onToolApproval: toolContext.onToolApproval,
           onAgentEvent: queueAgentEvent,

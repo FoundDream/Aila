@@ -59,6 +59,7 @@ import {
   SKILL_TOOL_NAME,
   summarizeToolTarget,
   type ToolPack,
+  type ToolShellRequest,
   type ToolWebSearchRequest,
 } from '../src/runtime'
 
@@ -219,10 +220,16 @@ async function testRuntimeHostBoundaryContract(): Promise<void> {
     let workspaceRootPath: string | null = null
     let workspaceRootLabel: string | null = null
     let shellCwdPath: string | null = null
+    let shellRunnerPassed = false
     let settingsLoaded = false
     let streamSettingsKey: string | null = null
     let activeSelectionModelIdDuringStream: string | null = null
     let runtime: AgentRuntime | undefined
+    const runShell: AgentRuntimeHost['runShell'] = async () => ({
+      exitCode: 0,
+      stdout: '',
+      stderr: '',
+    })
 
     const host: AgentRuntimeHost = {
       onEvent: (event) => events.push(event),
@@ -244,8 +251,10 @@ async function testRuntimeHostBoundaryContract(): Promise<void> {
       },
       workspaceRoots: () => [{ path: '/host/workspace', label: 'host-root' }],
       shellCwd: () => '/host/shell',
+      runShell,
       streamChat: async (req, handlers) => {
         shellCwdPath = req.shellCwd ?? null
+        shellRunnerPassed = req.runShell === runShell
         streamSettingsKey = req.settings?.apiKeys.openrouter ?? null
         req.selection.modelId = 'host-mutated-model'
         activeSelectionModelIdDuringStream =
@@ -345,6 +354,7 @@ async function testRuntimeHostBoundaryContract(): Promise<void> {
     assertEqual(workspaceRootPath, '/host/workspace', 'host workspace root path')
     assertEqual(workspaceRootLabel, 'host-root', 'host workspace root label')
     assertEqual(shellCwdPath, '/host/shell', 'host shell cwd should pass to streamChat')
+    assertEqual(shellRunnerPassed, true, 'host shell runner should pass to streamChat')
     assertEqual(
       activeSelectionModelIdDuringStream,
       'contract/mock',
@@ -4883,6 +4893,23 @@ async function testToolRegistryContract(): Promise<void> {
   }
   const policyRegistry = createDefaultToolRegistry([policyPack])
 
+  policyAllowedRunnerCalled = false
+  try {
+    await executeTool(
+      'contract_policy_tool',
+      { mode: 'missing-approval-host' },
+      { settings },
+      policyRegistry,
+    )
+    throw new Error('approval-required tool unexpectedly succeeded without approval host')
+  } catch (error) {
+    assertEqual(policyAllowedRunnerCalled, false, 'missing approval host should not run handler')
+    assert(
+      error instanceof Error && error.message.includes('requires approval but no approval host'),
+      'approval-required tool should fail closed without approval host',
+    )
+  }
+
   const allowed = await executeTool(
     'contract_policy_tool',
     { mode: 'allow' },
@@ -5418,14 +5445,14 @@ async function testFilesystemToolWorkspaceRootsContract(): Promise<void> {
     await executeTool(
       'write',
       { path: writePath, content: 'draft' },
-      { settings, workspaceRoots: [dir] },
+      { settings, workspaceRoots: [dir], onToolApproval: async () => true },
     )
     assertEqual(await readFile(writePath, 'utf-8'), 'draft', 'write should target extra root')
 
     await executeTool(
       'edit',
       { path: writePath, oldText: 'draft', newText: 'final' },
-      { settings, workspaceRoots: [dir] },
+      { settings, workspaceRoots: [dir], onToolApproval: async () => true },
     )
     assertEqual(await readFile(writePath, 'utf-8'), 'final', 'edit should target extra root')
   } finally {
@@ -5435,22 +5462,54 @@ async function testFilesystemToolWorkspaceRootsContract(): Promise<void> {
 
 async function testBashToolShellCwdContract(): Promise<void> {
   const settings: Settings = { apiKeys: {}, defaultModel: null }
-  const dir = await mkdtemp(join(tmpdir(), 'aila-tool-shell-'))
+  const abortController = new AbortController()
+  const dir = join(tmpdir(), 'aila-tool-shell-contract')
+  const requestSeen: { current?: ToolShellRequest } = {}
+
+  const result = await executeTool(
+    'bash',
+    { command: 'printf shell-cwd' },
+    {
+      settings,
+      shellCwd: dir,
+      signal: abortController.signal,
+      onToolApproval: async () => true,
+      runShell: async (request) => {
+        requestSeen.current = { ...request }
+        return { exitCode: 0, stdout: 'shell-cwd', stderr: '' }
+      },
+    },
+  )
+
+  const parsed = JSON.parse(result) as { exit_code?: unknown; stdout?: unknown; stderr?: unknown }
+  assertEqual(parsed.exit_code, 0, 'bash shell cwd command should succeed')
+  assertEqual(parsed.stdout, 'shell-cwd', 'bash tool should return injected shell stdout')
+  assertEqual(parsed.stderr, '', 'bash tool should return injected shell stderr')
+
+  const seenRequest = requestSeen.current
+  assert(seenRequest, 'bash should call the injected shell host dependency')
+  assertEqual(seenRequest.command, 'printf shell-cwd', 'bash shell request command')
+  assertEqual(seenRequest.cwd, dir, 'bash shell request cwd')
+  assertEqual(seenRequest.timeoutMs, 30_000, 'bash shell request timeout')
+  assertEqual(seenRequest.maxBufferBytes, 128 * 1024, 'bash shell request max buffer')
+  assertEqual(seenRequest.signal, abortController.signal, 'bash shell request abort signal')
+}
+
+async function testBashToolRequiresHostDependency(): Promise<void> {
+  const settings: Settings = { apiKeys: {}, defaultModel: null }
+
   try {
-    const result = await executeTool(
+    await executeTool(
       'bash',
-      { command: 'printf shell-cwd > shell-cwd.txt' },
-      { settings, shellCwd: dir },
+      { command: 'printf should-not-run' },
+      { settings, onToolApproval: async () => true },
     )
-    const parsed = JSON.parse(result) as { exit_code?: unknown }
-    assertEqual(parsed.exit_code, 0, 'bash shell cwd command should succeed')
-    assertEqual(
-      await readFile(join(dir, 'shell-cwd.txt'), 'utf-8'),
-      'shell-cwd',
-      'bash tool should run from injected shell cwd',
+    throw new Error('bash unexpectedly succeeded without a host dependency')
+  } catch (error) {
+    assert(
+      error instanceof Error && error.message.includes('shell host is not available'),
+      'bash should fail closed without an injected shell host dependency',
     )
-  } finally {
-    await rm(dir, { recursive: true, force: true })
   }
 }
 
@@ -5599,6 +5658,10 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
     hostSource.includes("from './web-search'") && hostSource.includes('webSearch'),
     'default runtime host should own web search provider wiring',
   )
+  assert(
+    hostSource.includes("from './shell'") && hostSource.includes('runShell'),
+    'default runtime host should own shell execution wiring',
+  )
 
   const runtimeStoreSource = await readFile(
     join(process.cwd(), 'src/main/runtime-store.ts'),
@@ -5640,6 +5703,20 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
     'web search tool should fail closed when host search dependency is absent',
   )
   assert(
+    !toolsSource.includes("from 'node:child_process'") &&
+      !toolsSource.includes('execAsync') &&
+      !toolsSource.includes('process.env'),
+    'builtin tool core must not own shell process execution or environment wiring',
+  )
+  assert(
+    toolsSource.includes('shell host is not available'),
+    'bash tool should fail closed when host shell dependency is absent',
+  )
+  assert(
+    toolsSource.includes("if (requiresApproval) return { action: 'ask' }"),
+    'approval-required tools should fail closed unless a policy explicitly allows them',
+  )
+  assert(
     hostSource.includes("from './agent'") &&
       hostSource.includes('getModelInfo:') &&
       hostSource.includes('streamChat'),
@@ -5652,6 +5729,14 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
       webSearchSource.includes('https://api.tavily.com/search') &&
       webSearchSource.includes('fetch('),
     'default web search adapter should own Tavily HTTP wiring',
+  )
+
+  const shellSource = await readFile(join(process.cwd(), 'src/main/shell.ts'), 'utf-8')
+  assert(
+    shellSource.includes("from 'node:child_process'") &&
+      shellSource.includes('process.env') &&
+      shellSource.includes('GIT_TERMINAL_PROMPT'),
+    'default shell adapter should own process execution and environment wiring',
   )
 
   const protocolSource = await readFile(join(process.cwd(), 'src/main/agent-protocol.ts'), 'utf-8')
@@ -6397,6 +6482,7 @@ async function main(): Promise<void> {
   testToolActivityTargetContract()
   await testFilesystemToolWorkspaceRootsContract()
   await testBashToolShellCwdContract()
+  await testBashToolRequiresHostDependency()
   await testRuntimeCoreHasNoDocToolContract()
   await testRuntimeSdkDoesNotExportDocsContract()
   await testRuntimeCoreHostBoundarySourceContract()

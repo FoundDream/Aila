@@ -6,14 +6,10 @@
  * handler here and feeds the result back as a `role: "tool"` message.
  */
 
-import { exec } from 'node:child_process'
 import { readFile, writeFile } from 'node:fs/promises'
 import { basename, isAbsolute, relative, resolve, sep } from 'node:path'
-import { promisify } from 'node:util'
 import type { ImageGenerateRequest, ImageResult } from './image/types'
 import type { Settings } from './settings'
-
-const execAsync = promisify(exec)
 
 export interface ToolDefinition {
   type: 'function'
@@ -384,6 +380,7 @@ export function getToolDefinitions(
 
 const MAX_OUTPUT_BYTES = 64 * 1024
 const BASH_TIMEOUT_MS = 30_000
+const BASH_MAX_BUFFER_BYTES = MAX_OUTPUT_BYTES * 2
 const TOOL_TARGET_PREVIEW_CHARS = 300
 
 const SENSITIVE_BASENAMES = new Set([
@@ -703,6 +700,22 @@ export type ToolImageSaver = (
   filename: string,
 ) => Promise<{ url: string }>
 
+export interface ToolShellRequest {
+  command: string
+  cwd?: string
+  timeoutMs: number
+  maxBufferBytes: number
+  signal?: AbortSignal
+}
+
+export interface ToolShellResult {
+  exitCode: number
+  stdout?: string
+  stderr?: string
+}
+
+export type ToolShellRunner = (request: ToolShellRequest) => Promise<ToolShellResult>
+
 export interface ToolApprovalRequest {
   name: string
   args: Record<string, unknown>
@@ -791,6 +804,7 @@ export interface ToolContext {
   webSearch?: ToolWebSearcher
   generateImage?: ToolImageGenerator
   saveImage?: ToolImageSaver
+  runShell?: ToolShellRunner
   onImage?: (block: ImageSideChannelBlock) => void
 }
 
@@ -838,28 +852,23 @@ async function runBash(args: { command?: unknown }, ctx: ToolContext): Promise<s
   const command = args.command
   if (typeof command !== 'string') throw new Error('`command` must be a string')
   assertBashCommandAllowed(command)
-  const cwd = resolve(ctx.shellCwd ?? process.cwd())
-
-  try {
-    const { stdout, stderr } = await execAsync(command, {
-      cwd,
-      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
-      timeout: BASH_TIMEOUT_MS,
-      maxBuffer: MAX_OUTPUT_BYTES * 2,
-    })
-    return JSON.stringify({
-      exit_code: 0,
-      stdout: truncate(stdout),
-      stderr: truncate(stderr),
-    })
-  } catch (error) {
-    const err = error as { code?: number; stdout?: string; stderr?: string; message?: string }
-    return JSON.stringify({
-      exit_code: typeof err.code === 'number' ? err.code : 1,
-      stdout: truncate(err.stdout ?? ''),
-      stderr: truncate(err.stderr ?? err.message ?? 'command failed'),
-    })
+  if (!ctx.runShell) {
+    throw new Error('shell host is not available')
   }
+
+  const result = await ctx.runShell({
+    command,
+    ...(ctx.shellCwd && { cwd: resolve(ctx.shellCwd) }),
+    timeoutMs: BASH_TIMEOUT_MS,
+    maxBufferBytes: BASH_MAX_BUFFER_BYTES,
+    ...(ctx.signal && { signal: ctx.signal }),
+  })
+
+  return JSON.stringify({
+    exit_code: result.exitCode,
+    stdout: truncate(result.stdout ?? ''),
+    stderr: truncate(result.stderr ?? ''),
+  })
 }
 
 export async function executeTool(
@@ -903,6 +912,6 @@ export async function evaluateToolPolicy(
   const requiresApproval = request.metadata.requiresApproval
   const decision = await ctx.onToolPolicy?.(cloneToolPolicyRequest(request))
   if (decision !== undefined) return normalizeToolPolicyDecision(request, decision)
-  if (requiresApproval && ctx.onToolApproval) return { action: 'ask' }
+  if (requiresApproval) return { action: 'ask' }
   return { action: 'allow' }
 }
