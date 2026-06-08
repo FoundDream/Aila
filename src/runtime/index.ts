@@ -67,6 +67,7 @@ export {
 export {
   type ActiveAssistantTurn,
   AgentRuntime,
+  type AgentRuntimeEnvironment,
   type AgentRuntimeEvent,
   type AgentRuntimeEventMap,
   type AgentRuntimeHost,
@@ -77,6 +78,7 @@ export {
   type AilaRuntimeEventType,
   type ChatAttachmentInput,
   type ConversationAbortReason,
+  type CreateInMemoryRuntimeStoreInput,
   createInMemoryRuntimeStore,
   createRuntimeEvent,
   isRuntimeEventType,

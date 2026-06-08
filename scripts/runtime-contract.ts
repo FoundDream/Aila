@@ -1606,6 +1606,61 @@ async function testInMemoryRuntimeStoreEventListContract(): Promise<void> {
   )
 }
 
+async function testRuntimeEnvironmentContract(): Promise<void> {
+  const ids = ['conversation-env-id', 'user-env-id', 'assistant-env-id']
+  const timestamps = [100, 200, 300, 400]
+  const emitted: AgentRuntimeEvent[] = []
+  const runtime = new AgentRuntime({
+    createId: () => {
+      const id = ids.shift()
+      if (!id) throw new Error('runtime requested an unexpected id')
+      return id
+    },
+    now: () => {
+      const timestamp = timestamps.shift()
+      if (timestamp === undefined) throw new Error('runtime requested an unexpected timestamp')
+      return timestamp
+    },
+    onEvent: (event) => emitted.push(event),
+    logger: { warn() {}, error() {} },
+  })
+
+  const conversation = await runtime.createConversation()
+  assertEqual(conversation.id, 'conversation-env-id', 'runtime should use injected id for create')
+  assertEqual(conversation.createdAt, 100, 'runtime should use injected clock for createdAt')
+  assertEqual(conversation.updatedAt, 100, 'runtime should use injected clock for updatedAt')
+
+  const result = await runtime.send({
+    conversationId: conversation.id,
+    userText: 'deterministic environment',
+    selection: { providerId: 'openrouter', modelId: 'contract/mock' },
+  })
+  assertEqual(result.userMessage.id, 'user-env-id', 'runtime should use injected id for user')
+  assertEqual(
+    result.assistantMessageId,
+    'assistant-env-id',
+    'runtime should use injected id for assistant',
+  )
+
+  const record = await runtime.getConversation(conversation.id)
+  assertEqual(record.meta.updatedAt, 400, 'runtime should use injected event time for activity')
+  assertEqual(record.messages[0]?.id, 'user-env-id', 'recorded user id')
+  assertEqual(record.messages[1]?.id, 'assistant-env-id', 'recorded assistant id')
+  assertEqual(record.messages[1]?.status, 'error', 'hostless assistant status')
+
+  const failedEvent = emitted.find(
+    (event) => event.type === 'agent:event' && event.data.type === 'turn.failed',
+  )
+  assert(failedEvent?.type === 'agent:event', 'runtime should emit setup failure event')
+  assertEqual(
+    failedEvent.data.timestamp,
+    400,
+    'runtime should timestamp events from injected clock',
+  )
+  assertEqual(ids.length, 0, 'runtime should consume expected injected ids')
+  assertEqual(timestamps.length, 0, 'runtime should consume expected injected timestamps')
+}
+
 async function testRuntimeAppendUserMessageUsesInjectedStore(): Promise<void> {
   const conversationId = 'append-user-message-contract'
   const calls: string[] = []
@@ -5670,6 +5725,14 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
     'AgentRuntime core must not import the provider-backed agent loop',
   )
   assert(
+    !runtimeSource.includes("from 'node:crypto'") &&
+      runtimeSource.includes('createId?:') &&
+      runtimeSource.includes('now?:') &&
+      runtimeSource.includes('this.createId()') &&
+      runtimeSource.includes('this.now()'),
+    'AgentRuntime core should expose injectable ids and clocks instead of Node crypto wiring',
+  )
+  assert(
     !runtimeSource.includes('DocRefRewrite') && !runtimeSource.includes('rewriteDocRefs'),
     'AgentRuntime core must not own Desktop document ref rewrites',
   )
@@ -6515,6 +6578,7 @@ async function main(): Promise<void> {
   await testRuntimeStreamHandlerSnapshots()
   await testRuntimeConversationStoreFacadeContract()
   await testInMemoryRuntimeStoreEventListContract()
+  await testRuntimeEnvironmentContract()
   await testRuntimeAppendUserMessageUsesInjectedStore()
   await testRuntimeRecordAgentEventUsesInjectedStore()
   await testRuntimeRecoveryDelegatesToInjectedStore()

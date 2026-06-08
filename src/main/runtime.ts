@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto'
 import type {
   AgentEvent,
   ChatMessage,
@@ -58,6 +57,13 @@ interface RuntimeToolContextInput {
   signal?: AbortSignal
 }
 
+export interface AgentRuntimeEnvironment {
+  createId?: () => string
+  now?: () => number
+}
+
+export type CreateInMemoryRuntimeStoreInput = AgentRuntimeEnvironment
+
 type MaybePromise<T> = T | Promise<T>
 export type RuntimeRecordAgentEventInput = AgentEvent
 type AgentEventInput = RuntimeRecordAgentEventInput
@@ -76,6 +82,22 @@ const TURN_LIFECYCLE_EVENTS = new Set<AgentEvent['type']>([
   'turn.cancelled',
   'turn.interrupted',
 ])
+
+function defaultRuntimeNow(): number {
+  return Date.now()
+}
+
+function defaultCreateRuntimeId(): string {
+  const cryptoLike = (
+    globalThis as typeof globalThis & {
+      crypto?: { randomUUID?: () => string }
+    }
+  ).crypto
+  return (
+    cryptoLike?.randomUUID?.() ??
+    `runtime-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
+  )
+}
 
 function messageText(message: PersistedMessage): string {
   return message.blocks
@@ -226,6 +248,8 @@ export {
 } from './runtime-events'
 
 export interface AgentRuntimeHost {
+  createId?: () => string
+  now?: () => number
   onEvent?: (event: AgentRuntimeEvent) => void
   onToolPolicy?: ToolContext['onToolPolicy']
   onToolApproval?: ToolContext['onToolApproval']
@@ -286,7 +310,7 @@ function cloneRuntimeValue<T>(value: T): T {
   return structuredClone(value)
 }
 
-function nextRuntimeUpdatedAt(current: ConversationSummary, timestamp = Date.now()): number {
+function nextRuntimeUpdatedAt(current: ConversationSummary, timestamp: number): number {
   return Math.max(current.updatedAt + 1, timestamp)
 }
 
@@ -313,7 +337,11 @@ function sameConversationActivity(
   )
 }
 
-export function createInMemoryRuntimeStore(): AgentRuntimeStore {
+export function createInMemoryRuntimeStore(
+  input: CreateInMemoryRuntimeStoreInput = {},
+): AgentRuntimeStore {
+  const createId = input.createId ?? defaultCreateRuntimeId
+  const now = input.now ?? defaultRuntimeNow
   const records = new Map<string, ConversationRecord>()
   const agentEvents = new Map<string, PersistedAgentEvent[]>()
 
@@ -368,13 +396,13 @@ export function createInMemoryRuntimeStore(): AgentRuntimeStore {
 
   return {
     async createConversation(docId?: string): Promise<ConversationSummary> {
-      const now = Date.now()
+      const createdAt = now()
       const meta: ConversationSummary = {
         schemaVersion: AILA_CONVERSATION_META_SCHEMA_VERSION,
-        id: randomUUID(),
+        id: createId(),
         title: DEFAULT_CONVERSATION_TITLE,
-        createdAt: now,
-        updatedAt: now,
+        createdAt,
+        updatedAt: createdAt,
         ...(docId ? { docId } : {}),
       }
       records.set(meta.id, { meta, messages: [] })
@@ -396,7 +424,7 @@ export function createInMemoryRuntimeStore(): AgentRuntimeStore {
 
       record.meta = {
         ...record.meta,
-        updatedAt: nextRuntimeUpdatedAt(record.meta),
+        updatedAt: nextRuntimeUpdatedAt(record.meta, now()),
       }
       if (record.meta.title === DEFAULT_CONVERSATION_TITLE) {
         const title = deriveConversationTitle(prepared)
@@ -443,14 +471,14 @@ export function createInMemoryRuntimeStore(): AgentRuntimeStore {
       return updateMeta(conversationId, (current) => ({
         ...current,
         title: title.trim() || DEFAULT_CONVERSATION_TITLE,
-        updatedAt: nextRuntimeUpdatedAt(current),
+        updatedAt: nextRuntimeUpdatedAt(current, now()),
       }))
     },
     async setConversationUsage(conversationId, usage): Promise<ConversationSummary> {
       return updateMeta(conversationId, (current) => ({
         ...current,
-        updatedAt: nextRuntimeUpdatedAt(current),
-        usage: { ...usage, updatedAt: Date.now() },
+        updatedAt: nextRuntimeUpdatedAt(current, now()),
+        usage: { ...usage, updatedAt: now() },
       }))
     },
     async deleteConversation(conversationId): Promise<void> {
@@ -462,6 +490,8 @@ export function createInMemoryRuntimeStore(): AgentRuntimeStore {
 
 function normalizeRuntimeHost(options: AgentRuntimeOptions): AgentRuntimeHost {
   const host: AgentRuntimeHost = {}
+  if (options.createId) host.createId = options.createId
+  if (options.now) host.now = options.now
   if (options.onEvent) host.onEvent = options.onEvent
   if (options.onToolPolicy) host.onToolPolicy = options.onToolPolicy
   if (options.onToolApproval) host.onToolApproval = options.onToolApproval
@@ -486,6 +516,8 @@ function normalizeRuntimeHost(options: AgentRuntimeOptions): AgentRuntimeHost {
   if (options.logger) host.logger = options.logger
 
   if (!options.host) return host
+  if (options.host.createId) host.createId = options.host.createId
+  if (options.host.now) host.now = options.host.now
   if (options.host.onEvent) host.onEvent = options.host.onEvent
   if (options.host.onToolPolicy) host.onToolPolicy = options.host.onToolPolicy
   if (options.host.onToolApproval) host.onToolApproval = options.host.onToolApproval
@@ -638,6 +670,8 @@ export class AgentRuntime {
   private readonly host: AgentRuntimeHost
   private readonly store: AgentRuntimeStore
   private readonly logger: Pick<Console, 'error' | 'warn'>
+  private readonly createId: () => string
+  private readonly now: () => number
   private readonly staticToolPacks: readonly ToolPack[]
   private readonly staticSkills: readonly LoadedSkill[]
   private readonly fallbackToolRegistry: ToolRegistry
@@ -648,7 +682,10 @@ export class AgentRuntime {
 
   constructor(private readonly options: AgentRuntimeOptions = {}) {
     this.host = normalizeRuntimeHost(options)
-    this.store = options.store ?? createInMemoryRuntimeStore()
+    this.createId = this.host.createId ?? defaultCreateRuntimeId
+    this.now = this.host.now ?? defaultRuntimeNow
+    this.store =
+      options.store ?? createInMemoryRuntimeStore({ createId: this.createId, now: this.now })
     this.logger = this.host.logger ?? console
     this.staticToolPacks = resolveStaticToolPacks(options)
     this.staticSkills = resolveStaticSkills(options)
@@ -754,7 +791,7 @@ export class AgentRuntime {
     this.assertCanStartTurn(conversationId)
     const message: PersistedMessage = {
       schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
-      id: randomUUID(),
+      id: this.createId(),
       role: 'user',
       blocks: [{ type: 'text', content: text }],
       status: 'done',
@@ -800,7 +837,7 @@ export class AgentRuntime {
 
       const userMessage: PersistedMessage = {
         schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
-        id: randomUUID(),
+        id: this.createId(),
         role: 'user',
         blocks,
         status: 'done',
@@ -916,7 +953,7 @@ export class AgentRuntime {
   }): Promise<RuntimeSendResult> {
     const { conversationId, userMessage, record, transientContext, source, turnStartLock } = input
     const selection = cloneRuntimeValue(input.selection)
-    const assistantMessageId = randomUUID()
+    const assistantMessageId = this.createId()
     this.assertCanStartTurn(conversationId)
 
     const controller = new AbortController()
@@ -1208,7 +1245,7 @@ export class AgentRuntime {
       await this.recordAgentEvent(
         withTurnSelection(
           {
-            timestamp: Date.now(),
+            timestamp: this.now(),
             conversationId,
             messageId: assistantMessageId,
             type: 'turn.failed',
@@ -1251,7 +1288,7 @@ export class AgentRuntime {
       await this.recordAgentEvent(
         withTurnSelection(
           {
-            timestamp: Date.now(),
+            timestamp: this.now(),
             conversationId,
             messageId: assistantMessageId,
             type: 'turn.cancelled',
@@ -1419,7 +1456,7 @@ export class AgentRuntime {
       await this.recordAgentEvent(
         withTurnSelection(
           {
-            timestamp: Date.now(),
+            timestamp: this.now(),
             conversationId,
             messageId: slot.assistantMessageId,
             type: 'turn.cancelled',
@@ -1441,7 +1478,7 @@ export class AgentRuntime {
     await this.recordAgentEvent(
       withTurnSelection(
         {
-          timestamp: Date.now(),
+          timestamp: this.now(),
           conversationId,
           messageId: slot.assistantMessageId,
           type: 'turn.interrupted',
@@ -1684,7 +1721,7 @@ export class AgentRuntime {
         }
         if (!terminalAgentEventQueued) {
           queueAgentEvent({
-            timestamp: Date.now(),
+            timestamp: this.now(),
             conversationId,
             messageId: assistantMessageId,
             type: isAbort ? 'turn.cancelled' : 'turn.failed',
