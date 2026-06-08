@@ -6272,7 +6272,7 @@ async function testRuntimeSdkDoesNotExportDocsContract(): Promise<void> {
 }
 
 async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
-  const runtimeSource = await readFile(join(process.cwd(), 'src/main/runtime.ts'), 'utf-8')
+  const runtimeSource = await readFile(join(process.cwd(), 'src/runtime/runtime.ts'), 'utf-8')
   assert(
     !runtimeSource.includes("from './image-store'") && !runtimeSource.includes('saveImage('),
     'AgentRuntime core must not import or call the Desktop image store',
@@ -6411,7 +6411,30 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
   )
 
   const runtimeCoreSdkSource = await readFile(join(process.cwd(), 'src/runtime/core.ts'), 'utf-8')
+  for (const expected of [
+    "'./agent-protocol'",
+    "'./conversation-core'",
+    "'./find-replace'",
+    "'./runtime'",
+    "'./settings-types'",
+    "'./skills'",
+    "'./tool-approvals'",
+    "'./tools'",
+  ]) {
+    assert(
+      runtimeCoreSdkSource.includes(expected),
+      `runtime core SDK should directly export runtime module: ${expected}`,
+    )
+  }
   for (const forbidden of [
+    "'../main/agent-protocol'",
+    "'../main/conversation-core'",
+    "'../main/find-replace'",
+    "'../main/runtime'",
+    "'../main/settings-types'",
+    "'../main/skills'",
+    "'../main/tool-approvals'",
+    "'../main/tools'",
     "'../main/agent'",
     "'../main/conversations'",
     "'../main/extensions'",
@@ -6427,9 +6450,28 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
       `runtime core SDK must not re-export node adapter module: ${forbidden}`,
     )
   }
+  for (const [mainFile, runtimeFile] of [
+    ['agent-protocol.ts', 'agent-protocol'],
+    ['conversation-core.ts', 'conversation-core'],
+    ['runtime-events.ts', 'runtime-events'],
+    ['context.ts', 'context'],
+    ['runtime.ts', 'runtime'],
+    ['settings-types.ts', 'settings-types'],
+    ['tools.ts', 'tools'],
+    ['skills.ts', 'skills'],
+    ['tool-approvals.ts', 'tool-approvals'],
+    ['find-replace.ts', 'find-replace'],
+  ] as const) {
+    const source = (await readFile(join(process.cwd(), 'src/main', mainFile), 'utf-8')).trim()
+    assertEqual(
+      source,
+      `export * from '../runtime/${runtimeFile}'`,
+      `main ${mainFile} should stay a compatibility shim`,
+    )
+  }
 
   const conversationCoreSource = await readFile(
-    join(process.cwd(), 'src/main/conversation-core.ts'),
+    join(process.cwd(), 'src/runtime/conversation-core.ts'),
     'utf-8',
   )
   assert(
@@ -6467,7 +6509,10 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
     )
   }
 
-  const approvalSource = await readFile(join(process.cwd(), 'src/main/tool-approvals.ts'), 'utf-8')
+  const approvalSource = await readFile(
+    join(process.cwd(), 'src/runtime/tool-approvals.ts'),
+    'utf-8',
+  )
   assert(
     !approvalSource.includes("from 'node:") &&
       !approvalSource.includes("from './runtime-host'") &&
@@ -6478,7 +6523,7 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
     'tool approval activity helpers must stay host-agnostic and free of Desktop/Node adapter wiring',
   )
 
-  const toolsSource = await readFile(join(process.cwd(), 'src/main/tools.ts'), 'utf-8')
+  const toolsSource = await readFile(join(process.cwd(), 'src/runtime/tools.ts'), 'utf-8')
   assert(
     !toolsSource.includes("from './image'") &&
       !toolsSource.includes("from './image-store'") &&
@@ -6560,7 +6605,10 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
     'default filesystem adapter should own filesystem IO and default workspace roots',
   )
 
-  const protocolSource = await readFile(join(process.cwd(), 'src/main/agent-protocol.ts'), 'utf-8')
+  const protocolSource = await readFile(
+    join(process.cwd(), 'src/runtime/agent-protocol.ts'),
+    'utf-8',
+  )
   assert(
     protocolSource.includes('export interface StreamRequest') &&
       protocolSource.includes('export type RuntimeStreamChat') &&
@@ -6569,7 +6617,7 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
     'agent protocol should define stream and model-info host contracts',
   )
 
-  const skillCoreSource = await readFile(join(process.cwd(), 'src/main/skills.ts'), 'utf-8')
+  const skillCoreSource = await readFile(join(process.cwd(), 'src/runtime/skills.ts'), 'utf-8')
   for (const forbidden of [
     "from 'node:fs'",
     "from 'node:fs/promises'",

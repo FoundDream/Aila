@@ -1,5 +1,16 @@
 export const AILA_RUNTIME_SDK_VERSION = 1
 
+export {
+  findModel,
+  IMAGE_MODEL_CATALOG,
+  type ImageModelEntry,
+  MODEL_CATALOG,
+  type ModelEntry,
+  type ModelTag,
+  PROVIDER_LABELS,
+  PROVIDER_ORDER,
+  type ProviderId,
+} from '../shared/models'
 export type {
   AgentEvent,
   AgentEventSink,
@@ -12,7 +23,7 @@ export type {
   StreamHandlers,
   StreamRequest,
   UsageInfo,
-} from '../main/agent-protocol'
+} from './agent-protocol'
 export {
   type AgentEventAppendResult,
   AILA_AGENT_EVENT_SCHEMA_VERSION,
@@ -37,7 +48,7 @@ export {
   type PersistedToolCallBlock,
   replayConversationActivity,
   replayConversationRuntimeState,
-} from '../main/conversation-core'
+} from './conversation-core'
 export {
   applyFindReplace,
   type FindReplaceEdit,
@@ -45,7 +56,7 @@ export {
   type FindReplacePatch,
   type FindReplaceResult,
   formatFindReplaceErrors,
-} from '../main/find-replace'
+} from './find-replace'
 export {
   type ActiveAssistantTurn,
   AgentRuntime,
@@ -83,8 +94,8 @@ export {
   type RuntimeSendInput,
   type RuntimeSendResult,
   type RuntimeTransientContextInput,
-} from '../main/runtime'
-export type { Settings } from '../main/settings-types'
+} from './runtime'
+export type { Settings } from './settings-types'
 export {
   AILA_SKILL_FILE,
   createSkillToolPack,
@@ -93,14 +104,14 @@ export {
   parseSkillDocument,
   SKILL_TOOL_NAME,
   type SkillDefinition,
-} from '../main/skills'
+} from './skills'
 export {
   type ImmediateToolApprovalActivityInput,
   requestToolApprovalWithActivity,
   type ToolApprovalActivityRecorder,
   type ToolApprovalIdFactory,
   type ToolApprovalResolutionReason,
-} from '../main/tool-approvals'
+} from './tool-approvals'
 export {
   BUILTIN_TOOL_PACKS,
   createDefaultToolRegistry,
@@ -136,15 +147,4 @@ export {
   type ToolWebSearchResult,
   type ToolWebSearchResultItem,
   type ToolWorkspaceRoot,
-} from '../main/tools'
-export {
-  findModel,
-  IMAGE_MODEL_CATALOG,
-  type ImageModelEntry,
-  MODEL_CATALOG,
-  type ModelEntry,
-  type ModelTag,
-  PROVIDER_LABELS,
-  PROVIDER_ORDER,
-  type ProviderId,
-} from '../shared/models'
+} from './tools'
