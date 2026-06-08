@@ -16,6 +16,7 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef } from 'react'
 import type {
   ActiveAssistantTurn,
+  ChatAttachmentInput,
   ChatDoneEvent,
   ChatErrorEvent,
   ConversationSummary,
@@ -36,6 +37,7 @@ type QueuedRun =
   | {
       kind: 'send'
       text: string
+      attachments: ChatAttachmentInput[]
       selection: ModelSelection
     }
   | {
@@ -600,7 +602,12 @@ export interface ChatStreamsApi {
   busyIds: Set<string>
   hydrate: (id: string) => Promise<void>
   markHydrated: (id: string) => void
-  enqueueSend: (id: string, text: string, selection: ModelSelection) => void
+  enqueueSend: (
+    id: string,
+    text: string,
+    selection: ModelSelection,
+    attachments?: ChatAttachmentInput[],
+  ) => void
   enqueueRetryLast: (id: string, selection: ModelSelection) => void
   abort: (id: string) => void
   drop: (id: string) => void
@@ -650,7 +657,7 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
     try {
       result =
         queued.kind === 'send'
-          ? await window.api.send(id, queued.text, queued.selection)
+          ? await window.api.send(id, queued.text, queued.selection, queued.attachments)
           : await window.api.retryLast(id, queued.selection)
     } catch (err) {
       const errorText = err instanceof Error ? err.message : String(err)
@@ -670,7 +677,18 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
           userMessage: {
             id: crypto.randomUUID(),
             role: 'user',
-            blocks: [{ type: 'text', content: queued.text }],
+            blocks: [
+              { type: 'text', content: queued.text },
+              ...queued.attachments.map((a) =>
+                a.kind === 'image'
+                  ? {
+                      type: 'image' as const,
+                      url: `data:${a.mime};base64,${a.data}`,
+                      mime: a.mime,
+                    }
+                  : { type: 'file' as const, name: a.name, content: a.data },
+              ),
+            ],
             status: 'done',
           },
           assistantMessage: stub,
@@ -736,18 +754,26 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
     }
   }, [state, startRun])
 
-  const enqueueSend = useCallback((id: string, text: string, selection: ModelSelection): void => {
-    const trimmed = text.trim()
-    if (!trimmed) return
-    // Just enqueue — the drain effect above picks up the head once React
-    // commits, regardless of whether the conversation is idle, mid-stream,
-    // or has other prompts already queued ahead.
-    dispatch({
-      type: 'ENQUEUE',
-      conversationId: id,
-      queued: { kind: 'send', text: trimmed, selection },
-    })
-  }, [])
+  const enqueueSend = useCallback(
+    (
+      id: string,
+      text: string,
+      selection: ModelSelection,
+      attachments: ChatAttachmentInput[] = [],
+    ): void => {
+      const trimmed = text.trim()
+      if (!trimmed && attachments.length === 0) return
+      // Just enqueue — the drain effect above picks up the head once React
+      // commits, regardless of whether the conversation is idle, mid-stream,
+      // or has other prompts already queued ahead.
+      dispatch({
+        type: 'ENQUEUE',
+        conversationId: id,
+        queued: { kind: 'send', text: trimmed, attachments, selection },
+      })
+    },
+    [],
+  )
 
   const enqueueRetryLast = useCallback((id: string, selection: ModelSelection): void => {
     dispatch({

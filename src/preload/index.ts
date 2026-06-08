@@ -156,7 +156,27 @@ export interface PersistedImageBlock {
   prompt?: string
 }
 
-export type PersistedBlock = PersistedTextBlock | PersistedToolCallBlock | PersistedImageBlock
+/** A text file (or doc reference) the user attached to their message. */
+export interface PersistedFileBlock {
+  type: 'file'
+  name: string
+  content: string
+}
+
+export type PersistedBlock =
+  | PersistedTextBlock
+  | PersistedToolCallBlock
+  | PersistedImageBlock
+  | PersistedFileBlock
+
+/** Attachment payload sent with a user message. */
+export interface ChatAttachmentInput {
+  kind: 'image' | 'text'
+  name: string
+  mime: string
+  /** kind 'image': base64-encoded bytes (no data: prefix). kind 'text': raw content. */
+  data: string
+}
 
 export interface ImageBlockEvent extends ChatStreamEventBase {
   block: PersistedImageBlock
@@ -280,7 +300,9 @@ const api = {
     conversationId: string,
     userText: string,
     selection: ModelSelection,
-  ): Promise<SendResult> => ipcRenderer.invoke('chat:send', conversationId, userText, selection),
+    attachments?: ChatAttachmentInput[],
+  ): Promise<SendResult> =>
+    ipcRenderer.invoke('chat:send', conversationId, userText, selection, attachments ?? []),
   retryLast: (conversationId: string, selection: ModelSelection): Promise<SendResult> =>
     ipcRenderer.invoke('chat:retry-last', conversationId, selection),
   abort: (conversationId: string): Promise<void> =>

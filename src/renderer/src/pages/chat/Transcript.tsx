@@ -1,4 +1,11 @@
-import { CheckIcon, ChevronRightIcon, CopyIcon, RotateCcwIcon, TerminalIcon } from 'lucide-react'
+import {
+  CheckIcon,
+  ChevronRightIcon,
+  CopyIcon,
+  FileTextIcon,
+  RotateCcwIcon,
+  TerminalIcon,
+} from 'lucide-react'
 import { type ReactElement, useCallback, useState } from 'react'
 import { Streamdown } from 'streamdown'
 import { useStickToBottom } from 'use-stick-to-bottom'
@@ -172,6 +179,14 @@ function BlockView({ block, isStreaming }: { block: Block; isStreaming: boolean 
           <figcaption className="text-[11.5px] text-[var(--text-dim)]">{block.prompt}</figcaption>
         )}
       </figure>
+    )
+  }
+  if (block.type === 'file') {
+    return (
+      <span className="inline-flex max-w-full items-center gap-1.5 self-start rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2.5 py-1.5 text-[12px] text-[var(--text-soft)]">
+        <FileTextIcon className="size-3.5 shrink-0 text-[var(--text-dim)]" />
+        <span className="min-w-0 truncate">{block.name}</span>
+      </span>
     )
   }
   if (block.type === 'tool_call') {

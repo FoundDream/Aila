@@ -3,6 +3,7 @@
 export type {
   ActiveAssistantTurn,
   AgentEventType,
+  ChatAttachmentInput,
   ChatDoneEvent,
   ChatErrorEvent,
   ChatMessage,
@@ -23,6 +24,7 @@ export type {
   OrModel,
   PersistedAgentEvent,
   PersistedBlock,
+  PersistedFileBlock,
   PersistedImageBlock,
   PersistedMessage,
   PersistedTextBlock,

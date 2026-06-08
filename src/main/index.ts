@@ -23,6 +23,7 @@ import { cleanupConversationImages, saveImage } from './image-store'
 import { handleImageProtocol, registerImageProtocolScheme } from './images'
 import { getOpenRouterCatalog } from './openrouter-catalog'
 import { configureDataDir, getDataDir } from './paths'
+import type { ChatAttachmentInput } from './runtime'
 import { createPersistedAgentRuntime } from './runtime-host'
 import { configuredProviders, loadSettings, type Settings, saveSettings } from './settings'
 import { ToolApprovalStore } from './tool-approvals'
@@ -128,11 +129,18 @@ async function shutdownRuntimeWorkbench(): Promise<void> {
 function registerIpcHandlers(): void {
   ipcMain.handle(
     'chat:send',
-    async (_event, conversationId: string, userText: string, selection: ModelSelection) => {
+    async (
+      _event,
+      conversationId: string,
+      userText: string,
+      selection: ModelSelection,
+      attachments?: ChatAttachmentInput[],
+    ) => {
       return agentRuntime.send({
         conversationId,
         userText,
         selection,
+        ...(attachments && attachments.length > 0 && { attachments }),
       })
     },
   )

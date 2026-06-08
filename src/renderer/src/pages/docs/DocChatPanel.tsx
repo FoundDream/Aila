@@ -6,7 +6,7 @@ import { Transcript } from '@/pages/chat/Transcript'
 import type { ChatStreamsApi } from '@/pages/chat/useChatStreams'
 import { useModelSelection } from '@/pages/chat/useModelSelection'
 import type { ConversationSummary } from '../../../../preload/index'
-import type { ProviderId, Settings } from '../../types'
+import type { ChatAttachmentInput, ProviderId, Settings } from '../../types'
 import { useDocConversation } from './useDocConversation'
 
 interface DocChatPanelProps {
@@ -71,9 +71,9 @@ export function DocChatPanel({
     Boolean(activeId) && !isStreaming && queuedCount === 0 && hasRetryableLastTurn
 
   const handleSubmit = useCallback(
-    async (text: string) => {
+    async (text: string, attachments: ChatAttachmentInput[]) => {
       const trimmed = text.trim()
-      if (!trimmed) return
+      if (!trimmed && attachments.length === 0) return
 
       const currentSelection = selectionRef.current
       if (!currentSelection) {
@@ -82,7 +82,7 @@ export function DocChatPanel({
       }
       const id = await ensureActiveSession()
       if (!id) return
-      streams.enqueueSend(id, trimmed, currentSelection)
+      streams.enqueueSend(id, trimmed, currentSelection, attachments)
     },
     [streams, onOpenSettings, selectionRef, ensureActiveSession],
   )

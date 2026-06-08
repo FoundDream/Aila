@@ -1,5 +1,11 @@
-import type { ChatMessage, ModelInfo, ToolCall } from './agent'
-import type { PersistedMessage, PersistedTextBlock, PersistedToolCallBlock } from './conversations'
+import type { ChatMessage, ModelInfo, ToolCall, UserContentPart } from './agent'
+import type {
+  PersistedFileBlock,
+  PersistedImageBlock,
+  PersistedMessage,
+  PersistedTextBlock,
+  PersistedToolCallBlock,
+} from './conversations'
 
 const APPROX_CHARS_PER_TOKEN = 4
 const DEFAULT_CONTEXT_TOKENS = 32_000
@@ -8,6 +14,7 @@ const MIN_CONTEXT_CHARS = 16_000
 const MAX_CONTEXT_CHARS = 180_000
 const MAX_TOOL_RESULT_CHARS = 16_000
 const MAX_OMITTED_SUMMARY_CHARS = 5_000
+const MAX_FILE_ATTACHMENT_CHARS = 16_000
 
 interface ContextRound {
   source: PersistedMessage
@@ -61,8 +68,24 @@ function toolCalls(message: PersistedMessage): PersistedToolCallBlock[] {
 
 function messageToRound(message: PersistedMessage): ContextRound | null {
   if (message.role === 'user') {
-    const content = textContent(message)
-    if (!content) return null
+    const files = message.blocks.filter((b): b is PersistedFileBlock => b.type === 'file')
+    const images = message.blocks.filter((b): b is PersistedImageBlock => b.type === 'image')
+
+    const sections = [textContent(message)]
+    for (const file of files) {
+      const body = truncateChars(file.content, MAX_FILE_ATTACHMENT_CHARS, `file ${file.name}`)
+      sections.push(`[Attached file: ${file.name}]\n\`\`\`\n${body}\n\`\`\``)
+    }
+    const text = sections.filter(Boolean).join('\n\n')
+    if (!text && images.length === 0) return null
+
+    const content: string | UserContentPart[] =
+      images.length === 0
+        ? text
+        : [
+            ...(text ? [{ type: 'text' as const, text }] : []),
+            ...images.map((img) => ({ type: 'image' as const, url: img.url, mime: img.mime })),
+          ]
     const messages: ChatMessage[] = [{ role: 'user', content }]
     return { source: message, messages, charCost: charCost(messages) }
   }

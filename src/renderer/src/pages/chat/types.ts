@@ -1,6 +1,6 @@
 import type { ProviderId } from '../../types'
 
-export type BlockType = 'text' | 'reasoning' | 'tool_call' | 'image'
+export type BlockType = 'text' | 'reasoning' | 'tool_call' | 'image' | 'file'
 
 export interface TextBlock {
   type: 'text' | 'reasoning'
@@ -23,7 +23,13 @@ export interface ImageBlock {
   prompt?: string
 }
 
-export type Block = TextBlock | ToolCallBlock | ImageBlock
+export interface FileBlock {
+  type: 'file'
+  name: string
+  content: string
+}
+
+export type Block = TextBlock | ToolCallBlock | ImageBlock | FileBlock
 
 export interface Message {
   id: string

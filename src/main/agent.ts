@@ -8,6 +8,8 @@
  * persist it on completion regardless of renderer state.
  */
 
+import { readFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import { jsonSchema, type ModelMessage, smoothStream, stepCountIs, streamText, tool } from 'ai'
 import { findModel, type ProviderId } from '../shared/models'
 import {
@@ -17,6 +19,8 @@ import {
   type PersistedMessage,
   type PersistedToolCallBlock,
 } from './conversations'
+import { imageNameFromUrl } from './image-store'
+import { getImagesDir } from './paths'
 import { MissingApiKeyError, resolveModel } from './providers'
 import { loadSettings, type Settings } from './settings'
 import {
@@ -35,8 +39,15 @@ export interface ToolCall {
   function: { name: string; arguments: string }
 }
 
+/** Multimodal user content. Image urls are aila-image:// references resolved
+ * to bytes just before the provider call. */
+export type UserContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image'; url: string; mime: string }
+
 export type ChatMessage =
-  | { role: 'system' | 'user'; content: string }
+  | { role: 'system'; content: string }
+  | { role: 'user'; content: string | UserContentPart[] }
   | { role: 'assistant'; content: string; tool_calls?: ToolCall[] }
   | { role: 'tool'; tool_call_id: string; content: string }
 
@@ -242,16 +253,51 @@ function buildTools(
   )
 }
 
+// Resolve aila-image:// parts to raw bytes for the provider call. Unreadable
+// images (e.g. file pruned from disk) degrade to a text note instead of
+// failing the whole turn.
+async function resolveUserContent(
+  parts: UserContentPart[],
+): Promise<Extract<ModelMessage, { role: 'user' }>['content']> {
+  const out: Array<
+    { type: 'text'; text: string } | { type: 'image'; image: Uint8Array; mediaType: string }
+  > = []
+  for (const part of parts) {
+    if (part.type === 'text') {
+      out.push({ type: 'text', text: part.text })
+      continue
+    }
+    const name = imageNameFromUrl(part.url)
+    try {
+      if (!name) throw new Error('unrecognized image url')
+      const bytes = await readFile(join(getImagesDir(), name))
+      out.push({ type: 'image', image: bytes, mediaType: part.mime })
+    } catch {
+      out.push({ type: 'text', text: '[attached image is no longer available]' })
+    }
+  }
+  return out
+}
+
 // Convert OpenAI-format ChatMessage[] to AI SDK ModelMessage[]. Tool messages
 // need toolName; we look it up from the previous assistant's tool_calls list
 // since persisted state only carries tool_call_id + content.
-function toModelMessages(messages: ChatMessage[]): ModelMessage[] {
+async function toModelMessages(messages: ChatMessage[]): Promise<ModelMessage[]> {
   const toolNameById = new Map<string, string>()
   const out: ModelMessage[] = []
 
   for (const msg of messages) {
-    if (msg.role === 'system' || msg.role === 'user') {
-      out.push({ role: msg.role, content: msg.content })
+    if (msg.role === 'system') {
+      out.push({ role: 'system', content: msg.content })
+      continue
+    }
+
+    if (msg.role === 'user') {
+      if (typeof msg.content === 'string') {
+        out.push({ role: 'user', content: msg.content })
+      } else {
+        out.push({ role: 'user', content: await resolveUserContent(msg.content) })
+      }
       continue
     }
 
@@ -482,7 +528,7 @@ export async function streamChat(req: StreamRequest, handlers: StreamHandlers): 
   try {
     const result = streamText({
       model,
-      messages: toModelMessages(messages),
+      messages: await toModelMessages(messages),
       tools: buildTools(
         {
           settings,

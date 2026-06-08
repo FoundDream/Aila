@@ -18,10 +18,12 @@ import {
   type DocRefRewrite,
   orderedUniqueAgentEvents,
   type PersistedAgentEvent,
+  type PersistedBlock,
   type PersistedMessage,
   type PersistedTextBlock,
   replayConversationActivity,
 } from './conversations'
+import { saveImage } from './image-store'
 import { type AgentRuntimeEvent, createRuntimeEvent } from './runtime-events'
 import type { Settings } from './settings'
 import { createSkillToolPack, type LoadedSkill } from './skills'
@@ -132,10 +134,20 @@ function resolveRetryTurn(record: ConversationRecord): {
   throw new Error('cannot retry: failed assistant turn has no preceding user message')
 }
 
+/** Attachment payload sent with a user message. */
+export interface ChatAttachmentInput {
+  kind: 'image' | 'text'
+  name: string
+  mime: string
+  /** kind 'image': base64-encoded bytes (no data: prefix). kind 'text': raw content. */
+  data: string
+}
+
 export interface RuntimeSendInput {
   conversationId: string
   userText: string
   selection: ModelSelection
+  attachments?: ChatAttachmentInput[]
   transientContext?: ChatMessage[]
 }
 
@@ -773,7 +785,7 @@ export class AgentRuntime {
 
   async send(input: RuntimeSendInput): Promise<RuntimeSendResult> {
     return this.withTurnStartLock(input.conversationId, async (turnStartLock) => {
-      const { conversationId, userText, selection, transientContext } = input
+      const { conversationId, userText, selection, attachments, transientContext } = input
 
       this.assertCanStartTurn(conversationId)
 
@@ -783,11 +795,22 @@ export class AgentRuntime {
       if (previous) await this.waitForPriorStreamBeforeNextTurn(conversationId, previous)
       this.assertCanStartTurn(conversationId)
 
+      const blocks: PersistedBlock[] = [{ type: 'text', content: userText }]
+      for (const attachment of attachments ?? []) {
+        if (attachment.kind === 'image') {
+          const bytes = Buffer.from(attachment.data, 'base64')
+          const { url } = await saveImage(bytes, attachment.name)
+          blocks.push({ type: 'image', url, mime: attachment.mime })
+        } else {
+          blocks.push({ type: 'file', name: attachment.name, content: attachment.data })
+        }
+      }
+
       const userMessage: PersistedMessage = {
         schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
         id: randomUUID(),
         role: 'user',
-        blocks: [{ type: 'text', content: userText }],
+        blocks,
         status: 'done',
       }
       if (!(await this.persistAndAnnounce(conversationId, userMessage))) {
@@ -823,8 +846,13 @@ export class AgentRuntime {
       this.assertCanStartTurn(conversationId)
       const retry = resolveRetryTurn(record)
 
-      if (!messageText(retry.userMessage).trim()) {
-        throw new Error('cannot retry: last persisted user message has no text content')
+      const hasRetryableContent = retry.userMessage.blocks.some((block) =>
+        block.type === 'text'
+          ? block.content.trim().length > 0
+          : block.type === 'image' || block.type === 'file',
+      )
+      if (!hasRetryableContent) {
+        throw new Error('cannot retry: last persisted user message has no content')
       }
 
       return this.startAssistantTurn({

@@ -30,7 +30,18 @@ export interface PersistedImageBlock {
   prompt?: string
 }
 
-export type PersistedBlock = PersistedTextBlock | PersistedToolCallBlock | PersistedImageBlock
+/** A text file (or doc reference) the user attached to their message. */
+export interface PersistedFileBlock {
+  type: 'file'
+  name: string
+  content: string
+}
+
+export type PersistedBlock =
+  | PersistedTextBlock
+  | PersistedToolCallBlock
+  | PersistedImageBlock
+  | PersistedFileBlock
 
 export interface PersistedMessage {
   schemaVersion: typeof AILA_PERSISTED_MESSAGE_SCHEMA_VERSION

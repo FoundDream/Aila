@@ -1,5 +1,11 @@
 import { type ReactElement, useCallback, useEffect } from 'react'
-import type { ConversationRecord, ConversationSummary, ProviderId, Settings } from '../../types'
+import type {
+  ChatAttachmentInput,
+  ConversationRecord,
+  ConversationSummary,
+  ProviderId,
+  Settings,
+} from '../../types'
 import { Composer } from './Composer'
 import { Transcript } from './Transcript'
 import type { ChatStreamsApi } from './useChatStreams'
@@ -53,9 +59,9 @@ export function ChatPage({
     Boolean(conversationId) && !isStreaming && queuedCount === 0 && hasRetryableLastTurn
 
   const handleSubmit = useCallback(
-    async (text: string) => {
+    async (text: string, attachments: ChatAttachmentInput[]) => {
       const trimmed = text.trim()
-      if (!trimmed) return
+      if (!trimmed && attachments.length === 0) return
 
       const currentSelection = selectionRef.current
       if (!currentSelection) {
@@ -72,7 +78,7 @@ export function ChatPage({
         streams.markHydrated(id)
       }
 
-      streams.enqueueSend(id, trimmed, currentSelection)
+      streams.enqueueSend(id, trimmed, currentSelection, attachments)
     },
     [conversationId, onCreateConversation, streams, onOpenSettings, selectionRef.current],
   )
@@ -92,28 +98,49 @@ export function ChatPage({
     streams.enqueueRetryLast(conversationId, currentSelection)
   }, [conversationId, streams, onOpenSettings, selectionRef.current])
 
+  const composer = (
+    <Composer
+      isStreaming={isStreaming}
+      queuedCount={queuedCount}
+      onSubmit={handleSubmit}
+      onAbort={handleAbort}
+      usage={usage}
+      contextLength={contextLength}
+      configuredProviders={configuredProviders}
+      selection={selection}
+      onSelectionChange={handleSelectionChange}
+      onOpenSettings={onOpenSettings}
+      recentOpenRouterModels={settings?.recentOpenRouterModels ?? []}
+    />
+  )
+
   return (
     <div className="flex h-full flex-col text-[var(--text)]">
       <header className="flex h-10 shrink-0 items-center justify-center px-8 [-webkit-app-region:drag]">
         <span className="max-w-[60%] truncate text-[13px] font-medium text-[var(--text-soft)]">
-          {conversation?.meta.title || 'Aila'}
+          {conversation?.meta.title ?? ''}
         </span>
       </header>
       <main className="flex min-h-0 flex-1 flex-col">
-        <Transcript messages={messages} canRetryLast={canRetryLast} onRetryLast={handleRetryLast} />
-        <Composer
-          isStreaming={isStreaming}
-          queuedCount={queuedCount}
-          onSubmit={handleSubmit}
-          onAbort={handleAbort}
-          usage={usage}
-          contextLength={contextLength}
-          configuredProviders={configuredProviders}
-          selection={selection}
-          onSelectionChange={handleSelectionChange}
-          onOpenSettings={onOpenSettings}
-          recentOpenRouterModels={settings?.recentOpenRouterModels ?? []}
-        />
+        {messages.length === 0 ? (
+          // New-chat hero: prompt + composer sit together at the vertical
+          // center; pb offsets the h-10 header so it reads optically centered.
+          <div className="flex min-h-0 flex-1 flex-col justify-center pb-20">
+            <p className="mb-4 text-center text-[22px] font-medium text-[var(--text)]">
+              What can I help with?
+            </p>
+            {composer}
+          </div>
+        ) : (
+          <>
+            <Transcript
+              messages={messages}
+              canRetryLast={canRetryLast}
+              onRetryLast={handleRetryLast}
+            />
+            {composer}
+          </>
+        )}
       </main>
     </div>
   )

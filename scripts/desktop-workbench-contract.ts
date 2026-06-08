@@ -94,7 +94,8 @@ async function testDocConversationWorkspaceContext(): Promise<void> {
     assertEqual(context.length, 1, 'doc-bound conversation should get one context message')
     assertEqual(context[0]?.role, 'system', 'context should be a system message')
 
-    const content = context[0]?.content ?? ''
+    const rawContent = context[0]?.content ?? ''
+    const content = typeof rawContent === 'string' ? rawContent : ''
     assert(content.includes('Desktop workspace context:'), 'context should identify Desktop scope')
     assert(
       content.includes('Active document title: Workbench Contract'),
@@ -913,6 +914,7 @@ function testRendererDropClearsQueueAndBlocksFutureActions(): void {
     queued: {
       kind: 'send',
       text: 'queued before delete',
+      attachments: [],
       selection: { providerId: 'openrouter', modelId: 'contract/mock' },
     },
   })
@@ -958,6 +960,7 @@ function testRendererDropClearsQueueAndBlocksFutureActions(): void {
     queued: {
       kind: 'send',
       text: 'queued after delete',
+      attachments: [],
       selection: { providerId: 'openrouter', modelId: 'contract/mock' },
     },
   })
