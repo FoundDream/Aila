@@ -6,6 +6,7 @@ import {
 } from './runtime'
 import { createPersistedRuntimeStore } from './runtime-store'
 import { loadSettings } from './settings'
+import { loadSkillsFromDir } from './skills'
 import { loadToolPacksFromDir } from './tool-pack-loader'
 
 export interface CreatePersistedAgentRuntimeInput {
@@ -18,6 +19,7 @@ export function createDefaultRuntimeHost(overrides: AgentRuntimeHost = {}): Agen
   return {
     loadSettings,
     loadToolPacks: async () => (await loadToolPacksFromDir()).map((pack) => pack.toolPack),
+    loadSkills: async () => (await loadSkillsFromDir()).skills,
     ...overrides,
   }
 }

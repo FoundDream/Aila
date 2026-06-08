@@ -476,6 +476,10 @@ export function summarizeToolTarget(
     const prompt = stringArg(args, 'prompt')
     return prompt ? target('prompt', prompt) : null
   }
+  if (name === 'skill') {
+    const skillName = stringArg(args, 'name')
+    return skillName ? target('query', skillName) : null
+  }
   return null
 }
 

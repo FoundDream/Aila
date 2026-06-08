@@ -438,6 +438,19 @@ export function writeExtensionReport(report: ExtensionReport): void {
       writeLine(`  ${pack.id} - ${pack.tools.length} tools${toolNames ? `: ${toolNames}` : ''}`)
     }
   }
+
+  writeLine(`Skills: ${report.skillsDir}`)
+  const skillErrors = report.errors.filter((error) => error.kind === 'skills')
+  for (const skillError of skillErrors) {
+    writeLine(`  [error] ${skillError.message}`)
+  }
+  if (report.skills.length === 0) {
+    if (skillErrors.length === 0) writeLine('  (none)')
+  } else {
+    for (const skill of report.skills) {
+      writeLine(`  ${skill.name} - ${skill.description}`)
+    }
+  }
 }
 
 export async function handleSlashCommand(input: {

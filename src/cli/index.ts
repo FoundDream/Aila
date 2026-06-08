@@ -294,6 +294,19 @@ async function printExtensionReport(json: boolean): Promise<boolean> {
     }
   }
 
+  output.write(`Skills: ${report.skillsDir}\n`)
+  const skillErrors = report.errors.filter((error) => error.kind === 'skills')
+  for (const skillError of skillErrors) {
+    output.write(`  [error] ${skillError.message}\n`)
+  }
+  if (report.skills.length === 0) {
+    if (skillErrors.length === 0) output.write('  (none)\n')
+  } else {
+    for (const skill of report.skills) {
+      output.write(`  ${skill.name} - ${skill.description}\n`)
+    }
+  }
+
   return report.ok
 }
 

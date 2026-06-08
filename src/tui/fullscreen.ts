@@ -78,6 +78,19 @@ function extensionReportText(report: Awaited<ReturnType<typeof getExtensionRepor
     }
   }
 
+  lines.push('', `Skills: ${report.skillsDir}`)
+  const skillErrors = report.errors.filter((error) => error.kind === 'skills')
+  for (const skillError of skillErrors) {
+    lines.push(`  [error] ${skillError.message}`)
+  }
+  if (report.skills.length === 0) {
+    if (skillErrors.length === 0) lines.push('  (none)')
+  } else {
+    for (const skill of report.skills) {
+      lines.push(`  ${skill.name} - ${skill.description}`)
+    }
+  }
+
   return lines.join('\n')
 }
 

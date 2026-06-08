@@ -29,6 +29,7 @@ import {
   type AgentRuntimeStore,
   AILA_RUNTIME_EVENT_SCHEMA_VERSION,
   AILA_RUNTIME_EVENT_TYPES,
+  AILA_SKILL_FILE,
   AILA_TOOL_PACK_MANIFEST_FILE,
   AILA_TOOL_PACK_MANIFEST_SCHEMA_VERSION,
   configureDataDir,
@@ -40,14 +41,19 @@ import {
   executeTool,
   getConversationsDir,
   getExtensionReport,
+  getSkillsDir,
   getToolDefinitions,
   getToolPacksDir,
   isRuntimeEventType,
+  loadSkillFromDir,
+  loadSkillsFromDir,
   loadToolPacksFromDir,
+  parseSkillDocument,
   type RuntimeRecordAgentEventInput,
   replayConversationActivity,
   replayConversationRuntimeState,
   type Settings,
+  SKILL_TOOL_NAME,
   summarizeToolTarget,
   type ToolPack,
 } from '../src/runtime'
@@ -698,7 +704,8 @@ async function testRuntimeHostTransientContextUsesInjectedRecord(): Promise<void
     streamChat: async (req, handlers) => {
       streamedContext =
         req.messages.find(
-          (message) => message.role === 'system' && message.content.includes('host context for'),
+          (message): message is { role: 'system'; content: string } =>
+            message.role === 'system' && message.content.includes('host context for'),
         )?.content ?? null
       streamedUserMessages = req.messages
         .filter((message): message is { role: 'user'; content: string } => message.role === 'user')
@@ -5380,6 +5387,245 @@ export default {
   })
 }
 
+function skillDocument(name: string, description: string, body = 'Do the thing.'): string {
+  return `---\nname: ${name}\ndescription: ${description}\n---\n\n${body}\n`
+}
+
+async function writeSkill(skillsDir: string, dirName: string, contents: string): Promise<string> {
+  const directory = join(skillsDir, dirName)
+  await mkdir(directory, { recursive: true })
+  await writeFile(join(directory, AILA_SKILL_FILE), contents, 'utf-8')
+  return directory
+}
+
+function testSkillDocumentParsingContract(): void {
+  const parsed = parseSkillDocument(
+    `---
+name: pdf-processing
+description: Extract text and tables from PDF files.
+license: MIT
+compatibility: Requires Python 3.
+metadata:
+  category: documents
+allowed-tools: read, bash
+---
+
+# Steps
+
+Use pdfplumber.
+`,
+  )
+  assertEqual(parsed.definition.name, 'pdf-processing', 'skill name parsed')
+  assertEqual(
+    parsed.definition.description,
+    'Extract text and tables from PDF files.',
+    'skill description parsed',
+  )
+  assertEqual(parsed.definition.license, 'MIT', 'skill license parsed')
+  assertEqual(parsed.definition.compatibility, 'Requires Python 3.', 'skill compatibility parsed')
+  assertEqual(parsed.definition.metadata?.category, 'documents', 'skill metadata parsed')
+  assert(
+    parsed.definition.allowedTools?.includes('read') &&
+      parsed.definition.allowedTools?.includes('bash'),
+    'skill allowed-tools parsed from comma list',
+  )
+  assert(parsed.body.includes('Use pdfplumber.'), 'skill body excludes frontmatter')
+
+  const expectFailure = (raw: string, label: string) => {
+    let threw = false
+    try {
+      parseSkillDocument(raw)
+    } catch {
+      threw = true
+    }
+    assert(threw, label)
+  }
+
+  expectFailure('no frontmatter here', 'skill without frontmatter is rejected')
+  expectFailure('---\nname: only-name\n---\n\nbody\n', 'skill without description is rejected')
+  expectFailure(
+    '---\nname: Bad_Name\ndescription: x\n---\n\nbody\n',
+    'skill with invalid name characters is rejected',
+  )
+  expectFailure(
+    `---\nname: empty-body\ndescription: ${'a'.repeat(2000)}\n---\n\nbody\n`,
+    'skill with over-long description is rejected',
+  )
+  expectFailure(
+    '---\nname: empty-body\ndescription: valid\n---\n\n   \n',
+    'skill without body instructions is rejected',
+  )
+}
+
+async function testSkillLoaderGracefulErrorsContract(): Promise<void> {
+  await withTempDataDir(async () => {
+    const skillsDir = getSkillsDir()
+    await writeSkill(skillsDir, 'good-skill', skillDocument('good-skill', 'A working skill.'))
+    // name must match directory name.
+    await writeSkill(skillsDir, 'mismatch', skillDocument('other-name', 'Mismatched name.'))
+    // Stray non-directory entry must be ignored, not fail the whole load.
+    await writeFile(join(skillsDir, 'README.txt'), 'not a skill', 'utf-8')
+
+    const result = await loadSkillsFromDir(skillsDir)
+    assertEqual(result.skills.length, 1, 'loader returns only valid skills')
+    assertEqual(result.skills[0]?.definition.name, 'good-skill', 'loader keeps valid skill')
+    assertEqual(result.errors.length, 1, 'loader collects per-skill errors')
+    assert(
+      result.errors[0]?.message.includes('must match its directory name'),
+      'loader reports name/directory mismatch',
+    )
+
+    const single = await loadSkillFromDir(join(skillsDir, 'good-skill'))
+    assertEqual(single.definition.name, 'good-skill', 'loadSkillFromDir returns the skill')
+  })
+}
+
+async function testSkillToolProgressiveDisclosureContract(): Promise<void> {
+  await withTempDataDir(async () => {
+    const skillsDir = getSkillsDir()
+    await writeSkill(
+      skillsDir,
+      'brand-voice',
+      skillDocument('brand-voice', 'Apply the company brand voice to copy.', 'Write warmly.'),
+    )
+    const referencePath = join(skillsDir, 'brand-voice', 'references', 'tone.md')
+    await mkdir(join(skillsDir, 'brand-voice', 'references'), { recursive: true })
+    await writeFile(referencePath, '# Tone\nFriendly.\n', 'utf-8')
+
+    const runtime = new AgentRuntime({
+      loadSkills: async () => (await loadSkillsFromDir()).skills,
+      logger: { warn() {}, error() {} },
+    })
+
+    const registry = await runtime.getToolRegistry()
+    const skillSpec = registry.specsByName.get(SKILL_TOOL_NAME)
+    assert(skillSpec, 'runtime registers the skill tool when skills exist')
+    // Level 1 disclosure: name + description embedded in the tool description.
+    assert(
+      skillSpec?.function.description.includes('brand-voice') &&
+        skillSpec?.function.description.includes('Apply the company brand voice'),
+      'skill tool description embeds skill name and description',
+    )
+    const skillParams = skillSpec?.function.parameters as {
+      properties?: { name?: { enum?: string[] } }
+    }
+    assert(
+      skillParams.properties?.name?.enum?.includes('brand-voice'),
+      'skill tool constrains name to known skills',
+    )
+
+    const context = { settings: { apiKeys: {}, defaultModel: null } satisfies Settings }
+    const output = await executeTool(SKILL_TOOL_NAME, { name: 'brand-voice' }, context, registry)
+    // Level 2 disclosure: SKILL.md body returned on invocation.
+    assert(output.includes('Write warmly.'), 'skill invocation returns the SKILL.md body')
+    // Level 3 disclosure: bundled files listed for on-demand reading.
+    assert(output.includes(referencePath), 'skill invocation lists bundled files')
+
+    let unknownThrew = false
+    try {
+      await executeTool(SKILL_TOOL_NAME, { name: 'missing' }, context, registry)
+    } catch {
+      unknownThrew = true
+    }
+    assert(unknownThrew, 'skill invocation rejects unknown skill names')
+  })
+}
+
+async function testSkillBundledFilesAreReadableContract(): Promise<void> {
+  await withTempDataDir(async () => {
+    const skillsDir = getSkillsDir()
+    await writeSkill(
+      skillsDir,
+      'data-helper',
+      skillDocument('data-helper', 'Helps with data.', 'See scripts/run.py.'),
+    )
+    const scriptPath = join(skillsDir, 'data-helper', 'scripts', 'run.py')
+    await mkdir(join(skillsDir, 'data-helper', 'scripts'), { recursive: true })
+    await writeFile(scriptPath, 'print("hi")\n', 'utf-8')
+
+    const runtime = new AgentRuntime({
+      loadSkills: async () => (await loadSkillsFromDir()).skills,
+      logger: { warn() {}, error() {} },
+    })
+
+    // The skill directory is added as a workspace root, so the read tool can
+    // open bundled files even though they live under the data dir.
+    const readOutput = await runtime.executeTool({ name: 'read', args: { path: scriptPath } })
+    assert(readOutput.includes('print("hi")'), 'read tool can open bundled skill files')
+  })
+}
+
+async function testSkillReloadPicksUpNewSkillsContract(): Promise<void> {
+  await withTempDataDir(async () => {
+    const skillsDir = getSkillsDir()
+    await writeSkill(skillsDir, 'first', skillDocument('first', 'The first skill.'))
+
+    const runtime = new AgentRuntime({
+      loadSkills: async () => (await loadSkillsFromDir()).skills,
+      logger: { warn() {}, error() {} },
+    })
+
+    let registry = await runtime.getToolRegistry()
+    let params = registry.specsByName.get(SKILL_TOOL_NAME)?.function.parameters as {
+      properties?: { name?: { enum?: string[] } }
+    }
+    assert(params.properties?.name?.enum?.includes('first'), 'initial skill is registered')
+    assert(!params.properties?.name?.enum?.includes('second'), 'second skill not yet present')
+
+    await writeSkill(skillsDir, 'second', skillDocument('second', 'The second skill.'))
+    registry = await runtime.reloadToolPacks()
+    params = registry.specsByName.get(SKILL_TOOL_NAME)?.function.parameters as {
+      properties?: { name?: { enum?: string[] } }
+    }
+    assert(
+      params.properties?.name?.enum?.includes('first') &&
+        params.properties?.name?.enum?.includes('second'),
+      'reload picks up newly added skills',
+    )
+  })
+}
+
+async function testPersistedRuntimeLoadsSkillsContract(): Promise<void> {
+  await withTempDataDir(async () => {
+    await writeSkill(
+      getSkillsDir(),
+      'factory-skill',
+      skillDocument('factory-skill', 'Loaded through the default host.'),
+    )
+    const runtime = runtimeSdk.createPersistedAgentRuntime()
+    const registry = await runtime.getToolRegistry()
+    assert(
+      registry.specsByName.has(SKILL_TOOL_NAME),
+      'persisted runtime factory loads skills through the default host',
+    )
+    const skills = await runtime.getSkills()
+    assertEqual(
+      skills[0]?.definition.name,
+      'factory-skill',
+      'default host loads skills from dataDir',
+    )
+  })
+}
+
+async function testSkillExtensionReportContract(): Promise<void> {
+  await withTempDataDir(async (dataDir) => {
+    const skillsDir = getSkillsDir()
+    await writeSkill(skillsDir, 'reportable', skillDocument('reportable', 'Shows up in reports.'))
+    await writeSkill(skillsDir, 'broken', skillDocument('different', 'Name mismatch error.'))
+
+    const report = await getExtensionReport()
+    assertEqual(report.skillsDir, skillsDir, 'extension report exposes skills dir')
+    assert(
+      report.skills.some((skill) => skill.name === 'reportable'),
+      'extension report lists loaded skills',
+    )
+    const skillError = report.errors.find((error) => error.kind === 'skills')
+    assert(skillError, 'extension report surfaces skill load errors')
+    assertEqual(report.ok, false, 'extension report is not ok when a skill fails to load')
+    assertEqual(report.dataDir, dataDir, 'extension report data dir')
+  })
+}
+
 async function main(): Promise<void> {
   await testRuntimeEventContract()
   await testRuntimeEmitsVersionedEvents()
@@ -5444,6 +5690,13 @@ async function main(): Promise<void> {
   await testToolPackManifestLoader()
   await testToolPackReloadsChangedEntry()
   await testExtensionReportContract()
+  testSkillDocumentParsingContract()
+  await testSkillLoaderGracefulErrorsContract()
+  await testSkillToolProgressiveDisclosureContract()
+  await testSkillBundledFilesAreReadableContract()
+  await testSkillReloadPicksUpNewSkillsContract()
+  await testPersistedRuntimeLoadsSkillsContract()
+  await testSkillExtensionReportContract()
   console.log('runtime contract: ok')
 }
 

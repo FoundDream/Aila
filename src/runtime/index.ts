@@ -38,6 +38,7 @@ export {
   type ExtensionReport,
   type ExtensionReportError,
   type ExtensionReportErrorKind,
+  type ExtensionSkillReport,
   type ExtensionToolPackReport,
   getExtensionReport,
 } from '../main/extensions'
@@ -55,6 +56,7 @@ export {
   getDataDir,
   getImagesDir,
   getSettingsPath,
+  getSkillsDir,
   getToolPacksDir,
 } from '../main/paths'
 export {
@@ -97,6 +99,19 @@ export {
   type Settings,
   saveSettings,
 } from '../main/settings'
+export {
+  AILA_SKILL_FILE,
+  createSkillToolPack,
+  type LoadedSkill,
+  loadSkillFromDir,
+  loadSkillsFromDir,
+  type ParsedSkillDocument,
+  parseSkillDocument,
+  SKILL_TOOL_NAME,
+  type SkillDefinition,
+  type SkillLoadError,
+  type SkillLoadResult,
+} from '../main/skills'
 export {
   AILA_TOOL_PACK_MANIFEST_FILE,
   AILA_TOOL_PACK_MANIFEST_SCHEMA_VERSION,

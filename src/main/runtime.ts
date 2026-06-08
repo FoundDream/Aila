@@ -24,6 +24,7 @@ import {
 } from './conversations'
 import { type AgentRuntimeEvent, createRuntimeEvent } from './runtime-events'
 import type { Settings } from './settings'
+import { createSkillToolPack, type LoadedSkill } from './skills'
 import {
   createDefaultToolRegistry,
   createToolRegistry,
@@ -31,6 +32,7 @@ import {
   type ToolContext,
   type ToolPack,
   type ToolRegistry,
+  type ToolWorkspaceRoot,
 } from './tools'
 
 interface StreamSlot {
@@ -216,6 +218,8 @@ export interface AgentRuntimeHost {
   cleanupConversationAssets?: (record: ConversationRecord) => MaybePromise<void>
   toolPacks?: readonly ToolPack[]
   loadToolPacks?: () => Promise<readonly ToolPack[]>
+  skills?: readonly LoadedSkill[]
+  loadSkills?: () => Promise<readonly LoadedSkill[]>
   loadSettings?: () => MaybePromise<Settings>
   loadTransientContext?: (
     input: RuntimeTransientContextInput,
@@ -232,6 +236,7 @@ export interface AgentRuntimeOptions extends AgentRuntimeHost {
   host?: AgentRuntimeHost
   store?: AgentRuntimeStore
   toolPacks?: readonly ToolPack[]
+  skills?: readonly LoadedSkill[]
   abortAllCleanupTimeoutMs?: number
 }
 
@@ -473,6 +478,7 @@ function normalizeRuntimeHost(options: AgentRuntimeOptions): AgentRuntimeHost {
     host.cleanupConversationAssets = options.cleanupConversationAssets
   }
   if (options.loadToolPacks) host.loadToolPacks = options.loadToolPacks
+  if (options.loadSkills) host.loadSkills = options.loadSkills
   if (options.loadSettings) host.loadSettings = options.loadSettings
   if (options.loadTransientContext) host.loadTransientContext = options.loadTransientContext
   if (options.generateImage) host.generateImage = options.generateImage
@@ -491,6 +497,7 @@ function normalizeRuntimeHost(options: AgentRuntimeOptions): AgentRuntimeHost {
     host.cleanupConversationAssets = options.host.cleanupConversationAssets
   }
   if (options.host.loadToolPacks) host.loadToolPacks = options.host.loadToolPacks
+  if (options.host.loadSkills) host.loadSkills = options.host.loadSkills
   if (options.host.loadSettings) host.loadSettings = options.host.loadSettings
   if (options.host.loadTransientContext) {
     host.loadTransientContext = options.host.loadTransientContext
@@ -586,6 +593,23 @@ function resolveStaticToolPacks(options: AgentRuntimeOptions): readonly ToolPack
   return (options.host?.toolPacks ?? options.toolPacks ?? []).map(cloneRuntimeToolPack)
 }
 
+function resolveStaticSkills(options: AgentRuntimeOptions): readonly LoadedSkill[] {
+  return (options.host?.skills ?? options.skills ?? []).map(cloneRuntimeSkill)
+}
+
+function cloneRuntimeSkill(skill: LoadedSkill): LoadedSkill {
+  return cloneRuntimeValue(skill)
+}
+
+function cloneRuntimeSkills(skills: readonly LoadedSkill[]): LoadedSkill[] {
+  return skills.map(cloneRuntimeSkill)
+}
+
+function createRuntimeSkillToolPacks(skills: readonly LoadedSkill[]): ToolPack[] {
+  const pack = createSkillToolPack(skills)
+  return pack ? [pack] : []
+}
+
 export class AgentRuntime {
   private readonly activeStreams = new Map<string, StreamSlot>()
   private readonly turnStartLocks = new Map<string, TurnStartLockSlot>()
@@ -594,27 +618,44 @@ export class AgentRuntime {
   private readonly store: AgentRuntimeStore
   private readonly logger: Pick<Console, 'error' | 'warn'>
   private readonly staticToolPacks: readonly ToolPack[]
+  private readonly staticSkills: readonly LoadedSkill[]
   private readonly fallbackToolRegistry: ToolRegistry
   private shutdownPromise: Promise<void> | null = null
   private shutdownStarted = false
   private toolRegistryLoad: Promise<ToolRegistry> | null = null
+  private skillsLoad: Promise<readonly LoadedSkill[]> | null = null
 
   constructor(private readonly options: AgentRuntimeOptions = {}) {
     this.host = normalizeRuntimeHost(options)
     this.store = options.store ?? createInMemoryRuntimeStore()
     this.logger = this.host.logger ?? console
     this.staticToolPacks = resolveStaticToolPacks(options)
-    this.fallbackToolRegistry = createDefaultToolRegistry(this.staticToolPacks)
+    this.staticSkills = resolveStaticSkills(options)
+    this.fallbackToolRegistry = createDefaultToolRegistry([
+      ...this.staticToolPacks,
+      ...createRuntimeSkillToolPacks(this.staticSkills),
+    ])
   }
 
   async getToolRegistry(): Promise<ToolRegistry> {
-    if (!this.host.loadToolPacks) return cloneRuntimeToolRegistry(this.fallbackToolRegistry)
+    if (!this.host.loadToolPacks && !this.host.loadSkills) {
+      return cloneRuntimeToolRegistry(this.fallbackToolRegistry)
+    }
     if (!this.toolRegistryLoad) this.toolRegistryLoad = this.loadToolRegistry()
     return cloneRuntimeToolRegistry(await this.toolRegistryLoad)
   }
 
+  async getSkills(): Promise<LoadedSkill[]> {
+    if (!this.host.loadSkills) return cloneRuntimeSkills(this.staticSkills)
+    if (!this.skillsLoad) this.skillsLoad = this.loadSkills()
+    return cloneRuntimeSkills(await this.skillsLoad)
+  }
+
+  // Reloads every extension cache (manifest tool packs and skills) and
+  // rebuilds the tool registry from the refreshed sources.
   async reloadToolPacks(): Promise<ToolRegistry> {
     this.toolRegistryLoad = null
+    this.skillsLoad = null
     return this.getToolRegistry()
   }
 
@@ -1224,6 +1265,16 @@ export class AgentRuntime {
     return cloneRuntimeWorkspaceRoots(typeof roots === 'function' ? roots() : roots)
   }
 
+  // Skill directories become read/write roots so the model can open bundled
+  // skill files (references/, scripts/, assets/) with the ordinary file tools.
+  private async resolveSkillWorkspaceRoots(): Promise<ToolWorkspaceRoot[]> {
+    const skills = await this.getSkills()
+    return skills.map((skill) => ({
+      path: skill.directory,
+      label: `Skill: ${skill.definition.name}`,
+    }))
+  }
+
   private resolveShellCwd(): ToolContext['shellCwd'] {
     const cwd = this.host.shellCwd
     return typeof cwd === 'function' ? cwd() : cwd
@@ -1238,13 +1289,15 @@ export class AgentRuntime {
   }
 
   private async buildToolContext(input: RuntimeToolContextInput): Promise<ToolContext> {
+    const hostRoots = this.resolveWorkspaceRoots()
+    const skillRoots = await this.resolveSkillWorkspaceRoots()
     return {
       settings: await this.resolveSettingsOrDefault(),
       ...(input.conversationId && { conversationId: input.conversationId }),
       ...(input.messageId && { messageId: input.messageId }),
       ...(input.toolCallId && { toolCallId: input.toolCallId }),
       ...(input.signal && { signal: input.signal }),
-      workspaceRoots: this.resolveWorkspaceRoots(),
+      workspaceRoots: skillRoots.length > 0 ? [...(hostRoots ?? []), ...skillRoots] : hostRoots,
       shellCwd: this.resolveShellCwd(),
       onToolPolicy: this.host.onToolPolicy,
       onToolApproval: this.host.onToolApproval,
@@ -1390,9 +1443,11 @@ export class AgentRuntime {
   private async loadToolRegistry(): Promise<ToolRegistry> {
     try {
       const loaded = await this.host.loadToolPacks?.()
+      const skills = await this.getSkills()
       return createDefaultToolRegistry([
         ...this.staticToolPacks,
         ...(loaded ?? []).map(cloneRuntimeToolPack),
+        ...createRuntimeSkillToolPacks(skills),
       ])
     } catch (error) {
       this.logger.warn(
@@ -1400,6 +1455,16 @@ export class AgentRuntime {
         error,
       )
       return this.fallbackToolRegistry
+    }
+  }
+
+  private async loadSkills(): Promise<readonly LoadedSkill[]> {
+    try {
+      const loaded = await this.host.loadSkills?.()
+      return [...this.staticSkills, ...(loaded ?? [])].map(cloneRuntimeSkill)
+    } catch (error) {
+      this.logger.warn('[runtime] skill load failed; continuing without skills:', error)
+      return cloneRuntimeSkills(this.staticSkills)
     }
   }
 
