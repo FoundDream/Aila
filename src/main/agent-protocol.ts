@@ -1,1 +1,1 @@
-export * from '../runtime/agent-protocol'
+export * from '../../packages/agent/src/agent-protocol'

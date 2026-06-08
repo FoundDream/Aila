@@ -5,7 +5,6 @@ import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { stdin as input, stdout as output, stderr } from 'node:process'
-import * as dotenv from 'dotenv'
 import {
   type AgentRuntimeApi,
   type AgentRuntimeEvent,
@@ -18,7 +17,8 @@ import {
   type ProviderId,
   requestToolApprovalWithActivity,
   type ToolApprovalRequest,
-} from '../runtime/core'
+} from '@aila/agent'
+import * as dotenv from 'dotenv'
 import {
   configureDataDir,
   configuredProviders,
@@ -27,7 +27,7 @@ import {
   getExtensionReport,
   getToolPacksDir,
   loadSettings,
-} from '../runtime/node'
+} from '../main/agent-host'
 
 dotenv.config()
 

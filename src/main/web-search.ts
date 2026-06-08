@@ -1,4 +1,4 @@
-import type { ToolWebSearchRequest, ToolWebSearchResult } from '../runtime/core'
+import type { ToolWebSearchRequest, ToolWebSearchResult } from '@aila/agent'
 
 interface TavilyResponse {
   answer?: string

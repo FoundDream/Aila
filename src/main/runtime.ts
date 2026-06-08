@@ -1,1 +1,1 @@
-export * from '../runtime/runtime'
+export * from '../../packages/agent/src/runtime'

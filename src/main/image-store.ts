@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { mkdir, unlink, writeFile } from 'node:fs/promises'
 import { extname, join } from 'node:path'
-import type { ConversationRecord, PersistedImageBlock } from '../runtime/core'
+import type { ConversationRecord, PersistedImageBlock } from '@aila/agent'
 import { getImagesDir } from './paths'
 
 export const IMAGE_PROTOCOL = 'aila-image'

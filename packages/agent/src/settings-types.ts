@@ -1,4 +1,4 @@
-import type { ProviderId } from '../shared/models'
+import type { ProviderId } from './models'
 
 export interface Settings {
   apiKeys: {

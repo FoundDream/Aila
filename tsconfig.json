@@ -4,6 +4,7 @@
   "compilerOptions": {
     "baseUrl": ".",
     "paths": {
+      "@aila/agent": ["./packages/agent/src/index.ts"],
       "@/*": ["./src/renderer/src/*"]
     }
   }

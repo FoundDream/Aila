@@ -1,4 +1,4 @@
-import type { ProviderId } from '../../shared/models'
+import type { ProviderId } from '@aila/agent'
 
 export interface ImageRequest {
   prompt: string

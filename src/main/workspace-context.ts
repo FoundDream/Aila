@@ -1,4 +1,4 @@
-import type { ChatMessage, ConversationRecord, ToolContext } from '../runtime/core'
+import type { ChatMessage, ConversationRecord, ToolContext } from '@aila/agent'
 import { getDoc, getDocFilePath } from './docs'
 import { getDocumentsDir } from './paths'
 

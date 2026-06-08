@@ -1,4 +1,3 @@
-import type { IpcMain } from 'electron'
 import {
   type ActiveAssistantTurn,
   type AgentRuntimeApi,
@@ -13,7 +12,8 @@ import {
   type ToolApprovalRequest,
   type ToolApprovalRequestPayload,
   ToolApprovalStore,
-} from '../runtime/core'
+} from '@aila/agent'
+import type { IpcMain } from 'electron'
 import { cleanupConversationImages } from './image-store'
 import { createPersistedAgentRuntime } from './runtime-host'
 import {

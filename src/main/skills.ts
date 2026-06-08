@@ -1,1 +1,1 @@
-export * from '../runtime/skills'
+export * from '../../packages/agent/src/skills'

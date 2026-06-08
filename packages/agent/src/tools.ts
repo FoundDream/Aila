@@ -7,7 +7,7 @@
  */
 
 import { basename, isAbsolute, relative, resolve, sep } from 'node:path'
-import type { ProviderId } from '../shared/models'
+import type { ProviderId } from './models'
 import type { Settings } from './settings-types'
 
 export interface ToolDefinition {

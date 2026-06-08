@@ -5,6 +5,7 @@
     "src/renderer/src/**/*",
     "src/renderer/src/**/*.tsx",
     "src/preload/*.d.ts",
+    "packages/agent/src/**/*",
     "src/shared/**/*"
   ],
   "compilerOptions": {
@@ -13,6 +14,7 @@
     "jsx": "react-jsx",
     "baseUrl": ".",
     "paths": {
+      "@aila/agent": ["packages/agent/src/index.ts"],
       "@/*": ["src/renderer/src/*"],
       "@shared/*": ["src/shared/*"]
     }

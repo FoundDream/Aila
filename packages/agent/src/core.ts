@@ -1,16 +1,5 @@
 export const AILA_RUNTIME_SDK_VERSION = 1
 
-export {
-  findModel,
-  IMAGE_MODEL_CATALOG,
-  type ImageModelEntry,
-  MODEL_CATALOG,
-  type ModelEntry,
-  type ModelTag,
-  PROVIDER_LABELS,
-  PROVIDER_ORDER,
-  type ProviderId,
-} from '../shared/models'
 export type {
   AgentEvent,
   AgentEventSink,
@@ -58,6 +47,17 @@ export {
   replayConversationActivity,
   replayConversationRuntimeState,
 } from './conversation-core'
+export {
+  findModel,
+  IMAGE_MODEL_CATALOG,
+  type ImageModelEntry,
+  MODEL_CATALOG,
+  type ModelEntry,
+  type ModelTag,
+  PROVIDER_LABELS,
+  PROVIDER_ORDER,
+  type ProviderId,
+} from './models'
 export {
   type ActiveAssistantTurn,
   AgentRuntime,

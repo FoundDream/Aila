@@ -2,13 +2,13 @@ import { spawn } from 'node:child_process'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { appendMessage, createConversation, getConversation } from '../src/main/conversations'
 import {
   AILA_AGENT_EVENT_SCHEMA_VERSION,
   AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
-  configureDataDir,
   createRuntimeEvent,
-} from '../src/runtime'
+} from '@aila/agent'
+import { configureDataDir } from '../src/main/agent-host'
+import { appendMessage, createConversation, getConversation } from '../src/main/conversations'
 import { handleRuntimeEvent } from '../src/tui/line-mode'
 
 interface RunResult {
@@ -261,12 +261,12 @@ async function testTuiUsesSharedRuntimeFactory(): Promise<void> {
   const source = await readFile(join(process.cwd(), 'src/tui/line-mode.ts'), 'utf-8')
   const fullscreenSource = await readFile(join(process.cwd(), 'src/tui/fullscreen.ts'), 'utf-8')
   assert(
-    source.includes("from '../runtime/core'") && source.includes("from '../runtime/node'"),
-    'TUI adapter should import explicit runtime core and node adapter surfaces',
+    source.includes("from '@aila/agent'") && source.includes("from '../main/agent-host'"),
+    'TUI adapter should import agent core from @aila/agent and host adapters from main',
   )
   assert(
-    !source.includes("from '../runtime'"),
-    'TUI adapter should not import the mixed compatibility runtime barrel',
+    !source.includes("from '../runtime") && !fullscreenSource.includes("from '../runtime"),
+    'TUI adapters should not import local runtime paths',
   )
   assert(
     !source.includes("from '../runtime/internal'") &&

@@ -1,1 +1,1 @@
-export * from '../runtime/tool-approvals'
+export * from '../../packages/agent/src/tool-approvals'

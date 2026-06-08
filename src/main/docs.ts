@@ -1,6 +1,6 @@
 import { mkdir, open, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, join, posix as pathPosix, relative, sep } from 'node:path'
-import type { ConversationSummary } from '../runtime/core'
+import type { ConversationSummary } from '@aila/agent'
 import { type DocRefRewrite, rewriteDocRefs as rewritePersistedDocRefs } from './conversations'
 import { imageNameFromUrl } from './image-store'
 import { getDocumentsDir, getImagesDir } from './paths'

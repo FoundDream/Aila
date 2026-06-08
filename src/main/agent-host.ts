@@ -1,4 +1,4 @@
-export { getModelInfo } from '../main/agent'
+export { getModelInfo } from './agent'
 export {
   type ExtensionReport,
   type ExtensionReportError,
@@ -6,7 +6,7 @@ export {
   type ExtensionSkillReport,
   type ExtensionToolPackReport,
   getExtensionReport,
-} from '../main/extensions'
+} from './extensions'
 export {
   configureDataDir,
   getConversationsDir,
@@ -15,26 +15,26 @@ export {
   getSettingsPath,
   getSkillsDir,
   getToolPacksDir,
-} from '../main/paths'
+} from './paths'
 export {
   type CreatePersistedAgentRuntimeInput,
   createDefaultRuntimeHost,
   createPersistedAgentRuntime,
-} from '../main/runtime-host'
-export { createPersistedRuntimeStore } from '../main/runtime-store'
+} from './runtime-host'
+export { createPersistedRuntimeStore } from './runtime-store'
 export {
   configuredProviders,
   loadSettings,
   resolveApiKey,
   type Settings,
   saveSettings,
-} from '../main/settings'
+} from './settings'
 export {
   loadSkillFromDir,
   loadSkillsFromDir,
   type SkillLoadError,
   type SkillLoadResult,
-} from '../main/skill-loader'
+} from './skill-loader'
 export {
   AILA_TOOL_PACK_MANIFEST_FILE,
   AILA_TOOL_PACK_MANIFEST_SCHEMA_VERSION,
@@ -44,4 +44,4 @@ export {
   loadToolPacksFromDir,
   parseToolPackManifest,
   type ToolPackManifest,
-} from '../main/tool-pack-loader'
+} from './tool-pack-loader'

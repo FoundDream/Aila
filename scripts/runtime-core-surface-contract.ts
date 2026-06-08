@@ -39,7 +39,7 @@ import {
   type ToolRegistry,
   type ToolShellRequest,
   type ToolWebSearchRequest,
-} from '../src/runtime/core'
+} from '@aila/agent'
 
 export type RuntimeCorePublicSurfaceContract = {
   agentEvent: AgentEvent

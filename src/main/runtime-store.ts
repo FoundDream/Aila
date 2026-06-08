@@ -1,4 +1,4 @@
-import type { AgentRuntimeStore } from '../runtime/core'
+import type { AgentRuntimeStore } from '@aila/agent'
 import {
   appendAgentEventAndTouchConversation,
   createConversation,

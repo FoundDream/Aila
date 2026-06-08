@@ -1,4 +1,4 @@
-import { IMAGE_MODEL_CATALOG, MODEL_CATALOG, PROVIDER_LABELS, PROVIDER_ORDER } from '@shared/models'
+import { IMAGE_MODEL_CATALOG, MODEL_CATALOG, PROVIDER_LABELS, PROVIDER_ORDER } from '@aila/agent'
 import { BoxIcon, EyeIcon, EyeOffIcon, KeyRoundIcon, SearchIcon, XIcon } from 'lucide-react'
 import { Dialog as DialogPrimitive } from 'radix-ui'
 import { type ReactElement, type ReactNode, useEffect, useMemo, useState } from 'react'

@@ -1,4 +1,4 @@
-import { findModel, MODEL_CATALOG } from '@shared/models'
+import { findModel, MODEL_CATALOG } from '@aila/agent'
 import { useCallback, useMemo, useRef } from 'react'
 import type { ModelSelection, ProviderId, Settings } from '../../types'
 

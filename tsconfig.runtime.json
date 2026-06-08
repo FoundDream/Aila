@@ -8,8 +8,9 @@
     "types": ["node"],
     "baseUrl": ".",
     "paths": {
+      "@aila/agent": ["./packages/agent/src/index.ts"],
       "@shared/*": ["./src/shared/*"]
     }
   },
-  "include": ["src/runtime/core.ts", "scripts/runtime-core-surface-contract.ts"]
+  "include": ["packages/agent/src/**/*", "scripts/runtime-core-surface-contract.ts"]
 }

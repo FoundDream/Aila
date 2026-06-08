@@ -2,14 +2,14 @@ import { spawn } from 'node:child_process'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { handleRuntimeEvent } from '../src/cli/index'
-import { appendMessage, createConversation, getConversation } from '../src/main/conversations'
 import {
   AILA_AGENT_EVENT_SCHEMA_VERSION,
   AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
-  configureDataDir,
   createRuntimeEvent,
-} from '../src/runtime'
+} from '@aila/agent'
+import { handleRuntimeEvent } from '../src/cli/index'
+import { configureDataDir } from '../src/main/agent-host'
+import { appendMessage, createConversation, getConversation } from '../src/main/conversations'
 
 interface RunResult {
   code: number
@@ -171,13 +171,10 @@ function testInterruptedAgentEventCompletesCliAdapter(): void {
 async function testCliUsesSharedRuntimeFactory(): Promise<void> {
   const source = await readFile(join(process.cwd(), 'src/cli/index.ts'), 'utf-8')
   assert(
-    source.includes("from '../runtime/core'") && source.includes("from '../runtime/node'"),
-    'CLI adapter should import explicit runtime core and node adapter surfaces',
+    source.includes("from '@aila/agent'") && source.includes("from '../main/agent-host'"),
+    'CLI adapter should import agent core from @aila/agent and host adapters from main',
   )
-  assert(
-    !source.includes("from '../runtime'"),
-    'CLI adapter should not import the mixed compatibility runtime barrel',
-  )
+  assert(!source.includes("from '../runtime"), 'CLI adapter should not import local runtime paths')
   assert(
     !source.includes("from '../runtime/internal'"),
     'CLI adapter should not import runtime implementation internals',

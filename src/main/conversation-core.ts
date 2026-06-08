@@ -1,1 +1,1 @@
-export * from '../runtime/conversation-core'
+export * from '../../packages/agent/src/conversation-core'

@@ -1,5 +1,4 @@
 import { randomUUID } from 'node:crypto'
-import * as dotenv from 'dotenv'
 import {
   type AgentRuntimeApi,
   type AgentRuntimeEvent,
@@ -8,8 +7,14 @@ import {
   type ModelSelection,
   PROVIDER_LABELS,
   type ToolApprovalRequest,
-} from '../runtime/core'
-import { configureDataDir, getDataDir, getExtensionReport, getToolPacksDir } from '../runtime/node'
+} from '@aila/agent'
+import * as dotenv from 'dotenv'
+import {
+  configureDataDir,
+  getDataDir,
+  getExtensionReport,
+  getToolPacksDir,
+} from '../main/agent-host'
 import {
   CombinedAutocompleteProvider,
   Editor,

@@ -1,5 +1,5 @@
+import type { ProviderId } from '@aila/agent'
 import { contextBridge, ipcRenderer } from 'electron'
-import type { ProviderId } from '../shared/models'
 import type { OrCatalog } from '../shared/openrouter'
 
 export type { OrCatalog, OrFamily, OrModel } from '../shared/openrouter'

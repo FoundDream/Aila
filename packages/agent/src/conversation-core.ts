@@ -1,5 +1,5 @@
-import type { ProviderId } from '../shared/models'
 import type { AgentEvent } from './agent-protocol'
+import type { ProviderId } from './models'
 
 export const AILA_CONVERSATION_META_SCHEMA_VERSION = 1
 export const AILA_PERSISTED_MESSAGE_SCHEMA_VERSION = 1

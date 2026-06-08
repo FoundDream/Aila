@@ -8,9 +8,7 @@
     "types": ["node"],
     "baseUrl": ".",
     "paths": {
-      "@aila/runtime": ["./src/runtime/index.ts"],
-      "@aila/runtime/core": ["./src/runtime/core.ts"],
-      "@aila/runtime/node": ["./src/runtime/node.ts"],
+      "@aila/agent": ["./packages/agent/src/index.ts"],
       "@shared/*": ["./src/shared/*"]
     }
   },

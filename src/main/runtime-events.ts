@@ -1,1 +1,1 @@
-export * from '../runtime/runtime-events'
+export * from '../../packages/agent/src/runtime-events'

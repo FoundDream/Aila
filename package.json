@@ -1,18 +1,22 @@
 {
   "name": "Aila",
   "version": "0.1.0",
+  "private": true,
   "description": "Aila is a desktop AI agent that helps you with your daily tasks.",
+  "workspaces": [
+    "packages/*"
+  ],
   "main": "./out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
     "tui": "bun src/tui/index.ts",
     "cli": "bun src/cli/index.ts",
     "build": "electron-vite build",
-    "typecheck:runtime": "tsc --noEmit -p tsconfig.runtime.json --composite false",
-    "typecheck:runtime-package": "tsc --noEmit -p tsconfig.runtime-package.json --composite false",
+    "typecheck:agent": "tsc --noEmit -p tsconfig.runtime.json --composite false",
+    "typecheck:agent-package": "tsc --noEmit -p tsconfig.runtime-package.json --composite false",
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json --composite false",
     "typecheck:web": "tsc --noEmit -p tsconfig.web.json --composite false",
-    "typecheck": "bun run typecheck:runtime && bun run typecheck:runtime-package && bun run typecheck:node && bun run typecheck:web",
+    "typecheck": "bun run typecheck:agent && bun run typecheck:agent-package && bun run typecheck:node && bun run typecheck:web",
     "postinstall": "electron-builder install-app-deps",
     "build:mac": "bun run build && electron-builder --mac",
     "build:win": "bun run build && electron-builder --win",
@@ -27,6 +31,7 @@
     "test": "bun run test:runtime && bun run test:desktop && bun run test:cli && bun run test:tui"
   },
   "dependencies": {
+    "@aila/agent": "workspace:*",
     "@ai-sdk/anthropic": "^3.0.74",
     "@ai-sdk/google": "^3.0.67",
     "@ai-sdk/openai": "^3.0.58",

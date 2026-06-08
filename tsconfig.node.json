@@ -4,8 +4,8 @@
     "electron.vite.config.*",
     "src/cli/**/*",
     "src/main/**/*",
+    "packages/agent/src/**/*",
     "src/preload/**/*",
-    "src/runtime/**/*",
     "src/shared/**/*",
     "src/tui/**/*",
     "scripts/**/*"
@@ -17,6 +17,7 @@
     "types": ["electron-vite/node"],
     "baseUrl": ".",
     "paths": {
+      "@aila/agent": ["./packages/agent/src/index.ts"],
       "@shared/*": ["./src/shared/*"]
     }
   }

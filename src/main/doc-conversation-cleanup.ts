@@ -1,4 +1,4 @@
-import type { ConversationSummary } from '../runtime/core'
+import type { ConversationSummary } from '@aila/agent'
 import { listConversations as listPersistedConversations } from './conversations'
 import { listAll } from './docs'
 

@@ -7,11 +7,10 @@
 
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
-import type { Settings } from '../runtime/core'
-import type { ProviderId } from '../shared/models'
+import type { ProviderId, Settings } from '@aila/agent'
 import { getDataDir, getSettingsPath } from './paths'
 
-export type { Settings } from '../runtime/core'
+export type { Settings } from '@aila/agent'
 
 const ENV_KEY_BY_PROVIDER: Record<ProviderId, string> = {
   anthropic: 'ANTHROPIC_API_KEY',

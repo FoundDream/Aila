@@ -1,1 +1,1 @@
-export * from '../runtime/settings-types'
+export * from '../../packages/agent/src/settings-types'

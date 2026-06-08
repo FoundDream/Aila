@@ -2,6 +2,11 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
+  type ToolApprovalRequestPayload,
+  type ToolApprovalResolvedPayload,
+  ToolApprovalStore,
+} from '@aila/agent'
+import {
   AILA_CONVERSATION_META_SCHEMA_VERSION,
   AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
   appendAgentEvent,
@@ -44,11 +49,6 @@ import {
   resolveToolApproval,
   resolveToolApprovalsForConversation,
 } from '../src/renderer/src/toolApprovalsState'
-import {
-  type ToolApprovalRequestPayload,
-  type ToolApprovalResolvedPayload,
-  ToolApprovalStore,
-} from '../src/runtime/core'
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message)
@@ -160,13 +160,13 @@ async function testDesktopUsesSharedRuntimeFactory(): Promise<void> {
     'Desktop runtime workbench should depend on the host-facing runtime API type',
   )
   assert(
-    workbenchSource.includes("from '../runtime/core'") &&
+    workbenchSource.includes("from '@aila/agent'") &&
       !workbenchSource.includes("from './runtime'") &&
       !workbenchSource.includes("from './agent-protocol'") &&
       !workbenchSource.includes("from './conversation-core'") &&
       !workbenchSource.includes("from './tool-approvals'") &&
       !workbenchSource.includes("from './tools'"),
-    'Desktop runtime workbench should import runtime contracts from the public core surface',
+    'Desktop runtime workbench should import runtime contracts from @aila/agent',
   )
   assert(
     !workbenchSource.includes("from '../runtime/internal'"),

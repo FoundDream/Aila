@@ -1,6 +1,58 @@
 import { chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import * as runtimeSdk from '@aila/agent'
+import * as runtimeCoreSdk from '@aila/agent'
+import {
+  type AgentEvent,
+  AgentRuntime,
+  type AgentRuntimeEvent,
+  type AgentRuntimeHost,
+  type AgentRuntimeStore,
+  AILA_RUNTIME_EVENT_SCHEMA_VERSION,
+  AILA_RUNTIME_EVENT_TYPES,
+  AILA_SKILL_FILE,
+  createInMemoryRuntimeStore,
+  createInterruptedConversationRecoveryEvent,
+  createRuntimeEvent,
+  isRuntimeEventType,
+  parseSkillDocument,
+  type RuntimeAttachmentBlock,
+  type RuntimePersistAttachmentInput,
+  type RuntimeRecordAgentEventInput,
+  replayConversationActivity,
+  replayConversationRuntimeState,
+  requestToolApprovalWithActivity,
+  type Settings,
+  SKILL_TOOL_NAME,
+  type ToolApprovalRequest,
+  type ToolFileSystem,
+  type ToolPack,
+  type ToolShellRequest,
+  type ToolWebSearchRequest,
+} from '@aila/agent'
+import * as runtimeInternalSdk from '../packages/agent/src/internal'
+import {
+  createDefaultToolRegistry,
+  executeTool,
+  getToolDefinitions,
+  summarizeToolTarget,
+} from '../packages/agent/src/internal'
+import * as runtimeNodeSdk from '../src/main/agent-host'
+import {
+  AILA_TOOL_PACK_MANIFEST_FILE,
+  AILA_TOOL_PACK_MANIFEST_SCHEMA_VERSION,
+  configureDataDir,
+  createPersistedRuntimeStore,
+  getConversationsDir,
+  getExtensionReport,
+  getImagesDir,
+  getSkillsDir,
+  getToolPacksDir,
+  loadSkillFromDir,
+  loadSkillsFromDir,
+  loadToolPacksFromDir,
+} from '../src/main/agent-host'
 import {
   AILA_AGENT_EVENT_SCHEMA_VERSION,
   AILA_CONVERSATION_META_SCHEMA_VERSION,
@@ -20,56 +72,6 @@ import {
   setConversationUsage,
   upsertMessage,
 } from '../src/main/conversations'
-import * as runtimeSdk from '../src/runtime'
-import {
-  type AgentEvent,
-  AgentRuntime,
-  type AgentRuntimeEvent,
-  type AgentRuntimeHost,
-  type AgentRuntimeStore,
-  AILA_RUNTIME_EVENT_SCHEMA_VERSION,
-  AILA_RUNTIME_EVENT_TYPES,
-  AILA_SKILL_FILE,
-  AILA_TOOL_PACK_MANIFEST_FILE,
-  AILA_TOOL_PACK_MANIFEST_SCHEMA_VERSION,
-  configureDataDir,
-  createInMemoryRuntimeStore,
-  createInterruptedConversationRecoveryEvent,
-  createPersistedRuntimeStore,
-  createRuntimeEvent,
-  getConversationsDir,
-  getExtensionReport,
-  getImagesDir,
-  getSkillsDir,
-  getToolPacksDir,
-  isRuntimeEventType,
-  loadSkillFromDir,
-  loadSkillsFromDir,
-  loadToolPacksFromDir,
-  parseSkillDocument,
-  type RuntimeAttachmentBlock,
-  type RuntimePersistAttachmentInput,
-  type RuntimeRecordAgentEventInput,
-  replayConversationActivity,
-  replayConversationRuntimeState,
-  requestToolApprovalWithActivity,
-  type Settings,
-  SKILL_TOOL_NAME,
-  type ToolApprovalRequest,
-  type ToolFileSystem,
-  type ToolPack,
-  type ToolShellRequest,
-  type ToolWebSearchRequest,
-} from '../src/runtime'
-import * as runtimeCoreSdk from '../src/runtime/core'
-import * as runtimeInternalSdk from '../src/runtime/internal'
-import {
-  createDefaultToolRegistry,
-  executeTool,
-  getToolDefinitions,
-  summarizeToolTarget,
-} from '../src/runtime/internal'
-import * as runtimeNodeSdk from '../src/runtime/node'
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message)
@@ -1576,7 +1578,7 @@ async function testRuntimeConversationRuntimeStateApiUsesEventReplay(): Promise<
     logger: { warn() {}, error() {} },
   })
   const chat = await runtime.createConversation()
-  const docChat = await runtime.createConversation({ docId: 'docs/runtime-state.md' })
+  const docChat = await runtime.createConversation({ docId: 'docs@aila/agent-state.md' })
 
   await runtime.recordAgentEvent({
     timestamp: 10,
@@ -1696,7 +1698,9 @@ async function testRuntimeConversationRuntimeStateApiUsesEventReplay(): Promise<
     'runtime state list should include replay state snapshots',
   )
 
-  const docStates = await runtime.listConversationRuntimeStates({ docId: 'docs/runtime-state.md' })
+  const docStates = await runtime.listConversationRuntimeStates({
+    docId: 'docs@aila/agent-state.md',
+  })
   assertEqual(docStates.length, 1, 'runtime state list should respect doc conversation filter')
   assertEqual(
     docStates[0]?.conversationId,
@@ -4465,7 +4469,7 @@ async function testRuntimeShutdownRejectsNewTurns(): Promise<void> {
 
 async function testPersistenceContract(): Promise<void> {
   await withTempDataDir(async () => {
-    const conversation = await createConversation('docs/runtime-contract')
+    const conversation = await createConversation('docs@aila/agent-contract')
     assertEqual(
       conversation.schemaVersion,
       AILA_CONVERSATION_META_SCHEMA_VERSION,
@@ -5627,7 +5631,7 @@ async function testToolRegistryContract(): Promise<void> {
 
 async function testRuntimeExecuteToolUsesHostBoundary(): Promise<void> {
   const settings: Settings = { apiKeys: { openrouter: 'runtime-key' }, defaultModel: null }
-  const workspaceRoots = [{ path: '/contract/runtime-root', label: 'contract' }]
+  const workspaceRoots = [{ path: '/contract@aila/agent-root', label: 'contract' }]
   let loadSettingsCalled = false
   let policySawRuntimeRequest = false
   let approvalSawRuntimeRequest = false
@@ -5673,7 +5677,7 @@ async function testRuntimeExecuteToolUsesHostBoundary(): Promise<void> {
             ctx.toolCallId === 'tool-call-runtime-tool' &&
             ctx.workspaceRoots !== workspaceRoots &&
             typeof root === 'object' &&
-            root.path === '/contract/runtime-root' &&
+            root.path === '/contract@aila/agent-root' &&
             root.label === 'contract' &&
             root !== workspaceRoots[0]
           args.value = 'runner-mutated'
@@ -5863,7 +5867,7 @@ async function testWebSearchToolUsesInjectedHostDependency(): Promise<void> {
           results: [
             {
               title: 'Injected result',
-              url: 'https://example.com/runtime',
+              url: 'https://example.com@aila/agent',
               content: 'Injected snippet',
             },
           ],
@@ -5880,7 +5884,11 @@ async function testWebSearchToolUsesInjectedHostDependency(): Promise<void> {
   assertEqual(parsed.answer, 'Injected search answer', 'web_search injected dependency answer')
   assert(firstResult, 'web_search injected dependency should return a result')
   assertEqual(firstResult.title, 'Injected result', 'web_search injected dependency result title')
-  assertEqual(firstResult.url, 'https://example.com/runtime', 'web_search injected dependency url')
+  assertEqual(
+    firstResult.url,
+    'https://example.com@aila/agent',
+    'web_search injected dependency url',
+  )
   assertEqual(firstResult.content, 'Injected snippet', 'web_search injected dependency content')
 
   const seenRequest = requestSeen.current
@@ -6021,7 +6029,7 @@ async function testDefaultRuntimeHostOwnsFilesystemTools(): Promise<void> {
       const writePath = join(dir, 'created.md')
       await writeFile(sourcePath, 'default host filesystem', 'utf-8')
 
-      const runtime = runtimeSdk.createPersistedAgentRuntime({
+      const runtime = runtimeNodeSdk.createPersistedAgentRuntime({
         host: {
           workspaceRoots: () => [dir],
           onToolApproval: async () => true,
@@ -6178,21 +6186,21 @@ async function testRuntimeSdkDoesNotExportDocsContract(): Promise<void> {
   }
 
   assertEqual(
-    typeof runtimeSdk.createPersistedRuntimeStore,
+    typeof runtimeNodeSdk.createPersistedRuntimeStore,
     'function',
     'runtime SDK should expose the persisted store adapter factory',
   )
   assertEqual(
-    typeof runtimeSdk.createDefaultRuntimeHost,
+    typeof runtimeNodeSdk.createDefaultRuntimeHost,
     'function',
     'runtime SDK should expose the default runtime host factory',
   )
   assertEqual(
-    typeof runtimeSdk.createPersistedAgentRuntime,
+    typeof runtimeNodeSdk.createPersistedAgentRuntime,
     'function',
     'runtime SDK should expose the persisted AgentRuntime factory',
   )
-  const store = runtimeSdk.createPersistedRuntimeStore()
+  const store = runtimeNodeSdk.createPersistedRuntimeStore()
   assertEqual(typeof store.getConversation, 'function', 'persisted store should read records')
   assertEqual(typeof store.saveMessage, 'function', 'persisted store should persist messages')
   assert(
@@ -6322,7 +6330,7 @@ async function testRuntimeSdkDoesNotExportDocsContract(): Promise<void> {
   ]) {
     assert(
       runtimeCoreSurfaceSource.includes(`type ${name}`) &&
-        runtimeCoreSurfaceSource.includes("from '../src/runtime/core'"),
+        runtimeCoreSurfaceSource.includes("from '@aila/agent'"),
       `runtime core SDK should export public type: ${name}`,
     )
   }
@@ -6344,7 +6352,10 @@ async function testRuntimeSdkDoesNotExportDocsContract(): Promise<void> {
 }
 
 async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
-  const runtimeSource = await readFile(join(process.cwd(), 'src/runtime/runtime.ts'), 'utf-8')
+  const runtimeSource = await readFile(
+    join(process.cwd(), 'packages/agent/src/runtime.ts'),
+    'utf-8',
+  )
   assert(
     !runtimeSource.includes("from './image-store'") && !runtimeSource.includes('saveImage('),
     'AgentRuntime core must not import or call the Desktop image store',
@@ -6472,32 +6483,35 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
     'persisted runtime store adapter should map persisted message and usage helpers into runtime names',
   )
 
-  const runtimeSdkSource = await readFile(join(process.cwd(), 'src/runtime/index.ts'), 'utf-8')
+  const runtimeSdkSource = await readFile(
+    join(process.cwd(), 'packages/agent/src/index.ts'),
+    'utf-8',
+  )
   assert(
     !runtimeSdkSource.includes('DocRefRewrite'),
     'runtime SDK must not expose Desktop doc ref rewrite types',
   )
   assert(
-    runtimeSdkSource.trim() === "export * from './core'\nexport * from './node'",
-    'runtime compatibility SDK should only aggregate core and node surfaces',
+    runtimeSdkSource.trim() === "export * from './core'",
+    'agent package SDK should expose the core surface only',
   )
   const packageJson = JSON.parse(await readFile(join(process.cwd(), 'package.json'), 'utf-8')) as {
     scripts?: Record<string, string>
   }
   assertEqual(
-    packageJson.scripts?.['typecheck:runtime'],
+    packageJson.scripts?.['typecheck:agent'],
     'tsc --noEmit -p tsconfig.runtime.json --composite false',
-    'package scripts should expose a runtime-only compile contract',
+    'package scripts should expose an agent-only compile contract',
   )
   assertEqual(
-    packageJson.scripts?.['typecheck:runtime-package'],
+    packageJson.scripts?.['typecheck:agent-package'],
     'tsc --noEmit -p tsconfig.runtime-package.json --composite false',
-    'package scripts should expose a simulated package compile contract',
+    'package scripts should expose an agent package compile contract',
   )
   assert(
     packageJson.scripts?.typecheck ===
-      'bun run typecheck:runtime && bun run typecheck:runtime-package && bun run typecheck:node && bun run typecheck:web',
-    'full typecheck should run runtime core, simulated package, node, and web compile contracts',
+      'bun run typecheck:agent && bun run typecheck:agent-package && bun run typecheck:node && bun run typecheck:web',
+    'full typecheck should run agent core, package, node, and web compile contracts',
   )
   const runtimeTsconfig = JSON.parse(
     await readFile(join(process.cwd(), 'tsconfig.runtime.json'), 'utf-8'),
@@ -6506,8 +6520,8 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
   }
   assertEqual(
     JSON.stringify(runtimeTsconfig.include),
-    JSON.stringify(['src/runtime/core.ts', 'scripts/runtime-core-surface-contract.ts']),
-    'runtime-only tsconfig should compile the public core entry and public surface fixture only',
+    JSON.stringify(['packages/agent/src/**/*', 'scripts/runtime-core-surface-contract.ts']),
+    'agent-only tsconfig should compile the package source and public surface fixture',
   )
   assert(
     !JSON.stringify(runtimeTsconfig).includes('src/main'),
@@ -6529,16 +6543,14 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
   assertEqual(
     JSON.stringify(runtimePackageTsconfig.compilerOptions?.paths),
     JSON.stringify({
-      '@aila/runtime': ['./src/runtime/index.ts'],
-      '@aila/runtime/core': ['./src/runtime/core.ts'],
-      '@aila/runtime/node': ['./src/runtime/node.ts'],
+      '@aila/agent': ['./packages/agent/src/index.ts'],
       '@shared/*': ['./src/shared/*'],
     }),
-    'runtime package dry-run aliases should model only the intended package entrypoints',
+    'agent package dry-run aliases should model only the single public entrypoint',
   )
   assert(
     !Object.keys(runtimePackageTsconfig.compilerOptions?.paths ?? {}).some(
-      (path) => path === '@aila/runtime/internal' || path === '@aila/runtime/*',
+      (path) => path === '@aila/agent/internal' || path === '@aila/agent/*',
     ),
     'runtime package dry-run must not expose an internal package alias',
   )
@@ -6555,21 +6567,19 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
     join(process.cwd(), 'scripts/runtime-package-consumer-contract.ts'),
     'utf-8',
   )
-  for (const expected of [
-    "from '@aila/runtime/core'",
-    "from '@aila/runtime/node'",
-    "from '@aila/runtime'",
-  ]) {
-    assert(
-      runtimePackageConsumerSource.includes(expected),
-      `runtime package dry-run should consume package entrypoint: ${expected}`,
-    )
-  }
+  assert(
+    runtimePackageConsumerSource.includes("from '@aila/agent'") &&
+      !runtimePackageConsumerSource.includes("from '@aila/agent/core'") &&
+      !runtimePackageConsumerSource.includes("from '@aila/agent/node'"),
+    'agent package dry-run should consume only the single @aila/agent entrypoint',
+  )
   for (const expectedError of [
-    "typeof import('@aila/runtime/internal')",
-    'runtimeCore.executeTool',
-    'runtimePackage.createConversation',
-    'runtimeNode.createDoc',
+    "typeof import('@aila/agent/internal')",
+    "typeof import('@aila/agent/node')",
+    'agent.executeTool',
+    'agent.createConversation',
+    'agent.createDoc',
+    'agent.configureDataDir',
   ]) {
     assert(
       runtimePackageConsumerSource.includes('@ts-expect-error') &&
@@ -6578,7 +6588,10 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
     )
   }
 
-  const runtimeCoreSdkSource = await readFile(join(process.cwd(), 'src/runtime/core.ts'), 'utf-8')
+  const runtimeCoreSdkSource = await readFile(
+    join(process.cwd(), 'packages/agent/src/core.ts'),
+    'utf-8',
+  )
   for (const expected of [
     "'./agent-protocol'",
     "'./conversation-core'",
@@ -6637,7 +6650,7 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
     )
   }
   const runtimeInternalSdkSource = await readFile(
-    join(process.cwd(), 'src/runtime/internal.ts'),
+    join(process.cwd(), 'packages/agent/src/internal.ts'),
     'utf-8',
   )
   assert(
@@ -6662,13 +6675,13 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
     const source = (await readFile(join(process.cwd(), 'src/main', mainFile), 'utf-8')).trim()
     assertEqual(
       source,
-      `export * from '../runtime/${runtimeFile}'`,
+      `export * from '../../packages/agent/src/${runtimeFile}'`,
       `main ${mainFile} should stay a compatibility shim`,
     )
   }
 
   const conversationCoreSource = await readFile(
-    join(process.cwd(), 'src/runtime/conversation-core.ts'),
+    join(process.cwd(), 'packages/agent/src/conversation-core.ts'),
     'utf-8',
   )
   assert(
@@ -6686,7 +6699,7 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
   )
   assert(
     conversationsSource.includes("from 'node:fs/promises'") &&
-      conversationsSource.includes("from '../runtime/conversation-core'") &&
+      conversationsSource.includes("from '../../packages/agent/src/conversation-core'") &&
       conversationsSource.includes('getConversationsDir'),
     'persisted conversations module should own filesystem IO and reuse pure conversation core contracts',
   )
@@ -6725,14 +6738,17 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
     }
   }
 
-  const runtimeNodeSdkSource = await readFile(join(process.cwd(), 'src/runtime/node.ts'), 'utf-8')
+  const runtimeNodeSdkSource = await readFile(
+    join(process.cwd(), 'src/main/agent-host.ts'),
+    'utf-8',
+  )
   for (const expected of [
-    "'../main/runtime-host'",
-    "'../main/runtime-store'",
-    "'../main/settings'",
-    "'../main/paths'",
-    "'../main/skill-loader'",
-    "'../main/tool-pack-loader'",
+    "'./runtime-host'",
+    "'./runtime-store'",
+    "'./settings'",
+    "'./paths'",
+    "'./skill-loader'",
+    "'./tool-pack-loader'",
   ]) {
     assert(
       runtimeNodeSdkSource.includes(expected),
@@ -6741,7 +6757,7 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
   }
 
   const approvalSource = await readFile(
-    join(process.cwd(), 'src/runtime/tool-approvals.ts'),
+    join(process.cwd(), 'packages/agent/src/tool-approvals.ts'),
     'utf-8',
   )
   assert(
@@ -6754,7 +6770,7 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
     'tool approval activity helpers must stay host-agnostic and free of Desktop/Node adapter wiring',
   )
 
-  const toolsSource = await readFile(join(process.cwd(), 'src/runtime/tools.ts'), 'utf-8')
+  const toolsSource = await readFile(join(process.cwd(), 'packages/agent/src/tools.ts'), 'utf-8')
   assert(
     !toolsSource.includes("from './image'") &&
       !toolsSource.includes("from './image-store'") &&
@@ -6837,7 +6853,7 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
   )
 
   const protocolSource = await readFile(
-    join(process.cwd(), 'src/runtime/agent-protocol.ts'),
+    join(process.cwd(), 'packages/agent/src/agent-protocol.ts'),
     'utf-8',
   )
   assert(
@@ -6848,7 +6864,10 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
     'agent protocol should define stream and model-info host contracts',
   )
 
-  const skillCoreSource = await readFile(join(process.cwd(), 'src/runtime/skills.ts'), 'utf-8')
+  const skillCoreSource = await readFile(
+    join(process.cwd(), 'packages/agent/src/skills.ts'),
+    'utf-8',
+  )
   for (const forbidden of [
     "from 'node:fs'",
     "from 'node:fs/promises'",
@@ -6875,9 +6894,9 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
     'runtime SDK should expose the host-agnostic skill tool pack builder',
   )
   assertEqual(
-    typeof (runtimeSdk as Record<string, unknown>).loadSkillsFromDir,
+    typeof (runtimeNodeSdk as Record<string, unknown>).loadSkillsFromDir,
     'function',
-    'runtime SDK should still expose the filesystem skill loader adapter',
+    'agent host adapter should expose the filesystem skill loader adapter',
   )
 }
 
@@ -6936,7 +6955,7 @@ export default {
     )
 
     const emitted: AgentRuntimeEvent[] = []
-    const runtime = runtimeSdk.createPersistedAgentRuntime({
+    const runtime = runtimeNodeSdk.createPersistedAgentRuntime({
       host: {
         onEvent: (event) => emitted.push(event),
       },
@@ -6964,7 +6983,7 @@ export default {
 
 async function testPersistedRuntimeFactoryPersistsImageAttachmentsThroughDefaultHost(): Promise<void> {
   await withTempDataDir(async () => {
-    const runtime = runtimeSdk.createPersistedAgentRuntime({
+    const runtime = runtimeNodeSdk.createPersistedAgentRuntime({
       host: {
         streamChat: async (req, handlers) => {
           await handlers.onDone({
@@ -7491,7 +7510,7 @@ async function testPersistedRuntimeLoadsSkillsContract(): Promise<void> {
       'factory-skill',
       skillDocument('factory-skill', 'Loaded through the default host.'),
     )
-    const runtime = runtimeSdk.createPersistedAgentRuntime()
+    const runtime = runtimeNodeSdk.createPersistedAgentRuntime()
     const registry = await runtime.getToolRegistry()
     assert(
       registry.specsByName.has(SKILL_TOOL_NAME),

@@ -4,6 +4,7 @@ import react from '@vitejs/plugin-react'
 import { defineConfig } from 'electron-vite'
 
 const sharedAlias = {
+  '@aila/agent': resolve(__dirname, 'packages/agent/src/index.ts'),
   '@shared': resolve(__dirname, 'src/shared'),
 }
 

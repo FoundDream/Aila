@@ -1,1 +1,1 @@
-export * from '../runtime/find-replace'
+export * from '../../packages/agent/src/find-replace'

@@ -5,7 +5,7 @@ import {
   type AgentRuntimeStore,
   type RuntimeAttachmentBlock,
   type RuntimePersistAttachmentInput,
-} from '../runtime/core'
+} from '@aila/agent'
 import { getModelInfo, streamChat } from './agent'
 import { fileSystem, workspaceRoots } from './filesystem'
 import { generateImage } from './image'
