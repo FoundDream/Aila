@@ -6,7 +6,6 @@
  * handler here and feeds the result back as a `role: "tool"` message.
  */
 
-import { readFile, writeFile } from 'node:fs/promises'
 import { basename, isAbsolute, relative, resolve, sep } from 'node:path'
 import type { ImageGenerateRequest, ImageResult } from './image/types'
 import type { Settings } from './settings'
@@ -491,7 +490,7 @@ function isInsideRoot(path: string, root: string): boolean {
 }
 
 function normalizeWorkspaceRoots(ctx: ToolContext): string[] {
-  const roots = [resolve(process.cwd())]
+  const roots: string[] = []
   for (const root of ctx.workspaceRoots ?? []) {
     const raw = typeof root === 'string' ? root : root.path
     if (raw.trim()) roots.push(resolve(raw))
@@ -523,6 +522,9 @@ function resolveWorkspacePath(
   if (!isAbsolute(path)) throw new Error('`path` must be absolute')
   const normalized = resolve(path)
   const roots = normalizeWorkspaceRoots(ctx)
+  if (roots.length === 0) {
+    throw new Error(`${operation} denied: no workspace roots configured`)
+  }
   if (!roots.some((root) => isInsideRoot(normalized, root))) {
     throw new Error(
       `${operation} denied outside workspace roots: ${normalized} (allowed roots: ${roots.join(
@@ -546,7 +548,10 @@ function assertBashCommandAllowed(command: string): void {
 
 async function runRead(args: { path?: unknown }, ctx: ToolContext): Promise<string> {
   const path = resolveWorkspacePath(args.path, 'read', ctx)
-  const content = await readFile(path, 'utf-8')
+  if (!ctx.fileSystem) {
+    throw new Error('filesystem host is not available')
+  }
+  const content = await ctx.fileSystem.readTextFile(path)
   return truncate(content)
 }
 
@@ -557,7 +562,10 @@ async function runWrite(
   const path = resolveWorkspacePath(args.path, 'write', ctx)
   const content = args.content
   if (typeof content !== 'string') throw new Error('`content` must be a string')
-  await writeFile(path, content, 'utf-8')
+  if (!ctx.fileSystem) {
+    throw new Error('filesystem host is not available')
+  }
+  await ctx.fileSystem.writeTextFile(path, content)
   return `Wrote ${Buffer.byteLength(content, 'utf-8')} bytes to ${path}`
 }
 
@@ -578,7 +586,10 @@ async function runEdit(
   if (typeof newText !== 'string') throw new Error('`newText` must be a string')
   if (oldText.length === 0) throw new Error('`oldText` must not be empty')
 
-  const original = await readFile(path, 'utf-8')
+  if (!ctx.fileSystem) {
+    throw new Error('filesystem host is not available')
+  }
+  const original = await ctx.fileSystem.readTextFile(path)
 
   let occurrences = 0
   let index = original.indexOf(oldText)
@@ -600,7 +611,7 @@ async function runEdit(
     ? original.split(oldText).join(newText)
     : original.replace(oldText, newText)
 
-  await writeFile(path, updated, 'utf-8')
+  await ctx.fileSystem.writeTextFile(path, updated)
   return `Replaced ${occurrences} occurrence${occurrences === 1 ? '' : 's'} in ${path}`
 }
 
@@ -716,6 +727,11 @@ export interface ToolShellResult {
 
 export type ToolShellRunner = (request: ToolShellRequest) => Promise<ToolShellResult>
 
+export interface ToolFileSystem {
+  readTextFile(path: string): Promise<string>
+  writeTextFile(path: string, content: string): Promise<void>
+}
+
 export interface ToolApprovalRequest {
   name: string
   args: Record<string, unknown>
@@ -805,6 +821,7 @@ export interface ToolContext {
   generateImage?: ToolImageGenerator
   saveImage?: ToolImageSaver
   runShell?: ToolShellRunner
+  fileSystem?: ToolFileSystem
   onImage?: (block: ImageSideChannelBlock) => void
 }
 

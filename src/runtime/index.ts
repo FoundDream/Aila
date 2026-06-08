@@ -147,6 +147,7 @@ export {
   type ToolActivityTarget,
   type ToolApprovalRequest,
   type ToolDefinition,
+  type ToolFileSystem,
   type ToolHandler,
   type ToolMetadata,
   type ToolPack,

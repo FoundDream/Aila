@@ -362,6 +362,7 @@ export const streamChat: RuntimeStreamChat = async (req, handlers): Promise<void
     generateImage,
     saveImage,
     runShell,
+    fileSystem,
     toolRegistry,
   } = req
 
@@ -440,6 +441,7 @@ export const streamChat: RuntimeStreamChat = async (req, handlers): Promise<void
           generateImage,
           saveImage,
           runShell,
+          fileSystem,
           onImage: onImageFromTool,
         },
         emitAgentEvent,

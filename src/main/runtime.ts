@@ -247,6 +247,7 @@ export interface AgentRuntimeHost {
   generateImage?: ToolContext['generateImage']
   saveImage?: ToolContext['saveImage']
   runShell?: ToolContext['runShell']
+  fileSystem?: ToolContext['fileSystem']
   workspaceRoots?: ToolContext['workspaceRoots'] | (() => ToolContext['workspaceRoots'])
   shellCwd?: ToolContext['shellCwd'] | (() => ToolContext['shellCwd'])
   getModelInfo?: RuntimeModelInfoResolver
@@ -477,6 +478,7 @@ function normalizeRuntimeHost(options: AgentRuntimeOptions): AgentRuntimeHost {
   if (options.generateImage) host.generateImage = options.generateImage
   if (options.saveImage) host.saveImage = options.saveImage
   if (options.runShell) host.runShell = options.runShell
+  if (options.fileSystem) host.fileSystem = options.fileSystem
   if (options.workspaceRoots !== undefined) host.workspaceRoots = options.workspaceRoots
   if (options.shellCwd !== undefined) host.shellCwd = options.shellCwd
   if (options.getModelInfo) host.getModelInfo = options.getModelInfo
@@ -502,6 +504,7 @@ function normalizeRuntimeHost(options: AgentRuntimeOptions): AgentRuntimeHost {
   if (options.host.generateImage) host.generateImage = options.host.generateImage
   if (options.host.saveImage) host.saveImage = options.host.saveImage
   if (options.host.runShell) host.runShell = options.host.runShell
+  if (options.host.fileSystem) host.fileSystem = options.host.fileSystem
   if (options.host.workspaceRoots !== undefined) host.workspaceRoots = options.host.workspaceRoots
   if (options.host.shellCwd !== undefined) host.shellCwd = options.host.shellCwd
   if (options.host.getModelInfo) host.getModelInfo = options.host.getModelInfo
@@ -1357,6 +1360,7 @@ export class AgentRuntime {
       generateImage: this.host.generateImage,
       saveImage: this.host.saveImage,
       runShell: this.host.runShell,
+      fileSystem: this.host.fileSystem,
     }
   }
 
@@ -1581,6 +1585,7 @@ export class AgentRuntime {
           generateImage: toolContext.generateImage,
           saveImage: toolContext.saveImage,
           runShell: toolContext.runShell,
+          fileSystem: toolContext.fileSystem,
           onToolPolicy: toolContext.onToolPolicy,
           onToolApproval: toolContext.onToolApproval,
           onAgentEvent: queueAgentEvent,

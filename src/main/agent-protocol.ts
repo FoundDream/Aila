@@ -141,6 +141,7 @@ export interface StreamRequest {
   generateImage?: ToolContext['generateImage']
   saveImage?: ToolContext['saveImage']
   runShell?: ToolContext['runShell']
+  fileSystem?: ToolContext['fileSystem']
   toolRegistry?: ToolRegistry
 }
 

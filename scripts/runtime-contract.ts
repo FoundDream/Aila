@@ -58,6 +58,7 @@ import {
   type Settings,
   SKILL_TOOL_NAME,
   summarizeToolTarget,
+  type ToolFileSystem,
   type ToolPack,
   type ToolShellRequest,
   type ToolWebSearchRequest,
@@ -219,6 +220,7 @@ async function testRuntimeHostBoundaryContract(): Promise<void> {
     let abortReason: string | null = null
     let workspaceRootPath: string | null = null
     let workspaceRootLabel: string | null = null
+    let fileSystemPassed = false
     let shellCwdPath: string | null = null
     let shellRunnerPassed = false
     let settingsLoaded = false
@@ -230,6 +232,10 @@ async function testRuntimeHostBoundaryContract(): Promise<void> {
       stdout: '',
       stderr: '',
     })
+    const fileSystem: ToolFileSystem = {
+      readTextFile: async () => '',
+      writeTextFile: async () => {},
+    }
 
     const host: AgentRuntimeHost = {
       onEvent: (event) => events.push(event),
@@ -250,9 +256,11 @@ async function testRuntimeHostBoundaryContract(): Promise<void> {
         return { apiKeys: { openrouter: 'host-openrouter-key' }, defaultModel: null }
       },
       workspaceRoots: () => [{ path: '/host/workspace', label: 'host-root' }],
+      fileSystem,
       shellCwd: () => '/host/shell',
       runShell,
       streamChat: async (req, handlers) => {
+        fileSystemPassed = req.fileSystem === fileSystem
         shellCwdPath = req.shellCwd ?? null
         shellRunnerPassed = req.runShell === runShell
         streamSettingsKey = req.settings?.apiKeys.openrouter ?? null
@@ -353,6 +361,7 @@ async function testRuntimeHostBoundaryContract(): Promise<void> {
     )
     assertEqual(workspaceRootPath, '/host/workspace', 'host workspace root path')
     assertEqual(workspaceRootLabel, 'host-root', 'host workspace root label')
+    assertEqual(fileSystemPassed, true, 'host filesystem should pass to streamChat')
     assertEqual(shellCwdPath, '/host/shell', 'host shell cwd should pass to streamChat')
     assertEqual(shellRunnerPassed, true, 'host shell runner should pass to streamChat')
     assertEqual(
@@ -5406,58 +5415,94 @@ function testToolActivityTargetContract(): void {
 
 async function testFilesystemToolWorkspaceRootsContract(): Promise<void> {
   const settings: Settings = { apiKeys: {}, defaultModel: null }
-  const dir = await mkdtemp(join(tmpdir(), 'aila-tool-workspace-'))
-  try {
-    const sourcePath = join(dir, 'source.md')
-    await writeFile(sourcePath, 'hello workspace roots', 'utf-8')
-
-    try {
-      await executeTool('read', { path: sourcePath }, { settings })
-      throw new Error('read outside default workspace unexpectedly succeeded')
-    } catch (error) {
-      assert(
-        error instanceof Error && error.message.includes('outside workspace roots'),
-        'read outside configured roots should be denied',
-      )
-    }
-
-    const previousCwd = process.cwd()
-    try {
-      process.chdir(dir)
-      const cwdSourcePath = join(process.cwd(), 'source.md')
-      assertEqual(
-        await executeTool('read', { path: cwdSourcePath }, { settings }),
-        'hello workspace roots',
-        'default workspace root should resolve from current cwd at execution time',
-      )
-    } finally {
-      process.chdir(previousCwd)
-    }
-
-    const readResult = await executeTool(
-      'read',
-      { path: sourcePath },
-      { settings, workspaceRoots: [{ path: dir, label: 'contract' }] },
-    )
-    assertEqual(readResult, 'hello workspace roots', 'read should allow configured workspace root')
-
-    const writePath = join(dir, 'created.md')
-    await executeTool(
-      'write',
-      { path: writePath, content: 'draft' },
-      { settings, workspaceRoots: [dir], onToolApproval: async () => true },
-    )
-    assertEqual(await readFile(writePath, 'utf-8'), 'draft', 'write should target extra root')
-
-    await executeTool(
-      'edit',
-      { path: writePath, oldText: 'draft', newText: 'final' },
-      { settings, workspaceRoots: [dir], onToolApproval: async () => true },
-    )
-    assertEqual(await readFile(writePath, 'utf-8'), 'final', 'edit should target extra root')
-  } finally {
-    await rm(dir, { recursive: true, force: true })
+  const dir = join(tmpdir(), 'aila-tool-workspace-contract')
+  const sourcePath = join(dir, 'source.md')
+  const writePath = join(dir, 'created.md')
+  const files = new Map<string, string>([[sourcePath, 'hello workspace roots']])
+  const fileSystem: ToolFileSystem = {
+    readTextFile: async (path) => {
+      const content = files.get(path)
+      if (content === undefined) throw new Error(`missing test file: ${path}`)
+      return content
+    },
+    writeTextFile: async (path, content) => {
+      files.set(path, content)
+    },
   }
+
+  try {
+    await executeTool('read', { path: sourcePath }, { settings, fileSystem })
+    throw new Error('read without workspace roots unexpectedly succeeded')
+  } catch (error) {
+    assert(
+      error instanceof Error && error.message.includes('no workspace roots configured'),
+      'read without configured roots should be denied',
+    )
+  }
+
+  try {
+    await executeTool('read', { path: sourcePath }, { settings, workspaceRoots: [dir] })
+    throw new Error('read without filesystem host unexpectedly succeeded')
+  } catch (error) {
+    assert(
+      error instanceof Error && error.message.includes('filesystem host is not available'),
+      'read inside roots should fail closed without an injected filesystem host',
+    )
+  }
+
+  const readResult = await executeTool(
+    'read',
+    { path: sourcePath },
+    { settings, workspaceRoots: [{ path: dir, label: 'contract' }], fileSystem },
+  )
+  assertEqual(readResult, 'hello workspace roots', 'read should allow configured workspace root')
+
+  await executeTool(
+    'write',
+    { path: writePath, content: 'draft' },
+    { settings, workspaceRoots: [dir], fileSystem, onToolApproval: async () => true },
+  )
+  assertEqual(files.get(writePath), 'draft', 'write should target extra root')
+
+  await executeTool(
+    'edit',
+    { path: writePath, oldText: 'draft', newText: 'final' },
+    { settings, workspaceRoots: [dir], fileSystem, onToolApproval: async () => true },
+  )
+  assertEqual(files.get(writePath), 'final', 'edit should target extra root')
+}
+
+async function testDefaultRuntimeHostOwnsFilesystemTools(): Promise<void> {
+  await withTempDataDir(async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'aila-default-host-filesystem-'))
+    try {
+      const sourcePath = join(dir, 'source.md')
+      const writePath = join(dir, 'created.md')
+      await writeFile(sourcePath, 'default host filesystem', 'utf-8')
+
+      const runtime = runtimeSdk.createPersistedAgentRuntime({
+        host: {
+          workspaceRoots: () => [dir],
+          onToolApproval: async () => true,
+        },
+      })
+
+      assertEqual(
+        await runtime.executeTool({ name: 'read', args: { path: sourcePath } }),
+        'default host filesystem',
+        'default host should read through its filesystem adapter',
+      )
+      await runtime.executeTool({ name: 'write', args: { path: writePath, content: 'draft' } })
+      assertEqual(await readFile(writePath, 'utf-8'), 'draft', 'default host should write files')
+      await runtime.executeTool({
+        name: 'edit',
+        args: { path: writePath, oldText: 'draft', newText: 'final' },
+      })
+      assertEqual(await readFile(writePath, 'utf-8'), 'final', 'default host should edit files')
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
 }
 
 async function testBashToolShellCwdContract(): Promise<void> {
@@ -5662,6 +5707,12 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
     hostSource.includes("from './shell'") && hostSource.includes('runShell'),
     'default runtime host should own shell execution wiring',
   )
+  assert(
+    hostSource.includes("from './filesystem'") &&
+      hostSource.includes('fileSystem') &&
+      hostSource.includes('workspaceRoots'),
+    'default runtime host should own filesystem and default workspace root wiring',
+  )
 
   const runtimeStoreSource = await readFile(
     join(process.cwd(), 'src/main/runtime-store.ts'),
@@ -5713,6 +5764,18 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
     'bash tool should fail closed when host shell dependency is absent',
   )
   assert(
+    !toolsSource.includes("from 'node:fs/promises'") &&
+      !toolsSource.includes('readFile(') &&
+      !toolsSource.includes('writeFile(') &&
+      !toolsSource.includes('process.cwd()'),
+    'builtin tool core must not own filesystem IO or default workspace roots',
+  )
+  assert(
+    toolsSource.includes('filesystem host is not available') &&
+      toolsSource.includes('no workspace roots configured'),
+    'filesystem tools should fail closed when host filesystem or workspace roots are absent',
+  )
+  assert(
     toolsSource.includes("if (requiresApproval) return { action: 'ask' }"),
     'approval-required tools should fail closed unless a policy explicitly allows them',
   )
@@ -5739,11 +5802,21 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
     'default shell adapter should own process execution and environment wiring',
   )
 
+  const filesystemSource = await readFile(join(process.cwd(), 'src/main/filesystem.ts'), 'utf-8')
+  assert(
+    filesystemSource.includes("from 'node:fs/promises'") &&
+      filesystemSource.includes('readFile(') &&
+      filesystemSource.includes('writeFile(') &&
+      filesystemSource.includes('process.cwd()'),
+    'default filesystem adapter should own filesystem IO and default workspace roots',
+  )
+
   const protocolSource = await readFile(join(process.cwd(), 'src/main/agent-protocol.ts'), 'utf-8')
   assert(
     protocolSource.includes('export interface StreamRequest') &&
       protocolSource.includes('export type RuntimeStreamChat') &&
-      protocolSource.includes('export type RuntimeModelInfoResolver'),
+      protocolSource.includes('export type RuntimeModelInfoResolver') &&
+      protocolSource.includes('fileSystem?:'),
     'agent protocol should define stream and model-info host contracts',
   )
 
@@ -6284,6 +6357,10 @@ async function testSkillToolProgressiveDisclosureContract(): Promise<void> {
 
     const runtime = new AgentRuntime({
       loadSkills: async () => (await loadSkillsFromDir()).skills,
+      fileSystem: {
+        readTextFile: (path) => readFile(path, 'utf-8'),
+        writeTextFile: (path, content) => writeFile(path, content, 'utf-8'),
+      },
       logger: { warn() {}, error() {} },
     })
 
@@ -6335,6 +6412,10 @@ async function testSkillBundledFilesAreReadableContract(): Promise<void> {
 
     const runtime = new AgentRuntime({
       loadSkills: async () => (await loadSkillsFromDir()).skills,
+      fileSystem: {
+        readTextFile: (path) => readFile(path, 'utf-8'),
+        writeTextFile: (path, content) => writeFile(path, content, 'utf-8'),
+      },
       logger: { warn() {}, error() {} },
     })
 
@@ -6481,6 +6562,7 @@ async function main(): Promise<void> {
   await testWebSearchToolRequiresHostDependency()
   testToolActivityTargetContract()
   await testFilesystemToolWorkspaceRootsContract()
+  await testDefaultRuntimeHostOwnsFilesystemTools()
   await testBashToolShellCwdContract()
   await testBashToolRequiresHostDependency()
   await testRuntimeCoreHasNoDocToolContract()
