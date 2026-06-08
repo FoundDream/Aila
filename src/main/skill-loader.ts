@@ -1,8 +1,8 @@
 import type { Dirent } from 'node:fs'
 import { readdir, readFile, stat } from 'node:fs/promises'
 import { basename, join, resolve } from 'node:path'
+import { AILA_SKILL_FILE, type LoadedSkill, parseSkillDocument } from '../runtime/core'
 import { getSkillsDir } from './paths'
-import { AILA_SKILL_FILE, type LoadedSkill, parseSkillDocument } from './skills'
 
 const SKILL_BUNDLED_IGNORED_DIRECTORIES = new Set(['.git', 'node_modules'])
 

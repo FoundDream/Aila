@@ -7,11 +7,11 @@
 
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
+import type { Settings } from '../runtime/core'
 import type { ProviderId } from '../shared/models'
 import { getDataDir, getSettingsPath } from './paths'
-import type { Settings } from './settings-types'
 
-export type { Settings } from './settings-types'
+export type { Settings } from '../runtime/core'
 
 const ENV_KEY_BY_PROVIDER: Record<ProviderId, string> = {
   anthropic: 'ANTHROPIC_API_KEY',

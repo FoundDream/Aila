@@ -1,4 +1,4 @@
-import type { ToolWebSearchRequest, ToolWebSearchResult } from './tools'
+import type { ToolWebSearchRequest, ToolWebSearchResult } from '../runtime/core'
 
 interface TavilyResponse {
   answer?: string

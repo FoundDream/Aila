@@ -11,37 +11,33 @@
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { jsonSchema, type ModelMessage, smoothStream, stepCountIs, streamText, tool } from 'ai'
-import { findModel, type ProviderId } from '../shared/models'
-import type {
-  AgentEvent,
-  AgentEventType,
-  ChatMessage,
-  ModelInfo,
-  ModelSelection,
-  RuntimeStreamChat,
-  UsageInfo,
-  UserContentPart,
-} from './agent-protocol'
 import {
+  type AgentEvent,
+  type AgentEventType,
   AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+  type ChatMessage,
+  executeTool,
+  getToolDefinitions,
+  type ImageSideChannelBlock,
+  type ModelInfo,
+  type ModelSelection,
   type PersistedBlock,
   type PersistedImageBlock,
   type PersistedMessage,
   type PersistedToolCallBlock,
-} from './conversation-core'
-import { imageNameFromUrl } from './image-store'
-import { getImagesDir } from './paths'
-import { MissingApiKeyError, resolveModel } from './providers'
-import { loadSettings, type Settings } from './settings'
-import {
-  executeTool,
-  getToolDefinitions,
-  type ImageSideChannelBlock,
+  type RuntimeStreamChat,
   summarizeToolTarget,
   type ToolActivityTarget,
   type ToolContext,
   type ToolRegistry,
-} from './tools'
+  type UsageInfo,
+  type UserContentPart,
+} from '../runtime/core'
+import { findModel, type ProviderId } from '../shared/models'
+import { imageNameFromUrl } from './image-store'
+import { getImagesDir } from './paths'
+import { MissingApiKeyError, resolveModel } from './providers'
+import { loadSettings, type Settings } from './settings'
 
 export type {
   AgentEvent,
@@ -64,7 +60,7 @@ export type {
   ToolResultEvent,
   UsageInfo,
   UserContentPart,
-} from './agent-protocol'
+} from '../runtime/core'
 
 type MaybePromise<T> = T | Promise<T>
 

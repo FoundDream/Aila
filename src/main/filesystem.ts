@@ -1,5 +1,5 @@
 import { readFile, writeFile } from 'node:fs/promises'
-import type { ToolFileSystem, ToolWorkspaceRoot } from './tools'
+import type { ToolFileSystem, ToolWorkspaceRoot } from '../runtime/core'
 
 export const fileSystem: ToolFileSystem = {
   readTextFile: (path) => readFile(path, 'utf-8'),

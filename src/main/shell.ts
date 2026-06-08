@@ -1,6 +1,6 @@
 import { exec } from 'node:child_process'
 import { promisify } from 'node:util'
-import type { ToolShellRequest, ToolShellResult } from './tools'
+import type { ToolShellRequest, ToolShellResult } from '../runtime/core'
 
 const execAsync = promisify(exec)
 

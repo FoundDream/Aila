@@ -28,11 +28,6 @@ import {
 } from '../src/main/docs'
 import { configureDataDir, getDocumentsDir } from '../src/main/paths'
 import {
-  type ToolApprovalRequestPayload,
-  type ToolApprovalResolvedPayload,
-  ToolApprovalStore,
-} from '../src/main/tool-approvals'
-import {
   buildDesktopWorkspaceContextFromRecord,
   getDesktopWorkspaceRoots,
 } from '../src/main/workspace-context'
@@ -49,6 +44,11 @@ import {
   resolveToolApproval,
   resolveToolApprovalsForConversation,
 } from '../src/renderer/src/toolApprovalsState'
+import {
+  type ToolApprovalRequestPayload,
+  type ToolApprovalResolvedPayload,
+  ToolApprovalStore,
+} from '../src/runtime/core'
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message)
@@ -158,6 +158,15 @@ async function testDesktopUsesSharedRuntimeFactory(): Promise<void> {
     workbenchSource.includes('let runtime: AgentRuntimeApi') &&
       !workbenchSource.includes('ReturnType<typeof createPersistedAgentRuntime>'),
     'Desktop runtime workbench should depend on the host-facing runtime API type',
+  )
+  assert(
+    workbenchSource.includes("from '../runtime/core'") &&
+      !workbenchSource.includes("from './runtime'") &&
+      !workbenchSource.includes("from './agent-protocol'") &&
+      !workbenchSource.includes("from './conversation-core'") &&
+      !workbenchSource.includes("from './tool-approvals'") &&
+      !workbenchSource.includes("from './tools'"),
+    'Desktop runtime workbench should import runtime contracts from the public core surface',
   )
 }
 

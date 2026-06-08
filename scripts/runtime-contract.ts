@@ -6254,6 +6254,37 @@ async function testRuntimeSdkDoesNotExportDocsContract(): Promise<void> {
     'function',
     'runtime core SDK should export host-agnostic approval activity helper',
   )
+  assertEqual(
+    typeof coreSdk.ToolApprovalStore,
+    'function',
+    'runtime core SDK should export the host-agnostic approval store',
+  )
+  const runtimeCoreSurfaceSource = await readFile(
+    join(process.cwd(), 'scripts/runtime-core-surface-contract.ts'),
+    'utf-8',
+  )
+  for (const name of [
+    'AgentRuntimeApi',
+    'AgentRuntimeHost',
+    'AgentRuntimeStore',
+    'RuntimeStreamChat',
+    'RuntimeModelInfoResolver',
+    'Settings',
+    'ToolPack',
+    'ToolApprovalRequest',
+    'ToolApprovalRequestPayload',
+    'ConversationRecord',
+    'ConversationSummary',
+    'ConversationUsage',
+    'AgentEvent',
+    'AgentRuntimeEvent',
+  ]) {
+    assert(
+      runtimeCoreSurfaceSource.includes(`type ${name}`) &&
+        runtimeCoreSurfaceSource.includes("from '../src/runtime/core'"),
+      `runtime core SDK should export public type: ${name}`,
+    )
+  }
 
   const nodeSdk = runtimeNodeSdk as Record<string, unknown>
   for (const name of [
@@ -6409,6 +6440,32 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
     runtimeSdkSource.trim() === "export * from './core'\nexport * from './node'",
     'runtime compatibility SDK should only aggregate core and node surfaces',
   )
+  const packageJson = JSON.parse(await readFile(join(process.cwd(), 'package.json'), 'utf-8')) as {
+    scripts?: Record<string, string>
+  }
+  assertEqual(
+    packageJson.scripts?.['typecheck:runtime'],
+    'tsc --noEmit -p tsconfig.runtime.json --composite false',
+    'package scripts should expose a runtime-only compile contract',
+  )
+  assert(
+    packageJson.scripts?.typecheck?.startsWith('bun run typecheck:runtime &&') === true,
+    'full typecheck should run the runtime-only compile contract first',
+  )
+  const runtimeTsconfig = JSON.parse(
+    await readFile(join(process.cwd(), 'tsconfig.runtime.json'), 'utf-8'),
+  ) as {
+    include?: string[]
+  }
+  assertEqual(
+    JSON.stringify(runtimeTsconfig.include),
+    JSON.stringify(['src/runtime/core.ts', 'scripts/runtime-core-surface-contract.ts']),
+    'runtime-only tsconfig should compile the public core entry and public surface fixture only',
+  )
+  assert(
+    !JSON.stringify(runtimeTsconfig).includes('src/main'),
+    'runtime-only tsconfig must not include Desktop/main adapter sources',
+  )
 
   const runtimeCoreSdkSource = await readFile(join(process.cwd(), 'src/runtime/core.ts'), 'utf-8')
   for (const expected of [
@@ -6489,10 +6546,44 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
   )
   assert(
     conversationsSource.includes("from 'node:fs/promises'") &&
-      conversationsSource.includes("from './conversation-core'") &&
+      conversationsSource.includes("from '../runtime/conversation-core'") &&
       conversationsSource.includes('getConversationsDir'),
     'persisted conversations module should own filesystem IO and reuse pure conversation core contracts',
   )
+
+  for (const adapterFile of [
+    'src/main/agent.ts',
+    'src/main/conversations.ts',
+    'src/main/doc-conversation-cleanup.ts',
+    'src/main/docs.ts',
+    'src/main/filesystem.ts',
+    'src/main/image-store.ts',
+    'src/main/runtime-host.ts',
+    'src/main/runtime-store.ts',
+    'src/main/runtime-workbench.ts',
+    'src/main/settings.ts',
+    'src/main/shell.ts',
+    'src/main/skill-loader.ts',
+    'src/main/tool-pack-loader.ts',
+    'src/main/web-search.ts',
+    'src/main/workspace-context.ts',
+  ]) {
+    const source = await readFile(join(process.cwd(), adapterFile), 'utf-8')
+    for (const forbidden of [
+      "from './agent-protocol'",
+      "from './conversation-core'",
+      "from './runtime'",
+      "from './settings-types'",
+      "from './skills'",
+      "from './tool-approvals'",
+      "from './tools'",
+    ]) {
+      assert(
+        !source.includes(forbidden),
+        `${adapterFile} should not import runtime contracts through main compatibility shim: ${forbidden}`,
+      )
+    }
+  }
 
   const runtimeNodeSdkSource = await readFile(join(process.cwd(), 'src/runtime/node.ts'), 'utf-8')
   for (const expected of [

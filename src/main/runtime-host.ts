@@ -1,7 +1,3 @@
-import { getModelInfo, streamChat } from './agent'
-import { fileSystem, workspaceRoots } from './filesystem'
-import { generateImage } from './image'
-import { saveImage } from './image-store'
 import {
   AgentRuntime,
   type AgentRuntimeHost,
@@ -9,7 +5,11 @@ import {
   type AgentRuntimeStore,
   type RuntimeAttachmentBlock,
   type RuntimePersistAttachmentInput,
-} from './runtime'
+} from '../runtime/core'
+import { getModelInfo, streamChat } from './agent'
+import { fileSystem, workspaceRoots } from './filesystem'
+import { generateImage } from './image'
+import { saveImage } from './image-store'
 import { createPersistedRuntimeStore } from './runtime-store'
 import { loadSettings } from './settings'
 import { runShell } from './shell'

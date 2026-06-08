@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { appendFile, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import type { AgentEvent } from './agent-protocol'
 import {
   type AgentEventAppendResult,
   AILA_CONVERSATION_META_SCHEMA_VERSION,
@@ -24,7 +23,8 @@ import {
   preparePersistedMessage,
   replayConversationActivity,
   upsertPersistedMessage,
-} from './conversation-core'
+} from '../runtime/conversation-core'
+import type { AgentEvent } from '../runtime/core'
 import { getConversationsDir } from './paths'
 
 export {
@@ -54,7 +54,7 @@ export {
   type PersistedToolCallBlock,
   replayConversationActivity,
   replayConversationRuntimeState,
-} from './conversation-core'
+} from '../runtime/conversation-core'
 
 const metaWriteChains = new Map<string, Promise<void>>()
 const messageWriteChains = new Map<string, Promise<void>>()

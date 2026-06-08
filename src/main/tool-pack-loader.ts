@@ -3,8 +3,8 @@ import { cp, mkdir, readdir, readFile, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { createToolRegistry, type ToolPack } from '../runtime/core'
 import { getToolPacksDir } from './paths'
-import { createToolRegistry, type ToolPack } from './tools'
 
 export const AILA_TOOL_PACK_MANIFEST_SCHEMA_VERSION = 1
 export const AILA_TOOL_PACK_MANIFEST_FILE = 'aila-tool-pack.json'

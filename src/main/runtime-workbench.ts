@@ -1,19 +1,21 @@
 import type { IpcMain } from 'electron'
-import type { ModelSelection } from './agent-protocol'
-import type { ConversationRecord, ConversationSummary } from './conversation-core'
+import {
+  type ActiveAssistantTurn,
+  type AgentRuntimeApi,
+  type ChatAttachmentInput,
+  type ConversationRecord,
+  type ConversationRuntimeHydration,
+  type ConversationRuntimeStateSnapshot,
+  type ConversationSummary,
+  type ModelSelection,
+  type RuntimeListConversationsInput,
+  type RuntimeSendResult,
+  type ToolApprovalRequest,
+  type ToolApprovalRequestPayload,
+  ToolApprovalStore,
+} from '../runtime/core'
 import { cleanupConversationImages } from './image-store'
-import type {
-  ActiveAssistantTurn,
-  AgentRuntimeApi,
-  ChatAttachmentInput,
-  ConversationRuntimeHydration,
-  ConversationRuntimeStateSnapshot,
-  RuntimeListConversationsInput,
-  RuntimeSendResult,
-} from './runtime'
 import { createPersistedAgentRuntime } from './runtime-host'
-import { type ToolApprovalRequestPayload, ToolApprovalStore } from './tool-approvals'
-import type { ToolApprovalRequest } from './tools'
 import {
   buildDesktopWorkspaceContextFromRecord,
   getDesktopWorkspaceRoots,

@@ -1,8 +1,6 @@
-import type { ChatMessage } from './agent-protocol'
-import type { ConversationRecord } from './conversation-core'
+import type { ChatMessage, ConversationRecord, ToolContext } from '../runtime/core'
 import { getDoc, getDocFilePath } from './docs'
 import { getDocumentsDir } from './paths'
-import type { ToolContext } from './tools'
 
 const DOC_PREVIEW_CHARS = 12_000
 

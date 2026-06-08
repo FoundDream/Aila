@@ -1,3 +1,4 @@
+import type { AgentRuntimeStore } from '../runtime/core'
 import {
   appendAgentEventAndTouchConversation,
   createConversation,
@@ -10,7 +11,6 @@ import {
   setConversationUsage,
   upsertMessage,
 } from './conversations'
-import type { AgentRuntimeStore } from './runtime'
 
 export function createPersistedRuntimeStore(): AgentRuntimeStore {
   return {

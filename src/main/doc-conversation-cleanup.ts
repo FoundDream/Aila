@@ -1,4 +1,4 @@
-import type { ConversationSummary } from './conversation-core'
+import type { ConversationSummary } from '../runtime/core'
 import { listConversations as listPersistedConversations } from './conversations'
 import { listAll } from './docs'
 
