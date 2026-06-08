@@ -1,5 +1,5 @@
 import chalk from 'chalk'
-import type { ModelSelection, ToolApprovalRequest, UsageInfo } from '../runtime'
+import type { ModelSelection, ToolApprovalRequest, UsageInfo } from '../runtime/core'
 import {
   type Component,
   type Editor,

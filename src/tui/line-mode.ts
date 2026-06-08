@@ -10,22 +10,24 @@ import {
   type AgentRuntime,
   type AgentRuntimeEvent,
   type ConversationSummary,
-  configureDataDir,
-  configuredProviders,
-  createPersistedAgentRuntime,
-  type ExtensionReport,
   findModel,
-  getDataDir,
-  getExtensionReport,
-  getToolPacksDir,
-  loadSettings,
   MODEL_CATALOG,
   type ModelSelection,
   type PersistedMessage,
   PROVIDER_LABELS,
   type ProviderId,
   type ToolApprovalRequest,
-} from '../runtime'
+} from '../runtime/core'
+import {
+  configureDataDir,
+  configuredProviders,
+  createPersistedAgentRuntime,
+  type ExtensionReport,
+  getDataDir,
+  getExtensionReport,
+  getToolPacksDir,
+  loadSettings,
+} from '../runtime/node'
 
 dotenv.config()
 

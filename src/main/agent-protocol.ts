@@ -1,6 +1,6 @@
 import type { ProviderId } from '../shared/models'
 import type { PersistedImageBlock, PersistedMessage } from './conversations'
-import type { Settings } from './settings'
+import type { Settings } from './settings-types'
 import type { ToolContext, ToolRegistry } from './tools'
 
 type MaybePromise<T> = T | Promise<T>

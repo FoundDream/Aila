@@ -171,6 +171,14 @@ function testInterruptedAgentEventCompletesCliAdapter(): void {
 async function testCliUsesSharedRuntimeFactory(): Promise<void> {
   const source = await readFile(join(process.cwd(), 'src/cli/index.ts'), 'utf-8')
   assert(
+    source.includes("from '../runtime/core'") && source.includes("from '../runtime/node'"),
+    'CLI adapter should import explicit runtime core and node adapter surfaces',
+  )
+  assert(
+    !source.includes("from '../runtime'"),
+    'CLI adapter should not import the mixed compatibility runtime barrel',
+  )
+  assert(
     source.includes('createPersistedAgentRuntime'),
     'CLI adapter should use the shared persisted runtime factory',
   )

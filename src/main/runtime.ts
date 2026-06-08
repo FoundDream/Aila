@@ -23,7 +23,7 @@ import {
   replayConversationActivity,
 } from './conversations'
 import { type AgentRuntimeEvent, createRuntimeEvent } from './runtime-events'
-import type { Settings } from './settings'
+import type { Settings } from './settings-types'
 import { createSkillToolPack, type LoadedSkill } from './skills'
 import {
   createDefaultToolRegistry,

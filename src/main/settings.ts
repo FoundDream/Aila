@@ -9,19 +9,9 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import type { ProviderId } from '../shared/models'
 import { getDataDir, getSettingsPath } from './paths'
+import type { Settings } from './settings-types'
 
-export interface Settings {
-  apiKeys: {
-    anthropic?: string
-    openai?: string
-    google?: string
-    openrouter?: string
-  }
-  defaultModel: { providerId: ProviderId; modelId: string } | null
-  defaultImageModel?: { providerId: ProviderId; modelId: string } | null
-  /** MRU list of recently chosen OpenRouter model ids (max 5). */
-  recentOpenRouterModels?: string[]
-}
+export type { Settings } from './settings-types'
 
 const ENV_KEY_BY_PROVIDER: Record<ProviderId, string> = {
   anthropic: 'ANTHROPIC_API_KEY',

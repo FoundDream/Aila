@@ -8,7 +8,7 @@
 
 import { basename, isAbsolute, relative, resolve, sep } from 'node:path'
 import type { ImageGenerateRequest, ImageResult } from './image/types'
-import type { Settings } from './settings'
+import type { Settings } from './settings-types'
 
 export interface ToolDefinition {
   type: 'function'

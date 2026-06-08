@@ -260,6 +260,14 @@ function testInterruptedAgentEventCompletesLineModeAdapter(): void {
 async function testTuiUsesSharedRuntimeFactory(): Promise<void> {
   const source = await readFile(join(process.cwd(), 'src/tui/line-mode.ts'), 'utf-8')
   assert(
+    source.includes("from '../runtime/core'") && source.includes("from '../runtime/node'"),
+    'TUI adapter should import explicit runtime core and node adapter surfaces',
+  )
+  assert(
+    !source.includes("from '../runtime'"),
+    'TUI adapter should not import the mixed compatibility runtime barrel',
+  )
+  assert(
     source.includes('createPersistedAgentRuntime'),
     'TUI adapter should use the shared persisted runtime factory',
   )

@@ -4,15 +4,12 @@ import {
   type AgentRuntime,
   type AgentRuntimeEvent,
   type ConversationSummary,
-  configureDataDir,
-  getDataDir,
-  getExtensionReport,
-  getToolPacksDir,
   MODEL_CATALOG,
   type ModelSelection,
   PROVIDER_LABELS,
   type ToolApprovalRequest,
-} from '../runtime'
+} from '../runtime/core'
+import { configureDataDir, getDataDir, getExtensionReport, getToolPacksDir } from '../runtime/node'
 import {
   CombinedAutocompleteProvider,
   Editor,

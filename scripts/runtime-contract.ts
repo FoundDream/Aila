@@ -63,6 +63,8 @@ import {
   type ToolShellRequest,
   type ToolWebSearchRequest,
 } from '../src/runtime'
+import * as runtimeCoreSdk from '../src/runtime/core'
+import * as runtimeNodeSdk from '../src/runtime/node'
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message)
@@ -5712,6 +5714,52 @@ async function testRuntimeSdkDoesNotExportDocsContract(): Promise<void> {
     memoryConversation.id,
     'in-memory store should keep records without a host adapter',
   )
+
+  const coreSdk = runtimeCoreSdk as Record<string, unknown>
+  for (const name of [
+    'configureDataDir',
+    'getDataDir',
+    'getImagesDir',
+    'getSettingsPath',
+    'loadSettings',
+    'saveSettings',
+    'configuredProviders',
+    'createPersistedRuntimeStore',
+    'createDefaultRuntimeHost',
+    'createPersistedAgentRuntime',
+    'loadSkillsFromDir',
+    'loadToolPacksFromDir',
+    'getExtensionReport',
+    'getModelInfo',
+  ]) {
+    assert(!(name in coreSdk), `runtime core SDK must not export node adapter API: ${name}`)
+  }
+  assertEqual(typeof coreSdk.AgentRuntime, 'function', 'runtime core SDK should export runtime')
+  assertEqual(
+    typeof coreSdk.createInMemoryRuntimeStore,
+    'function',
+    'runtime core SDK should export in-memory store',
+  )
+  assertEqual(
+    typeof coreSdk.createDefaultToolRegistry,
+    'function',
+    'runtime core SDK should export tool registry helpers',
+  )
+
+  const nodeSdk = runtimeNodeSdk as Record<string, unknown>
+  for (const name of [
+    'configureDataDir',
+    'getDataDir',
+    'loadSettings',
+    'createPersistedRuntimeStore',
+    'createDefaultRuntimeHost',
+    'createPersistedAgentRuntime',
+    'loadSkillsFromDir',
+    'loadToolPacksFromDir',
+    'getExtensionReport',
+  ]) {
+    assert(name in nodeSdk, `runtime node SDK should export node adapter API: ${name}`)
+  }
 }
 
 async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
@@ -5791,6 +5839,42 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
     !runtimeSdkSource.includes('DocRefRewrite'),
     'runtime SDK must not expose Desktop doc ref rewrite types',
   )
+  assert(
+    runtimeSdkSource.trim() === "export * from './core'\nexport * from './node'",
+    'runtime compatibility SDK should only aggregate core and node surfaces',
+  )
+
+  const runtimeCoreSdkSource = await readFile(join(process.cwd(), 'src/runtime/core.ts'), 'utf-8')
+  for (const forbidden of [
+    "'../main/agent'",
+    "'../main/extensions'",
+    "'../main/paths'",
+    "'../main/runtime-host'",
+    "'../main/runtime-store'",
+    "'../main/settings'",
+    "'../main/skill-loader'",
+    "'../main/tool-pack-loader'",
+  ]) {
+    assert(
+      !runtimeCoreSdkSource.includes(forbidden),
+      `runtime core SDK must not re-export node adapter module: ${forbidden}`,
+    )
+  }
+
+  const runtimeNodeSdkSource = await readFile(join(process.cwd(), 'src/runtime/node.ts'), 'utf-8')
+  for (const expected of [
+    "'../main/runtime-host'",
+    "'../main/runtime-store'",
+    "'../main/settings'",
+    "'../main/paths'",
+    "'../main/skill-loader'",
+    "'../main/tool-pack-loader'",
+  ]) {
+    assert(
+      runtimeNodeSdkSource.includes(expected),
+      `runtime node SDK should re-export adapter module: ${expected}`,
+    )
+  }
 
   const toolsSource = await readFile(join(process.cwd(), 'src/main/tools.ts'), 'utf-8')
   assert(
