@@ -1561,6 +1561,70 @@ async function testRuntimeConversationStoreFacadeContract(): Promise<void> {
   )
 }
 
+async function testRuntimeOptionalStoreCapabilitiesFailClosed(): Promise<void> {
+  const summary: ConversationSummary = {
+    schemaVersion: AILA_CONVERSATION_META_SCHEMA_VERSION,
+    id: 'minimal-store-conversation',
+    title: 'minimal store',
+    createdAt: 1,
+    updatedAt: 1,
+  }
+  const record: ConversationRecord = { meta: summary, messages: [] }
+  const store: AgentRuntimeStore = {
+    getConversation: async () => record,
+    saveMessage: async () => summary,
+    recordAgentEvent: async (_conversationId, event) => ({
+      event: { ...event, schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION },
+    }),
+    recordUsage: async () => summary,
+    deleteConversation: async () => {},
+  }
+  const runtime = new AgentRuntime({ store, logger: { warn() {}, error() {} } })
+
+  async function expectCapabilityError(
+    label: string,
+    operation: () => Promise<unknown>,
+    expectedMessage: string,
+  ): Promise<void> {
+    try {
+      await operation()
+      throw new Error(`${label} unexpectedly succeeded`)
+    } catch (error) {
+      assert(
+        error instanceof Error && error.message.includes(expectedMessage),
+        `${label} should fail closed with: ${expectedMessage}`,
+      )
+    }
+  }
+
+  await expectCapabilityError(
+    'create without store capability',
+    () => runtime.createConversation(),
+    'runtime store cannot create conversations',
+  )
+  await expectCapabilityError(
+    'list without store capability',
+    () => runtime.listConversations(),
+    'runtime store cannot list conversations',
+  )
+  await expectCapabilityError(
+    'event list without store capability',
+    () => runtime.listAgentEvents(summary.id),
+    'runtime store cannot list agent events',
+  )
+  await expectCapabilityError(
+    'rename without store capability',
+    () => runtime.renameConversation(summary.id, 'renamed'),
+    'runtime store cannot rename conversations',
+  )
+  const recovered = await runtime.recoverInterruptedActivities('minimal store restart')
+  assertEqual(
+    recovered.length,
+    0,
+    'recovery without list/replay store capabilities should be a no-op',
+  )
+}
+
 async function testInMemoryRuntimeStoreEventListContract(): Promise<void> {
   const store = createInMemoryRuntimeStore()
   const summary = await store.createConversation?.()
@@ -6752,6 +6816,7 @@ async function main(): Promise<void> {
   await testRuntimeHostTransientContextUsesInjectedRecord()
   await testRuntimeStreamHandlerSnapshots()
   await testRuntimeConversationStoreFacadeContract()
+  await testRuntimeOptionalStoreCapabilitiesFailClosed()
   await testInMemoryRuntimeStoreEventListContract()
   await testRuntimeEnvironmentContract()
   await testRuntimeAppendUserMessageUsesInjectedStore()
