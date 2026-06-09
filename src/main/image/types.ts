@@ -7,7 +7,7 @@ export interface ImageRequest {
 }
 
 export interface ImageResult {
-  bytes: Buffer
+  bytes: ArrayBuffer | Uint8Array
   mime: string
 }
 

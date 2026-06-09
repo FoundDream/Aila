@@ -2,12 +2,7 @@ import type { ProviderId } from './models'
 import type { ToolApprovalMode } from './tool-policy'
 
 export interface Settings {
-  apiKeys: {
-    anthropic?: string
-    openai?: string
-    google?: string
-    openrouter?: string
-  }
+  apiKeys: Partial<Record<ProviderId, string>>
   defaultModel: { providerId: ProviderId; modelId: string } | null
   defaultImageModel?: { providerId: ProviderId; modelId: string } | null
   approvalMode?: ToolApprovalMode

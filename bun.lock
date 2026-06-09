@@ -57,6 +57,13 @@
     "packages/agent": {
       "name": "@aila/agent",
       "version": "0.1.0",
+      "dependencies": {
+        "@ai-sdk/anthropic": "^3.0.74",
+        "@ai-sdk/google": "^3.0.67",
+        "@ai-sdk/openai": "^3.0.58",
+        "@openrouter/ai-sdk-provider": "^2.9.0",
+        "ai": "^6.0.174",
+      },
     },
   },
   "packages": {

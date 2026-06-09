@@ -31,6 +31,7 @@ import {
   type ToolShellRequest,
   type ToolWebSearchRequest,
 } from '@aila/agent'
+import * as runtimePackageNodeSdk from '@aila/agent/node'
 import * as runtimeInternalSdk from '../packages/agent/src/internal'
 import {
   createDefaultToolRegistry,
@@ -6377,6 +6378,19 @@ async function testRuntimeSdkDoesNotExportDocsContract(): Promise<void> {
   ]) {
     assert(name in nodeSdk, `runtime node SDK should export node adapter API: ${name}`)
   }
+
+  const packageNodeSdk = runtimePackageNodeSdk as Record<string, unknown>
+  for (const name of [
+    'createDefaultNodeRuntimeHost',
+    'createNodeAgentRuntime',
+    'createProviderStreamChat',
+    'createModelRegistry',
+    'createProtocolRegistry',
+    'createFileRuntimeStore',
+    'loadNodeSettings',
+  ]) {
+    assert(name in packageNodeSdk, `@aila/agent/node should export node adapter API: ${name}`)
+  }
 }
 
 async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
@@ -6467,24 +6481,24 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
     'default runtime host should own image attachment persistence',
   )
   assert(
-    hostSource.includes("from './image'") &&
-      hostSource.includes('generateImage') &&
+    hostSource.includes("from '@aila/agent/node'") &&
+      hostSource.includes('createDefaultNodeRuntimeHost') &&
       hostSource.includes('saveImage'),
-    'default runtime host should own image tool generation and storage dependencies',
+    'default runtime host should compose node image generation/storage dependencies from @aila/agent/node',
   )
   assert(
     hostSource.includes("from './web-search'") && hostSource.includes('webSearch'),
     'default runtime host should own web search provider wiring',
   )
   assert(
-    hostSource.includes("from './shell'") && hostSource.includes('runShell'),
-    'default runtime host should own shell execution wiring',
+    hostSource.includes("from '@aila/agent/node'") &&
+      hostSource.includes('createDefaultNodeRuntimeHost'),
+    'default runtime host should compose shell execution wiring from @aila/agent/node',
   )
   assert(
-    hostSource.includes("from './filesystem'") &&
-      hostSource.includes('fileSystem') &&
-      hostSource.includes('workspaceRoots'),
-    'default runtime host should own filesystem and default workspace root wiring',
+    hostSource.includes("from '@aila/agent/node'") &&
+      hostSource.includes('createDefaultNodeRuntimeHost'),
+    'default runtime host should compose filesystem and default workspace root wiring from @aila/agent/node',
   )
   assert(
     hostSource.includes('createToolPolicy') &&
@@ -6578,9 +6592,10 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
     JSON.stringify(runtimePackageTsconfig.compilerOptions?.paths),
     JSON.stringify({
       '@aila/agent': ['./packages/agent/src/index.ts'],
+      '@aila/agent/node': ['./packages/agent/src/node.ts'],
       '@shared/*': ['./src/shared/*'],
     }),
-    'agent package dry-run aliases should model only the single public entrypoint',
+    'agent package dry-run aliases should model only public package entrypoints',
   )
   assert(
     !Object.keys(runtimePackageTsconfig.compilerOptions?.paths ?? {}).some(
@@ -6603,13 +6618,12 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
   )
   assert(
     runtimePackageConsumerSource.includes("from '@aila/agent'") &&
-      !runtimePackageConsumerSource.includes("from '@aila/agent/core'") &&
-      !runtimePackageConsumerSource.includes("from '@aila/agent/node'"),
-    'agent package dry-run should consume only the single @aila/agent entrypoint',
+      runtimePackageConsumerSource.includes("from '@aila/agent/node'") &&
+      !runtimePackageConsumerSource.includes("from '@aila/agent/core'"),
+    'agent package dry-run should consume the core and node package entrypoints',
   )
   for (const expectedError of [
     "typeof import('@aila/agent/internal')",
-    "typeof import('@aila/agent/node')",
     'agent.executeTool',
     'agent.createConversation',
     'agent.createDoc',
@@ -6791,6 +6805,24 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
     )
   }
 
+  const packageNodeSource = await readFile(
+    join(process.cwd(), 'packages/agent/src/node.ts'),
+    'utf-8',
+  )
+  for (const expected of [
+    "'./node/runtime-host'",
+    "'./node/stream-chat'",
+    "'./node/model-registry'",
+    "'./node/protocols'",
+    "'./node/auth'",
+    "'./node/file-store'",
+  ]) {
+    assert(
+      packageNodeSource.includes(expected),
+      `@aila/agent/node should re-export adapter module: ${expected}`,
+    )
+  }
+
   const approvalSource = await readFile(
     join(process.cwd(), 'packages/agent/src/tool-approvals.ts'),
     'utf-8',
@@ -6856,10 +6888,9 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
     'approval-required tools should fail closed unless a policy explicitly allows them',
   )
   assert(
-    hostSource.includes("from './agent'") &&
-      hostSource.includes('getModelInfo:') &&
-      hostSource.includes('streamChat'),
-    'default runtime host should own provider stream and model metadata wiring',
+    hostSource.includes("from '@aila/agent/node'") &&
+      hostSource.includes('createDefaultNodeRuntimeHost'),
+    'default runtime host should compose provider stream and model metadata wiring from @aila/agent/node',
   )
 
   const webSearchSource = await readFile(join(process.cwd(), 'src/main/web-search.ts'), 'utf-8')

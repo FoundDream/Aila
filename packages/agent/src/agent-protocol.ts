@@ -1,5 +1,5 @@
 import type { PersistedImageBlock, PersistedMessage } from './conversation-core'
-import type { ProviderId } from './models'
+import type { ModelDescriptor, ProviderId } from './models'
 import type { Settings } from './settings-types'
 import type { ToolContext, ToolRegistry } from './tools'
 
@@ -123,6 +123,7 @@ export interface ModelInfo {
 export interface ModelSelection {
   providerId: ProviderId
   modelId: string
+  model?: ModelDescriptor
 }
 
 export interface StreamRequest {

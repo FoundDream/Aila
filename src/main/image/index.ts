@@ -4,9 +4,8 @@
  * provider is one new file + one switch arm.
  */
 
-import { MissingApiKeyError } from '../providers'
-import { resolveApiKey, type Settings } from '../settings'
-import { openrouterImageAdapter } from './openrouter'
+import { createNodeImageGenerator } from '@aila/agent/node'
+import type { Settings } from '../settings'
 import type { ImageGenerateRequest, ImageResult } from './types'
 
 export type { ImageGenerateRequest, ImageRequest, ImageResult } from './types'
@@ -15,13 +14,5 @@ export async function generateImage(
   req: ImageGenerateRequest,
   settings: Settings,
 ): Promise<ImageResult> {
-  const apiKey = resolveApiKey(req.providerId, settings)
-  if (!apiKey) throw new MissingApiKeyError(req.providerId)
-
-  switch (req.providerId) {
-    case 'openrouter':
-      return openrouterImageAdapter.generate(req, apiKey)
-    default:
-      throw new Error(`Image generation is not yet supported for provider "${req.providerId}".`)
-  }
+  return createNodeImageGenerator()(req, settings)
 }

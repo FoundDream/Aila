@@ -6,7 +6,17 @@
  * Catalog snapshot date: 2026-05-02 (sourced from OpenRouter live /models).
  */
 
-export type ProviderId = 'anthropic' | 'openai' | 'google' | 'openrouter'
+export type KnownProviderId = 'anthropic' | 'openai' | 'google' | 'openrouter'
+
+export type ProviderId = KnownProviderId | (string & {})
+
+export type KnownModelApi =
+  | 'anthropic-messages'
+  | 'openai-chat-completions'
+  | 'openai-responses'
+  | 'google-generative-ai'
+
+export type ModelApi = KnownModelApi | (string & {})
 
 export type ModelTag = 'flagship' | 'fast' | 'cheap' | 'coding' | 'reasoning'
 
@@ -16,6 +26,43 @@ export interface ModelEntry {
   displayName: string
   contextLength: number
   tags?: ModelTag[]
+  api?: ModelApi
+  baseUrl?: string
+  headers?: Record<string, string>
+  maxTokens?: number
+  input?: ('text' | 'image')[]
+  capabilities?: ModelCapabilities
+  compat?: Record<string, unknown>
+  pricing?: ModelPricing
+}
+
+export interface ModelCapabilities {
+  tools?: boolean
+  vision?: boolean
+  reasoning?: boolean
+  imageGeneration?: boolean
+}
+
+export interface ModelPricing {
+  inputPerMTok?: number
+  outputPerMTok?: number
+  cacheReadPerMTok?: number
+  cacheWritePerMTok?: number
+}
+
+export interface ModelDescriptor {
+  provider: ProviderId
+  modelId: string
+  api: ModelApi
+  displayName?: string
+  baseUrl?: string
+  headers?: Record<string, string>
+  contextLength?: number
+  maxTokens?: number
+  input?: ('text' | 'image')[]
+  capabilities?: ModelCapabilities
+  compat?: Record<string, unknown>
+  pricing?: ModelPricing
 }
 
 export const MODEL_CATALOG: ModelEntry[] = [
@@ -163,11 +210,43 @@ export const IMAGE_MODEL_CATALOG: ImageModelEntry[] = [
 
 export const PROVIDER_ORDER: ProviderId[] = ['anthropic', 'openai', 'google', 'openrouter']
 
-export const PROVIDER_LABELS: Record<ProviderId, string> = {
+export const PROVIDER_LABELS: Record<KnownProviderId, string> = {
   anthropic: 'Anthropic',
   openai: 'OpenAI',
   google: 'Google',
   openrouter: 'OpenRouter',
+}
+
+export const PROVIDER_DEFAULT_API: Record<KnownProviderId, ModelApi> = {
+  anthropic: 'anthropic-messages',
+  openai: 'openai-chat-completions',
+  google: 'google-generative-ai',
+  openrouter: 'openai-chat-completions',
+}
+
+export function providerLabel(providerId: ProviderId): string {
+  return providerId in PROVIDER_LABELS ? PROVIDER_LABELS[providerId as KnownProviderId] : providerId
+}
+
+export function modelEntryToDescriptor(entry: ModelEntry): ModelDescriptor {
+  return {
+    provider: entry.providerId,
+    modelId: entry.modelId,
+    api:
+      entry.api ??
+      (entry.providerId in PROVIDER_DEFAULT_API
+        ? PROVIDER_DEFAULT_API[entry.providerId as KnownProviderId]
+        : 'openai-chat-completions'),
+    displayName: entry.displayName,
+    contextLength: entry.contextLength,
+    ...(entry.baseUrl && { baseUrl: entry.baseUrl }),
+    ...(entry.headers && { headers: entry.headers }),
+    ...(entry.maxTokens !== undefined && { maxTokens: entry.maxTokens }),
+    ...(entry.input && { input: entry.input }),
+    ...(entry.capabilities && { capabilities: entry.capabilities }),
+    ...(entry.compat && { compat: entry.compat }),
+    ...(entry.pricing && { pricing: entry.pricing }),
+  }
 }
 
 /**
@@ -178,7 +257,21 @@ export function findModel(providerId: ProviderId, modelId: string): ModelEntry |
   const entry = MODEL_CATALOG.find((m) => m.providerId === providerId && m.modelId === modelId)
   if (entry) return entry
   if (providerId === 'openrouter') {
-    return { providerId, modelId, displayName: modelId, contextLength: 0 }
+    return {
+      providerId,
+      modelId,
+      displayName: modelId,
+      contextLength: 0,
+      api: 'openai-chat-completions',
+    }
   }
   return null
+}
+
+export function findModelDescriptor(
+  providerId: ProviderId,
+  modelId: string,
+): ModelDescriptor | null {
+  const entry = findModel(providerId, modelId)
+  return entry ? modelEntryToDescriptor(entry) : null
 }

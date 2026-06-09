@@ -18,6 +18,7 @@
     "baseUrl": ".",
     "paths": {
       "@aila/agent": ["./packages/agent/src/index.ts"],
+      "@aila/agent/node": ["./packages/agent/src/node.ts"],
       "@shared/*": ["./src/shared/*"]
     }
   }

@@ -49,14 +49,24 @@ export {
 } from './conversation-core'
 export {
   findModel,
+  findModelDescriptor,
   IMAGE_MODEL_CATALOG,
   type ImageModelEntry,
+  type KnownModelApi,
+  type KnownProviderId,
   MODEL_CATALOG,
+  type ModelApi,
+  type ModelCapabilities,
+  type ModelDescriptor,
   type ModelEntry,
+  type ModelPricing,
   type ModelTag,
+  modelEntryToDescriptor,
+  PROVIDER_DEFAULT_API,
   PROVIDER_LABELS,
   PROVIDER_ORDER,
   type ProviderId,
+  providerLabel,
 } from './models'
 export {
   type ActiveAssistantTurn,

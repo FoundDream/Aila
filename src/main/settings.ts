@@ -12,7 +12,7 @@ import { getDataDir, getSettingsPath } from './paths'
 
 export type { Settings } from '@aila/agent'
 
-const ENV_KEY_BY_PROVIDER: Record<ProviderId, string> = {
+const ENV_KEY_BY_PROVIDER: Record<string, string> = {
   anthropic: 'ANTHROPIC_API_KEY',
   openai: 'OPENAI_API_KEY',
   google: 'GOOGLE_GENERATIVE_AI_API_KEY',

@@ -67,5 +67,18 @@ export function ProviderLogo({ id, size = 16, className }: Props): ReactElement 
           <path d="M2.5 12.5h3.6c1.5 0 2.4-.6 3.5-1.6.6-.6 1.4-1.5 2.6-1.5h4M19.5 9.4l3-1.4-3-1.4M2.5 11.5h3.6c1.5 0 2.4.6 3.5 1.6.6.6 1.4 1.5 2.6 1.5h4M19.5 14.6l3 1.4-3 1.4" />
         </svg>
       )
+    default:
+      return (
+        <svg {...props} fill="currentColor">
+          <title>{id}</title>
+          <circle cx="12" cy="12" r="9" opacity="0.18" />
+          <path
+            d="M7 12h10M12 7v10"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            strokeLinecap="round"
+          />
+        </svg>
+      )
   }
 }

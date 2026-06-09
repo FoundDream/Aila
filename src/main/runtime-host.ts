@@ -7,13 +7,11 @@ import {
   type RuntimeAttachmentBlock,
   type RuntimePersistAttachmentInput,
 } from '@aila/agent'
-import { getModelInfo, streamChat } from './agent'
-import { fileSystem, workspaceRoots } from './filesystem'
-import { generateImage } from './image'
+import { createDefaultNodeRuntimeHost } from '@aila/agent/node'
 import { saveImage } from './image-store'
+import { getDataDir, getImagesDir } from './paths'
 import { createPersistedRuntimeStore } from './runtime-store'
 import { loadSettings } from './settings'
-import { runShell } from './shell'
 import { loadSkillsFromDir } from './skill-loader'
 import { loadToolPacksFromDir } from './tool-pack-loader'
 import { webSearch } from './web-search'
@@ -37,19 +35,19 @@ async function persistRuntimeAttachment(
 
 export function createDefaultRuntimeHost(overrides: AgentRuntimeHost = {}): AgentRuntimeHost {
   return {
+    ...createDefaultNodeRuntimeHost({
+      dataDir: getDataDir(),
+      imageDir: getImagesDir(),
+      loadSettings,
+      enableFileStore: false,
+    }),
     loadSettings,
     onToolPolicy: (request) => createToolPolicy(loadSettings().approvalMode)(request),
     loadToolPacks: async () => (await loadToolPacksFromDir()).map((pack) => pack.toolPack),
     loadSkills: async () => (await loadSkillsFromDir()).skills,
     persistAttachment: persistRuntimeAttachment,
-    fileSystem,
-    workspaceRoots,
     webSearch,
-    generateImage,
     saveImage,
-    runShell,
-    getModelInfo: (selection) => getModelInfo(selection.providerId, selection.modelId),
-    streamChat,
     ...overrides,
   }
 }
