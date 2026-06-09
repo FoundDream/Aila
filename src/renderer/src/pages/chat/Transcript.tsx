@@ -212,9 +212,7 @@ function BlockView({ block, isStreaming }: { block: Block; isStreaming: boolean 
 }
 
 function ToolCallView({ block }: { block: ToolCallBlock }): ReactElement {
-  // Auto-expand while running so long streaming arguments do not look like a
-  // frozen UI.
-  const [expanded, setExpanded] = useState(block.status === 'running')
+  const [expanded, setExpanded] = useState(false)
   const statusLabel =
     block.status === 'running' ? 'Running' : block.status === 'error' ? 'Error' : 'Done'
   const statusColor =
