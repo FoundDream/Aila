@@ -52,4 +52,8 @@ export const agentNodePackageValueContract = {
   createModelRegistry: agentNode.createModelRegistry,
   createProtocolRegistry: agentNode.createProtocolRegistry,
   createFileRuntimeStore: agentNode.createFileRuntimeStore,
+  createDefaultWebSearch: agentNode.createDefaultWebSearch,
+  createWebSearchRegistry: agentNode.createWebSearchRegistry,
+  WebSearchRegistry: agentNode.WebSearchRegistry,
+  registerBuiltInWebSearchProviders: agentNode.registerBuiltInWebSearchProviders,
 } satisfies Record<string, unknown>

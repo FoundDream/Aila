@@ -5924,6 +5924,154 @@ async function testWebSearchToolRequiresHostDependency(): Promise<void> {
   }
 }
 
+async function testNodeWebSearchRegistryFallbacksAndMerge(): Promise<void> {
+  const fallbackCalls: string[] = []
+  const fallbackSearch = runtimePackageNodeSdk.createDefaultWebSearch({
+    providers: {
+      tavily: { apiKey: '' },
+      duckduckgo: {},
+      wikimedia: {},
+    },
+    order: ['tavily', 'duckduckgo', 'wikimedia'],
+    fetch: async (url) => {
+      const href = String(url)
+      fallbackCalls.push(href)
+      if (href.includes('api.duckduckgo.com')) {
+        return new Response(JSON.stringify({ RelatedTopics: [] }), {
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      return new Response(
+        JSON.stringify({
+          pages: [
+            {
+              key: 'Aila',
+              title: 'Aila',
+              excerpt: 'Aila runtime search result',
+            },
+          ],
+        }),
+        { headers: { 'Content-Type': 'application/json' } },
+      )
+    },
+  })
+  const fallback = await fallbackSearch({
+    query: 'Aila',
+    searchDepth: 'basic',
+    topic: 'general',
+    maxResults: 3,
+  })
+  assert(
+    fallbackCalls.some((url) => url.includes('api.duckduckgo.com')) &&
+      fallbackCalls.some((url) => url.includes('api.wikimedia.org')),
+    'node web search should fallback from empty DuckDuckGo result to Wikimedia without Tavily key',
+  )
+  assertEqual(fallback.results?.[0]?.source, 'wikimedia', 'fallback result source')
+
+  let searxngSignal: AbortSignal | undefined
+  const controller = new AbortController()
+  const searxngSearch = runtimePackageNodeSdk.createDefaultWebSearch({
+    providers: {
+      searxng: { baseUrl: 'https://searx.example' },
+      duckduckgo: {},
+    },
+    order: ['searxng', 'duckduckgo'],
+    fetch: async (url, init) => {
+      assert(String(url).startsWith('https://searx.example/search?'), 'SearXNG should be first')
+      searxngSignal = init?.signal ?? undefined
+      return new Response(
+        JSON.stringify({
+          results: [{ title: 'SearXNG result', url: 'https://example.com/a', content: 'Snippet' }],
+        }),
+        { headers: { 'Content-Type': 'application/json' } },
+      )
+    },
+  })
+  const searxng = await searxngSearch({
+    query: 'Aila runtime',
+    searchDepth: 'basic',
+    topic: 'general',
+    maxResults: 5,
+    signal: controller.signal,
+  })
+  assertEqual(searxng.results?.[0]?.source, 'searxng', 'SearXNG result source')
+  assertEqual(searxngSignal, controller.signal, 'SearXNG provider receives abort signal')
+
+  const tavilyCalls: string[] = []
+  const tavilyFallbackSearch = runtimePackageNodeSdk.createDefaultWebSearch({
+    providers: {
+      tavily: { apiKey: 'contract-key' },
+      duckduckgo: {},
+    },
+    order: ['tavily', 'duckduckgo'],
+    fetch: async (url) => {
+      const href = String(url)
+      tavilyCalls.push(href)
+      if (href.includes('api.tavily.com')) return new Response('boom', { status: 500 })
+      return new Response(
+        JSON.stringify({
+          RelatedTopics: [
+            {
+              Text: 'Fallback result - from DuckDuckGo',
+              FirstURL: 'https://example.com/fallback',
+            },
+          ],
+        }),
+        { headers: { 'Content-Type': 'application/json' } },
+      )
+    },
+  })
+  const tavilyFallback = await tavilyFallbackSearch({
+    query: 'Aila runtime',
+    searchDepth: 'basic',
+    topic: 'general',
+    maxResults: 5,
+  })
+  assert(
+    tavilyCalls.some((url) => url.includes('api.tavily.com')) &&
+      tavilyCalls.some((url) => url.includes('api.duckduckgo.com')),
+    'node web search should fallback when Tavily provider fails',
+  )
+  assertEqual(tavilyFallback.results?.[0]?.source, 'duckduckgo', 'Tavily fallback source')
+
+  const mergeRegistry = runtimePackageNodeSdk.createWebSearchRegistry({
+    adapters: [
+      {
+        id: 'one',
+        search: async () => ({
+          results: [
+            { title: 'One', url: 'https://example.com/shared#fragment', source: 'one' },
+            { title: 'Only one', url: 'https://example.com/one', source: 'one' },
+          ],
+        }),
+      },
+      {
+        id: 'two',
+        search: async () => ({
+          results: [
+            { title: 'Two', url: 'https://example.com/shared', source: 'two' },
+            { title: 'Only two', url: 'https://example.com/two', source: 'two' },
+          ],
+        }),
+      },
+    ],
+    order: ['one', 'two'],
+    advancedMode: 'merge',
+  })
+  const merged = await mergeRegistry.search({
+    query: 'Aila runtime',
+    searchDepth: 'advanced',
+    topic: 'general',
+    maxResults: 2,
+  })
+  assertEqual(merged.results?.length, 2, 'advanced merge should respect maxResults')
+  assertEqual(
+    merged.results?.filter((result) => result.url?.includes('/shared')).length,
+    1,
+    'advanced merge should dedupe URLs',
+  )
+}
+
 function testToolActivityTargetContract(): void {
   assertEqual(
     summarizeToolTarget('read', { path: '/workspace/src/app.ts' })?.preview,
@@ -6388,6 +6536,10 @@ async function testRuntimeSdkDoesNotExportDocsContract(): Promise<void> {
     'createProtocolRegistry',
     'createFileRuntimeStore',
     'loadNodeSettings',
+    'createDefaultWebSearch',
+    'createWebSearchRegistry',
+    'WebSearchRegistry',
+    'registerBuiltInWebSearchProviders',
   ]) {
     assert(name in packageNodeSdk, `@aila/agent/node should export node adapter API: ${name}`)
   }
@@ -6816,6 +6968,7 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
     "'./node/protocols'",
     "'./node/auth'",
     "'./node/file-store'",
+    "'./node/web-search'",
   ]) {
     assert(
       packageNodeSource.includes(expected),
@@ -6895,10 +7048,25 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
 
   const webSearchSource = await readFile(join(process.cwd(), 'src/main/web-search.ts'), 'utf-8')
   assert(
-    webSearchSource.includes('TAVILY_API_KEY') &&
-      webSearchSource.includes('https://api.tavily.com/search') &&
-      webSearchSource.includes('fetch('),
-    'default web search adapter should own Tavily HTTP wiring',
+    webSearchSource.includes("from '@aila/agent/node'") &&
+      webSearchSource.includes('createDefaultWebSearch') &&
+      !webSearchSource.includes('https://api.tavily.com/search') &&
+      !webSearchSource.includes('fetch('),
+    'Desktop web search adapter should compose @aila/agent/node default search instead of owning provider HTTP wiring',
+  )
+
+  const nodeWebSearchSource = await readFile(
+    join(process.cwd(), 'packages/agent/src/node/web-search/index.ts'),
+    'utf-8',
+  )
+  assert(
+    nodeWebSearchSource.includes('https://api.tavily.com/search') &&
+      nodeWebSearchSource.includes('https://api.duckduckgo.com/') &&
+      nodeWebSearchSource.includes('https://api.wikimedia.org/core/v1/wikipedia') &&
+      nodeWebSearchSource.includes('https://hn.algolia.com/api/v1/search') &&
+      nodeWebSearchSource.includes('https://export.arxiv.org/api/query') &&
+      nodeWebSearchSource.includes('https://api.stackexchange.com/2.3/search/advanced'),
+    '@aila/agent/node web search provider registry should own built-in provider HTTP wiring',
   )
 
   const shellSource = await readFile(join(process.cwd(), 'src/main/shell.ts'), 'utf-8')
@@ -7678,6 +7846,7 @@ async function main(): Promise<void> {
   await testGenerateImageToolRequiresHostImageDependencies()
   await testWebSearchToolUsesInjectedHostDependency()
   await testWebSearchToolRequiresHostDependency()
+  await testNodeWebSearchRegistryFallbacksAndMerge()
   testToolActivityTargetContract()
   await testFilesystemToolWorkspaceRootsContract()
   await testDefaultRuntimeHostOwnsFilesystemTools()

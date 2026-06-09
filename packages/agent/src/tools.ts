@@ -645,6 +645,8 @@ export interface ToolWebSearchResultItem {
   title?: string
   url?: string
   content?: string
+  source?: string
+  publishedAt?: string
 }
 
 export interface ToolWebSearchResult {
@@ -713,6 +715,8 @@ async function runWebSearch(
       title: r.title,
       url: r.url,
       content: r.content,
+      source: r.source,
+      publishedAt: r.publishedAt,
     })),
   }
   return truncate(JSON.stringify(compact))

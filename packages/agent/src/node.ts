@@ -58,3 +58,13 @@ export {
   createProviderStreamChat,
   type ProviderStreamChatOptions,
 } from './node/stream-chat'
+export {
+  type CreateWebSearchRegistryInput,
+  createDefaultWebSearch,
+  createWebSearchRegistry,
+  registerBuiltInWebSearchProviders,
+  type WebSearchProvider,
+  type WebSearchProviderConfig,
+  type WebSearchProviderId,
+  WebSearchRegistry,
+} from './node/web-search'
