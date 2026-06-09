@@ -1,15 +1,34 @@
-import { createDefaultWebSearch } from '@aila/agent/node'
+import type { ToolWebSearchRequest, ToolWebSearchResult } from '@aila/agent'
+import { type CreateWebSearchRegistryInput, createDefaultWebSearch } from '@aila/agent/node'
+import { loadSettings } from './settings'
 
-export const webSearch = createDefaultWebSearch({
-  providers: {
-    tavily: { apiKey: '$TAVILY_API_KEY' },
-    searxng: { baseUrl: '$SEARXNG_URL' },
-    brave: { apiKey: '$BRAVE_SEARCH_API_KEY' },
-    google: { apiKey: '$GOOGLE_SEARCH_API_KEY', cx: '$GOOGLE_SEARCH_CX' },
-    duckduckgo: {},
-    wikimedia: {},
-    hackernews: {},
-    arxiv: {},
-    stackexchange: {},
-  },
-})
+export async function webSearch(request: ToolWebSearchRequest): Promise<ToolWebSearchResult> {
+  return createDefaultWebSearch({ providers: buildWebSearchProviders() })(request)
+}
+
+function buildWebSearchProviders(): CreateWebSearchRegistryInput['providers'] {
+  const settings = loadSettings().webSearch?.providers ?? {}
+  return {
+    ...(settings.tavily?.apiKey?.trim() && {
+      tavily: { apiKey: settings.tavily.apiKey.trim() },
+    }),
+    ...(settings.searxng?.baseUrl?.trim() && {
+      searxng: { baseUrl: settings.searxng.baseUrl.trim() },
+    }),
+    ...(settings.brave?.apiKey?.trim() && {
+      brave: { apiKey: settings.brave.apiKey.trim() },
+    }),
+    ...(settings.google?.apiKey?.trim() &&
+      settings.google.cx?.trim() && {
+        google: { apiKey: settings.google.apiKey.trim(), cx: settings.google.cx.trim() },
+      }),
+    duckduckgo: { disabled: settings.duckduckgo?.enabled === false },
+    wikimedia: { disabled: settings.wikimedia?.enabled === false },
+    hackernews: { disabled: settings.hackernews?.enabled === false },
+    arxiv: { disabled: settings.arxiv?.enabled === false },
+    stackexchange: {
+      disabled: settings.stackexchange?.enabled === false,
+      site: settings.stackexchange?.site?.trim() || 'stackoverflow',
+    },
+  }
+}

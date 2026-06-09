@@ -19,11 +19,30 @@ const API_KEY_PLACEHOLDERS: Record<ProviderId, string> = {
   openrouter: 'sk-or-...',
 }
 
-type SettingsTab = 'provider' | 'models'
+type SettingsTab = 'provider' | 'models' | 'search'
 
 const TABS: Array<{ id: SettingsTab; label: string; icon: typeof KeyRoundIcon }> = [
   { id: 'provider', label: 'Provider', icon: KeyRoundIcon },
   { id: 'models', label: 'Default Models', icon: BoxIcon },
+  { id: 'search', label: 'Search', icon: SearchIcon },
+]
+
+type WebSearchProviders = NonNullable<NonNullable<Settings['webSearch']>['providers']>
+type WebSearchProviderKey = keyof WebSearchProviders
+
+const FREE_SEARCH_PROVIDERS: Array<{
+  id: Extract<
+    WebSearchProviderKey,
+    'duckduckgo' | 'wikimedia' | 'hackernews' | 'arxiv' | 'stackexchange'
+  >
+  label: string
+  detail: string
+}> = [
+  { id: 'duckduckgo', label: 'DuckDuckGo', detail: 'Instant answers fallback' },
+  { id: 'wikimedia', label: 'Wikimedia', detail: 'Encyclopedic search' },
+  { id: 'hackernews', label: 'Hacker News', detail: 'Technical news and project discussion' },
+  { id: 'arxiv', label: 'arXiv', detail: 'Research paper search' },
+  { id: 'stackexchange', label: 'Stack Exchange', detail: 'Technical Q&A search' },
 ]
 
 function formatContext(tokens: number): string {
@@ -45,6 +64,7 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
   const [tab, setTab] = useState<SettingsTab>('provider')
   const [selectedProvider, setSelectedProvider] = useState<ProviderId>('anthropic')
   const [revealKey, setRevealKey] = useState(false)
+  const [revealSearchKeys, setRevealSearchKeys] = useState(false)
   // Live OpenRouter catalog, fetched lazily the first time that detail page
   // is shown. The static MODEL_CATALOG only carries a couple of curated
   // OpenRouter entries — the real list comes from the API.
@@ -58,6 +78,7 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
       setDraft(settings)
       setTab('provider')
       setRevealKey(false)
+      setRevealSearchKeys(false)
     }
   }, [open, settings])
 
@@ -111,6 +132,27 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
   const setDefaultImageModel = (selection: ModelSelection | null): void => {
     setDraft((prev) => ({ ...prev, defaultImageModel: selection }))
   }
+
+  const updateWebSearchProvider = <K extends WebSearchProviderKey>(
+    provider: K,
+    patch: Partial<NonNullable<WebSearchProviders[K]>>,
+  ): void => {
+    setDraft((prev) => ({
+      ...prev,
+      webSearch: {
+        ...(prev.webSearch ?? {}),
+        providers: {
+          ...(prev.webSearch?.providers ?? {}),
+          [provider]: {
+            ...(prev.webSearch?.providers?.[provider] ?? {}),
+            ...patch,
+          },
+        },
+      },
+    }))
+  }
+
+  const searchProviders = draft.webSearch?.providers ?? {}
 
   const configuredInDraft = PROVIDER_ORDER.filter((p) => Boolean(draft.apiKeys[p]?.trim()))
   const providerConfigured = configuredInDraft.includes(selectedProvider)
@@ -506,6 +548,141 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
                       </p>
                     </div>
                   </div>
+                </div>
+              </div>
+            )}
+
+            {tab === 'search' && (
+              <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+                <div className="space-y-5">
+                  <section>
+                    <div className="mb-2 flex items-center justify-between gap-3">
+                      <SectionTitle>API Providers</SectionTitle>
+                      <button
+                        type="button"
+                        onClick={() => setRevealSearchKeys((value) => !value)}
+                        className="flex items-center gap-1.5 rounded-md px-2 py-1 text-[11px] text-[var(--text-dim)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
+                      >
+                        {revealSearchKeys ? (
+                          <EyeOffIcon className="size-3.5" />
+                        ) : (
+                          <EyeIcon className="size-3.5" />
+                        )}
+                        {revealSearchKeys ? 'Hide keys' : 'Show keys'}
+                      </button>
+                    </div>
+
+                    <div className="space-y-3">
+                      <label className="grid grid-cols-[112px_1fr] items-center gap-3 text-[12px]">
+                        <span className="text-[var(--text)]">Tavily</span>
+                        <input
+                          type={revealSearchKeys ? 'text' : 'password'}
+                          value={searchProviders.tavily?.apiKey ?? ''}
+                          onChange={(event) =>
+                            updateWebSearchProvider('tavily', { apiKey: event.target.value })
+                          }
+                          placeholder="tvly-..."
+                          className="min-w-0 rounded-md border border-[var(--border)] bg-[var(--bg-soft)] px-2 py-1.5 outline-none focus:border-[var(--border-strong)]"
+                        />
+                      </label>
+
+                      <label className="grid grid-cols-[112px_1fr] items-center gap-3 text-[12px]">
+                        <span className="text-[var(--text)]">SearXNG URL</span>
+                        <input
+                          type="text"
+                          value={searchProviders.searxng?.baseUrl ?? ''}
+                          onChange={(event) =>
+                            updateWebSearchProvider('searxng', { baseUrl: event.target.value })
+                          }
+                          placeholder="https://search.example.com"
+                          className="min-w-0 rounded-md border border-[var(--border)] bg-[var(--bg-soft)] px-2 py-1.5 outline-none focus:border-[var(--border-strong)]"
+                        />
+                      </label>
+
+                      <label className="grid grid-cols-[112px_1fr] items-center gap-3 text-[12px]">
+                        <span className="text-[var(--text)]">Brave</span>
+                        <input
+                          type={revealSearchKeys ? 'text' : 'password'}
+                          value={searchProviders.brave?.apiKey ?? ''}
+                          onChange={(event) =>
+                            updateWebSearchProvider('brave', { apiKey: event.target.value })
+                          }
+                          placeholder="Brave Search API key"
+                          className="min-w-0 rounded-md border border-[var(--border)] bg-[var(--bg-soft)] px-2 py-1.5 outline-none focus:border-[var(--border-strong)]"
+                        />
+                      </label>
+
+                      <label className="grid grid-cols-[112px_1fr] items-center gap-3 text-[12px]">
+                        <span className="text-[var(--text)]">Google key</span>
+                        <input
+                          type={revealSearchKeys ? 'text' : 'password'}
+                          value={searchProviders.google?.apiKey ?? ''}
+                          onChange={(event) =>
+                            updateWebSearchProvider('google', { apiKey: event.target.value })
+                          }
+                          placeholder="Google Search API key"
+                          className="min-w-0 rounded-md border border-[var(--border)] bg-[var(--bg-soft)] px-2 py-1.5 outline-none focus:border-[var(--border-strong)]"
+                        />
+                      </label>
+
+                      <label className="grid grid-cols-[112px_1fr] items-center gap-3 text-[12px]">
+                        <span className="text-[var(--text)]">Google CX</span>
+                        <input
+                          type="text"
+                          value={searchProviders.google?.cx ?? ''}
+                          onChange={(event) =>
+                            updateWebSearchProvider('google', { cx: event.target.value })
+                          }
+                          placeholder="Programmable Search engine ID"
+                          className="min-w-0 rounded-md border border-[var(--border)] bg-[var(--bg-soft)] px-2 py-1.5 outline-none focus:border-[var(--border-strong)]"
+                        />
+                      </label>
+                    </div>
+                  </section>
+
+                  <section>
+                    <SectionTitle>Free Fallbacks</SectionTitle>
+                    <div className="divide-y divide-[var(--border)] rounded-md border border-[var(--border)]">
+                      {FREE_SEARCH_PROVIDERS.map((provider) => {
+                        const enabled = searchProviders[provider.id]?.enabled !== false
+                        return (
+                          <label
+                            key={provider.id}
+                            className="flex items-center gap-3 px-3 py-2 text-[12px]"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={enabled}
+                              onChange={(event) =>
+                                updateWebSearchProvider(provider.id, {
+                                  enabled: event.target.checked,
+                                })
+                              }
+                              className="size-3.5"
+                            />
+                            <span className="min-w-0 flex-1">
+                              <span className="block text-[var(--text)]">{provider.label}</span>
+                              <span className="block text-[11px] text-[var(--text-dim)]">
+                                {provider.detail}
+                              </span>
+                            </span>
+                          </label>
+                        )
+                      })}
+                    </div>
+
+                    <label className="mt-3 grid grid-cols-[112px_1fr] items-center gap-3 text-[12px]">
+                      <span className="text-[var(--text)]">Stack site</span>
+                      <input
+                        type="text"
+                        value={searchProviders.stackexchange?.site ?? 'stackoverflow'}
+                        onChange={(event) =>
+                          updateWebSearchProvider('stackexchange', { site: event.target.value })
+                        }
+                        className="min-w-0 rounded-md border border-[var(--border)] bg-[var(--bg-soft)] px-2 py-1.5 outline-none focus:border-[var(--border-strong)]"
+                      />
+                    </label>
+                  </section>
                 </div>
               </div>
             )}

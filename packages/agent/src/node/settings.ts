@@ -27,6 +27,7 @@ export function loadNodeSettings(options: NodeSettingsOptions = {}): Settings {
       apiKeys: parsed.apiKeys ?? {},
       defaultModel: parsed.defaultModel ?? null,
       defaultImageModel: parsed.defaultImageModel ?? null,
+      webSearch: parsed.webSearch ?? {},
       recentOpenRouterModels: parsed.recentOpenRouterModels ?? [],
     }
   } catch {

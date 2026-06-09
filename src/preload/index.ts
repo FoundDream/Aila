@@ -207,7 +207,22 @@ export interface Settings {
   defaultModel: ModelSelection | null
   defaultImageModel?: ModelSelection | null
   approvalMode?: 'safe' | 'yolo'
+  webSearch?: WebSearchSettings
   recentOpenRouterModels?: string[]
+}
+
+export interface WebSearchSettings {
+  providers?: {
+    tavily?: { apiKey?: string }
+    searxng?: { baseUrl?: string }
+    brave?: { apiKey?: string }
+    google?: { apiKey?: string; cx?: string }
+    duckduckgo?: { enabled?: boolean }
+    wikimedia?: { enabled?: boolean }
+    hackernews?: { enabled?: boolean }
+    arxiv?: { enabled?: boolean }
+    stackexchange?: { enabled?: boolean; site?: string }
+  }
 }
 
 export interface SettingsState {

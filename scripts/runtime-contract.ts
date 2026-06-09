@@ -5904,10 +5904,8 @@ async function testWebSearchToolUsesInjectedHostDependency(): Promise<void> {
 
 async function testWebSearchToolRequiresHostDependency(): Promise<void> {
   const settings: Settings = { apiKeys: {}, defaultModel: null }
-  const originalTavilyApiKey = process.env.TAVILY_API_KEY
 
   try {
-    process.env.TAVILY_API_KEY = 'contract-env-key-must-not-leak-into-tools'
     await executeTool('web_search', { query: 'Aila runtime' }, { settings })
     throw new Error('web_search unexpectedly succeeded without a host dependency')
   } catch (error) {
@@ -5915,12 +5913,6 @@ async function testWebSearchToolRequiresHostDependency(): Promise<void> {
       error instanceof Error && error.message.includes('web search host is not available'),
       'web_search should fail closed without an injected host dependency',
     )
-  } finally {
-    if (originalTavilyApiKey === undefined) {
-      delete process.env.TAVILY_API_KEY
-    } else {
-      process.env.TAVILY_API_KEY = originalTavilyApiKey
-    }
   }
 }
 
@@ -7050,6 +7042,9 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
   assert(
     webSearchSource.includes("from '@aila/agent/node'") &&
       webSearchSource.includes('createDefaultWebSearch') &&
+      webSearchSource.includes('loadSettings().webSearch') &&
+      !webSearchSource.includes('$TAVILY_API_KEY') &&
+      !webSearchSource.includes('process.env') &&
       !webSearchSource.includes('https://api.tavily.com/search') &&
       !webSearchSource.includes('fetch('),
     'Desktop web search adapter should compose @aila/agent/node default search instead of owning provider HTTP wiring',
@@ -7065,8 +7060,10 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
       nodeWebSearchSource.includes('https://api.wikimedia.org/core/v1/wikipedia') &&
       nodeWebSearchSource.includes('https://hn.algolia.com/api/v1/search') &&
       nodeWebSearchSource.includes('https://export.arxiv.org/api/query') &&
-      nodeWebSearchSource.includes('https://api.stackexchange.com/2.3/search/advanced'),
-    '@aila/agent/node web search provider registry should own built-in provider HTTP wiring',
+      nodeWebSearchSource.includes('https://api.stackexchange.com/2.3/search/advanced') &&
+      !nodeWebSearchSource.includes('process.env') &&
+      !nodeWebSearchSource.includes('$TAVILY_API_KEY'),
+    '@aila/agent/node web search provider registry should own provider HTTP wiring without env fallback',
   )
 
   const shellSource = await readFile(join(process.cwd(), 'src/main/shell.ts'), 'utf-8')

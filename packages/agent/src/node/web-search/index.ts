@@ -4,7 +4,6 @@ import type {
   ToolWebSearchResult,
   ToolWebSearchResultItem,
 } from '../../tools'
-import { resolveConfiguredValue } from '../auth'
 
 export type WebSearchProviderId =
   | 'tavily'
@@ -39,7 +38,6 @@ export interface CreateWebSearchRegistryInput {
   adapters?: WebSearchProvider[]
   order?: WebSearchProviderId[]
   advancedMode?: 'first-success' | 'merge'
-  env?: NodeJS.ProcessEnv
   fetch?: typeof fetch
 }
 
@@ -68,10 +66,6 @@ const NEWS_ORDER: WebSearchProviderId[] = [
 ]
 
 const DEFAULT_PROVIDERS: Partial<Record<WebSearchProviderId, WebSearchProviderConfig>> = {
-  tavily: { apiKey: '$TAVILY_API_KEY' },
-  searxng: { baseUrl: '$SEARXNG_URL' },
-  brave: { apiKey: '$BRAVE_SEARCH_API_KEY' },
-  google: { apiKey: '$GOOGLE_SEARCH_API_KEY', cx: '$GOOGLE_SEARCH_CX' },
   duckduckgo: {},
   wikimedia: {},
   hackernews: {},
@@ -266,28 +260,22 @@ function maybeRegister(
 function resolveProviderConfigs(
   input: CreateWebSearchRegistryInput,
 ): Partial<Record<WebSearchProviderId, WebSearchProviderConfig>> {
-  const env = input.env ?? process.env
   const merged: Partial<Record<WebSearchProviderId, WebSearchProviderConfig>> = {
     ...DEFAULT_PROVIDERS,
     ...(input.providers ?? {}),
   }
   for (const [id, config] of Object.entries(merged)) {
-    merged[id] = resolveProviderConfig(config ?? {}, env)
+    merged[id] = resolveProviderConfig(config ?? {})
   }
   return merged
 }
 
-function resolveProviderConfig(
-  config: WebSearchProviderConfig,
-  env: NodeJS.ProcessEnv,
-): WebSearchProviderConfig {
+function resolveProviderConfig(config: WebSearchProviderConfig): WebSearchProviderConfig {
   return {
     ...config,
-    ...(config.apiKey !== undefined && { apiKey: resolveConfiguredValue(config.apiKey, env) }),
-    ...(config.baseUrl !== undefined && {
-      baseUrl: trimTrailingSlash(resolveConfiguredValue(config.baseUrl, env)),
-    }),
-    ...(config.cx !== undefined && { cx: resolveConfiguredValue(config.cx, env) }),
+    ...(config.apiKey !== undefined && { apiKey: config.apiKey.trim() }),
+    ...(config.baseUrl !== undefined && { baseUrl: trimTrailingSlash(config.baseUrl.trim()) }),
+    ...(config.cx !== undefined && { cx: config.cx.trim() }),
   }
 }
 

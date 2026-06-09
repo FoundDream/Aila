@@ -32,6 +32,7 @@ export function loadSettings(): Settings {
       defaultModel: parsed.defaultModel ?? null,
       defaultImageModel: parsed.defaultImageModel ?? null,
       approvalMode: normalizeToolApprovalMode(parsed.approvalMode),
+      webSearch: parsed.webSearch ?? {},
       recentOpenRouterModels: parsed.recentOpenRouterModels ?? [],
     }
   } catch {
