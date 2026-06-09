@@ -1,10 +1,11 @@
 import {
+  AlertCircleIcon,
   CheckIcon,
   ChevronRightIcon,
   CopyIcon,
   FileTextIcon,
+  LoaderCircleIcon,
   RotateCcwIcon,
-  TerminalIcon,
 } from 'lucide-react'
 import { type ReactElement, useCallback, useEffect, useState } from 'react'
 import { Streamdown } from 'streamdown'
@@ -167,12 +168,7 @@ function messageToPlainText(message: Message): string {
 
 function BlockView({ block, isStreaming }: { block: Block; isStreaming: boolean }): ReactElement {
   if (block.type === 'reasoning') {
-    return (
-      <aside className="text-[13.5px] leading-[1.6] text-[var(--text-dim)]">
-        <div className="mb-1 text-[12px] font-medium text-[var(--text-soft)]">Thinking</div>
-        <div className="whitespace-pre-wrap">{block.content}</div>
-      </aside>
-    )
+    return <ReasoningView content={block.content} isStreaming={isStreaming} />
   }
   if (block.type === 'image') {
     return (
@@ -211,10 +207,47 @@ function BlockView({ block, isStreaming }: { block: Block; isStreaming: boolean 
   )
 }
 
+function ReasoningView({
+  content,
+  isStreaming,
+}: {
+  content: string
+  isStreaming: boolean
+}): ReactElement {
+  const [expanded, setExpanded] = useState(isStreaming)
+
+  useEffect(() => {
+    setExpanded(isStreaming)
+  }, [isStreaming])
+
+  return (
+    <aside className="my-0.5 text-[13px] text-[var(--text-dim)]">
+      <button
+        type="button"
+        onClick={() => setExpanded((value) => !value)}
+        className="group flex w-full items-center gap-2 rounded-md px-1 py-1 text-left outline-none transition-colors hover:text-[var(--text)] focus-visible:text-[var(--text)]"
+        aria-expanded={expanded}
+      >
+        <ChevronRightIcon
+          className={`size-3 shrink-0 text-[var(--text-dim)] transition-transform ${
+            expanded ? 'rotate-90' : ''
+          }`}
+        />
+        <span className="font-medium text-[var(--text-soft)]">Thinking</span>
+      </button>
+      {expanded && (
+        <div className="ml-4 mt-1 border-l border-[var(--border)] pl-3 whitespace-pre-wrap leading-[1.6]">
+          {content}
+        </div>
+      )}
+    </aside>
+  )
+}
+
 function ToolCallView({ block }: { block: ToolCallBlock }): ReactElement {
   const [expanded, setExpanded] = useState(false)
-  const statusLabel =
-    block.status === 'running' ? 'Running' : block.status === 'error' ? 'Error' : 'Done'
+  const summary = toolCallSummary(block)
+  const resultLabel = block.status === 'error' ? 'Error' : 'Result'
   const statusColor =
     block.status === 'error'
       ? 'text-[var(--error)]'
@@ -222,38 +255,131 @@ function ToolCallView({ block }: { block: ToolCallBlock }): ReactElement {
         ? 'text-[var(--blue)]'
         : 'text-[var(--text-dim)]'
   return (
-    <aside className="overflow-hidden rounded-xl bg-[var(--bg-soft)] font-mono text-[12px] text-[var(--text-soft)]">
+    <aside className="my-0.5 text-[13px] text-[var(--text-soft)]">
       <button
         type="button"
         onClick={() => setExpanded((v) => !v)}
-        className="flex w-full items-center gap-2 px-3 py-2 text-left text-[11.5px] text-[var(--text-dim)] hover:text-[var(--text)]"
+        className="group flex w-full items-center gap-2 rounded-md px-1 py-1 text-left outline-none transition-colors hover:text-[var(--text)] focus-visible:text-[var(--text)]"
         aria-expanded={expanded}
       >
         <ChevronRightIcon
-          className={`h-3 w-3 shrink-0 transition-transform ${expanded ? 'rotate-90' : ''}`}
+          className={`size-3 shrink-0 text-[var(--text-dim)] transition-transform ${
+            expanded ? 'rotate-90' : ''
+          }`}
         />
-        <TerminalIcon className="h-3 w-3 shrink-0" />
-        <span className="truncate text-[var(--text-soft)]">{block.name}</span>
-        <span className={`ml-auto shrink-0 ${statusColor}`}>{statusLabel}</span>
+        <ToolStatusIcon status={block.status} />
+        <span className="shrink-0 font-medium text-[var(--text)]">{summary.action}</span>
+        {summary.detail && (
+          <span className="min-w-0 truncate text-[var(--text-dim)]">{summary.detail}</span>
+        )}
+        <span className={`ml-auto shrink-0 text-[11px] ${statusColor}`}>{summary.status}</span>
       </button>
       {expanded && (
-        <div className="border-t border-[var(--border)] px-3 py-2">
-          <pre className="overflow-x-auto whitespace-pre-wrap break-all text-[var(--text-soft)]">
-            {block.arguments || '{}'}
-          </pre>
+        <div className="ml-6 mt-1 border-l border-[var(--border)] pl-3">
+          <ToolPayload label="Input" value={block.arguments || '{}'} />
           {block.result !== undefined && (
-            <pre
-              className={`mt-2 overflow-x-auto whitespace-pre-wrap break-all border-t border-[var(--border)] pt-2 ${
-                block.status === 'error' ? 'text-[var(--error)]' : 'text-[var(--text-soft)]'
-              }`}
-            >
-              {block.result}
-            </pre>
+            <ToolPayload
+              label={resultLabel}
+              value={block.result}
+              tone={block.status === 'error' ? 'error' : 'neutral'}
+            />
           )}
         </div>
       )}
     </aside>
   )
+}
+
+function ToolStatusIcon({ status }: { status: ToolCallBlock['status'] }): ReactElement {
+  if (status === 'running') {
+    return <LoaderCircleIcon className="size-3.5 shrink-0 animate-spin text-[var(--blue)]" />
+  }
+  if (status === 'error') {
+    return <AlertCircleIcon className="size-3.5 shrink-0 text-[var(--error)]" />
+  }
+  return <CheckIcon className="size-3.5 shrink-0 text-[var(--text-dim)]" />
+}
+
+function ToolPayload({
+  label,
+  value,
+  tone = 'neutral',
+}: {
+  label: string
+  value: string
+  tone?: 'neutral' | 'error'
+}): ReactElement {
+  return (
+    <div className="mb-2 last:mb-0">
+      <div className="mb-1 text-[11px] font-medium text-[var(--text-dim)]">{label}</div>
+      <pre
+        className={`max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md bg-[var(--bg-soft)] px-3 py-2 font-mono text-[11.5px] leading-relaxed ${
+          tone === 'error' ? 'text-[var(--error)]' : 'text-[var(--text-soft)]'
+        }`}
+      >
+        {formatToolPayload(value)}
+      </pre>
+    </div>
+  )
+}
+
+function toolCallSummary(block: ToolCallBlock): {
+  action: string
+  detail?: string
+  status: string
+} {
+  const args = parseToolArguments(block.arguments)
+  const detail =
+    stringArg(args, 'command') ??
+    stringArg(args, 'cmd') ??
+    stringArg(args, 'path') ??
+    stringArg(args, 'file') ??
+    stringArg(args, 'query') ??
+    stringArg(args, 'q') ??
+    stringArg(args, 'prompt')
+
+  return {
+    action: toolActionLabel(block.name),
+    ...(detail ? { detail } : {}),
+    status: block.status === 'running' ? 'Running' : block.status === 'error' ? 'Failed' : 'Done',
+  }
+}
+
+function toolActionLabel(name: string): string {
+  const normalized = name.toLowerCase().replaceAll('-', '_')
+  if (['bash', 'shell', 'run_shell', 'exec_command'].includes(normalized)) return 'Ran command'
+  if (['read', 'read_file', 'open_file'].includes(normalized)) return 'Read file'
+  if (['write', 'write_file', 'create_file'].includes(normalized)) return 'Wrote file'
+  if (['edit', 'apply_patch', 'replace'].includes(normalized)) return 'Edited file'
+  if (['list', 'ls', 'list_files'].includes(normalized)) return 'Listed files'
+  if (['grep', 'search', 'rg', 'find'].includes(normalized)) return 'Searched'
+  if (['web_search', 'search_web'].includes(normalized)) return 'Searched web'
+  if (['generate_image', 'image_generation'].includes(normalized)) return 'Generated image'
+  return `Called ${name}`
+}
+
+function parseToolArguments(value: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(value || '{}')
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null
+  } catch {
+    return null
+  }
+}
+
+function stringArg(args: Record<string, unknown> | null, key: string): string | null {
+  const value = args?.[key]
+  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null
+}
+
+function formatToolPayload(value: string): string {
+  try {
+    return JSON.stringify(JSON.parse(value), null, 2)
+  } catch {
+    return value
+  }
 }
 
 function StreamingDots(): ReactElement {
