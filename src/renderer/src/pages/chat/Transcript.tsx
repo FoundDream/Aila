@@ -6,7 +6,7 @@ import {
   RotateCcwIcon,
   TerminalIcon,
 } from 'lucide-react'
-import { type ReactElement, useCallback, useState } from 'react'
+import { type ReactElement, useCallback, useEffect, useState } from 'react'
 import { Streamdown } from 'streamdown'
 import { useStickToBottom } from 'use-stick-to-bottom'
 import { markdownComponents } from '@/components/markdown/streamdownComponents'
@@ -16,15 +16,22 @@ export function Transcript({
   messages,
   canRetryLast = false,
   onRetryLast,
+  submitScrollKey = 0,
 }: {
   messages: Message[]
   canRetryLast?: boolean
   onRetryLast?: () => void
+  submitScrollKey?: number
 }): ReactElement {
   const { scrollRef, contentRef, isAtBottom, scrollToBottom } = useStickToBottom({
     initial: 'instant',
     resize: 'instant',
   })
+
+  useEffect(() => {
+    if (submitScrollKey === 0) return
+    void scrollToBottom({ animation: 'instant', ignoreEscapes: true })
+  }, [submitScrollKey, scrollToBottom])
 
   if (messages.length === 0) {
     return (

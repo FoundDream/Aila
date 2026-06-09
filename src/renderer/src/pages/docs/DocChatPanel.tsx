@@ -124,6 +124,17 @@ export function DocChatPanel({
     [deleteSession, onClearConversationApprovals, streams],
   )
 
+  const handleApprovalModeChange = useCallback(
+    async (approvalMode: NonNullable<Settings['approvalMode']>) => {
+      if (!settings) {
+        onOpenSettings()
+        return
+      }
+      await onUpdateSettings({ ...settings, approvalMode })
+    },
+    [settings, onUpdateSettings, onOpenSettings],
+  )
+
   const activeSession = sessions.find((s) => s.id === activeId) ?? null
 
   return (
@@ -178,6 +189,8 @@ export function DocChatPanel({
               onSelectionChange={handleSelectionChange}
               onOpenSettings={onOpenSettings}
               recentOpenRouterModels={settings?.recentOpenRouterModels ?? []}
+              approvalMode={settings?.approvalMode ?? 'safe'}
+              onApprovalModeChange={handleApprovalModeChange}
             />
           </>
         ) : (

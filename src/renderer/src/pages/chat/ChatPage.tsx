@@ -1,4 +1,4 @@
-import { type ReactElement, useCallback, useEffect } from 'react'
+import { type ReactElement, useCallback, useEffect, useState } from 'react'
 import type {
   ChatAttachmentInput,
   ConversationRecord,
@@ -35,6 +35,7 @@ export function ChatPage({
     configuredProviders,
     onUpdateSettings,
   )
+  const [submitScrollKey, setSubmitScrollKey] = useState(0)
 
   const conversationId = conversation?.meta.id ?? null
 
@@ -79,6 +80,7 @@ export function ChatPage({
       }
 
       streams.enqueueSend(id, trimmed, currentSelection, attachments)
+      setSubmitScrollKey((key) => key + 1)
     },
     [conversationId, onCreateConversation, streams, onOpenSettings, selectionRef.current],
   )
@@ -98,6 +100,17 @@ export function ChatPage({
     streams.enqueueRetryLast(conversationId, currentSelection)
   }, [conversationId, streams, onOpenSettings, selectionRef.current])
 
+  const handleApprovalModeChange = useCallback(
+    async (approvalMode: NonNullable<Settings['approvalMode']>) => {
+      if (!settings) {
+        onOpenSettings()
+        return
+      }
+      await onUpdateSettings({ ...settings, approvalMode })
+    },
+    [settings, onUpdateSettings, onOpenSettings],
+  )
+
   const composer = (
     <Composer
       isStreaming={isStreaming}
@@ -111,6 +124,8 @@ export function ChatPage({
       onSelectionChange={handleSelectionChange}
       onOpenSettings={onOpenSettings}
       recentOpenRouterModels={settings?.recentOpenRouterModels ?? []}
+      approvalMode={settings?.approvalMode ?? 'safe'}
+      onApprovalModeChange={handleApprovalModeChange}
     />
   )
 
@@ -137,6 +152,7 @@ export function ChatPage({
               messages={messages}
               canRetryLast={canRetryLast}
               onRetryLast={handleRetryLast}
+              submitScrollKey={submitScrollKey}
             />
             {composer}
           </>
