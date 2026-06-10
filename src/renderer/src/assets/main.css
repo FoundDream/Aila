@@ -328,8 +328,13 @@ body {
 .aila-md [data-streamdown="code-block-body"] code {
   display: block !important;
   min-width: max-content;
+  white-space: pre;
   background: transparent !important;
   padding: 0 !important;
+}
+.aila-md [data-streamdown="code-block-body"] code > span {
+  display: block;
+  min-height: 1lh;
 }
 .aila-md [data-streamdown="code-block-body"] code > span::before {
   display: none !important;
