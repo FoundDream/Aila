@@ -8,6 +8,7 @@ import {
   AILA_CONVERSATION_META_SCHEMA_VERSION,
   type ConversationRecord,
   type ConversationSummary,
+  type ConversationWorkspaceRef,
   createInterruptedConversationRecoveryEvent,
   DEFAULT_CONVERSATION_TITLE,
   deriveConversationTitle,
@@ -120,7 +121,10 @@ export function createFileRuntimeStore(options: FileRuntimeStoreOptions): AgentR
   }
 
   return {
-    async createConversation(docId?: string): Promise<ConversationSummary> {
+    async createConversation(
+      docId?: string,
+      workspace?: ConversationWorkspaceRef | null,
+    ): Promise<ConversationSummary> {
       const createdAt = now()
       const meta: ConversationSummary = {
         schemaVersion: AILA_CONVERSATION_META_SCHEMA_VERSION,
@@ -129,6 +133,7 @@ export function createFileRuntimeStore(options: FileRuntimeStoreOptions): AgentR
         createdAt,
         updatedAt: createdAt,
         ...(docId ? { docId } : {}),
+        ...(workspace ? { workspace: structuredClone(workspace) } : {}),
       }
       await writeRecord({ meta, messages: [] })
       await writeEvents(meta.id, [])

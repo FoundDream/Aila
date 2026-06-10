@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { ConversationRecord, ConversationSummary } from '../../../../preload/index'
+import type {
+  ConversationRecord,
+  ConversationSummary,
+  ConversationWorkspaceRef,
+} from '../../../../preload/index'
 
 export interface ConversationsState {
   conversations: ConversationSummary[]
@@ -8,7 +12,8 @@ export interface ConversationsState {
   isReady: boolean
   select: (id: string) => void
   deselect: () => void
-  create: () => Promise<ConversationSummary>
+  create: (workspace?: ConversationWorkspaceRef | null) => Promise<ConversationSummary>
+  createWorkspaceChat: () => Promise<ConversationSummary | null>
   remove: (id: string) => Promise<void>
   rename: (id: string, title: string) => Promise<void>
   applyUpdate: (summary: ConversationSummary) => void
@@ -95,13 +100,24 @@ export function useConversations(): ConversationsState {
     }
   }, [activeId, refreshList])
 
-  const create = useCallback(async (): Promise<ConversationSummary> => {
-    const summary = await window.api.runtime.conversations.create()
-    await refreshList()
-    setActiveId(summary.id)
-    setActiveRecord({ meta: summary, messages: [] })
-    return summary
-  }, [refreshList])
+  const create = useCallback(
+    async (workspace?: ConversationWorkspaceRef | null): Promise<ConversationSummary> => {
+      const summary = workspace
+        ? await window.api.runtime.conversations.createForWorkspace(workspace)
+        : await window.api.runtime.conversations.create()
+      await refreshList()
+      setActiveId(summary.id)
+      setActiveRecord({ meta: summary, messages: [] })
+      return summary
+    },
+    [refreshList],
+  )
+
+  const createWorkspaceChat = useCallback(async (): Promise<ConversationSummary | null> => {
+    const workspace = await window.api.workspaces.pickDirectory()
+    if (!workspace) return null
+    return create(workspace)
+  }, [create])
 
   const remove = useCallback(
     async (id: string) => {
@@ -161,6 +177,7 @@ export function useConversations(): ConversationsState {
     select: setActiveId,
     deselect,
     create,
+    createWorkspaceChat,
     remove,
     rename,
     applyUpdate,

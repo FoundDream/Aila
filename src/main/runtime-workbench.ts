@@ -6,6 +6,7 @@ import {
   type ConversationRuntimeHydration,
   type ConversationRuntimeStateSnapshot,
   type ConversationSummary,
+  type ConversationWorkspaceRef,
   type ModelSelection,
   type RuntimeListConversationsInput,
   type RuntimeSendResult,
@@ -37,6 +38,11 @@ export interface RuntimeWorkbenchRetryLastInput {
   selection: ModelSelection
 }
 
+export interface RuntimeWorkbenchCreateConversationInput {
+  docId?: string | null
+  workspace?: ConversationWorkspaceRef | null
+}
+
 export interface RuntimeWorkbenchReloadResult {
   toolPackCount: number
   toolCount: number
@@ -51,7 +57,7 @@ export interface DesktopRuntimeWorkbench {
   shutdown(): Promise<void>
   reloadExtensions(): Promise<RuntimeWorkbenchReloadResult>
 
-  createConversation(docId?: string | null): Promise<ConversationSummary>
+  createConversation(input?: RuntimeWorkbenchCreateConversationInput): Promise<ConversationSummary>
   listConversations(input?: RuntimeListConversationsInput): Promise<ConversationSummary[]>
   getConversation(conversationId: string): Promise<ConversationRecord>
   hydrateConversation(conversationId: string): Promise<ConversationRuntimeHydration>
@@ -143,8 +149,11 @@ export function createDesktopRuntimeWorkbench(
       }
     },
 
-    createConversation(docId) {
-      return runtime.createConversation({ docId: docId ?? null })
+    createConversation(input = {}) {
+      return runtime.createConversation({
+        docId: input.docId ?? null,
+        workspace: input.workspace ?? null,
+      })
     },
     listConversations(input = {}) {
       return runtime.listConversations(input)
@@ -195,8 +204,14 @@ export function registerRuntimeWorkbenchIpcHandlers(
   ipc.handle('runtime:conversations:get', (_event, conversationId: string) =>
     workbench.getConversation(conversationId),
   )
-  ipc.handle('runtime:conversations:create', (_event, docId?: string | null) =>
-    workbench.createConversation(docId ?? null),
+  ipc.handle(
+    'runtime:conversations:create',
+    (_event, input?: string | null | RuntimeWorkbenchCreateConversationInput) => {
+      if (typeof input === 'string' || input === null) {
+        return workbench.createConversation({ docId: input ?? null })
+      }
+      return workbench.createConversation(input ?? {})
+    },
   )
   ipc.handle('runtime:conversations:rename', (_event, conversationId: string, title: string) =>
     workbench.renameConversation(conversationId, title),

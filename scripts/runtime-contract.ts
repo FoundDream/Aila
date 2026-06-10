@@ -4,16 +4,16 @@ import { join } from 'node:path'
 import * as runtimeSdk from '@aila/agent'
 import * as runtimeCoreSdk from '@aila/agent'
 import {
+  type AgentContextPlan,
   type AgentEvent,
   AgentRuntime,
   type AgentRuntimeEvent,
   type AgentRuntimeHost,
   type AgentRuntimeStore,
-  type AgentContextPlan,
-  type ChatMessage,
   AILA_RUNTIME_EVENT_SCHEMA_VERSION,
   AILA_RUNTIME_EVENT_TYPES,
   AILA_SKILL_FILE,
+  type ChatMessage,
   createInMemoryRuntimeStore,
   createInterruptedConversationRecoveryEvent,
   createRuntimeEvent,
@@ -71,6 +71,7 @@ import {
   listAgentEvents,
   listConversations,
   type PersistedAgentEvent,
+  type PersistedMessage,
   recoverInterruptedConversationActivities,
   setConversationUsage,
   upsertMessage,
@@ -1431,7 +1432,7 @@ function testContextAssemblerSectionsContract(): void {
     'runtime SDK should expose context assembler class',
   )
 
-  const baseMessages = [
+  const baseMessages: PersistedMessage[] = [
     {
       schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
       id: 'context-user-old',
@@ -1492,21 +1493,13 @@ function testContextAssemblerSectionsContract(): void {
     null,
     'context assembler should not assign cache keys to current user messages',
   )
-  assertEqual(
-    assembled.plan.version,
-    1,
-    'context assembler should expose a versioned context plan',
-  )
+  assertEqual(assembled.plan.version, 1, 'context assembler should expose a versioned context plan')
   assertEqual(
     assembled.plan.totalMessages,
     assembled.messages.length,
     'context plan should account for every flattened message',
   )
-  assertEqual(
-    assembled.plan.cacheableSections,
-    3,
-    'context plan should count cacheable sections',
-  )
+  assertEqual(assembled.plan.cacheableSections, 3, 'context plan should count cacheable sections')
   assertEqual(
     assembled.plan.sections
       .map((section) => `${section.kind}:${section.messageStartIndex}-${section.messageEndIndex}`)
@@ -1546,7 +1539,7 @@ function testContextAssemblerSectionsContract(): void {
     'context assembler class should flatten assembled sections',
   )
 
-  const largeHistory = Array.from({ length: 30 }, (_, index) => ({
+  const largeHistory: PersistedMessage[] = Array.from({ length: 30 }, (_, index) => ({
     schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
     id: `context-large-user-${index}`,
     role: 'user' as const,
@@ -1709,9 +1702,9 @@ async function testRuntimeConversationStoreFacadeContract(): Promise<void> {
   let nextId = 1
 
   const store: AgentRuntimeStore = {
-    createConversation: async (docId) => {
+    createConversation: async (docId, workspace) => {
       const id = `injected-conversation-${nextId++}`
-      calls.push(`create:${docId ?? 'chat'}`)
+      calls.push(`create:${docId ?? 'chat'}:${workspace?.id ?? 'no-workspace'}`)
       const summary: ConversationSummary = {
         schemaVersion: AILA_CONVERSATION_META_SCHEMA_VERSION,
         id,
@@ -1719,6 +1712,7 @@ async function testRuntimeConversationStoreFacadeContract(): Promise<void> {
         createdAt: nextId,
         updatedAt: nextId,
         ...(docId ? { docId } : {}),
+        ...(workspace ? { workspace: structuredClone(workspace) } : {}),
       }
       summaries.set(id, summary)
       records.set(id, { meta: summary, messages: [] })
@@ -1857,6 +1851,24 @@ async function testRuntimeConversationStoreFacadeContract(): Promise<void> {
     resolvedNew.summary.docId,
     'docs/resolved.md',
     'runtime resolve should pass create metadata through the store',
+  )
+  const workspaceRef = {
+    id: '/contract/workspace',
+    path: '/contract/workspace',
+    label: 'Contract Workspace',
+  }
+  const workspaceChat = await runtime.createConversation({ workspace: workspaceRef })
+  assertEqual(workspaceChat.docId, undefined, 'runtime create workspace chat should not bind a doc')
+  assertEqual(
+    workspaceChat.workspace?.id,
+    '/contract/workspace',
+    'runtime create should pass optional workspace metadata through the store',
+  )
+  if (workspaceChat.workspace) workspaceChat.workspace.label = 'caller-mutated-workspace'
+  assertEqual(
+    summaries.get(workspaceChat.id)?.workspace?.label,
+    'Contract Workspace',
+    'runtime create should isolate workspace metadata from caller mutation',
   )
   try {
     await runtime.resolveConversation({ conversationId: chat.id, resumeLatest: true })
@@ -2122,6 +2134,23 @@ async function testInMemoryRuntimeStoreEventListContract(): Promise<void> {
   const store = createInMemoryRuntimeStore()
   const summary = await store.createConversation?.()
   assert(summary, 'in-memory runtime store should create conversations')
+  const workspaceSummary = await store.createConversation?.(undefined, {
+    id: '/memory/workspace',
+    path: '/memory/workspace',
+    label: 'Memory Workspace',
+  })
+  assert(workspaceSummary, 'in-memory runtime store should create workspace conversations')
+  assertEqual(
+    workspaceSummary.workspace?.label,
+    'Memory Workspace',
+    'in-memory runtime store should persist optional workspace metadata',
+  )
+  if (workspaceSummary.workspace) workspaceSummary.workspace.label = 'caller-mutated'
+  assertEqual(
+    (await store.getConversation(workspaceSummary.id)).meta.workspace?.label,
+    'Memory Workspace',
+    'in-memory runtime store should isolate workspace metadata from caller mutation',
+  )
 
   const laterEvent: PersistedAgentEvent = {
     schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,

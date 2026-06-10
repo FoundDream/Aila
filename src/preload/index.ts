@@ -1,9 +1,9 @@
-import type { ProviderId } from '@aila/agent'
+import type { ConversationWorkspaceRef, ProviderId } from '@aila/agent'
 import { contextBridge, ipcRenderer } from 'electron'
 import type { OrCatalog } from '../shared/openrouter'
 
 export type { OrCatalog, OrFamily, OrModel } from '../shared/openrouter'
-export type { ProviderId }
+export type { ConversationWorkspaceRef, ProviderId }
 
 export const AILA_CONVERSATION_META_SCHEMA_VERSION = 1
 export const AILA_PERSISTED_MESSAGE_SCHEMA_VERSION = 1
@@ -304,6 +304,8 @@ export interface ConversationSummary {
   // Set when Desktop owns this conversation as the AI sidebar of a specific
   // doc. Runtime treats it as ordinary conversation metadata.
   docId?: string | null
+  // Optional chat session workspace affinity used by Desktop grouping.
+  workspace?: ConversationWorkspaceRef | null
 }
 
 export interface UsageInfo {
@@ -337,6 +339,11 @@ export interface RuntimeSendRequest {
 export interface RuntimeRetryLastRequest {
   conversationId: string
   selection: ModelSelection
+}
+
+export interface RuntimeCreateConversationRequest {
+  docId?: string | null
+  workspace?: ConversationWorkspaceRef | null
 }
 
 export interface ActiveAssistantTurn {
@@ -403,7 +410,9 @@ const api = {
       get: (id: string): Promise<ConversationRecord> =>
         ipcRenderer.invoke('runtime:conversations:get', id),
       create: (docPath?: string): Promise<ConversationSummary> =>
-        ipcRenderer.invoke('runtime:conversations:create', docPath ?? null),
+        ipcRenderer.invoke('runtime:conversations:create', { docId: docPath ?? null }),
+      createForWorkspace: (workspace: ConversationWorkspaceRef): Promise<ConversationSummary> =>
+        ipcRenderer.invoke('runtime:conversations:create', { workspace }),
       listForDoc: (docPath: string): Promise<ConversationSummary[]> =>
         ipcRenderer.invoke('runtime:conversations:list', docPath),
       rename: (id: string, title: string): Promise<ConversationSummary> =>
@@ -419,6 +428,10 @@ const api = {
     get: (): Promise<SettingsState> => ipcRenderer.invoke('settings:get'),
     set: (settings: Settings): Promise<SettingsState> =>
       ipcRenderer.invoke('settings:set', settings),
+  },
+  workspaces: {
+    pickDirectory: (): Promise<ConversationWorkspaceRef | null> =>
+      ipcRenderer.invoke('workspaces:pick-directory'),
   },
   openrouter: {
     listModels: (): Promise<OrCatalog> => ipcRenderer.invoke('openrouter:list-models'),

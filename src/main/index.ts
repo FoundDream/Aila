@@ -1,8 +1,18 @@
-import { join } from 'node:path'
-import type { ProviderId } from '@aila/agent'
+import { mkdirSync } from 'node:fs'
+import { basename, join, resolve } from 'node:path'
+import type { ConversationWorkspaceRef, ProviderId } from '@aila/agent'
 import { is } from '@electron-toolkit/utils'
 import * as dotenv from 'dotenv'
-import { app, BrowserWindow, ipcMain, type NativeImage, nativeImage, nativeTheme } from 'electron'
+import {
+  app,
+  BrowserWindow,
+  dialog,
+  ipcMain,
+  type NativeImage,
+  nativeImage,
+  nativeTheme,
+  type OpenDialogOptions,
+} from 'electron'
 import { getModelInfo } from './agent'
 import { rewriteDocRefs as rewritePersistedDocRefs } from './conversations'
 import { sweepOrphanedDocConversations } from './doc-conversation-cleanup'
@@ -31,6 +41,16 @@ import {
 import { configuredProviders, loadSettings, type Settings, saveSettings } from './settings'
 
 dotenv.config()
+
+const APP_NAME = 'Aila'
+const DEV_DATA_DIR = join(process.cwd(), '.dev-data')
+const DEV_ELECTRON_USER_DATA_DIR = join(process.cwd(), '.dev-electron-user-data')
+
+app.setName(APP_NAME)
+if (is.dev) {
+  mkdirSync(DEV_ELECTRON_USER_DATA_DIR, { recursive: true })
+  app.setPath('userData', DEV_ELECTRON_USER_DATA_DIR)
+}
 
 // Custom schemes must be registered before the app `ready` event fires.
 registerImageProtocolScheme()
@@ -93,6 +113,21 @@ function send(channel: string, data?: unknown): void {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send(channel, data)
   }
+}
+
+async function pickWorkspaceDirectory(): Promise<ConversationWorkspaceRef | null> {
+  const options: OpenDialogOptions = {
+    title: 'Open Workspace',
+    properties: ['openDirectory'],
+  }
+  const result =
+    mainWindow && !mainWindow.isDestroyed()
+      ? await dialog.showOpenDialog(mainWindow, options)
+      : await dialog.showOpenDialog(options)
+  const [selectedPath] = result.filePaths
+  if (result.canceled || !selectedPath) return null
+  const path = resolve(selectedPath)
+  return { id: path, path, label: basename(path) || path }
 }
 
 const runtimeWorkbench = createDesktopRuntimeWorkbench({ emit: send, logger: console })
@@ -160,6 +195,7 @@ function registerIpcHandlers(): void {
   }
   ipcMain.handle('settings:get', () => packSettings(loadSettings()))
   ipcMain.handle('settings:set', (_event, next: Settings) => packSettings(saveSettings(next)))
+  ipcMain.handle('workspaces:pick-directory', () => pickWorkspaceDirectory())
   ipcMain.handle('openrouter:list-models', () => getOpenRouterCatalog())
   ipcMain.handle('extensions:report', () => getExtensionReport())
   ipcMain.handle('extensions:reload', async () => {
@@ -177,7 +213,7 @@ function registerIpcHandlers(): void {
 }
 
 app.whenReady().then(async () => {
-  configureDataDir(is.dev ? join(app.getAppPath(), '.dev-data') : app.getPath('userData'))
+  configureDataDir(is.dev ? DEV_DATA_DIR : app.getPath('userData'))
   console.log('[storage] data dir =', getDataDir())
   const recovered = await runtimeWorkbench
     .recoverInterruptedActivities('app restarted before this turn finished')

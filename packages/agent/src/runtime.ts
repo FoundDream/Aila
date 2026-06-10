@@ -6,7 +6,7 @@ import type {
   RuntimeModelInfoResolver,
   RuntimeStreamChat,
 } from './agent-protocol'
-import { assembleAgentContext, type AgentContextPlan } from './context'
+import { type AgentContextPlan, assembleAgentContext } from './context'
 import {
   type AgentEventAppendResult,
   AILA_AGENT_EVENT_SCHEMA_VERSION,
@@ -15,6 +15,7 @@ import {
   type ConversationRecord,
   type ConversationRuntimeReplayState,
   type ConversationSummary,
+  type ConversationWorkspaceRef,
   createInterruptedConversationRecoveryEvent,
   orderedUniqueAgentEvents,
   type PersistedAgentEvent,
@@ -210,6 +211,7 @@ export interface ActiveAssistantTurn {
 
 export interface RuntimeCreateConversationInput {
   docId?: string | null
+  workspace?: ConversationWorkspaceRef | null
 }
 
 export interface RuntimeListConversationsInput {
@@ -308,7 +310,10 @@ export interface AgentRuntimeOptions extends AgentRuntimeHost {
 }
 
 export interface AgentRuntimeStore {
-  createConversation?: (docId?: string) => Promise<ConversationSummary>
+  createConversation?: (
+    docId?: string,
+    workspace?: ConversationWorkspaceRef | null,
+  ) => Promise<ConversationSummary>
   getConversation: (conversationId: string) => Promise<ConversationRecord>
   saveMessage: (conversationId: string, message: PersistedMessage) => Promise<ConversationSummary>
   recordAgentEvent: (conversationId: string, event: AgentEvent) => Promise<AgentEventAppendResult>
@@ -453,7 +458,10 @@ export function createInMemoryRuntimeStore(
   }
 
   return {
-    async createConversation(docId?: string): Promise<ConversationSummary> {
+    async createConversation(
+      docId?: string,
+      workspace?: ConversationWorkspaceRef | null,
+    ): Promise<ConversationSummary> {
       const createdAt = now()
       const meta: ConversationSummary = {
         schemaVersion: AILA_CONVERSATION_META_SCHEMA_VERSION,
@@ -462,6 +470,7 @@ export function createInMemoryRuntimeStore(
         createdAt,
         updatedAt: createdAt,
         ...(docId ? { docId } : {}),
+        ...(workspace ? { workspace: cloneRuntimeValue(workspace) } : {}),
       }
       records.set(meta.id, { meta, messages: [] })
       agentEvents.set(meta.id, [])
@@ -796,7 +805,7 @@ export class AgentRuntime implements AgentRuntimeApi {
   ): Promise<ConversationSummary> {
     if (!this.store.createConversation) throw new Error('runtime store cannot create conversations')
     const summary = cloneRuntimeConversationSummary(
-      await this.store.createConversation(input.docId ?? undefined),
+      await this.store.createConversation(input.docId ?? undefined, input.workspace ?? undefined),
     )
     this.emit(createRuntimeEvent('conversations:updated', summary))
     return summary

@@ -1,4 +1,10 @@
-import { PanelLeftCloseIcon, PanelLeftOpenIcon, SettingsIcon } from 'lucide-react'
+import {
+  FileTextIcon,
+  PanelLeftCloseIcon,
+  PanelLeftOpenIcon,
+  SettingsIcon,
+  SquarePenIcon,
+} from 'lucide-react'
 import {
   type ReactElement,
   type ReactNode,
@@ -37,44 +43,13 @@ interface NavItem {
 const navItems: NavItem[] = [
   {
     id: 'chat',
-    label: 'Chat',
-    icon: (
-      <svg
-        width="16"
-        height="16"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.6"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        aria-hidden="true"
-      >
-        <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
-      </svg>
-    ),
+    label: 'New chat',
+    icon: <SquarePenIcon className="size-4" />,
   },
   {
     id: 'docs',
     label: 'Docs',
-    icon: (
-      <svg
-        width="16"
-        height="16"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.6"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        aria-hidden="true"
-      >
-        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-        <path d="M14 2v6h6" />
-        <path d="M9 13h6" />
-        <path d="M9 17h6" />
-      </svg>
-    ),
+    icon: <FileTextIcon className="size-4" />,
   },
 ]
 
@@ -274,7 +249,11 @@ export default function App(): ReactElement {
               {navItems.map((item) => (
                 <SidebarButton
                   key={item.id}
-                  active={tab === item.id}
+                  active={
+                    item.id === 'chat'
+                      ? tab === item.id && conversationsState.activeId === null
+                      : tab === item.id
+                  }
                   onClick={() => {
                     // Chat is an entry point, not a session: clicking it always
                     // lands on the new-chat empty state.
@@ -296,8 +275,11 @@ export default function App(): ReactElement {
                 busyIds={chatStreams.busyIds}
                 pendingApprovalIds={pendingApprovalConversationIds}
                 onSelect={conversationsState.select}
-                onCreate={() => {
-                  void conversationsState.create()
+                onCreate={(workspace) => {
+                  void conversationsState.create(workspace)
+                }}
+                onCreateWorkspaceChat={() => {
+                  void conversationsState.createWorkspaceChat()
                 }}
                 onRename={(id, title) => {
                   void conversationsState.rename(id, title)

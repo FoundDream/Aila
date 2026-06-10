@@ -36,7 +36,11 @@ import {
   buildDesktopWorkspaceContextFromRecord,
   getDesktopWorkspaceRoots,
 } from '../src/main/workspace-context'
-import type { ConversationSummary } from '../src/preload'
+import type { ConversationSummary, ConversationWorkspaceRef } from '../src/preload'
+import {
+  buildConversationSidebarSections,
+  groupConversationsByWorkspace,
+} from '../src/renderer/src/pages/chat/ConversationList'
 import {
   createChatStreamsStateForTest,
   reduceChatStreamsForTest,
@@ -114,8 +118,11 @@ async function testDocConversationWorkspaceContext(): Promise<void> {
 async function testDesktopWorkspaceRoots(): Promise<void> {
   await withTempDataDir(async () => {
     const roots = getDesktopWorkspaceRoots()
-    assert(roots && roots.length === 1, 'Desktop should expose documents as an extra root')
-    const root = roots[0]
+    assert(roots && roots.length >= 1, 'Desktop should expose workspace roots')
+    const root = roots.find(
+      (candidate) => typeof candidate !== 'string' && candidate.path === getDocumentsDir(),
+    )
+    assert(root, 'Desktop should expose documents as an extra root')
     assert(typeof root !== 'string', 'Desktop workspace root should keep a label')
     assertEqual(root.path, getDocumentsDir(), 'Desktop documents root path')
   })
@@ -1210,6 +1217,18 @@ function docConversationSummary(
   }
 }
 
+function workspaceConversationSummary(
+  id: string,
+  title: string,
+  workspace: ConversationWorkspaceRef,
+  updatedAt: number,
+): ConversationSummary {
+  return {
+    ...conversationSummary(id, title, updatedAt),
+    workspace,
+  }
+}
+
 function testRendererConversationListIgnoresRemovedSummaryUpdates(): void {
   const removedIds = new Set<string>(['conversation-deleted'])
   const deletedSummary = conversationSummary('conversation-deleted', 'Deleted', 10)
@@ -1246,6 +1265,66 @@ function testRendererConversationListIgnoresRemovedSummaryUpdates(): void {
     conversations[0]?.id,
     'conversation-visible',
     'visible conversation should remain after late removed update',
+  )
+}
+
+function testRendererConversationListGroupsWorkspaceSessions(): void {
+  const alpha: ConversationWorkspaceRef = {
+    id: '/workspace/alpha',
+    path: '/workspace/alpha',
+    label: 'Alpha',
+  }
+  const beta: ConversationWorkspaceRef = {
+    id: '/workspace/beta',
+    path: '/workspace/beta',
+    label: 'Beta',
+  }
+  const groups = groupConversationsByWorkspace([
+    conversationSummary('general-old', 'General old', 5),
+    workspaceConversationSummary('alpha-new', 'Alpha new', alpha, 30),
+    workspaceConversationSummary('beta-only', 'Beta only', beta, 20),
+    workspaceConversationSummary('alpha-old', 'Alpha old', alpha, 10),
+    conversationSummary('general-new', 'General new', 25),
+  ])
+  const sections = buildConversationSidebarSections([
+    conversationSummary('general-old', 'General old', 5),
+    workspaceConversationSummary('alpha-new', 'Alpha new', alpha, 30),
+    workspaceConversationSummary('beta-only', 'Beta only', beta, 20),
+    workspaceConversationSummary('alpha-old', 'Alpha old', alpha, 10),
+    conversationSummary('general-new', 'General new', 25),
+  ])
+
+  assertEqual(groups.length, 3, 'conversation list should group sessions by optional workspace')
+  assertEqual(
+    groups.map((group) => group.label).join(','),
+    'Alpha,Beta,General',
+    'workspace groups should sort by latest session update before the General group',
+  )
+  assertEqual(
+    groups
+      .find((group) => group.workspace?.id === alpha.id)
+      ?.conversations.map((conversation) => conversation.id)
+      .join(','),
+    'alpha-new,alpha-old',
+    'workspace group should keep same-workspace sessions together',
+  )
+  assertEqual(
+    groups
+      .find((group) => group.workspace === null)
+      ?.conversations.map((conversation) => conversation.id)
+      .join(','),
+    'general-new,general-old',
+    'sessions without workspace should stay in the General group',
+  )
+  assertEqual(
+    sections.projects.map((project) => project.label).join(','),
+    'Alpha,Beta',
+    'Codex-style sidebar should render workspace sessions under Projects',
+  )
+  assertEqual(
+    sections.chats.map((conversation) => conversation.id).join(','),
+    'general-new,general-old',
+    'Codex-style sidebar should render sessions without workspace under Chats',
   )
 }
 
@@ -2032,6 +2111,7 @@ async function main(): Promise<void> {
   testRendererDropTombstonesLateStreamEvents()
   testRendererDropClearsQueueAndBlocksFutureActions()
   testRendererConversationListIgnoresRemovedSummaryUpdates()
+  testRendererConversationListGroupsWorkspaceSessions()
   testRendererDocConversationListIgnoresRemovedSummaryUpdates()
   testRendererFinishAppendsMissingAssistantMessage()
   testRendererRunStartedDoesNotDuplicateFinishedAssistant()

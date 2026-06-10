@@ -23,6 +23,21 @@ export type {
   UserContentPart,
 } from './agent-protocol'
 export {
+  type AgentContextPlan,
+  type AgentContextPlanSection,
+  type AgentContextResult,
+  type AgentContextSection,
+  type AgentContextSectionCachePolicy,
+  type AgentContextSectionKind,
+  type AgentContextSectionMetadata,
+  type AgentContextSectionSource,
+  type AssembleAgentContextInput,
+  assembleAgentContext,
+  type BuildAgentContextInput,
+  buildAgentContext,
+  ContextAssembler,
+} from './context'
+export {
   type AgentEventAppendResult,
   AILA_AGENT_EVENT_SCHEMA_VERSION,
   AILA_CONVERSATION_META_SCHEMA_VERSION,
@@ -37,6 +52,7 @@ export {
   type ConversationRuntimeStatePhase,
   type ConversationSummary,
   type ConversationUsage,
+  type ConversationWorkspaceRef,
   createInterruptedConversationRecoveryEvent,
   type PersistedAgentEvent,
   type PersistedBlock,
@@ -108,21 +124,6 @@ export {
   type RuntimeTransientContextInput,
 } from './runtime'
 export type { Settings } from './settings-types'
-export {
-  assembleAgentContext,
-  buildAgentContext,
-  ContextAssembler,
-  type AgentContextPlan,
-  type AgentContextPlanSection,
-  type AgentContextResult,
-  type AgentContextSection,
-  type AgentContextSectionCachePolicy,
-  type AgentContextSectionKind,
-  type AgentContextSectionMetadata,
-  type AgentContextSectionSource,
-  type AssembleAgentContextInput,
-  type BuildAgentContextInput,
-} from './context'
 export {
   AILA_SKILL_FILE,
   createSkillToolPack,

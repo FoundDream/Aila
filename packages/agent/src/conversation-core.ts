@@ -116,6 +116,12 @@ export interface ConversationInterruptedRecoveryOptions {
   activity?: ConversationActivity
 }
 
+export interface ConversationWorkspaceRef {
+  id: string
+  path: string
+  label?: string
+}
+
 export interface ConversationMeta {
   schemaVersion: typeof AILA_CONVERSATION_META_SCHEMA_VERSION
   id: string
@@ -127,6 +133,9 @@ export interface ConversationMeta {
   // When set, this conversation is the AI sidebar attached to a specific doc.
   // The chat tab filters these out; Desktop owns docs workspace behavior.
   docId?: string | null
+  // Optional workspace affinity for chat sessions. Runtime preserves this as
+  // metadata; hosts decide whether and how it affects tool roots.
+  workspace?: ConversationWorkspaceRef | null
 }
 
 export type ConversationSummary = ConversationMeta
@@ -177,6 +186,24 @@ export function normalizeConversationActivity(value: unknown): ConversationActiv
   }
 }
 
+export function normalizeConversationWorkspaceRef(
+  value: unknown,
+): ConversationWorkspaceRef | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const record = value as Partial<ConversationWorkspaceRef>
+  if (typeof record.id !== 'string' || record.id.trim().length === 0) return undefined
+  if (typeof record.path !== 'string' || record.path.trim().length === 0) return undefined
+  const label =
+    typeof record.label === 'string' && record.label.trim().length > 0
+      ? record.label.trim()
+      : undefined
+  return {
+    id: record.id.trim(),
+    path: record.path.trim(),
+    ...(label ? { label } : {}),
+  }
+}
+
 export function normalizeConversationMeta(
   value: Partial<ConversationMeta>,
   fallbackId?: string,
@@ -185,6 +212,7 @@ export function normalizeConversationMeta(
   const id = typeof value.id === 'string' && value.id.length > 0 ? value.id : fallbackId
   if (!id) throw new Error('conversation meta is missing id')
   const activity = normalizeConversationActivity(value.activity)
+  const workspace = normalizeConversationWorkspaceRef(value.workspace)
 
   return {
     schemaVersion: AILA_CONVERSATION_META_SCHEMA_VERSION,
@@ -198,6 +226,7 @@ export function normalizeConversationMeta(
     ...(value.usage ? { usage: value.usage } : {}),
     ...(activity ? { activity } : {}),
     ...(value.docId !== undefined ? { docId: value.docId } : {}),
+    ...(value.workspace === null ? { workspace: null } : workspace ? { workspace } : {}),
   }
 }
 

@@ -3,6 +3,7 @@ import type {
   ChatAttachmentInput,
   ConversationRecord,
   ConversationSummary,
+  ConversationWorkspaceRef,
   ProviderId,
   Settings,
 } from '../../types'
@@ -13,7 +14,9 @@ import { useModelSelection } from './useModelSelection'
 
 interface ChatPageProps {
   conversation: ConversationRecord | null
-  onCreateConversation: () => Promise<ConversationSummary>
+  onCreateConversation: (
+    workspace?: ConversationWorkspaceRef | null,
+  ) => Promise<ConversationSummary>
   streams: ChatStreamsApi
   settings: Settings | null
   configuredProviders: ProviderId[]

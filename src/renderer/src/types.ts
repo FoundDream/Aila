@@ -18,6 +18,7 @@ export type {
   ConversationRuntimeStateSnapshot,
   ConversationSummary,
   ConversationUsage,
+  ConversationWorkspaceRef,
   DocPatch,
   DocRecord,
   DocSummary,

@@ -9,6 +9,7 @@ import {
   type ConversationMeta,
   type ConversationRecord,
   type ConversationSummary,
+  type ConversationWorkspaceRef,
   conversationActivityEquals,
   createInterruptedConversationRecoveryEvent,
   DEFAULT_CONVERSATION_TITLE,
@@ -244,7 +245,10 @@ export async function getConversation(id: string): Promise<ConversationRecord> {
   return { meta, messages }
 }
 
-export async function createConversation(docId?: string): Promise<ConversationSummary> {
+export async function createConversation(
+  docId?: string,
+  workspace?: ConversationWorkspaceRef | null,
+): Promise<ConversationSummary> {
   await ensureDir()
   const now = Date.now()
   const meta: ConversationMeta = {
@@ -254,6 +258,7 @@ export async function createConversation(docId?: string): Promise<ConversationSu
     createdAt: now,
     updatedAt: now,
     ...(docId ? { docId } : {}),
+    ...(workspace ? { workspace: structuredClone(workspace) } : {}),
   }
   await writeMeta(meta)
   await writeFile(logPath(meta.id), '', 'utf-8')
