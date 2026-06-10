@@ -6,7 +6,7 @@ import type {
   RuntimeModelInfoResolver,
   RuntimeStreamChat,
 } from './agent-protocol'
-import { assembleAgentContext } from './context'
+import { assembleAgentContext, type AgentContextPlan } from './context'
 import {
   type AgentEventAppendResult,
   AILA_AGENT_EVENT_SCHEMA_VERSION,
@@ -1077,6 +1077,7 @@ export class AgentRuntime implements AgentRuntimeApi {
 
     let streamStarted = false
     let messages: ChatMessage[]
+    let contextPlan: AgentContextPlan
     let toolContext: ToolContext
     let toolRegistry: ToolRegistry
     try {
@@ -1101,6 +1102,7 @@ export class AgentRuntime implements AgentRuntimeApi {
         dynamicContext: inputTransientContext ?? hostTransientContext,
       })
       messages = context.messages
+      contextPlan = context.plan
       toolRegistry = await this.getToolRegistry()
       toolContext = await this.buildToolContext({
         conversationId,
@@ -1144,6 +1146,7 @@ export class AgentRuntime implements AgentRuntimeApi {
       controller,
       resolveCleanup,
       messages,
+      contextPlan,
       toolContext,
       toolRegistry,
     })
@@ -1700,6 +1703,7 @@ export class AgentRuntime implements AgentRuntimeApi {
     controller: AbortController
     resolveCleanup: () => void
     messages: ChatMessage[]
+    contextPlan: AgentContextPlan
     toolContext: ToolContext
     toolRegistry: ToolRegistry
   }): Promise<void> {
@@ -1710,6 +1714,7 @@ export class AgentRuntime implements AgentRuntimeApi {
       controller,
       resolveCleanup,
       messages,
+      contextPlan,
       toolContext,
       toolRegistry,
     } = input
@@ -1743,6 +1748,7 @@ export class AgentRuntime implements AgentRuntimeApi {
           conversationId,
           assistantMessageId,
           messages: cloneRuntimeChatMessages(messages) ?? [],
+          contextPlan: cloneRuntimeValue(contextPlan),
           selection: cloneRuntimeValue(selection),
           signal: controller.signal,
           workspaceRoots: cloneRuntimeWorkspaceRoots(toolContext.workspaceRoots),

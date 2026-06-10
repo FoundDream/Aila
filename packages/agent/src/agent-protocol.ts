@@ -1,4 +1,5 @@
 import type { PersistedImageBlock, PersistedMessage } from './conversation-core'
+import type { AgentContextPlan } from './context'
 import type { ModelDescriptor, ProviderId } from './models'
 import type { Settings } from './settings-types'
 import type { ToolContext, ToolRegistry } from './tools'
@@ -130,6 +131,7 @@ export interface StreamRequest {
   conversationId: string
   assistantMessageId: string
   messages: ChatMessage[]
+  contextPlan?: AgentContextPlan
   selection: ModelSelection
   signal: AbortSignal
   onAgentEvent?: AgentEventSink

@@ -9,6 +9,7 @@ import {
   type AgentRuntimeEvent,
   type AgentRuntimeHost,
   type AgentRuntimeStore,
+  type AgentContextPlan,
   type ChatMessage,
   AILA_RUNTIME_EVENT_SCHEMA_VERSION,
   AILA_RUNTIME_EVENT_TYPES,
@@ -1280,6 +1281,7 @@ async function testRuntimeHostStableInstructionsUsesInjectedRecord(): Promise<vo
   }
   let record: ConversationRecord = { meta: summary, messages: [] }
   let streamedMessages: ChatMessage[] = []
+  let streamedContextPlan: AgentContextPlan | undefined
   let stableLoaderMessageCount = 0
   let transientLoaderMessageCount = 0
 
@@ -1343,6 +1345,7 @@ async function testRuntimeHostStableInstructionsUsesInjectedRecord(): Promise<vo
     },
     streamChat: async (req, handlers) => {
       streamedMessages = req.messages
+      streamedContextPlan = req.contextPlan
       await handlers.onDone({
         conversationId: req.conversationId,
         messageId: req.assistantMessageId,
@@ -1392,6 +1395,26 @@ async function testRuntimeHostStableInstructionsUsesInjectedRecord(): Promise<vo
     streamedMessages.map((message) => message.content).join('|'),
     `stable instructions for ${conversationId}|dynamic context for ${conversationId}|use stable instructions`,
     'runtime should place stable instructions before dynamic context and current user message',
+  )
+  assertEqual(
+    streamedContextPlan?.sections.map((section) => section.kind).join(','),
+    'stable_instructions,dynamic_context,current_user_message',
+    'runtime should pass context plan sections to stream host',
+  )
+  assertEqual(
+    streamedContextPlan?.totalMessages,
+    streamedMessages.length,
+    'runtime context plan should match streamed prompt message count',
+  )
+  assertEqual(
+    streamedContextPlan?.sections.at(0)?.messageStartIndex,
+    0,
+    'runtime context plan should expose section message ranges',
+  )
+  assertEqual(
+    streamedContextPlan?.sections.at(-1)?.cachePolicy,
+    'no_cache',
+    'runtime context plan should preserve cache policy for current user message',
   )
   assertEqual(record.messages.length, 2, 'host stable instructions should not mutate store record')
 }
@@ -1445,6 +1468,53 @@ function testContextAssemblerSectionsContract(): void {
     'context assembler should expose ordered prompt sections',
   )
   assertEqual(
+    assembled.sections.map((section) => section.metadata.source).join(','),
+    'runtime,runtime,conversation,user',
+    'context assembler should expose section sources for cache routing',
+  )
+  assertEqual(
+    assembled.sections.map((section) => section.metadata.cachePolicy).join(','),
+    'stable,turn,conversation,no_cache',
+    'context assembler should expose section cache policies',
+  )
+  assert(
+    assembled.sections.every((section) => /^[0-9a-f]{16}$/.test(section.metadata.hash)),
+    'context assembler should expose deterministic section hashes',
+  )
+  assert(
+    assembled.sections
+      .filter((section) => section.metadata.cachePolicy !== 'no_cache')
+      .every((section) => section.metadata.cacheKey?.includes(`:${section.kind}:`)),
+    'context assembler should expose cache keys for cacheable sections',
+  )
+  assertEqual(
+    assembled.sections.at(-1)?.metadata.cacheKey,
+    null,
+    'context assembler should not assign cache keys to current user messages',
+  )
+  assertEqual(
+    assembled.plan.version,
+    1,
+    'context assembler should expose a versioned context plan',
+  )
+  assertEqual(
+    assembled.plan.totalMessages,
+    assembled.messages.length,
+    'context plan should account for every flattened message',
+  )
+  assertEqual(
+    assembled.plan.cacheableSections,
+    3,
+    'context plan should count cacheable sections',
+  )
+  assertEqual(
+    assembled.plan.sections
+      .map((section) => `${section.kind}:${section.messageStartIndex}-${section.messageEndIndex}`)
+      .join(','),
+    'stable_instructions:0-1,dynamic_context:1-2,selected_history:2-4,current_user_message:4-5',
+    'context plan should expose flattened message ranges per section',
+  )
+  assertEqual(
     assembled.messages.map((message) => message.role).join(','),
     'system,system,user,assistant,user',
     'context assembler should preserve flattened model message order',
@@ -1464,6 +1534,11 @@ function testContextAssemblerSectionsContract(): void {
     viaClass.sections[0]?.kind,
     'dynamic_context',
     'context assembler should map legacy transient context into dynamic context',
+  )
+  assertEqual(
+    viaClass.sections[0]?.metadata.cachePolicy,
+    'turn',
+    'legacy transient context should keep dynamic turn cache policy',
   )
   assertEqual(
     viaClass.messages[0]?.role,
@@ -1499,6 +1574,12 @@ function testContextAssemblerSectionsContract(): void {
   assert(
     compacted.sections.some((section) => section.kind === 'compaction_summary'),
     'context assembler should expose omitted history as a compaction summary section',
+  )
+  assertEqual(
+    compacted.sections.find((section) => section.kind === 'compaction_summary')?.metadata
+      .cachePolicy,
+    'conversation',
+    'compaction summaries should be eligible for conversation-scoped cache reuse',
   )
   assert(
     compacted.stats.omittedRounds > 0,
@@ -6728,6 +6809,11 @@ async function testRuntimeSdkDoesNotExportDocsContract(): Promise<void> {
     'AgentRuntimeApi',
     'AgentRuntimeHost',
     'AgentRuntimeStore',
+    'AgentContextPlan',
+    'AgentContextPlanSection',
+    'AgentContextSectionCachePolicy',
+    'AgentContextSectionMetadata',
+    'AgentContextSectionSource',
     'RuntimeStreamChat',
     'RuntimeModelInfoResolver',
     'RuntimeStableInstructionsInput',
@@ -7336,6 +7422,7 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
     protocolSource.includes('export interface StreamRequest') &&
       protocolSource.includes('export type RuntimeStreamChat') &&
       protocolSource.includes('export type RuntimeModelInfoResolver') &&
+      protocolSource.includes('contextPlan?:') &&
       protocolSource.includes('fileSystem?:'),
     'agent protocol should define stream and model-info host contracts',
   )

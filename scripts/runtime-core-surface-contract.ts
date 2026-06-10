@@ -21,6 +21,11 @@ import {
   createSkillToolPack,
   createToolPolicy,
   findModel,
+  type AgentContextPlan,
+  type AgentContextPlanSection,
+  type AgentContextSectionCachePolicy,
+  type AgentContextSectionMetadata,
+  type AgentContextSectionSource,
   type ImageGenerateRequest,
   type ImageResult,
   isRuntimeEventType,
@@ -46,6 +51,11 @@ import {
 
 export type RuntimeCorePublicSurfaceContract = {
   agentEvent: AgentEvent
+  agentContextPlan: AgentContextPlan
+  agentContextPlanSection: AgentContextPlanSection
+  agentContextSectionCachePolicy: AgentContextSectionCachePolicy
+  agentContextSectionMetadata: AgentContextSectionMetadata
+  agentContextSectionSource: AgentContextSectionSource
   api: AgentRuntimeApi
   chatMessage: ChatMessage
   conversationApi: AgentRuntimeConversationApi

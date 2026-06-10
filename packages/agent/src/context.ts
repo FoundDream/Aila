@@ -29,9 +29,49 @@ export type AgentContextSectionKind =
   | 'selected_history'
   | 'current_user_message'
 
+export type AgentContextSectionSource = 'runtime' | 'conversation' | 'compaction' | 'user'
+
+export type AgentContextSectionCachePolicy =
+  | 'stable'
+  | 'turn'
+  | 'conversation'
+  | 'no_cache'
+
+export interface AgentContextSectionMetadata {
+  id: string
+  source: AgentContextSectionSource
+  cachePolicy: AgentContextSectionCachePolicy
+  hash: string
+  cacheKey: string | null
+  messageCount: number
+  charCost: number
+}
+
 export interface AgentContextSection {
   kind: AgentContextSectionKind
+  metadata: AgentContextSectionMetadata
   messages: ChatMessage[]
+}
+
+export interface AgentContextPlanSection {
+  kind: AgentContextSectionKind
+  id: string
+  source: AgentContextSectionSource
+  cachePolicy: AgentContextSectionCachePolicy
+  hash: string
+  cacheKey: string | null
+  messageStartIndex: number
+  messageEndIndex: number
+  messageCount: number
+  charCost: number
+}
+
+export interface AgentContextPlan {
+  version: 1
+  sections: AgentContextPlanSection[]
+  totalMessages: number
+  totalCharCost: number
+  cacheableSections: number
 }
 
 export interface AssembleAgentContextInput {
@@ -48,6 +88,7 @@ export type BuildAgentContextInput = AssembleAgentContextInput
 export interface AgentContextResult {
   messages: ChatMessage[]
   sections: AgentContextSection[]
+  plan: AgentContextPlan
   stats: {
     budgetChars: number
     includedRounds: number
@@ -191,8 +232,110 @@ function latestUserMessage(messages: PersistedMessage[]): PersistedMessage | nul
   return null
 }
 
+function stableStringify(value: unknown): string {
+  if (value === undefined) return 'undefined'
+  if (value === null || typeof value !== 'object') return JSON.stringify(value)
+  if (Array.isArray(value)) return `[${value.map((item) => stableStringify(item)).join(',')}]`
+
+  const record = value as Record<string, unknown>
+  return `{${Object.keys(record)
+    .sort()
+    .filter((key) => record[key] !== undefined)
+    .map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`)
+    .join(',')}}`
+}
+
+function contextHash(value: unknown): string {
+  const input = stableStringify(value)
+  let high = 0xdeadbeef ^ input.length
+  let low = 0x41c6ce57 ^ input.length
+  for (let i = 0; i < input.length; i++) {
+    const code = input.charCodeAt(i)
+    high = Math.imul(high ^ code, 2654435761)
+    low = Math.imul(low ^ code, 1597334677)
+  }
+  high =
+    Math.imul(high ^ (high >>> 16), 2246822507) ^
+    Math.imul(low ^ (low >>> 13), 3266489909)
+  low =
+    Math.imul(low ^ (low >>> 16), 2246822507) ^
+    Math.imul(high ^ (high >>> 13), 3266489909)
+  return `${(high >>> 0).toString(16).padStart(8, '0')}${(low >>> 0)
+    .toString(16)
+    .padStart(8, '0')}`
+}
+
+function sectionDefaults(kind: AgentContextSectionKind): {
+  source: AgentContextSectionSource
+  cachePolicy: AgentContextSectionCachePolicy
+} {
+  switch (kind) {
+    case 'stable_instructions':
+      return { source: 'runtime', cachePolicy: 'stable' }
+    case 'dynamic_context':
+      return { source: 'runtime', cachePolicy: 'turn' }
+    case 'compaction_summary':
+      return { source: 'compaction', cachePolicy: 'conversation' }
+    case 'selected_history':
+      return { source: 'conversation', cachePolicy: 'conversation' }
+    case 'current_user_message':
+      return { source: 'user', cachePolicy: 'no_cache' }
+  }
+}
+
 function section(kind: AgentContextSectionKind, messages: ChatMessage[]): AgentContextSection[] {
-  return messages.length > 0 ? [{ kind, messages }] : []
+  if (messages.length === 0) return []
+  const defaults = sectionDefaults(kind)
+  const hash = contextHash(messages)
+  const cacheKey =
+    defaults.cachePolicy === 'no_cache' ? null : `agent-context:v1:${kind}:${hash}`
+  return [
+    {
+      kind,
+      metadata: {
+        id: kind,
+        ...defaults,
+        hash,
+        cacheKey,
+        messageCount: messages.length,
+        charCost: charCost(messages),
+      },
+      messages,
+    },
+  ]
+}
+
+function createContextPlan(sections: AgentContextSection[]): AgentContextPlan {
+  let cursor = 0
+  let totalCharCost = 0
+  let cacheableSections = 0
+  const planSections = sections.map((contextSection): AgentContextPlanSection => {
+    const messageStartIndex = cursor
+    const messageEndIndex = messageStartIndex + contextSection.messages.length
+    cursor = messageEndIndex
+    totalCharCost += contextSection.metadata.charCost
+    if (contextSection.metadata.cachePolicy !== 'no_cache') cacheableSections += 1
+    return {
+      kind: contextSection.kind,
+      id: contextSection.metadata.id,
+      source: contextSection.metadata.source,
+      cachePolicy: contextSection.metadata.cachePolicy,
+      hash: contextSection.metadata.hash,
+      cacheKey: contextSection.metadata.cacheKey,
+      messageStartIndex,
+      messageEndIndex,
+      messageCount: contextSection.metadata.messageCount,
+      charCost: contextSection.metadata.charCost,
+    }
+  })
+
+  return {
+    version: 1,
+    sections: planSections,
+    totalMessages: cursor,
+    totalCharCost,
+    cacheableSections,
+  }
 }
 
 export class ContextAssembler {
@@ -238,10 +381,12 @@ export function assembleAgentContext(input: AssembleAgentContextInput): AgentCon
     ...(currentUserRound ? section('current_user_message', currentUserRound.messages) : []),
   ]
   const output = sections.flatMap((contextSection) => contextSection.messages)
+  const plan = createContextPlan(sections)
 
   return {
     messages: output,
     sections,
+    plan,
     stats: {
       budgetChars,
       includedRounds: selected.length,
