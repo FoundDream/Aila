@@ -12,7 +12,10 @@ function truncateDocPreview(content: string): string {
 }
 
 export function getDesktopWorkspaceRoots(): ToolContext['workspaceRoots'] {
-  return [{ path: getDocumentsDir(), label: 'Desktop documents' }]
+  return [
+    { path: process.cwd(), label: 'Project' },
+    { path: getDocumentsDir(), label: 'Desktop documents' },
+  ]
 }
 
 export async function buildDesktopWorkspaceContextFromRecord(
