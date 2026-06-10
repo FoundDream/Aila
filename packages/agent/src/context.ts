@@ -22,14 +22,32 @@ interface ContextRound {
   charCost: number
 }
 
-export interface BuildAgentContextInput {
+export type AgentContextSectionKind =
+  | 'stable_instructions'
+  | 'dynamic_context'
+  | 'compaction_summary'
+  | 'selected_history'
+  | 'current_user_message'
+
+export interface AgentContextSection {
+  kind: AgentContextSectionKind
+  messages: ChatMessage[]
+}
+
+export interface AssembleAgentContextInput {
+  stableInstructions?: ChatMessage[]
+  dynamicContext?: ChatMessage[]
+  /** @deprecated Use dynamicContext. Kept while adapters migrate to ContextAssembler sections. */
+  transientContext?: ChatMessage[]
   messages: PersistedMessage[]
   modelInfo: ModelInfo
-  transientContext?: ChatMessage[]
 }
+
+export type BuildAgentContextInput = AssembleAgentContextInput
 
 export interface AgentContextResult {
   messages: ChatMessage[]
+  sections: AgentContextSection[]
   stats: {
     budgetChars: number
     includedRounds: number
@@ -165,7 +183,25 @@ function summarizeOmittedRounds(rounds: ContextRound[]): ChatMessage | null {
   }
 }
 
-export function buildAgentContext(input: BuildAgentContextInput): AgentContextResult {
+function latestUserMessage(messages: PersistedMessage[]): PersistedMessage | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i]
+    if (message.role === 'user') return message
+  }
+  return null
+}
+
+function section(kind: AgentContextSectionKind, messages: ChatMessage[]): AgentContextSection[] {
+  return messages.length > 0 ? [{ kind, messages }] : []
+}
+
+export class ContextAssembler {
+  assemble(input: AssembleAgentContextInput): AgentContextResult {
+    return assembleAgentContext(input)
+  }
+}
+
+export function assembleAgentContext(input: AssembleAgentContextInput): AgentContextResult {
   const budgetChars = getContextBudgetChars(input.modelInfo)
   const historyBudget = Math.max(MIN_CONTEXT_CHARS, budgetChars)
   const rounds = input.messages.map(messageToRound).filter((r): r is ContextRound => r !== null)
@@ -181,17 +217,39 @@ export function buildAgentContext(input: BuildAgentContextInput): AgentContextRe
 
   const omittedCount = Math.max(0, rounds.length - selected.length)
   const summaryMessage = summarizeOmittedRounds(rounds.slice(0, omittedCount))
-  const output: ChatMessage[] = []
-  if (input.transientContext) output.push(...input.transientContext)
-  if (summaryMessage) output.push(summaryMessage)
-  output.push(...selected.flatMap((round) => round.messages))
+  const currentUser = latestUserMessage(input.messages)
+  const currentUserIndex =
+    currentUser === null ? -1 : selected.findIndex((round) => round.source.id === currentUser.id)
+  const selectedHistory =
+    currentUserIndex === -1
+      ? selected
+      : selected.filter((_, index) => index !== currentUserIndex)
+  const currentUserRound = currentUserIndex === -1 ? null : selected[currentUserIndex]
+
+  const dynamicContext = [...(input.dynamicContext ?? []), ...(input.transientContext ?? [])]
+  const sections: AgentContextSection[] = [
+    ...section('stable_instructions', input.stableInstructions ?? []),
+    ...section('dynamic_context', dynamicContext),
+    ...(summaryMessage ? section('compaction_summary', [summaryMessage]) : []),
+    ...section(
+      'selected_history',
+      selectedHistory.flatMap((round) => round.messages),
+    ),
+    ...(currentUserRound ? section('current_user_message', currentUserRound.messages) : []),
+  ]
+  const output = sections.flatMap((contextSection) => contextSection.messages)
 
   return {
     messages: output,
+    sections,
     stats: {
       budgetChars,
       includedRounds: selected.length,
       omittedRounds: omittedCount,
     },
   }
+}
+
+export function buildAgentContext(input: BuildAgentContextInput): AgentContextResult {
+  return assembleAgentContext(input)
 }

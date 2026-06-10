@@ -9,6 +9,7 @@ import {
   type AgentRuntimeEvent,
   type AgentRuntimeHost,
   type AgentRuntimeStore,
+  type ChatMessage,
   AILA_RUNTIME_EVENT_SCHEMA_VERSION,
   AILA_RUNTIME_EVENT_TYPES,
   AILA_SKILL_FILE,
@@ -1265,6 +1266,249 @@ async function testRuntimeHostTransientContextUsesInjectedRecord(): Promise<void
     'host transient context should not mutate streamed persisted messages through input record',
   )
   assertEqual(record.messages.length, 2, 'host transient context should not mutate store record')
+}
+
+async function testRuntimeHostStableInstructionsUsesInjectedRecord(): Promise<void> {
+  const conversationId = 'stable-instructions-contract'
+  const calls: string[] = []
+  const summary: ConversationSummary = {
+    schemaVersion: AILA_CONVERSATION_META_SCHEMA_VERSION,
+    id: conversationId,
+    title: 'stable instructions',
+    createdAt: 1,
+    updatedAt: 1,
+  }
+  let record: ConversationRecord = { meta: summary, messages: [] }
+  let streamedMessages: ChatMessage[] = []
+  let stableLoaderMessageCount = 0
+  let transientLoaderMessageCount = 0
+
+  const store: AgentRuntimeStore = {
+    getConversation: async (id) => {
+      calls.push(`get:${id}`)
+      if (id !== conversationId) throw new Error(`unexpected conversation: ${id}`)
+      return record
+    },
+    saveMessage: async (_id, message) => {
+      calls.push(`upsert:${message.role}`)
+      record = { ...record, messages: [...record.messages, message] }
+      return { ...summary, updatedAt: summary.updatedAt + record.messages.length }
+    },
+    recordAgentEvent: async (_id, event) => {
+      calls.push(`event:${event.type}`)
+      return {
+        event: {
+          ...event,
+          schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+        },
+        summary: { ...summary, updatedAt: summary.updatedAt + record.messages.length + 1 },
+      }
+    },
+    recordUsage: async () => {
+      throw new Error('stable instructions contract should not persist usage')
+    },
+    deleteConversation: async () => {
+      throw new Error('stable instructions contract should not delete conversation')
+    },
+  }
+
+  const runtime = new AgentRuntime({
+    store,
+    loadStableInstructions: ({ record: inputRecord, source }) => {
+      stableLoaderMessageCount = inputRecord.messages.length
+      calls.push(`stable:${source}:${stableLoaderMessageCount}`)
+      inputRecord.messages.push({
+        schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+        id: 'host-mutated-stable-record-message',
+        role: 'user',
+        blocks: [{ type: 'text', content: 'host mutated stable record' }],
+        status: 'done',
+      })
+      return [
+        {
+          role: 'system',
+          content: `stable instructions for ${inputRecord.meta.id}`,
+        },
+      ]
+    },
+    loadTransientContext: ({ record: inputRecord, source }) => {
+      transientLoaderMessageCount = inputRecord.messages.length
+      calls.push(`dynamic:${source}:${transientLoaderMessageCount}`)
+      return [
+        {
+          role: 'system',
+          content: `dynamic context for ${inputRecord.meta.id}`,
+        },
+      ]
+    },
+    streamChat: async (req, handlers) => {
+      streamedMessages = req.messages
+      await handlers.onDone({
+        conversationId: req.conversationId,
+        messageId: req.assistantMessageId,
+        message: {
+          schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+          id: req.assistantMessageId,
+          role: 'assistant',
+          blocks: [{ type: 'text', content: 'used stable instructions' }],
+          status: 'done',
+          model: req.selection,
+        },
+      })
+    },
+    logger: { warn() {}, error() {} },
+  })
+
+  await runtime.send({
+    conversationId,
+    userText: 'use stable instructions',
+    selection: { providerId: 'openrouter', modelId: 'contract/mock' },
+  })
+  await waitFor(
+    () => runtime.listActiveStreams().length === 0,
+    'stable instructions stream should settle',
+  )
+
+  assert(calls.includes(`get:${conversationId}`), 'runtime should load record through store')
+  assert(
+    calls.includes('stable:send:1'),
+    'host stable instructions should receive the post-user-message record',
+  )
+  assert(
+    calls.includes('dynamic:send:1'),
+    'host transient context should receive a record isolated from stable instructions mutation',
+  )
+  assertEqual(
+    stableLoaderMessageCount,
+    1,
+    'stable instructions loader should see the post-user-message record',
+  )
+  assertEqual(
+    transientLoaderMessageCount,
+    1,
+    'transient context loader should not see stable instructions host mutations',
+  )
+  assertEqual(
+    streamedMessages.map((message) => message.content).join('|'),
+    `stable instructions for ${conversationId}|dynamic context for ${conversationId}|use stable instructions`,
+    'runtime should place stable instructions before dynamic context and current user message',
+  )
+  assertEqual(record.messages.length, 2, 'host stable instructions should not mutate store record')
+}
+
+function testContextAssemblerSectionsContract(): void {
+  assertEqual(
+    typeof runtimeSdk.assembleAgentContext,
+    'function',
+    'runtime SDK should expose context assembler function',
+  )
+  assertEqual(
+    typeof runtimeSdk.ContextAssembler,
+    'function',
+    'runtime SDK should expose context assembler class',
+  )
+
+  const baseMessages = [
+    {
+      schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+      id: 'context-user-old',
+      role: 'user' as const,
+      blocks: [{ type: 'text' as const, content: 'older request' }],
+      status: 'done' as const,
+    },
+    {
+      schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+      id: 'context-assistant-old',
+      role: 'assistant' as const,
+      blocks: [{ type: 'text' as const, content: 'older answer' }],
+      status: 'done' as const,
+    },
+    {
+      schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+      id: 'context-user-current',
+      role: 'user' as const,
+      blocks: [{ type: 'text' as const, content: 'current request' }],
+      status: 'done' as const,
+    },
+  ]
+
+  const assembled = runtimeSdk.assembleAgentContext({
+    stableInstructions: [{ role: 'system', content: 'stable instructions' }],
+    dynamicContext: [{ role: 'system', content: 'dynamic runtime context' }],
+    messages: baseMessages,
+    modelInfo: { model: 'contract', contextLength: 100_000 },
+  })
+
+  assertEqual(
+    assembled.sections.map((section) => section.kind).join(','),
+    'stable_instructions,dynamic_context,selected_history,current_user_message',
+    'context assembler should expose ordered prompt sections',
+  )
+  assertEqual(
+    assembled.messages.map((message) => message.role).join(','),
+    'system,system,user,assistant,user',
+    'context assembler should preserve flattened model message order',
+  )
+  assertEqual(
+    assembled.sections.at(-1)?.messages[0]?.role,
+    'user',
+    'context assembler should isolate current user message as the final section',
+  )
+
+  const viaClass = new runtimeSdk.ContextAssembler().assemble({
+    transientContext: [{ role: 'system', content: 'legacy dynamic context' }],
+    messages: baseMessages,
+    modelInfo: { model: 'contract', contextLength: 100_000 },
+  })
+  assertEqual(
+    viaClass.sections[0]?.kind,
+    'dynamic_context',
+    'context assembler should map legacy transient context into dynamic context',
+  )
+  assertEqual(
+    viaClass.messages[0]?.role,
+    'system',
+    'context assembler class should flatten assembled sections',
+  )
+
+  const largeHistory = Array.from({ length: 30 }, (_, index) => ({
+    schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+    id: `context-large-user-${index}`,
+    role: 'user' as const,
+    blocks: [
+      {
+        type: 'text' as const,
+        content: `large omitted request ${index} ${'x'.repeat(900)}`,
+      },
+    ],
+    status: 'done' as const,
+  }))
+  const compacted = runtimeSdk.assembleAgentContext({
+    messages: [
+      ...largeHistory,
+      {
+        schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+        id: 'context-large-current',
+        role: 'user' as const,
+        blocks: [{ type: 'text' as const, content: 'current request after large history' }],
+        status: 'done' as const,
+      },
+    ],
+    modelInfo: { model: 'contract', contextLength: 4_000 },
+  })
+  assert(
+    compacted.sections.some((section) => section.kind === 'compaction_summary'),
+    'context assembler should expose omitted history as a compaction summary section',
+  )
+  assert(
+    compacted.stats.omittedRounds > 0,
+    'context assembler should report omitted rounds when history exceeds budget',
+  )
+  assertEqual(
+    compacted.sections.at(-1)?.kind,
+    'current_user_message',
+    'context assembler should keep current user message after compaction summary and selected history',
+  )
 }
 
 async function testRuntimeStreamHandlerSnapshots(): Promise<void> {
@@ -6486,6 +6730,7 @@ async function testRuntimeSdkDoesNotExportDocsContract(): Promise<void> {
     'AgentRuntimeStore',
     'RuntimeStreamChat',
     'RuntimeModelInfoResolver',
+    'RuntimeStableInstructionsInput',
     'Settings',
     'ToolPack',
     'ToolApprovalMode',
@@ -7790,6 +8035,8 @@ async function main(): Promise<void> {
   await testRuntimeDynamicExtensionLoaderSnapshots()
   await testRuntimeInjectableStoreContract()
   await testRuntimeHostTransientContextUsesInjectedRecord()
+  await testRuntimeHostStableInstructionsUsesInjectedRecord()
+  testContextAssemblerSectionsContract()
   await testRuntimeStreamHandlerSnapshots()
   await testRuntimeConversationStoreFacadeContract()
   await testRuntimeConversationRuntimeStateApiUsesEventReplay()

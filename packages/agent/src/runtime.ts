@@ -6,7 +6,7 @@ import type {
   RuntimeModelInfoResolver,
   RuntimeStreamChat,
 } from './agent-protocol'
-import { buildAgentContext } from './context'
+import { assembleAgentContext } from './context'
 import {
   type AgentEventAppendResult,
   AILA_AGENT_EVENT_SCHEMA_VERSION,
@@ -195,6 +195,8 @@ export interface RuntimeTransientContextInput {
   source: 'send' | 'retry'
 }
 
+export type RuntimeStableInstructionsInput = RuntimeTransientContextInput
+
 export interface RuntimeSendResult {
   userMessage: PersistedMessage
   assistantMessageId: string
@@ -279,6 +281,9 @@ export interface AgentRuntimeHost {
   skills?: readonly LoadedSkill[]
   loadSkills?: () => Promise<readonly LoadedSkill[]>
   loadSettings?: () => MaybePromise<Settings>
+  loadStableInstructions?: (
+    input: RuntimeStableInstructionsInput,
+  ) => MaybePromise<ChatMessage[] | undefined>
   loadTransientContext?: (
     input: RuntimeTransientContextInput,
   ) => MaybePromise<ChatMessage[] | undefined>
@@ -560,6 +565,9 @@ function normalizeRuntimeHost(options: AgentRuntimeOptions): AgentRuntimeHost {
   if (options.loadToolPacks) host.loadToolPacks = options.loadToolPacks
   if (options.loadSkills) host.loadSkills = options.loadSkills
   if (options.loadSettings) host.loadSettings = options.loadSettings
+  if (options.loadStableInstructions) {
+    host.loadStableInstructions = options.loadStableInstructions
+  }
   if (options.loadTransientContext) host.loadTransientContext = options.loadTransientContext
   if (options.webSearch) host.webSearch = options.webSearch
   if (options.generateImage) host.generateImage = options.generateImage
@@ -586,6 +594,9 @@ function normalizeRuntimeHost(options: AgentRuntimeOptions): AgentRuntimeHost {
   if (options.host.loadToolPacks) host.loadToolPacks = options.host.loadToolPacks
   if (options.host.loadSkills) host.loadSkills = options.host.loadSkills
   if (options.host.loadSettings) host.loadSettings = options.host.loadSettings
+  if (options.host.loadStableInstructions) {
+    host.loadStableInstructions = options.host.loadStableInstructions
+  }
   if (options.host.loadTransientContext) {
     host.loadTransientContext = options.host.loadTransientContext
   }
@@ -1070,18 +1081,24 @@ export class AgentRuntime implements AgentRuntimeApi {
     let toolRegistry: ToolRegistry
     try {
       if (!this.host.streamChat) throw new Error('runtime host cannot stream chat')
-      const resolvedTransientContext =
-        cloneRuntimeChatMessages(transientContext) ??
-        (await this.resolveTransientContext({
-          conversationId,
-          record,
-          selection,
-          source,
-        }))
-      const context = buildAgentContext({
+      const contextInput = {
+        conversationId,
+        record,
+        selection,
+        source,
+      }
+      const inputTransientContext = cloneRuntimeChatMessages(transientContext)
+      const [resolvedStableInstructions, hostTransientContext] = await Promise.all([
+        this.resolveStableInstructions(contextInput),
+        inputTransientContext === undefined
+          ? this.resolveTransientContext(contextInput)
+          : Promise.resolve(undefined),
+      ])
+      const context = assembleAgentContext({
+        stableInstructions: resolvedStableInstructions,
         messages: cloneRuntimeValue(record.messages),
         modelInfo: await this.resolveModelInfo(selection),
-        transientContext: resolvedTransientContext,
+        dynamicContext: inputTransientContext ?? hostTransientContext,
       })
       messages = context.messages
       toolRegistry = await this.getToolRegistry()
@@ -1492,6 +1509,19 @@ export class AgentRuntime implements AgentRuntimeApi {
     if (!this.host.loadTransientContext) return undefined
     return cloneRuntimeChatMessages(
       await this.host.loadTransientContext({
+        ...input,
+        record: cloneRuntimeConversationRecord(input.record),
+        selection: cloneRuntimeValue(input.selection),
+      }),
+    )
+  }
+
+  private async resolveStableInstructions(
+    input: RuntimeStableInstructionsInput,
+  ): Promise<ChatMessage[] | undefined> {
+    if (!this.host.loadStableInstructions) return undefined
+    return cloneRuntimeChatMessages(
+      await this.host.loadStableInstructions({
         ...input,
         record: cloneRuntimeConversationRecord(input.record),
         selection: cloneRuntimeValue(input.selection),

@@ -29,6 +29,7 @@ import {
   type PersistedMessage,
   parseSkillDocument,
   type RuntimeModelInfoResolver,
+  type RuntimeStableInstructionsInput,
   type RuntimeStreamChat,
   requestToolApprovalWithActivity,
   type Settings,
@@ -61,6 +62,7 @@ export type RuntimeCorePublicSurfaceContract = {
   modelSelection: ModelSelection
   persistedMessage: PersistedMessage
   runtime: AgentRuntime
+  stableInstructionsInput: RuntimeStableInstructionsInput
   settings: Settings
   shellRequest: ToolShellRequest
   store: AgentRuntimeStore

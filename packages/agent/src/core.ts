@@ -104,9 +104,20 @@ export {
   type RuntimeRetryLastInput,
   type RuntimeSendInput,
   type RuntimeSendResult,
+  type RuntimeStableInstructionsInput,
   type RuntimeTransientContextInput,
 } from './runtime'
 export type { Settings } from './settings-types'
+export {
+  assembleAgentContext,
+  buildAgentContext,
+  ContextAssembler,
+  type AgentContextResult,
+  type AgentContextSection,
+  type AgentContextSectionKind,
+  type AssembleAgentContextInput,
+  type BuildAgentContextInput,
+} from './context'
 export {
   AILA_SKILL_FILE,
   createSkillToolPack,
