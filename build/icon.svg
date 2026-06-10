@@ -1,0 +1,71 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="192" y1="124" x2="832" y2="900" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#ECEFF1"/>
+    </linearGradient>
+    <linearGradient id="ink" x1="280" y1="210" x2="760" y2="800" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#050505"/>
+      <stop offset="0.52" stop-color="#181818"/>
+      <stop offset="1" stop-color="#050505"/>
+    </linearGradient>
+    <linearGradient id="fold" x1="372" y1="418" x2="708" y2="666" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#303030"/>
+      <stop offset="1" stop-color="#080808"/>
+    </linearGradient>
+    <radialGradient id="nodeGlow" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(556 538) rotate(90) scale(122)">
+      <stop stop-color="#0285FF" stop-opacity="0.34"/>
+      <stop offset="1" stop-color="#0285FF" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="cardShadow" x="20" y="40" width="984" height="984" color-interpolation-filters="sRGB" filterUnits="userSpaceOnUse">
+      <feDropShadow dx="0" dy="22" stdDeviation="24" flood-color="#0D0D0D" flood-opacity="0.1"/>
+      <feDropShadow dx="0" dy="3" stdDeviation="7" flood-color="#0D0D0D" flood-opacity="0.06"/>
+    </filter>
+    <filter id="softShadow" x="180" y="150" width="666" height="710" color-interpolation-filters="sRGB" filterUnits="userSpaceOnUse">
+      <feDropShadow dx="0" dy="16" stdDeviation="18" flood-color="#000000" flood-opacity="0.18"/>
+    </filter>
+  </defs>
+
+  <rect x="96" y="96" width="832" height="832" rx="198" fill="url(#bg)" filter="url(#cardShadow)"/>
+  <rect x="114" y="114" width="796" height="796" rx="184" stroke="#FFFFFF" stroke-opacity="0.72" stroke-width="2"/>
+
+  <g transform="translate(512 512) scale(0.86) translate(-512 -512)">
+    <g filter="url(#softShadow)">
+      <path
+        d="M309 701C387 574 454 442 520 319C548 267 609 249 657 284C711 323 719 394 675 459C629 527 540 552 455 516C392 489 326 523 293 589C255 666 300 742 379 767C492 803 619 700 718 533"
+        stroke="url(#ink)"
+        stroke-width="112"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      />
+
+      <path
+        d="M430 508C487 540 571 535 632 489"
+        stroke="#F2F4F5"
+        stroke-width="128"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      />
+      <path
+        d="M430 508C487 540 571 535 632 489"
+        stroke="url(#fold)"
+        stroke-width="92"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      />
+
+      <path
+        d="M309 701C346 642 383 576 420 506"
+        stroke="#050505"
+        stroke-width="112"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      />
+    </g>
+
+    <circle cx="556" cy="538" r="122" fill="url(#nodeGlow)"/>
+    <circle cx="556" cy="538" r="39" fill="#0285FF"/>
+    <circle cx="556" cy="538" r="18" fill="#FFFFFF" fill-opacity="0.32"/>
+    <path d="M622 248C667 263 705 296 730 340" stroke="#FFFFFF" stroke-opacity="0.46" stroke-width="18" stroke-linecap="round"/>
+  </g>
+</svg>

@@ -2,7 +2,7 @@ import { join } from 'node:path'
 import type { ProviderId } from '@aila/agent'
 import { is } from '@electron-toolkit/utils'
 import * as dotenv from 'dotenv'
-import { app, BrowserWindow, ipcMain, nativeTheme } from 'electron'
+import { app, BrowserWindow, ipcMain, type NativeImage, nativeImage, nativeTheme } from 'electron'
 import { getModelInfo } from './agent'
 import { rewriteDocRefs as rewritePersistedDocRefs } from './conversations'
 import { sweepOrphanedDocConversations } from './doc-conversation-cleanup'
@@ -44,10 +44,20 @@ let mainWindow: BrowserWindow | null = null
 let gracefulShutdownStarted = false
 let gracefulShutdownComplete = false
 
+function getDevelopmentAppIcon(): NativeImage | undefined {
+  if (!is.dev) return undefined
+
+  const icon = nativeImage.createFromPath(join(app.getAppPath(), 'build/icon.png'))
+  return icon.isEmpty() ? undefined : icon
+}
+
 function createWindow(): void {
   // The renderer is light-only; pin the native appearance so the sidebar
   // vibrancy material stays light when the OS switches to dark mode.
   nativeTheme.themeSource = 'light'
+  const appIcon = getDevelopmentAppIcon()
+
+  if (process.platform === 'darwin' && app.dock && appIcon) app.dock.setIcon(appIcon)
 
   mainWindow = new BrowserWindow({
     width: 900,
@@ -62,6 +72,7 @@ function createWindow(): void {
     ...(process.platform === 'darwin'
       ? { vibrancy: 'sidebar' as const }
       : { backgroundColor: '#f7f7f7' }),
+    ...(appIcon ? { icon: appIcon } : {}),
     trafficLightPosition: { x: 6, y: 10 },
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),

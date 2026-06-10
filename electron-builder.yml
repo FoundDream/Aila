@@ -9,15 +9,18 @@ asarUnpack:
   - resources/**
 mac:
   category: public.app-category.productivity
+  icon: build/icon.icns
   identity: null
   target:
     - target: dmg
       arch: [universal]
 win:
+  icon: build/icon.ico
   target:
     - target: nsis
       arch: [x64]
 linux:
+  icon: build/icons
   target:
     - target: AppImage
       arch: [x64]

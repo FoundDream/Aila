@@ -12,6 +12,7 @@
     "tui": "bun src/tui/index.ts",
     "cli": "bun src/cli/index.ts",
     "build": "electron-vite build",
+    "icons": "node scripts/generate-icons.mjs",
     "typecheck:agent": "tsc --noEmit -p tsconfig.runtime.json --composite false",
     "typecheck:agent-package": "tsc --noEmit -p tsconfig.runtime-package.json --composite false",
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json --composite false",
