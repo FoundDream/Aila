@@ -266,8 +266,16 @@ function ReasoningView({
         <span className="font-medium text-[var(--text-soft)]">Thinking</span>
       </button>
       {expanded && (
-        <div className="ml-4 mt-1 border-l border-[var(--border)] pl-3 whitespace-pre-wrap leading-[1.6]">
-          {content}
+        <div className="ml-4 mt-1 border-l border-[var(--border)] pl-3">
+          <Streamdown
+            mode={isStreaming ? "streaming" : "static"}
+            components={markdownComponents}
+            lineNumbers={false}
+            parseIncompleteMarkdown
+            className="aila-md aila-md-reasoning text-[13px] leading-[1.6]"
+          >
+            {content}
+          </Streamdown>
         </div>
       )}
     </aside>
