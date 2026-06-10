@@ -32,6 +32,7 @@ export function DocMarkdownView({
       <Streamdown
         mode="static"
         components={markdownComponents}
+        lineNumbers={false}
         rehypePlugins={rehypePlugins}
         className="aila-md aila-md-read text-[15px] leading-[1.75]"
       >

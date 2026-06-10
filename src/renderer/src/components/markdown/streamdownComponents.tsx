@@ -74,12 +74,9 @@ function MarkdownTable({
 
   return (
     <>
-      <div
-        className="my-4 flex flex-col gap-2 rounded-lg border border-[var(--border)] bg-[var(--bg-soft)] p-2"
-        data-streamdown="table-wrapper"
-      >
+      <div className="group/table relative my-3" data-streamdown="table-wrapper">
         {showActions && (
-          <div className="flex items-center justify-end gap-1">
+          <div className="absolute top-1 right-1 z-10 flex items-center gap-0.5 rounded-md border border-[var(--border)] bg-[var(--surface)] p-0.5 opacity-0 shadow-[0_2px_8px_rgba(0,0,0,0.04)] transition-opacity group-hover/table:opacity-100 focus-within:opacity-100">
             {showCopy && <TableCopyDropdown disabled={isAnimating} tableRef={tableRef} />}
             {showDownload && <TableDownloadDropdown disabled={isAnimating} tableRef={tableRef} />}
             {showFullscreen && (
@@ -94,10 +91,10 @@ function MarkdownTable({
             )}
           </div>
         )}
-        <div className="overflow-auto rounded-md border border-[var(--border)] bg-[var(--surface)]">
+        <div className="overflow-auto border-y border-[var(--border)]">
           <table
             {...props}
-            className={cn('w-full divide-y divide-[var(--border)]', className)}
+            className={cn('w-full', className)}
             data-streamdown="table"
             ref={tableRef}
           >
@@ -133,7 +130,7 @@ function MarkdownTable({
               <table
                 {...props}
                 className={cn(
-                  'w-full border-collapse border border-[var(--border)] bg-[var(--surface)]',
+                  'w-full border-collapse border-y border-[var(--border)] bg-[var(--surface)]',
                   className,
                 )}
                 data-streamdown="table"
@@ -271,7 +268,7 @@ function IconButton({
   return (
     <button
       aria-label={ariaLabel}
-      className="flex size-7 items-center justify-center rounded-md p-1 text-[var(--text-soft)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)] disabled:cursor-not-allowed disabled:opacity-50"
+      className="flex size-6 items-center justify-center rounded-[5px] p-1 text-[var(--text-dim)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)] disabled:cursor-not-allowed disabled:opacity-50"
       disabled={disabled}
       onClick={onClick}
       title={title}
@@ -284,7 +281,7 @@ function IconButton({
 
 function ActionMenu({ children }: { children: ReactNode }): ReactElement {
   return (
-    <div className="absolute top-full right-0 z-[1001] mt-1 min-w-[132px] overflow-hidden rounded-md border border-[var(--border)] bg-[var(--surface)] shadow-lg">
+    <div className="absolute top-full right-0 z-[1001] mt-1 min-w-[132px] overflow-hidden rounded-md border border-[var(--border)] bg-[var(--surface)] shadow-[0_8px_24px_rgba(0,0,0,0.08)]">
       {children}
     </div>
   )
@@ -301,7 +298,7 @@ function MenuItem({
 }): ReactElement {
   return (
     <button
-      className="w-full px-3 py-2 text-left text-sm transition-colors hover:bg-[var(--surface-hover)]"
+      className="w-full px-2.5 py-1.5 text-left text-[12px] transition-colors hover:bg-[var(--surface-hover)]"
       onClick={onClick}
       title={title}
       type="button"
