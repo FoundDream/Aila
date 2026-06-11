@@ -35,7 +35,7 @@ export interface Message {
   id: string
   role: 'user' | 'assistant'
   blocks: Block[]
-  status: 'streaming' | 'done' | 'error'
+  status: 'streaming' | 'queued' | 'done' | 'error'
   error?: string
   model?: { providerId: ProviderId; modelId: string }
 }

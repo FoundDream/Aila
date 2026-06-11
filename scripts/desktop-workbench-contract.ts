@@ -1121,6 +1121,7 @@ function testRendererDropClearsQueueAndBlocksFutureActions(): void {
     type: 'ENQUEUE',
     conversationId: 'conversation-dropped-queue',
     queued: {
+      id: 'queued-before-delete',
       kind: 'send',
       text: 'queued before delete',
       attachments: [],
@@ -1131,6 +1132,7 @@ function testRendererDropClearsQueueAndBlocksFutureActions(): void {
     type: 'ENQUEUE',
     conversationId: 'conversation-dropped-queue',
     queued: {
+      id: 'queued-retry-before-delete',
       kind: 'retryLast',
       selection: { providerId: 'openrouter', modelId: 'contract/mock' },
     },
@@ -1167,6 +1169,7 @@ function testRendererDropClearsQueueAndBlocksFutureActions(): void {
     type: 'ENQUEUE',
     conversationId: 'conversation-dropped-queue',
     queued: {
+      id: 'queued-after-delete',
       kind: 'send',
       text: 'queued after delete',
       attachments: [],

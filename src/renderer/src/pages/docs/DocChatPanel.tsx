@@ -59,6 +59,7 @@ export function DocChatPanel({
 
   const stream = activeId ? streams.getStream(activeId) : null
   const messages = stream?.messages ?? []
+  const displayMessages = stream?.displayMessages ?? []
   const isStreaming = stream?.runningMessageId !== null && stream?.runningMessageId !== undefined
   const usage = stream?.usage ?? null
   const events = stream?.events ?? []
@@ -172,14 +173,13 @@ export function DocChatPanel({
         {isReady ? (
           <>
             <Transcript
-              messages={messages}
+              messages={displayMessages}
               canRetryLast={canRetryLast}
               onRetryLast={handleRetryLast}
             />
             <ActivityTimeline events={events} />
             <Composer
               isStreaming={isStreaming}
-              queuedCount={queuedCount}
               onSubmit={handleSubmit}
               onAbort={handleAbort}
               usage={usage}

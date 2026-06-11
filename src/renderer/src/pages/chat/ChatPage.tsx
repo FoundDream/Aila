@@ -52,6 +52,7 @@ export function ChatPage({
 
   const stream = conversationId ? streams.getStream(conversationId) : null
   const messages = stream?.messages ?? []
+  const displayMessages = stream?.displayMessages ?? []
   const isStreaming = stream?.runningMessageId !== null && stream?.runningMessageId !== undefined
   const usage = stream?.usage ?? null
   const queuedCount = stream?.queue.length ?? 0
@@ -117,7 +118,6 @@ export function ChatPage({
   const composer = (
     <Composer
       isStreaming={isStreaming}
-      queuedCount={queuedCount}
       onSubmit={handleSubmit}
       onAbort={handleAbort}
       usage={usage}
@@ -140,7 +140,7 @@ export function ChatPage({
         </span>
       </header>
       <main className="flex min-h-0 flex-1 flex-col">
-        {messages.length === 0 ? (
+        {displayMessages.length === 0 ? (
           // New-chat hero: prompt + composer sit together at the vertical
           // center; pb offsets the h-10 header so it reads optically centered.
           <div className="flex min-h-0 flex-1 flex-col justify-center pb-20">
@@ -152,7 +152,7 @@ export function ChatPage({
         ) : (
           <>
             <Transcript
-              messages={messages}
+              messages={displayMessages}
               canRetryLast={canRetryLast}
               onRetryLast={handleRetryLast}
               submitScrollKey={submitScrollKey}

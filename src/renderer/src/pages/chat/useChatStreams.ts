@@ -32,22 +32,25 @@ import type {
   ToolCallStartEvent,
   UsageInfo,
 } from '../../types'
-import type { Block, ImageBlock, Message, TextBlock, ToolCallBlock } from './types'
+import type { Block, FileBlock, ImageBlock, Message, TextBlock, ToolCallBlock } from './types'
 
-type QueuedRun =
+export type QueuedRun =
   | {
+      id: string
       kind: 'send'
       text: string
       attachments: ChatAttachmentInput[]
       selection: ModelSelection
     }
   | {
+      id: string
       kind: 'retryLast'
       selection: ModelSelection
     }
 
 export interface ConversationStream {
   messages: Message[]
+  displayMessages: Message[]
   isHydrated: boolean
   queue: QueuedRun[]
   runningMessageId: string | null
@@ -55,12 +58,14 @@ export interface ConversationStream {
   events: PersistedAgentEvent[]
 }
 
+type ConversationStreamState = Omit<ConversationStream, 'displayMessages'>
+
 interface State {
-  streams: Map<string, ConversationStream>
+  streams: Map<string, ConversationStreamState>
   droppedConversationIds: Set<string>
 }
 
-const EMPTY_STREAM: ConversationStream = {
+const EMPTY_STREAM: ConversationStreamState = {
   messages: [],
   isHydrated: false,
   queue: [],
@@ -84,12 +89,14 @@ type Action =
   | {
       type: 'RUN_STARTED'
       conversationId: string
+      queuedId?: string
       userMessage: Message
       assistantMessage: Message
     }
   | {
       type: 'RETRY_STARTED'
       conversationId: string
+      queuedId?: string
       assistantMessage: Message
     }
   | {
@@ -140,14 +147,14 @@ type Action =
   | { type: 'AGENT_EVENT'; event: PersistedAgentEvent }
   | { type: 'DROP'; conversationId: string }
 
-function getStream(state: State, id: string): ConversationStream {
+function getStream(state: State, id: string): ConversationStreamState {
   return state.streams.get(id) ?? EMPTY_STREAM
 }
 
 function withStream(
   state: State,
   id: string,
-  updater: (current: ConversationStream) => ConversationStream,
+  updater: (current: ConversationStreamState) => ConversationStreamState,
 ): State {
   const next = new Map(state.streams)
   next.set(id, updater(getStream(state, id)))
@@ -228,6 +235,56 @@ function appendMissingMessage(messages: Message[], message: Message): Message[] 
   return messages.some((candidate) => candidate.id === message.id)
     ? messages
     : [...messages, message]
+}
+
+function queuedAttachmentToBlock(attachment: ChatAttachmentInput): ImageBlock | FileBlock {
+  if (attachment.kind === 'image') {
+    return {
+      type: 'image',
+      url: `data:${attachment.mime};base64,${attachment.data}`,
+      mime: attachment.mime,
+    }
+  }
+  return { type: 'file', name: attachment.name, content: attachment.data }
+}
+
+function queuedSendBlocks(text: string, attachments: ChatAttachmentInput[]): Block[] {
+  return [
+    ...(text ? [{ type: 'text' as const, content: text }] : []),
+    ...attachments.map(queuedAttachmentToBlock),
+  ]
+}
+
+function queuedSendToMessage(
+  queued: Extract<QueuedRun, { kind: 'send' }>,
+  id: string,
+  status: 'queued' | 'done',
+): Message {
+  return {
+    id,
+    role: 'user',
+    blocks: queuedSendBlocks(queued.text, queued.attachments),
+    status,
+  }
+}
+
+function displayMessagesForStream(stream: ConversationStreamState): Message[] {
+  const queuedMessages = stream.queue
+    .filter((queued): queued is Extract<QueuedRun, { kind: 'send' }> => queued.kind === 'send')
+    .map((queued) => queuedSendToMessage(queued, `queued:${queued.id}`, 'queued'))
+  return queuedMessages.length === 0 ? stream.messages : [...stream.messages, ...queuedMessages]
+}
+
+function materializeStream(stream: ConversationStreamState): ConversationStream {
+  return {
+    ...stream,
+    displayMessages: displayMessagesForStream(stream),
+  }
+}
+
+function removeQueuedRun(queue: QueuedRun[], queuedId?: string): QueuedRun[] {
+  if (!queuedId) return queue
+  return queue.filter((queued) => queued.id !== queuedId)
 }
 
 function finalizeAssistantMessageAsError(
@@ -458,6 +515,7 @@ function reducer(state: State, action: Action): State {
         return {
           ...current,
           messages,
+          queue: removeQueuedRun(current.queue, action.queuedId),
           runningMessageId:
             assistant?.status === 'streaming'
               ? action.assistantMessage.id
@@ -472,6 +530,7 @@ function reducer(state: State, action: Action): State {
         return {
           ...current,
           messages,
+          queue: removeQueuedRun(current.queue, action.queuedId),
           runningMessageId:
             assistant?.status === 'streaming'
               ? action.assistantMessage.id
@@ -702,7 +761,6 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
   const startingRef = useRef<Set<string>>(new Set())
 
   const startRun = useCallback(async (id: string, queued: QueuedRun): Promise<void> => {
-    dispatch({ type: 'POP_QUEUE_HEAD', conversationId: id })
     let result: Awaited<ReturnType<typeof window.api.runtime.send>>
     try {
       result =
@@ -732,22 +790,9 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
         dispatch({
           type: 'RUN_STARTED',
           conversationId: id,
+          queuedId: queued.id,
           userMessage: {
-            id: crypto.randomUUID(),
-            role: 'user',
-            blocks: [
-              { type: 'text', content: queued.text },
-              ...queued.attachments.map((a) =>
-                a.kind === 'image'
-                  ? {
-                      type: 'image' as const,
-                      url: `data:${a.mime};base64,${a.data}`,
-                      mime: a.mime,
-                    }
-                  : { type: 'file' as const, name: a.name, content: a.data },
-              ),
-            ],
-            status: 'done',
+            ...queuedSendToMessage(queued, crypto.randomUUID(), 'done'),
           },
           assistantMessage: stub,
         })
@@ -755,6 +800,7 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
         dispatch({
           type: 'RETRY_STARTED',
           conversationId: id,
+          queuedId: queued.id,
           assistantMessage: stub,
         })
       }
@@ -779,12 +825,14 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
         ? {
             type: 'RUN_STARTED',
             conversationId: id,
+            queuedId: queued.id,
             userMessage,
             assistantMessage,
           }
         : {
             type: 'RETRY_STARTED',
             conversationId: id,
+            queuedId: queued.id,
             assistantMessage,
           },
     )
@@ -827,7 +875,7 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
       dispatch({
         type: 'ENQUEUE',
         conversationId: id,
-        queued: { kind: 'send', text: trimmed, attachments, selection },
+        queued: { id: crypto.randomUUID(), kind: 'send', text: trimmed, attachments, selection },
       })
     },
     [],
@@ -837,7 +885,7 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
     dispatch({
       type: 'ENQUEUE',
       conversationId: id,
-      queued: { kind: 'retryLast', selection },
+      queued: { id: crypto.randomUUID(), kind: 'retryLast', selection },
     })
   }, [])
 
@@ -987,7 +1035,7 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
   }, [state])
 
   const getStreamFn = useCallback(
-    (id: string): ConversationStream => state.streams.get(id) ?? EMPTY_STREAM,
+    (id: string): ConversationStream => materializeStream(state.streams.get(id) ?? EMPTY_STREAM),
     [state],
   )
 
