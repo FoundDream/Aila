@@ -181,7 +181,7 @@ export function DocEditor({
             onBlur={() => void flush()}
             placeholder="无标题文档"
             className="w-full bg-transparent text-[34px] leading-[1.2] font-normal tracking-tight text-[var(--text)] outline-none placeholder:text-[var(--text-dim)]"
-            style={{ fontFamily: 'var(--font-serif)' }}
+            style={{ fontFamily: 'var(--font-doc-title)' }}
           />
           <div className="mt-6">
             <MarkdownEditor

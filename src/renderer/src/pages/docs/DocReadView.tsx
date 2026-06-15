@@ -52,8 +52,9 @@ export function DocReadView({
           <DocMarkdownView
             title={title}
             content={content}
+            contentClassName="aila-md-document"
             titleSpacingClassName="mb-6"
-            titleClassName="text-[34px] leading-[1.2] font-normal tracking-tight text-[var(--text)]"
+            titleClassName="text-[33px] leading-[1.18] font-normal tracking-tight text-[var(--text)]"
           />
         </article>
       </div>

@@ -10,77 +10,70 @@ type DocsHastNode = {
   children?: DocsHastNode[]
 }
 
-const htmlSanitizeSchema = {
-  attributes: {
-    a: ['href', 'title', 'target', 'rel'],
-    code: [['className', /^language-./]],
-    img: ['src', 'alt', 'title', 'width', 'height'],
-    ol: ['start'],
-    table: ['align'],
-    td: ['align', 'colSpan', 'rowSpan'],
-    th: ['align', 'colSpan', 'rowSpan', 'scope'],
-    '*': ['ariaLabel', 'ariaLabelledBy', 'ariaDescribedBy', 'dir', 'lang', 'open', 'title'],
-  },
-  clobber: ['ariaDescribedBy', 'ariaLabelledBy', 'id', 'name'],
-  clobberPrefix: 'user-content-',
-  protocols: {
-    href: ['http', 'https'],
-    src: ['http', 'https'],
-  },
-  strip: ['script', 'style'],
-  tagNames: [
-    'a',
-    'b',
-    'blockquote',
-    'br',
-    'code',
-    'del',
-    'details',
-    'div',
-    'em',
-    'h1',
-    'h2',
-    'h3',
-    'h4',
-    'h5',
-    'h6',
-    'hr',
-    'i',
-    'img',
-    'ins',
-    'kbd',
-    'li',
-    'mark',
-    'ol',
-    'p',
-    'pre',
-    's',
-    'span',
-    'strike',
-    'strong',
-    'sub',
-    'summary',
-    'sup',
-    'table',
-    'tbody',
-    'td',
-    'tfoot',
-    'th',
-    'thead',
-    'tr',
-    'ul',
-  ],
+type DocsSanitizeSchema = {
+  ancestors?: Record<string, string[]>
+  attributes?: Record<string, unknown[]>
+  clobber?: string[]
+  clobberPrefix?: string
+  protocols?: Record<string, string[]>
+  required?: Record<string, Record<string, unknown>>
+  strip?: string[]
+  tagNames?: string[]
 }
 
 const rehypeSanitizePlugin = (
   Array.isArray(defaultRehypePlugins.sanitize)
     ? defaultRehypePlugins.sanitize[0]
     : defaultRehypePlugins.sanitize
-) as Plugin<[typeof htmlSanitizeSchema]>
+) as Plugin<[DocsSanitizeSchema]>
+
+const defaultSanitizeSchema = (
+  Array.isArray(defaultRehypePlugins.sanitize) ? defaultRehypePlugins.sanitize[1] : {}
+) as DocsSanitizeSchema
+
+function mergeUnique<T>(base: readonly T[] = [], extra: readonly T[] = []): T[] {
+  return [...base, ...extra].filter((value, index, all) => all.indexOf(value) === index)
+}
+
+function mergeAttributes(
+  base: Record<string, unknown[]> | undefined,
+  extra: Record<string, unknown[]>,
+): Record<string, unknown[]> {
+  const out: Record<string, unknown[]> = { ...(base ?? {}) }
+  for (const [key, values] of Object.entries(extra)) {
+    out[key] = [...(out[key] ?? []), ...values]
+  }
+  return out
+}
+
+export const docsHtmlSanitizeSchema: DocsSanitizeSchema = {
+  ...defaultSanitizeSchema,
+  attributes: mergeAttributes(defaultSanitizeSchema.attributes, {
+    a: ['rel', 'target'],
+    img: ['alt', 'title', 'width', 'height'],
+    table: ['align'],
+    td: ['align', 'colSpan', 'rowSpan'],
+    th: ['align', 'colSpan', 'rowSpan', 'scope'],
+  }),
+  protocols: {
+    ...(defaultSanitizeSchema.protocols ?? {}),
+    href: mergeUnique(defaultSanitizeSchema.protocols?.href, ['mailto', 'tel']),
+    src: mergeUnique(defaultSanitizeSchema.protocols?.src, ['aila-image']),
+  },
+  strip: mergeUnique(defaultSanitizeSchema.strip, ['script', 'style']),
+  tagNames: mergeUnique(defaultSanitizeSchema.tagNames, [
+    'caption',
+    'col',
+    'colgroup',
+    'figcaption',
+    'figure',
+    'mark',
+  ]),
+}
 
 export const docsRehypePlugins: PluggableList = [
   defaultRehypePlugins.raw,
-  [rehypeSanitizePlugin, htmlSanitizeSchema],
+  [rehypeSanitizePlugin, docsHtmlSanitizeSchema],
   hardenDocsHtmlPlugin,
   createHeadingIdRehypePlugin,
 ]
@@ -139,7 +132,7 @@ function isExternalUrl(value: string): boolean {
   return /^https?:\/\//i.test(value)
 }
 
-function isSafeDocsUrl(value: string, key: 'href' | 'src'): boolean {
+export function isSafeDocsUrl(value: string, key: 'href' | 'src'): boolean {
   if (value.length === 0) return false
   if (key === 'href' && value.startsWith('#')) return true
   const compactValue = stripUrlControlChars(value)
@@ -147,7 +140,10 @@ function isSafeDocsUrl(value: string, key: 'href' | 'src'): boolean {
 
   const protocolMatch = compactValue.match(/^([a-zA-Z][a-zA-Z\d+.-]*):/)
   if (protocolMatch) {
-    return protocolMatch[1].toLowerCase() === 'http' || protocolMatch[1].toLowerCase() === 'https'
+    const protocol = protocolMatch[1].toLowerCase()
+    if (protocol === 'http' || protocol === 'https') return true
+    if (key === 'href' && (protocol === 'mailto' || protocol === 'tel')) return true
+    return key === 'src' && protocol === 'aila-image'
   }
 
   return true

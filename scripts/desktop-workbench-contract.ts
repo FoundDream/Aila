@@ -46,6 +46,10 @@ import {
   reduceChatStreamsForTest,
 } from '../src/renderer/src/pages/chat/useChatStreams'
 import { mergeConversationSummaryUpdate } from '../src/renderer/src/pages/chat/useConversations'
+import {
+  docsHtmlSanitizeSchema,
+  isSafeDocsUrl,
+} from '../src/renderer/src/pages/docs/docHtmlRendering'
 import { mergeDocConversationSummaryUpdate } from '../src/renderer/src/pages/docs/useDocConversation'
 import {
   createToolApprovalsState,
@@ -1373,6 +1377,28 @@ function testRendererDocConversationListIgnoresRemovedSummaryUpdates(): void {
   )
 }
 
+function testDocsHtmlAllowsDesktopImageProtocolOnlyForImages(): void {
+  const tagNames = docsHtmlSanitizeSchema.tagNames ?? []
+  const srcProtocols = docsHtmlSanitizeSchema.protocols?.src ?? []
+  const hrefProtocols = docsHtmlSanitizeSchema.protocols?.href ?? []
+
+  assert(
+    isSafeDocsUrl('aila-image://i/contract.png', 'src'),
+    'docs html should allow Desktop image protocol for markdown images',
+  )
+  assert(
+    !isSafeDocsUrl('aila-image://i/contract.png', 'href'),
+    'docs html should not allow Desktop image protocol for links',
+  )
+  assert(isSafeDocsUrl('mailto:docs@example.com', 'href'), 'docs html should allow mail links')
+  assert(!isSafeDocsUrl('javascript:alert(1)', 'src'), 'docs html should reject script URLs')
+  assert(srcProtocols.includes('aila-image'), 'docs sanitize schema should keep local images')
+  assert(hrefProtocols.includes('mailto'), 'docs sanitize schema should keep email autolinks')
+  assert(tagNames.includes('input'), 'docs sanitize schema should keep GFM task checkboxes')
+  assert(tagNames.includes('section'), 'docs sanitize schema should keep GFM footnotes')
+  assert(tagNames.includes('mark'), 'docs sanitize schema should keep highlighted text')
+}
+
 function testRendererFinishAppendsMissingAssistantMessage(): void {
   let state = createChatStreamsStateForTest()
   state = reduceChatStreamsForTest(state, {
@@ -2116,6 +2142,7 @@ async function main(): Promise<void> {
   testRendererConversationListIgnoresRemovedSummaryUpdates()
   testRendererConversationListGroupsWorkspaceSessions()
   testRendererDocConversationListIgnoresRemovedSummaryUpdates()
+  testDocsHtmlAllowsDesktopImageProtocolOnlyForImages()
   testRendererFinishAppendsMissingAssistantMessage()
   testRendererRunStartedDoesNotDuplicateFinishedAssistant()
   testRendererToolResultAppendsMissingAssistantMessage()

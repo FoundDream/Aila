@@ -55,7 +55,7 @@ const editorTheme = EditorView.theme({
   '&': {
     color: 'var(--text)',
     backgroundColor: 'transparent',
-    fontFamily: 'var(--font-serif)',
+    fontFamily: 'var(--font-doc)',
     fontSize: '15.5px',
     lineHeight: '1.75',
   },

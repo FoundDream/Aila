@@ -34,6 +34,7 @@ export function DocPreviewPanel({
           <DocMarkdownView
             title={title}
             content={content}
+            contentClassName="aila-md-preview"
             titleSpacingClassName="mb-4"
             titleClassName="text-[26px] leading-[1.25] font-normal tracking-tight text-[var(--text)]"
           />

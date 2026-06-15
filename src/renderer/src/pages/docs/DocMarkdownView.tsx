@@ -6,6 +6,7 @@ import { docsRehypePlugins } from './docHtmlRendering'
 interface DocMarkdownViewProps {
   title: string
   content: string
+  contentClassName?: string
   titleClassName: string
   titleSpacingClassName: string
 }
@@ -13,6 +14,7 @@ interface DocMarkdownViewProps {
 export function DocMarkdownView({
   title,
   content,
+  contentClassName = '',
   titleClassName,
   titleSpacingClassName,
 }: DocMarkdownViewProps): ReactElement {
@@ -24,7 +26,7 @@ export function DocMarkdownView({
       {trimmedTitle && (
         <h1
           className={`${titleSpacingClassName} ${titleClassName}`}
-          style={{ fontFamily: 'var(--font-serif)' }}
+          style={{ fontFamily: 'var(--font-doc-title)' }}
         >
           {trimmedTitle}
         </h1>
@@ -34,7 +36,7 @@ export function DocMarkdownView({
         components={markdownComponents}
         lineNumbers={false}
         rehypePlugins={rehypePlugins}
-        className="aila-md aila-md-read text-[15px] leading-[1.75]"
+        className={`aila-md aila-md-read ${contentClassName}`}
       >
         {content}
       </Streamdown>
