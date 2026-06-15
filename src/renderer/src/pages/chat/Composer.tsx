@@ -6,6 +6,7 @@ import {
   ImageIcon,
   NotebookTextIcon,
   PlusIcon,
+  PuzzleIcon,
   RotateCcwIcon,
   SquareIcon,
   XIcon,
@@ -16,7 +17,9 @@ import {
   type KeyboardEvent,
   type ReactElement,
   useCallback,
+  useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from 'react'
@@ -26,6 +29,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import type {
   ChatAttachmentInput,
   DocSummary,
+  ExtensionSkillReport,
   ModelSelection,
   ProviderId,
   Settings,
@@ -60,6 +64,26 @@ const APPROVAL_MODES: Array<{ id: ApprovalMode; label: string; description: stri
   { id: 'safe', label: 'Safe', description: 'Ask before write, edit, and shell tools.' },
   { id: 'yolo', label: 'Yolo', description: 'Run tools without approval prompts.' },
 ]
+
+type SlashCommandId = 'image'
+
+interface SlashState {
+  rangeStart: number
+  rangeEnd: number
+  query: string
+}
+
+interface SlashCommand {
+  id: string
+  kind: 'builtin' | 'skill'
+  commandId?: SlashCommandId
+  skillName?: string
+  token: string
+  label: string
+  description: string
+  keywords: string[]
+  icon: ReactElement
+}
 
 interface PendingAttachment {
   id: string
@@ -96,6 +120,32 @@ function queuedRunMeta(queued: QueuedRun): string | null {
     files > 0 ? pluralize(files, 'file') : null,
   ].filter((part): part is string => Boolean(part))
   return parts.length > 0 ? parts.join(' · ') : null
+}
+
+function getSlashState(text: string, cursor: number): SlashState | null {
+  const beforeCursor = text.slice(0, cursor)
+  const rangeStart = beforeCursor.lastIndexOf('/')
+  if (rangeStart < 0) return null
+
+  const charBefore = rangeStart > 0 ? text[rangeStart - 1] : ''
+  if (charBefore && !/\s/.test(charBefore)) return null
+
+  const query = beforeCursor.slice(rangeStart + 1)
+  if (query.includes('\n') || /\s/.test(query)) return null
+
+  return { rangeStart, rangeEnd: cursor, query }
+}
+
+function slashCommandMatches(command: SlashCommand, query: string): boolean {
+  const q = query.trim().toLowerCase()
+  if (!q) return true
+  const token = command.token.slice(1).toLowerCase()
+  return (
+    token.startsWith(q) ||
+    command.label.toLowerCase().includes(q) ||
+    command.description.toLowerCase().includes(q) ||
+    command.keywords.some((keyword) => keyword.includes(q))
+  )
 }
 
 function formatTokens(n: number): string {
@@ -157,6 +207,63 @@ function AttachMenuItem({
       <span className="grid size-4 place-items-center text-[var(--text-dim)]">{icon}</span>
       {label}
     </button>
+  )
+}
+
+function SlashCommandMenu({
+  commands,
+  selectedIndex,
+  onSelectCommand,
+  onHighlight,
+}: {
+  commands: SlashCommand[]
+  selectedIndex: number
+  onSelectCommand: (command: SlashCommand) => void
+  onHighlight: (index: number) => void
+}): ReactElement {
+  return (
+    <div className="flex max-h-72 flex-col overflow-y-auto" role="listbox">
+      {commands.length === 0 ? (
+        <p className="px-2 py-2 text-[12px] text-[var(--text-dim)]">No commands found.</p>
+      ) : (
+        commands.map((command, index) => {
+          const selected = index === selectedIndex
+          return (
+            <button
+              key={command.id}
+              type="button"
+              role="option"
+              aria-selected={selected}
+              onMouseEnter={() => onHighlight(index)}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => onSelectCommand(command)}
+              className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors ${
+                selected
+                  ? 'bg-[var(--surface-hover)]'
+                  : 'hover:bg-[var(--surface-hover)] hover:text-[var(--text)]'
+              }`}
+            >
+              <span className="grid size-7 shrink-0 place-items-center rounded-md border border-[var(--border)] bg-[var(--bg-soft)] text-[var(--text-soft)]">
+                {command.icon}
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="flex min-w-0 items-center gap-1.5">
+                  <span className="truncate text-[12.5px] font-medium text-[var(--text)]">
+                    {command.label}
+                  </span>
+                </span>
+                <span className="mt-0.5 block truncate text-[11px] text-[var(--text-dim)]">
+                  {command.description}
+                </span>
+              </span>
+              <span className="shrink-0 rounded border border-[var(--border)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--text-dim)]">
+                {command.token}
+              </span>
+            </button>
+          )
+        })
+      )}
+    </div>
   )
 }
 
@@ -227,9 +334,13 @@ export function Composer({
   const [modeOpen, setModeOpen] = useState(false)
   const [modeSaving, setModeSaving] = useState(false)
   const [docs, setDocs] = useState<DocSummary[] | null>(null)
+  const [skills, setSkills] = useState<ExtensionSkillReport[]>([])
+  const [slashState, setSlashState] = useState<SlashState | null>(null)
+  const [slashSelectedIndex, setSlashSelectedIndex] = useState(0)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const imageInputRef = useRef<HTMLInputElement | null>(null)
   const textInputRef = useRef<HTMLInputElement | null>(null)
+  const slashMenuRef = useRef<HTMLDivElement | null>(null)
 
   const addImageFiles = useCallback(async (files: File[]) => {
     for (const file of files) {
@@ -331,6 +442,8 @@ export function Composer({
     setValue('')
     setAttachments([])
     setAttachError(null)
+    setSlashState(null)
+    setSlashSelectedIndex(0)
     await onSubmit(text, outgoing)
   }, [value, attachments, onSubmit])
 
@@ -341,14 +454,40 @@ export function Composer({
     textarea.style.height = `${Math.min(textarea.scrollHeight, 180)}px`
   })
 
-  const handleKeyDown = useCallback(
-    (event: KeyboardEvent<HTMLTextAreaElement>) => {
-      if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
-        event.preventDefault()
-        void submit()
-      }
+  const updateSlashFromTextarea = useCallback((text: string, cursor: number) => {
+    const nextSlashState = getSlashState(text, cursor)
+    setSlashState(nextSlashState)
+    if (nextSlashState) setSlashSelectedIndex(0)
+  }, [])
+
+  const handleTextareaChange = useCallback(
+    (text: string, cursor: number) => {
+      setValue(text)
+      updateSlashFromTextarea(text, cursor)
     },
-    [submit],
+    [updateSlashFromTextarea],
+  )
+
+  const replaceSlashToken = useCallback(
+    (replacement: string) => {
+      const active = slashState
+      if (!active) return
+
+      const nextCursor = active.rangeStart + replacement.length
+      setValue(
+        (prev) => `${prev.slice(0, active.rangeStart)}${replacement}${prev.slice(active.rangeEnd)}`,
+      )
+      setSlashState(null)
+      setSlashSelectedIndex(0)
+
+      window.requestAnimationFrame(() => {
+        const textarea = textareaRef.current
+        if (!textarea) return
+        textarea.focus()
+        textarea.setSelectionRange(nextCursor, nextCursor)
+      })
+    },
+    [slashState],
   )
 
   const handlePaste = useCallback(
@@ -387,6 +526,7 @@ export function Composer({
   const primaryActionDisabled = !primaryActionIsAbort && !canSend
   const activeApprovalMode = approvalMode ?? 'safe'
   const activeApprovalModeMeta = APPROVAL_MODES.find((mode) => mode.id === activeApprovalMode)
+  const slashActive = slashState !== null
 
   const handlePrimaryAction = useCallback(() => {
     if (primaryActionIsAbort) {
@@ -413,6 +553,122 @@ export function Composer({
     [activeApprovalMode, modeSaving, onApprovalModeChange],
   )
 
+  const slashCommands = useMemo<SlashCommand[]>(
+    () => [
+      {
+        id: 'image',
+        kind: 'builtin',
+        commandId: 'image',
+        token: '/image',
+        label: 'Image mode',
+        description: 'Attach images to this prompt',
+        keywords: ['image', 'photo', 'picture', 'screenshot', 'png', 'jpg'],
+        icon: <ImageIcon className="size-3.5" />,
+      },
+      ...skills.map((skill) => ({
+        id: `skill:${skill.name}`,
+        kind: 'skill' as const,
+        skillName: skill.name,
+        token: `/${skill.name}`,
+        label: skill.name,
+        description: skill.description,
+        keywords: ['skill', skill.name, ...skill.description.toLowerCase().split(/[^a-z0-9-]+/)],
+        icon: <PuzzleIcon className="size-3.5" />,
+      })),
+    ],
+    [skills],
+  )
+
+  const filteredSlashCommands = useMemo(() => {
+    const query = slashState?.query ?? ''
+    return slashCommands.filter((command) => slashCommandMatches(command, query))
+  }, [slashCommands, slashState?.query])
+
+  useEffect(() => {
+    if (!slashActive) return
+    let cancelled = false
+    void (async () => {
+      try {
+        const report = await window.api.extensions.report()
+        if (!cancelled) setSkills(report.skills)
+      } catch {
+        if (!cancelled) setSkills([])
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [slashActive])
+
+  useEffect(() => {
+    if (!slashState) return
+
+    const handlePointerDown = (event: MouseEvent) => {
+      const target = event.target
+      if (!(target instanceof Node)) return
+      if (slashMenuRef.current?.contains(target)) return
+      if (textareaRef.current?.contains(target)) return
+      setSlashState(null)
+    }
+
+    window.addEventListener('mousedown', handlePointerDown)
+    return () => window.removeEventListener('mousedown', handlePointerDown)
+  }, [slashState])
+
+  const runSlashCommand = useCallback(
+    (command: SlashCommand) => {
+      if (command.kind === 'skill' && command.skillName) {
+        replaceSlashToken(`Use the \`${command.skillName}\` skill. `)
+        return
+      }
+
+      replaceSlashToken('')
+      if (command.commandId === 'image') imageInputRef.current?.click()
+    },
+    [replaceSlashToken],
+  )
+
+  const handleKeyDown = useCallback(
+    (event: KeyboardEvent<HTMLTextAreaElement>) => {
+      if (slashState) {
+        const itemCount = filteredSlashCommands.length
+
+        if (event.key === 'Escape') {
+          event.preventDefault()
+          setSlashState(null)
+          return
+        }
+
+        if (itemCount > 0 && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
+          event.preventDefault()
+          setSlashSelectedIndex((index) => {
+            const delta = event.key === 'ArrowDown' ? 1 : -1
+            return (index + delta + itemCount) % itemCount
+          })
+          return
+        }
+
+        if (
+          itemCount > 0 &&
+          (event.key === 'Enter' || event.key === 'Tab') &&
+          !event.shiftKey &&
+          !event.nativeEvent.isComposing
+        ) {
+          event.preventDefault()
+          const index = Math.min(slashSelectedIndex, itemCount - 1)
+          runSlashCommand(filteredSlashCommands[index])
+          return
+        }
+      }
+
+      if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
+        event.preventDefault()
+        void submit()
+      }
+    },
+    [filteredSlashCommands, runSlashCommand, slashSelectedIndex, slashState, submit],
+  )
+
   const used = usage?.totalTokens ?? 0
   const ratio = contextLength && contextLength > 0 ? Math.min(used / contextLength, 1) : 0
   const showMeter = (contextLength ?? 0) > 0 || used > 0
@@ -425,8 +681,22 @@ export function Composer({
         <div
           onDragOver={(e) => e.preventDefault()}
           onDrop={handleDrop}
-          className="rounded-[24px] border border-[var(--border)] bg-[var(--surface)] shadow-[0_2px_14px_rgba(0,0,0,0.035)] transition-shadow focus-within:shadow-[0_3px_18px_rgba(0,0,0,0.055)]"
+          className="relative rounded-[24px] border border-[var(--border)] bg-[var(--surface)] shadow-[0_2px_14px_rgba(0,0,0,0.035)] transition-shadow focus-within:shadow-[0_3px_18px_rgba(0,0,0,0.055)]"
         >
+          {slashState && (
+            <div
+              ref={slashMenuRef}
+              className="absolute bottom-full left-4 z-40 mb-2 w-[min(28rem,calc(100%-2rem))] overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--surface)] p-1 shadow-[0_14px_48px_rgba(0,0,0,0.14)]"
+            >
+              <SlashCommandMenu
+                commands={filteredSlashCommands}
+                selectedIndex={slashSelectedIndex}
+                onSelectCommand={runSlashCommand}
+                onHighlight={setSlashSelectedIndex}
+              />
+            </div>
+          )}
+
           <QueuedRunsList queuedRuns={queuedRuns} />
 
           {(attachments.length > 0 || attachError) && (
@@ -480,7 +750,15 @@ export function Composer({
             <textarea
               ref={textareaRef}
               value={value}
-              onChange={(event) => setValue(event.target.value)}
+              onChange={(event) =>
+                handleTextareaChange(event.currentTarget.value, event.currentTarget.selectionStart)
+              }
+              onSelect={(event) =>
+                updateSlashFromTextarea(
+                  event.currentTarget.value,
+                  event.currentTarget.selectionStart,
+                )
+              }
               onKeyDown={handleKeyDown}
               onPaste={handlePaste}
               placeholder={isStreaming ? 'Queue a follow-up' : 'Ask Aila anything'}
@@ -516,6 +794,7 @@ export function Composer({
                 open={menuOpen}
                 onOpenChange={(open) => {
                   setMenuOpen(open)
+                  if (open) setSlashState(null)
                   if (open) setMenuView('main')
                 }}
               >

@@ -29,7 +29,7 @@ import {
   renameFolder,
   updateDoc,
 } from './docs'
-import { getExtensionReport } from './extensions'
+import { getSkillExtensionReport, installSkillFromDirectory } from './extensions'
 import { saveImage } from './image-store'
 import { handleImageProtocol, registerImageProtocolScheme } from './images'
 import { getOpenRouterCatalog } from './openrouter-catalog'
@@ -130,6 +130,21 @@ async function pickWorkspaceDirectory(): Promise<ConversationWorkspaceRef | null
   return { id: path, path, label: basename(path) || path }
 }
 
+async function pickSkillDirectory(): Promise<string | null> {
+  const options: OpenDialogOptions = {
+    title: 'Install Skill',
+    buttonLabel: 'Install',
+    properties: ['openDirectory'],
+  }
+  const result =
+    mainWindow && !mainWindow.isDestroyed()
+      ? await dialog.showOpenDialog(mainWindow, options)
+      : await dialog.showOpenDialog(options)
+  const [selectedPath] = result.filePaths
+  if (result.canceled || !selectedPath) return null
+  return resolve(selectedPath)
+}
+
 const runtimeWorkbench = createDesktopRuntimeWorkbench({ emit: send, logger: console })
 configureDocConversationRefRewriter(async (rewrites) => {
   const summaries = await rewritePersistedDocRefs(rewrites.map((rewrite) => ({ ...rewrite })))
@@ -143,6 +158,18 @@ async function shutdownRuntimeWorkbench(): Promise<void> {
 
 function registerIpcHandlers(): void {
   registerRuntimeWorkbenchIpcHandlers(ipcMain, runtimeWorkbench)
+
+  async function reloadExtensions() {
+    const [runtimeReload, report] = await Promise.all([
+      runtimeWorkbench.reloadExtensions(),
+      getSkillExtensionReport(),
+    ])
+    return {
+      toolCount: runtimeReload.toolCount,
+      skillCount: report.skills.length,
+      report,
+    }
+  }
 
   ipcMain.handle('docs:list', () => listAll())
   ipcMain.handle('docs:get', (_event, docPath: string) => getDoc(docPath))
@@ -197,18 +224,13 @@ function registerIpcHandlers(): void {
   ipcMain.handle('settings:set', (_event, next: Settings) => packSettings(saveSettings(next)))
   ipcMain.handle('workspaces:pick-directory', () => pickWorkspaceDirectory())
   ipcMain.handle('openrouter:list-models', () => getOpenRouterCatalog())
-  ipcMain.handle('extensions:report', () => getExtensionReport())
-  ipcMain.handle('extensions:reload', async () => {
-    const [runtimeReload, report] = await Promise.all([
-      runtimeWorkbench.reloadExtensions(),
-      getExtensionReport(),
-    ])
-    return {
-      toolPackCount: runtimeReload.toolPackCount,
-      toolCount: runtimeReload.toolCount,
-      skillCount: report.skills.length,
-      report,
-    }
+  ipcMain.handle('extensions:report', () => getSkillExtensionReport())
+  ipcMain.handle('extensions:reload', () => reloadExtensions())
+  ipcMain.handle('extensions:install-skill', async () => {
+    const directory = await pickSkillDirectory()
+    if (!directory) return null
+    await installSkillFromDirectory(directory)
+    return reloadExtensions()
   })
 }
 

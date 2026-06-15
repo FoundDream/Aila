@@ -1,8 +1,19 @@
 import { IMAGE_MODEL_CATALOG, MODEL_CATALOG, PROVIDER_LABELS, PROVIDER_ORDER } from '@shared/models'
-import { BoxIcon, EyeIcon, EyeOffIcon, KeyRoundIcon, SearchIcon, XIcon } from 'lucide-react'
+import {
+  BoxIcon,
+  EyeIcon,
+  EyeOffIcon,
+  KeyRoundIcon,
+  PackagePlusIcon,
+  PuzzleIcon,
+  RefreshCwIcon,
+  SearchIcon,
+  TriangleAlertIcon,
+  XIcon,
+} from 'lucide-react'
 import { Dialog as DialogPrimitive } from 'radix-ui'
 import { type ReactElement, type ReactNode, useEffect, useMemo, useState } from 'react'
-import type { ModelSelection, OrCatalog, ProviderId, Settings } from '../types'
+import type { ExtensionReport, ModelSelection, OrCatalog, ProviderId, Settings } from '../types'
 import { ProviderLogo } from './ProviderLogo'
 
 interface Props {
@@ -19,12 +30,17 @@ const API_KEY_PLACEHOLDERS: Record<ProviderId, string> = {
   openrouter: 'sk-or-...',
 }
 
-type SettingsTab = 'provider' | 'models' | 'search'
+const OPENROUTER_MODELS_TIMEOUT_MS = 20_000
+const EXTENSIONS_REPORT_TIMEOUT_MS = 10_000
+const EXTENSIONS_RELOAD_TIMEOUT_MS = 15_000
+
+type SettingsTab = 'provider' | 'models' | 'search' | 'extensions'
 
 const TABS: Array<{ id: SettingsTab; label: string; icon: typeof KeyRoundIcon }> = [
   { id: 'provider', label: 'Provider', icon: KeyRoundIcon },
   { id: 'models', label: 'Default Models', icon: BoxIcon },
   { id: 'search', label: 'Search', icon: SearchIcon },
+  { id: 'extensions', label: 'Skills', icon: PuzzleIcon },
 ]
 
 type WebSearchProviders = NonNullable<NonNullable<Settings['webSearch']>['providers']>
@@ -50,11 +66,35 @@ function formatContext(tokens: number): string {
   return `${Math.round(tokens / 1000)}K`
 }
 
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`${label} timed out after ${timeoutMs / 1000}s`)),
+      timeoutMs,
+    )
+  })
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer) clearTimeout(timer)
+  })
+}
+
 function SectionTitle({ children }: { children: ReactNode }): ReactElement {
   return (
     <h3 className="mb-1.5 text-[11px] font-medium uppercase tracking-wide text-[var(--text-dim)]">
       {children}
     </h3>
+  )
+}
+
+function PathRow({ label, value }: { label: string; value: string }): ReactElement {
+  return (
+    <div className="grid grid-cols-[88px_minmax(0,1fr)] gap-3 px-2.5 py-1.5 text-[11px]">
+      <span className="text-[var(--text-soft)]">{label}</span>
+      <span className="truncate font-mono text-[var(--text-dim)]" title={value}>
+        {value}
+      </span>
+    </div>
   )
 }
 
@@ -71,6 +111,10 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
   const [orCatalog, setOrCatalog] = useState<OrCatalog | null>(null)
   const [orError, setOrError] = useState<string | null>(null)
   const [orQuery, setOrQuery] = useState('')
+  const [extensionsReport, setExtensionsReport] = useState<ExtensionReport | null>(null)
+  const [extensionsError, setExtensionsError] = useState<string | null>(null)
+  const [extensionsNotice, setExtensionsNotice] = useState<string | null>(null)
+  const [extensionsBusy, setExtensionsBusy] = useState<'report' | 'reload' | 'install' | null>(null)
 
   // Reset draft each time we re-open with fresh settings.
   useEffect(() => {
@@ -79,6 +123,11 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
       setTab('provider')
       setRevealKey(false)
       setRevealSearchKeys(false)
+      setOrError(null)
+      setExtensionsReport(null)
+      setExtensionsError(null)
+      setExtensionsNotice(null)
+      setExtensionsBusy(null)
     }
   }, [open, settings])
 
@@ -86,18 +135,48 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
     if (!open || tab !== 'provider' || selectedProvider !== 'openrouter' || orCatalog) return
     let cancelled = false
     setOrError(null)
-    void window.api.openrouter
-      .listModels()
-      .then((catalog) => {
+    void (async () => {
+      try {
+        const catalog = await withTimeout(
+          window.api.openrouter.listModels(),
+          OPENROUTER_MODELS_TIMEOUT_MS,
+          'OpenRouter model catalog',
+        )
         if (!cancelled) setOrCatalog(catalog)
-      })
-      .catch((err: unknown) => {
+      } catch (err) {
         if (!cancelled) setOrError(err instanceof Error ? err.message : String(err))
-      })
+      }
+    })()
     return () => {
       cancelled = true
     }
   }, [open, tab, selectedProvider, orCatalog])
+
+  useEffect(() => {
+    if (!open || tab !== 'extensions' || extensionsReport || extensionsError) {
+      return
+    }
+    let cancelled = false
+    setExtensionsBusy('report')
+    setExtensionsError(null)
+    void (async () => {
+      try {
+        const report = await withTimeout(
+          window.api.extensions.report(),
+          EXTENSIONS_REPORT_TIMEOUT_MS,
+          'Skills report',
+        )
+        if (!cancelled) setExtensionsReport(report)
+      } catch (err) {
+        if (!cancelled) setExtensionsError(err instanceof Error ? err.message : String(err))
+      } finally {
+        if (!cancelled) setExtensionsBusy(null)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [open, tab, extensionsReport, extensionsError])
 
   const orFilteredFamilies = useMemo(() => {
     if (!orCatalog) return []
@@ -158,6 +237,48 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
   const providerConfigured = configuredInDraft.includes(selectedProvider)
   const providerModels = MODEL_CATALOG.filter((m) => m.providerId === selectedProvider)
   const providerImageModels = IMAGE_MODEL_CATALOG.filter((m) => m.providerId === selectedProvider)
+
+  const handleReloadExtensions = async (): Promise<void> => {
+    if (extensionsBusy) return
+    setExtensionsBusy('reload')
+    setExtensionsError(null)
+    setExtensionsNotice(null)
+    try {
+      const result = await withTimeout(
+        window.api.extensions.reload(),
+        EXTENSIONS_RELOAD_TIMEOUT_MS,
+        'Skills reload',
+      )
+      setExtensionsReport(result.report)
+      setExtensionsNotice(`Loaded ${result.skillCount} skill${result.skillCount === 1 ? '' : 's'}.`)
+    } catch (err) {
+      setExtensionsError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setExtensionsBusy(null)
+    }
+  }
+
+  const handleInstallSkill = async (): Promise<void> => {
+    if (extensionsBusy) return
+    setExtensionsBusy('install')
+    setExtensionsError(null)
+    setExtensionsNotice(null)
+    try {
+      const result = await window.api.extensions.installSkill()
+      if (result) {
+        setExtensionsReport(result.report)
+        setExtensionsNotice(
+          `Installed skill. Loaded ${result.skillCount} skill${
+            result.skillCount === 1 ? '' : 's'
+          }.`,
+        )
+      }
+    } catch (err) {
+      setExtensionsError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setExtensionsBusy(null)
+    }
+  }
 
   const handleSave = async (): Promise<void> => {
     setSaving(true)
@@ -684,6 +805,128 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
                     </label>
                   </section>
                 </div>
+              </div>
+            )}
+
+            {tab === 'extensions' && (
+              <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+                <div className="mb-4 flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-[13px] font-medium text-[var(--text)]">Skills</div>
+                    <div className="mt-0.5 text-[11px] text-[var(--text-dim)]">
+                      Local skill packages loaded from the data directory.
+                    </div>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void handleInstallSkill()}
+                      disabled={extensionsBusy !== null}
+                      className="flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-soft)] px-2.5 py-1.5 text-[12px] text-[var(--text)] hover:bg-[var(--surface-hover)] disabled:opacity-50"
+                    >
+                      <PackagePlusIcon className="size-3.5" />
+                      {extensionsBusy === 'install' ? 'Installing...' : 'Install Skill...'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleReloadExtensions()}
+                      disabled={extensionsBusy !== null}
+                      className="flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-soft)] px-2.5 py-1.5 text-[12px] text-[var(--text)] hover:bg-[var(--surface-hover)] disabled:opacity-50"
+                    >
+                      <RefreshCwIcon
+                        className={`size-3.5 ${extensionsBusy === 'reload' ? 'animate-spin' : ''}`}
+                      />
+                      {extensionsBusy === 'reload' ? 'Reloading...' : 'Reload'}
+                    </button>
+                  </div>
+                </div>
+
+                {extensionsError && (
+                  <p className="mb-3 flex items-start gap-2 rounded-md border border-red-200 bg-red-50 px-2.5 py-2 text-[12px] text-red-700">
+                    <TriangleAlertIcon className="mt-0.5 size-3.5 shrink-0" />
+                    <span className="min-w-0 break-words">{extensionsError}</span>
+                  </p>
+                )}
+
+                {extensionsNotice && (
+                  <p className="mb-3 rounded-md border border-emerald-200 bg-emerald-50 px-2.5 py-2 text-[12px] text-emerald-700">
+                    {extensionsNotice}
+                  </p>
+                )}
+
+                {extensionsBusy === 'report' && !extensionsReport && (
+                  <p className="rounded-md border border-[var(--border)] px-2.5 py-2 text-[12px] text-[var(--text-dim)]">
+                    Loading skills...
+                  </p>
+                )}
+
+                {extensionsReport && (
+                  <div className="space-y-5">
+                    <section>
+                      <SectionTitle>Locations</SectionTitle>
+                      <div className="divide-y divide-[var(--border)] rounded-md border border-[var(--border)]">
+                        <PathRow label="Data" value={extensionsReport.dataDir} />
+                        <PathRow label="Skills" value={extensionsReport.skillsDir} />
+                      </div>
+                    </section>
+
+                    <section>
+                      <div className="mb-1.5 flex items-center gap-2">
+                        <SectionTitle>Skills</SectionTitle>
+                        <span className="rounded-full bg-[var(--surface-hover)] px-1.5 py-px text-[10px] tabular-nums text-[var(--text-dim)]">
+                          {extensionsReport.skills.length}
+                        </span>
+                      </div>
+                      <ul className="divide-y divide-[var(--border)] rounded-md border border-[var(--border)]">
+                        {extensionsReport.skills.map((skill) => (
+                          <li key={skill.directory} className="px-2.5 py-2">
+                            <div className="flex items-center gap-2">
+                              <span className="truncate text-[12px] font-medium text-[var(--text)]">
+                                {skill.name}
+                              </span>
+                              <span className="rounded bg-[var(--surface-hover)] px-1 py-px text-[9.5px] uppercase tracking-wide text-[var(--text-dim)]">
+                                skill
+                              </span>
+                            </div>
+                            <div className="mt-0.5 text-[11px] text-[var(--text-soft)]">
+                              {skill.description}
+                            </div>
+                            <div className="mt-1 truncate font-mono text-[10.5px] text-[var(--text-dim)]">
+                              {skill.skillPath}
+                            </div>
+                          </li>
+                        ))}
+                        {extensionsReport.skills.length === 0 && (
+                          <li className="px-2.5 py-2 text-[12px] text-[var(--text-dim)]">
+                            No skills installed.
+                          </li>
+                        )}
+                      </ul>
+                    </section>
+
+                    {extensionsReport.errors.length > 0 && (
+                      <section>
+                        <SectionTitle>Errors</SectionTitle>
+                        <ul className="divide-y divide-[var(--border)] rounded-md border border-[var(--border)]">
+                          {extensionsReport.errors.map((error) => (
+                            <li
+                              key={`${error.kind}:${error.message}`}
+                              className="flex items-start gap-2 px-2.5 py-2 text-[12px]"
+                            >
+                              <TriangleAlertIcon className="mt-0.5 size-3.5 shrink-0 text-amber-600" />
+                              <span className="rounded bg-[var(--surface-hover)] px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-[var(--text-dim)]">
+                                {error.kind}
+                              </span>
+                              <span className="min-w-0 break-words text-[var(--text)]">
+                                {error.message}
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                      </section>
+                    )}
+                  </div>
+                )}
               </div>
             )}
 

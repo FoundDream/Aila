@@ -239,6 +239,34 @@ export interface SettingsState {
   configuredProviders: ProviderId[]
 }
 
+export type ExtensionReportErrorKind = 'skills'
+
+export interface ExtensionReportError {
+  kind: ExtensionReportErrorKind
+  message: string
+}
+
+export interface ExtensionSkillReport {
+  name: string
+  description: string
+  directory: string
+  skillPath: string
+}
+
+export interface ExtensionReport {
+  ok: boolean
+  dataDir: string
+  skillsDir: string
+  skills: ExtensionSkillReport[]
+  errors: ExtensionReportError[]
+}
+
+export interface ExtensionReloadResult {
+  toolCount: number
+  skillCount: number
+  report: ExtensionReport
+}
+
 export interface ConversationUsage {
   promptTokens: number
   completionTokens: number
@@ -536,6 +564,12 @@ const api = {
   },
   openrouter: {
     listModels: (): Promise<OrCatalog> => ipcRenderer.invoke('openrouter:list-models'),
+  },
+  extensions: {
+    report: (): Promise<ExtensionReport> => ipcRenderer.invoke('extensions:report'),
+    reload: (): Promise<ExtensionReloadResult> => ipcRenderer.invoke('extensions:reload'),
+    installSkill: (): Promise<ExtensionReloadResult | null> =>
+      ipcRenderer.invoke('extensions:install-skill'),
   },
   tools: {
     listPendingApprovals: (): Promise<ToolApprovalRequestEvent[]> =>
