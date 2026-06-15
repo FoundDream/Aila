@@ -431,7 +431,7 @@ export default function App(): ReactElement {
               type="button"
               onClick={() => setCollapsed((c) => !c)}
               aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-              className="fixed top-[6px] left-[88px] z-50 grid size-7 place-items-center rounded-lg text-[var(--text-dim)] transition-colors [-webkit-app-region:no-drag] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
+              className="fixed top-[6px] left-[88px] z-50 grid size-7 place-items-center rounded-lg text-[var(--sidebar-text-dim)] transition-colors [-webkit-app-region:no-drag] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
             >
               {collapsed ? (
                 <PanelLeftOpenIcon className="size-4" />
@@ -479,10 +479,10 @@ function SidebarButton({ active = false, onClick, label, icon }: SidebarButtonPr
       className={`flex h-7 cursor-pointer items-center gap-2 rounded-lg px-2 text-[13px] transition-colors ${
         active
           ? 'bg-[var(--surface-hover)] text-[var(--text)]'
-          : 'text-[var(--text-soft)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]'
+          : 'text-[var(--sidebar-text-soft)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]'
       }`}
     >
-      <span className="flex h-4 w-4 shrink-0 items-center justify-center text-[var(--text-dim)]">
+      <span className="flex h-4 w-4 shrink-0 items-center justify-center text-[var(--sidebar-text-dim)]">
         {icon}
       </span>
       <span className="min-w-0 flex-1 truncate text-left">{label}</span>

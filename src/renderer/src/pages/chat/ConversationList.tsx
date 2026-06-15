@@ -180,10 +180,10 @@ export function ConversationList({
                         aria-expanded={isExpanded}
                         className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 px-2.5 text-left"
                       >
-                        <span className="grid size-5 shrink-0 place-items-center text-[var(--text-soft)]">
+                        <span className="grid size-5 shrink-0 place-items-center text-[var(--sidebar-text-soft)]">
                           <FolderIcon className="size-4" />
                         </span>
-                        <span className="min-w-0 flex-1 truncate text-[14px] text-[var(--text-soft)]">
+                        <span className="min-w-0 flex-1 truncate text-[14px] text-[var(--sidebar-text-soft)]">
                           {project.label}
                         </span>
                       </button>
@@ -194,7 +194,7 @@ export function ConversationList({
                         }}
                         aria-label={`Open Terminal in ${project.label}`}
                         title="Open Terminal"
-                        className="grid size-6 shrink-0 cursor-pointer place-items-center rounded-md text-[var(--text-dim)] opacity-0 transition group-hover/project:opacity-100 hover:bg-[var(--surface)] hover:text-[var(--text)]"
+                        className="grid size-6 shrink-0 cursor-pointer place-items-center rounded-md text-[var(--sidebar-text-dim)] opacity-0 transition group-hover/project:opacity-100 hover:bg-[var(--surface)] hover:text-[var(--text)]"
                       >
                         <TerminalIcon className="size-3.5" />
                       </button>
@@ -203,7 +203,7 @@ export function ConversationList({
                         onClick={() => onCreate(workspace)}
                         aria-label={`New chat in ${project.label}`}
                         title={`New chat in ${project.label}`}
-                        className="mr-1 grid size-6 shrink-0 cursor-pointer place-items-center rounded-md text-[var(--text-dim)] opacity-0 transition group-hover/project:opacity-100 hover:bg-[var(--surface)] hover:text-[var(--text)]"
+                        className="mr-1 grid size-6 shrink-0 cursor-pointer place-items-center rounded-md text-[var(--sidebar-text-dim)] opacity-0 transition group-hover/project:opacity-100 hover:bg-[var(--surface)] hover:text-[var(--text)]"
                       >
                         <PlusIcon className="size-3.5" />
                       </button>
@@ -237,7 +237,7 @@ export function ConversationList({
                                   return next
                                 })
                               }
-                              className="ml-11 flex h-8 cursor-pointer items-center rounded-xl px-2.5 text-[14px] text-[var(--text-dim)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text-soft)]"
+                              className="ml-11 flex h-8 cursor-pointer items-center rounded-xl px-2.5 text-[14px] text-[var(--sidebar-text-dim)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--sidebar-text-soft)]"
                             >
                               Show more
                             </button>
@@ -258,7 +258,7 @@ export function ConversationList({
             <button
               type="button"
               onClick={() => onCreate(null)}
-              className="flex h-8 w-full cursor-pointer items-center rounded-xl px-2.5 text-left text-[14px] text-[var(--text-dim)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text-soft)]"
+              className="flex h-8 w-full cursor-pointer items-center rounded-xl px-2.5 text-left text-[14px] text-[var(--sidebar-text-dim)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--sidebar-text-soft)]"
             >
               New chat
             </button>
@@ -298,7 +298,7 @@ function SectionHeader({
 }): ReactElement {
   return (
     <div className="group/section mb-2 flex h-7 items-center px-2.5">
-      <h2 className="min-w-0 flex-1 truncate text-[14px] font-normal text-[var(--text-dim)]">
+      <h2 className="min-w-0 flex-1 truncate text-[14px] font-normal text-[var(--sidebar-text-dim)]">
         {label}
       </h2>
       {onAction && actionLabel && (
@@ -307,7 +307,7 @@ function SectionHeader({
           onClick={onAction}
           aria-label={actionLabel}
           title={actionLabel}
-          className="grid size-6 shrink-0 cursor-pointer place-items-center rounded-md text-[var(--text-dim)] opacity-60 transition group-hover/section:opacity-100 hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
+          className="grid size-6 shrink-0 cursor-pointer place-items-center rounded-md text-[var(--sidebar-text-dim)] opacity-60 transition group-hover/section:opacity-100 hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
         >
           <FolderPlusIcon className="size-3.5" />
         </button>
@@ -380,7 +380,7 @@ function ConversationRow({
           >
             <span
               className={`min-w-0 flex-1 truncate text-[14px] ${
-                isActive ? 'font-medium text-[var(--text)]' : 'text-[var(--text-soft)]'
+                isActive ? 'font-medium text-[var(--text)]' : 'text-[var(--sidebar-text-soft)]'
               }`}
             >
               {title}
@@ -398,7 +398,7 @@ function ConversationRow({
               </span>
             )}
           </button>
-          <span className="w-9 shrink-0 pr-2 text-right text-[13px] tabular-nums text-[var(--text-dim)] group-hover:hidden">
+          <span className="w-9 shrink-0 pr-2 text-right text-[13px] tabular-nums text-[var(--sidebar-text-dim)] group-hover:hidden">
             {formatConversationListRelativeTime(conversation.updatedAt)}
           </span>
           <div className="mr-1 hidden shrink-0 items-center gap-0.5 group-hover:flex">
@@ -407,7 +407,7 @@ function ConversationRow({
               onClick={() => onStartRename(conversation.id)}
               aria-label="Rename conversation"
               title="Rename"
-              className="flex h-6 w-6 cursor-pointer items-center justify-center rounded-md text-[var(--text-dim)] hover:bg-[var(--surface)] hover:text-[var(--text)]"
+              className="flex h-6 w-6 cursor-pointer items-center justify-center rounded-md text-[var(--sidebar-text-dim)] hover:bg-[var(--surface)] hover:text-[var(--text)]"
             >
               <PencilIcon className="size-3.5" />
             </button>
@@ -420,7 +420,7 @@ function ConversationRow({
               }}
               aria-label="Delete conversation"
               title="Delete"
-              className="flex h-6 w-6 cursor-pointer items-center justify-center rounded-md text-[var(--text-dim)] hover:bg-[var(--surface)] hover:text-[var(--error)]"
+              className="flex h-6 w-6 cursor-pointer items-center justify-center rounded-md text-[var(--sidebar-text-dim)] hover:bg-[var(--surface)] hover:text-[var(--error)]"
             >
               <Trash2Icon className="size-3.5" />
             </button>
@@ -466,7 +466,7 @@ function ConversationRenameInput({
         }
       }}
       onBlur={() => onSubmit(value.trim())}
-      className={`h-8 min-w-0 flex-1 rounded-xl bg-transparent pr-2.5 text-[14px] text-[var(--text)] outline-none placeholder:text-[var(--text-dim)] ${
+      className={`h-8 min-w-0 flex-1 rounded-xl bg-transparent pr-2.5 text-[14px] text-[var(--text)] outline-none placeholder:text-[var(--sidebar-text-dim)] ${
         indented ? 'pl-11' : 'pl-2.5'
       }`}
     />

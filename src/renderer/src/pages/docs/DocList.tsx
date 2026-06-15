@@ -324,7 +324,7 @@ export function DocList({
           } ${drag?.kind === 'folder' && drag.path === node.path ? 'opacity-45' : ''}`}
           style={{ paddingLeft: `${Math.min(depth, 5) * 14}px` }}
         >
-          <span className="ml-2 flex h-4 w-4 shrink-0 items-center justify-center text-[var(--text-dim)]">
+          <span className="ml-2 flex h-4 w-4 shrink-0 items-center justify-center text-[var(--sidebar-text-dim)]">
             <FolderIcon open={isExpanded && hasChildren} />
           </span>
           {isRenaming ? (
@@ -349,7 +349,7 @@ export function DocList({
               className="flex min-w-0 flex-1 cursor-pointer items-center px-2 text-left"
               draggable={false}
             >
-              <span className="min-w-0 flex-1 truncate text-[13.5px] text-[var(--text-soft)]">
+              <span className="min-w-0 flex-1 truncate text-[13.5px] text-[var(--sidebar-text-soft)]">
                 {node.name}
               </span>
             </button>
@@ -364,7 +364,7 @@ export function DocList({
                 }}
                 aria-label="New document in folder"
                 title="New document"
-                className="flex h-5 w-5 shrink-0 cursor-pointer items-center justify-center rounded text-[var(--text-dim)] opacity-0 transition group-hover:opacity-100 hover:bg-[var(--surface)] hover:text-[var(--text-soft)]"
+                className="flex h-5 w-5 shrink-0 cursor-pointer items-center justify-center rounded text-[var(--sidebar-text-dim)] opacity-0 transition group-hover:opacity-100 hover:bg-[var(--surface)] hover:text-[var(--sidebar-text-soft)]"
                 draggable={false}
               >
                 <PlusIcon />
@@ -384,7 +384,7 @@ export function DocList({
                 }}
                 aria-label="New nested folder"
                 title="New folder"
-                className="flex h-5 w-5 shrink-0 cursor-pointer items-center justify-center rounded text-[var(--text-dim)] opacity-0 transition group-hover:opacity-100 hover:bg-[var(--surface)] hover:text-[var(--text-soft)]"
+                className="flex h-5 w-5 shrink-0 cursor-pointer items-center justify-center rounded text-[var(--sidebar-text-dim)] opacity-0 transition group-hover:opacity-100 hover:bg-[var(--surface)] hover:text-[var(--sidebar-text-soft)]"
                 draggable={false}
               >
                 <FolderPlusIcon />
@@ -394,7 +394,7 @@ export function DocList({
                 onClick={() => setRenamingPath(node.path)}
                 aria-label="Rename folder"
                 title="Rename"
-                className="flex h-5 w-5 shrink-0 cursor-pointer items-center justify-center rounded text-[var(--text-dim)] opacity-0 transition group-hover:opacity-100 hover:bg-[var(--surface)] hover:text-[var(--text-soft)]"
+                className="flex h-5 w-5 shrink-0 cursor-pointer items-center justify-center rounded text-[var(--sidebar-text-dim)] opacity-0 transition group-hover:opacity-100 hover:bg-[var(--surface)] hover:text-[var(--sidebar-text-soft)]"
                 draggable={false}
               >
                 <PencilIcon />
@@ -408,7 +408,7 @@ export function DocList({
                 }}
                 aria-label="Delete folder"
                 title="Delete"
-                className="mr-1 flex h-5 w-5 shrink-0 cursor-pointer items-center justify-center rounded text-[var(--text-dim)] opacity-0 transition group-hover:opacity-100 hover:bg-[var(--surface)] hover:text-[var(--error)]"
+                className="mr-1 flex h-5 w-5 shrink-0 cursor-pointer items-center justify-center rounded text-[var(--sidebar-text-dim)] opacity-0 transition group-hover:opacity-100 hover:bg-[var(--surface)] hover:text-[var(--error)]"
                 draggable={false}
               >
                 <TrashIcon />
@@ -448,7 +448,7 @@ export function DocList({
         >
           <span
             className={`ml-2 flex h-4 w-4 shrink-0 items-center justify-center ${
-              isActive ? 'text-[var(--text-soft)]' : 'text-[var(--text-dim)]'
+              isActive ? 'text-[var(--sidebar-text-soft)]' : 'text-[var(--sidebar-text-dim)]'
             }`}
           >
             <PageIcon />
@@ -461,7 +461,7 @@ export function DocList({
           >
             <span
               className={`min-w-0 flex-1 truncate text-[13.5px] ${
-                isActive ? 'text-[var(--text)]' : 'text-[var(--text-soft)]'
+                isActive ? 'text-[var(--text)]' : 'text-[var(--sidebar-text-soft)]'
               }`}
             >
               {title}
@@ -476,7 +476,7 @@ export function DocList({
             }}
             aria-label="Delete document"
             title="Delete"
-            className="mr-1 flex h-5 w-5 shrink-0 cursor-pointer items-center justify-center rounded text-[var(--text-dim)] opacity-0 transition group-hover:opacity-100 hover:bg-[var(--surface)] hover:text-[var(--error)]"
+            className="mr-1 flex h-5 w-5 shrink-0 cursor-pointer items-center justify-center rounded text-[var(--sidebar-text-dim)] opacity-0 transition group-hover:opacity-100 hover:bg-[var(--surface)] hover:text-[var(--error)]"
             draggable={false}
           >
             <TrashIcon />
@@ -491,7 +491,7 @@ export function DocList({
   return (
     <div className="flex h-full flex-col">
       <div className="group/header flex h-7 shrink-0 items-center px-2">
-        <span className="flex-1 px-2 text-[11px] font-medium tracking-wide text-[var(--text-dim)]">
+        <span className="flex-1 px-2 text-[11px] font-medium tracking-wide text-[var(--sidebar-text-dim)]">
           Documents
         </span>
         <button
@@ -508,7 +508,7 @@ export function DocList({
           }}
           aria-label="New folder"
           title="New folder"
-          className="flex h-5 w-5 cursor-pointer items-center justify-center rounded text-[var(--text-dim)] opacity-0 transition group-hover/header:opacity-100 hover:bg-[var(--surface-hover)] hover:text-[var(--text-soft)]"
+          className="flex h-5 w-5 cursor-pointer items-center justify-center rounded text-[var(--sidebar-text-dim)] opacity-0 transition group-hover/header:opacity-100 hover:bg-[var(--surface-hover)] hover:text-[var(--sidebar-text-soft)]"
         >
           <FolderPlusIcon />
         </button>
@@ -517,7 +517,7 @@ export function DocList({
           onClick={() => onCreateDoc(null)}
           aria-label="New document"
           title="New document"
-          className="flex h-5 w-5 cursor-pointer items-center justify-center rounded text-[var(--text-dim)] opacity-0 transition group-hover/header:opacity-100 hover:bg-[var(--surface-hover)] hover:text-[var(--text-soft)]"
+          className="flex h-5 w-5 cursor-pointer items-center justify-center rounded text-[var(--sidebar-text-dim)] opacity-0 transition group-hover/header:opacity-100 hover:bg-[var(--surface-hover)] hover:text-[var(--sidebar-text-soft)]"
         >
           <PlusIcon />
         </button>
@@ -549,7 +549,7 @@ export function DocList({
             <button
               type="button"
               onClick={() => onCreateDoc(null)}
-              className="flex h-7 w-full cursor-pointer items-center gap-2 rounded-md px-2 text-[13px] text-[var(--text-dim)] hover:bg-[var(--surface-hover)] hover:text-[var(--text-soft)]"
+              className="flex h-7 w-full cursor-pointer items-center gap-2 rounded-md px-2 text-[13px] text-[var(--sidebar-text-dim)] hover:bg-[var(--surface-hover)] hover:text-[var(--sidebar-text-soft)]"
             >
               <span className="flex h-4 w-4 items-center justify-center">
                 <PlusIcon />
@@ -565,7 +565,7 @@ export function DocList({
               <button
                 type="button"
                 onClick={() => onCreateDoc(null)}
-                className="mt-0.5 flex h-7 w-full cursor-pointer items-center gap-2 rounded-md px-2 text-[13px] text-[var(--text-dim)] transition hover:bg-[var(--surface-hover)] hover:text-[var(--text-soft)]"
+                className="mt-0.5 flex h-7 w-full cursor-pointer items-center gap-2 rounded-md px-2 text-[13px] text-[var(--sidebar-text-dim)] transition hover:bg-[var(--surface-hover)] hover:text-[var(--sidebar-text-soft)]"
               >
                 <span className="flex h-4 w-4 items-center justify-center">
                   <PlusIcon />
