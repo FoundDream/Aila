@@ -1,5 +1,4 @@
 import { type ReactElement, useCallback, useEffect, useRef, useState } from 'react'
-import { ActivityTimeline } from '@/pages/chat/ActivityTimeline'
 import { Composer } from '@/pages/chat/Composer'
 import { type ConversationStatusTone, getConversationStatus } from '@/pages/chat/conversationStatus'
 import { Transcript } from '@/pages/chat/Transcript'
@@ -61,7 +60,6 @@ export function DocChatPanel({
   const messages = stream?.messages ?? []
   const isStreaming = stream?.runningMessageId !== null && stream?.runningMessageId !== undefined
   const usage = stream?.usage ?? null
-  const events = stream?.events ?? []
   const queuedRuns = stream?.queue ?? []
   const queuedCount = queuedRuns.length
   const lastMessage = messages.at(-1)
@@ -177,7 +175,6 @@ export function DocChatPanel({
               canRetryLast={canRetryLast}
               onRetryLast={handleRetryLast}
             />
-            <ActivityTimeline events={events} />
             <Composer
               isStreaming={isStreaming}
               onSubmit={handleSubmit}
