@@ -244,6 +244,40 @@ export interface ConversationUsage {
   completionTokens: number
   totalTokens: number
   updatedAt: number
+  turnCount?: number
+  cumulativePromptTokens?: number
+  cumulativeCompletionTokens?: number
+  cumulativeTotalTokens?: number
+}
+
+export interface ConversationCompactFileArtifact {
+  path: string
+  mentions: number
+}
+
+export interface ConversationCompactToolActivity {
+  name: string
+  count: number
+}
+
+export interface ConversationCompactToolResultArtifact {
+  toolCallId: string
+  toolName: string
+  sizeChars: number
+  preview: string
+  path?: string
+  relativePath?: string
+}
+
+export interface ConversationCompactArtifact {
+  schemaVersion: 1
+  summary: string
+  userRequests: string[]
+  decisions: string[]
+  files: ConversationCompactFileArtifact[]
+  toolActivity: ConversationCompactToolActivity[]
+  toolResults: ConversationCompactToolResultArtifact[]
+  nextSteps: string[]
 }
 
 export interface ConversationContextCheckpoint {
@@ -255,10 +289,52 @@ export interface ConversationContextCheckpoint {
   omittedRoundCount: number
   summary: string
   charCost: number
+  artifact?: ConversationCompactArtifact
+}
+
+export interface ConversationContextLedgerSection {
+  kind: string
+  messageCount: number
+  charCost: number
+  estimatedTokens: number
+}
+
+export interface ConversationContextTokenPreflight {
+  inputTokens: number
+  method: string
+  providerId?: ProviderId | 'unknown'
+  model?: string
+  countedAt: number
+}
+
+export interface ConversationContextTurnLedgerEntry {
+  schemaVersion: 1
+  messageId: string
+  createdAt: number
+  providerId: ProviderId
+  modelId: string
+  estimatedInputTokens: number
+  inputBudgetTokens: number
+  remainingInputTokens: number
+  sectionCount: number
+  sections: ConversationContextLedgerSection[]
+  preflight?: ConversationContextTokenPreflight
+  usage?: {
+    promptTokens: number
+    completionTokens: number
+    totalTokens: number
+  }
+  compaction: {
+    activeCheckpointId: string | null
+    recommendedCheckpointId: string | null
+    omittedRoundCount: number
+    shouldAutoCompact: boolean
+  }
 }
 
 export interface ConversationContextState {
   checkpoint?: ConversationContextCheckpoint
+  turns?: ConversationContextTurnLedgerEntry[]
 }
 
 export type ConversationActivityState =

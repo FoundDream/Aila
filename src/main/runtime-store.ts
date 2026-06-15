@@ -6,6 +6,7 @@ import {
   getConversation,
   listAgentEvents,
   listConversations,
+  recordConversationContextTurnLedger,
   recoverInterruptedConversationActivityResults,
   renameConversation,
   setConversationContextCheckpoint,
@@ -25,6 +26,7 @@ export function createPersistedRuntimeStore(): AgentRuntimeStore {
     renameConversation,
     recordUsage: setConversationUsage,
     saveContextCheckpoint: setConversationContextCheckpoint,
+    recordContextTurnLedger: recordConversationContextTurnLedger,
     deleteConversation,
   }
 }

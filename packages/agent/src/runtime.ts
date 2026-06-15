@@ -6,19 +6,31 @@ import type {
   RuntimeModelInfoResolver,
   RuntimeStreamChat,
 } from './agent-protocol'
-import { type AgentContextPlan, assembleAgentContext } from './context'
+import {
+  type AgentContextPlan,
+  type AgentContextRecommendedCheckpoint,
+  type AgentContextTokenPreflight,
+  applyAgentContextTokenPreflight,
+  assembleAgentContext,
+} from './context'
 import {
   type AgentEventAppendResult,
   AILA_AGENT_EVENT_SCHEMA_VERSION,
   AILA_CONTEXT_CHECKPOINT_SCHEMA_VERSION,
+  AILA_CONTEXT_TURN_LEDGER_SCHEMA_VERSION,
   AILA_CONVERSATION_META_SCHEMA_VERSION,
   AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+  appendConversationContextTurnLedgerEntry,
+  type ConversationCompactArtifact,
   type ConversationContextCheckpoint,
+  type ConversationContextTurnLedgerEntry,
   type ConversationRecord,
   type ConversationRuntimeReplayState,
   type ConversationSummary,
   type ConversationWorkspaceRef,
+  createConversationUsageSnapshot,
   createInterruptedConversationRecoveryEvent,
+  normalizeConversationCompactArtifact,
   orderedUniqueAgentEvents,
   type PersistedAgentEvent,
   type PersistedBlock,
@@ -200,6 +212,34 @@ export interface RuntimeTransientContextInput {
 
 export type RuntimeStableInstructionsInput = RuntimeTransientContextInput
 
+export interface RuntimeContextTokenCountInput {
+  conversationId: string
+  assistantMessageId: string
+  selection: ModelSelection
+  messages: ChatMessage[]
+  contextPlan: AgentContextPlan
+}
+
+export interface RuntimeContextTokenCountResult {
+  inputTokens: number
+  method?: string
+  providerId?: string
+  model?: string
+}
+
+export interface RuntimeContextCompactArtifactInput {
+  conversationId: string
+  selection: ModelSelection
+  activeCheckpoint?: ConversationContextCheckpoint
+  recommendedCheckpoint: AgentContextRecommendedCheckpoint
+  sourceMessages: PersistedMessage[]
+}
+
+export interface RuntimeContextCompactArtifactResult {
+  artifact: ConversationCompactArtifact
+  summary?: string
+}
+
 export interface RuntimeSendResult {
   userMessage: PersistedMessage
   assistantMessageId: string
@@ -291,6 +331,12 @@ export interface AgentRuntimeHost {
   loadTransientContext?: (
     input: RuntimeTransientContextInput,
   ) => MaybePromise<ChatMessage[] | undefined>
+  countContextTokens?: (
+    input: RuntimeContextTokenCountInput,
+  ) => MaybePromise<RuntimeContextTokenCountResult | null | undefined>
+  generateContextCompactArtifact?: (
+    input: RuntimeContextCompactArtifactInput,
+  ) => MaybePromise<RuntimeContextCompactArtifactResult | null | undefined>
   webSearch?: ToolContext['webSearch']
   generateImage?: ToolContext['generateImage']
   saveImage?: ToolContext['saveImage']
@@ -330,6 +376,10 @@ export interface AgentRuntimeStore {
   saveContextCheckpoint?: (
     conversationId: string,
     checkpoint: ConversationContextCheckpoint,
+  ) => Promise<ConversationSummary>
+  recordContextTurnLedger?: (
+    conversationId: string,
+    entry: ConversationContextTurnLedgerEntry,
   ) => Promise<ConversationSummary>
   deleteConversation: (conversationId: string) => Promise<void>
 }
@@ -552,10 +602,11 @@ export function createInMemoryRuntimeStore(
       }))
     },
     async recordUsage(conversationId, usage): Promise<ConversationSummary> {
+      const timestamp = now()
       return updateMeta(conversationId, (current) => ({
         ...current,
-        updatedAt: nextRuntimeUpdatedAt(current, now()),
-        usage: { ...usage, updatedAt: now() },
+        updatedAt: nextRuntimeUpdatedAt(current, timestamp),
+        usage: createConversationUsageSnapshot(current.usage, usage, timestamp),
       }))
     },
     async saveContextCheckpoint(conversationId, checkpoint): Promise<ConversationSummary> {
@@ -566,6 +617,13 @@ export function createInMemoryRuntimeStore(
           ...(current.context ?? {}),
           checkpoint: cloneRuntimeValue(checkpoint),
         },
+      }))
+    },
+    async recordContextTurnLedger(conversationId, entry): Promise<ConversationSummary> {
+      return updateMeta(conversationId, (current) => ({
+        ...current,
+        updatedAt: nextRuntimeUpdatedAt(current, entry.createdAt),
+        context: appendConversationContextTurnLedgerEntry(current.context, entry),
       }))
     },
     async deleteConversation(conversationId): Promise<void> {
@@ -594,6 +652,10 @@ function normalizeRuntimeHost(options: AgentRuntimeOptions): AgentRuntimeHost {
     host.loadStableInstructions = options.loadStableInstructions
   }
   if (options.loadTransientContext) host.loadTransientContext = options.loadTransientContext
+  if (options.countContextTokens) host.countContextTokens = options.countContextTokens
+  if (options.generateContextCompactArtifact) {
+    host.generateContextCompactArtifact = options.generateContextCompactArtifact
+  }
   if (options.webSearch) host.webSearch = options.webSearch
   if (options.generateImage) host.generateImage = options.generateImage
   if (options.saveImage) host.saveImage = options.saveImage
@@ -624,6 +686,10 @@ function normalizeRuntimeHost(options: AgentRuntimeOptions): AgentRuntimeHost {
   }
   if (options.host.loadTransientContext) {
     host.loadTransientContext = options.host.loadTransientContext
+  }
+  if (options.host.countContextTokens) host.countContextTokens = options.host.countContextTokens
+  if (options.host.generateContextCompactArtifact) {
+    host.generateContextCompactArtifact = options.host.generateContextCompactArtifact
   }
   if (options.host.webSearch) host.webSearch = options.host.webSearch
   if (options.host.generateImage) host.generateImage = options.host.generateImage
@@ -1124,12 +1190,24 @@ export class AgentRuntime implements AgentRuntimeApi {
         stableInstructions: resolvedStableInstructions,
         messages: cloneRuntimeValue(record.messages),
         modelInfo: await this.resolveModelInfo(selection),
+        providerId: selection.providerId,
         dynamicContext: inputTransientContext ?? hostTransientContext,
         compactionCheckpoint: record.meta.context?.checkpoint,
       })
       messages = context.messages
-      contextPlan = context.plan
-      await this.persistRecommendedContextCheckpoint(conversationId, contextPlan)
+      contextPlan = await this.applyContextTokenPreflight({
+        conversationId,
+        assistantMessageId,
+        selection,
+        messages,
+        contextPlan: context.plan,
+      })
+      await this.persistRecommendedContextCheckpoint({
+        conversationId,
+        record,
+        selection,
+        contextPlan,
+      })
       toolRegistry = await this.getToolRegistry()
       toolContext = await this.buildToolContext({
         conversationId,
@@ -1723,12 +1801,93 @@ export class AgentRuntime implements AgentRuntimeApi {
     }
   }
 
-  private async persistRecommendedContextCheckpoint(
-    conversationId: string,
-    contextPlan: AgentContextPlan,
-  ): Promise<void> {
+  private async applyContextTokenPreflight(
+    input: RuntimeContextTokenCountInput,
+  ): Promise<AgentContextPlan> {
+    if (!this.host.countContextTokens) return input.contextPlan
+    try {
+      const counted = await this.host.countContextTokens({
+        ...input,
+        selection: cloneRuntimeValue(input.selection),
+        messages: cloneRuntimeChatMessages(input.messages) ?? [],
+        contextPlan: cloneRuntimeValue(input.contextPlan),
+      })
+      if (!counted || typeof counted.inputTokens !== 'number' || counted.inputTokens < 0) {
+        return input.contextPlan
+      }
+      const preflight: AgentContextTokenPreflight = {
+        inputTokens: counted.inputTokens,
+        method: counted.method ?? 'provider_preflight',
+        providerId: counted.providerId ?? input.selection.providerId,
+        model: counted.model ?? input.selection.modelId,
+        countedAt: this.now(),
+      }
+      return applyAgentContextTokenPreflight(input.contextPlan, preflight)
+    } catch (error) {
+      this.logger.warn('[runtime] context token preflight failed:', error)
+      return input.contextPlan
+    }
+  }
+
+  private async resolveSemanticCompactArtifact(input: {
+    conversationId: string
+    record: ConversationRecord
+    selection: ModelSelection
+    recommended: AgentContextRecommendedCheckpoint
+  }): Promise<{ artifact: ConversationCompactArtifact; summary: string }> {
+    if (!this.host.generateContextCompactArtifact) {
+      return {
+        artifact: cloneRuntimeValue(input.recommended.artifact),
+        summary: input.recommended.summary,
+      }
+    }
+    try {
+      const sourceIdSet = new Set(input.recommended.sourceMessageIds)
+      const generated = await this.host.generateContextCompactArtifact({
+        conversationId: input.conversationId,
+        selection: cloneRuntimeValue(input.selection),
+        activeCheckpoint: cloneRuntimeValue(input.record.meta.context?.checkpoint),
+        recommendedCheckpoint: cloneRuntimeValue(input.recommended),
+        sourceMessages: cloneRuntimeValue(
+          input.record.messages.filter((message) => sourceIdSet.has(message.id)),
+        ),
+      })
+      const artifact = normalizeConversationCompactArtifact(generated?.artifact)
+      if (!artifact) {
+        return {
+          artifact: cloneRuntimeValue(input.recommended.artifact),
+          summary: input.recommended.summary,
+        }
+      }
+      const summary =
+        typeof generated?.summary === 'string' && generated.summary.trim().length > 0
+          ? generated.summary.trim()
+          : artifact.summary || input.recommended.summary
+      return { artifact, summary }
+    } catch (error) {
+      this.logger.warn('[runtime] semantic context compact artifact generation failed:', error)
+      return {
+        artifact: cloneRuntimeValue(input.recommended.artifact),
+        summary: input.recommended.summary,
+      }
+    }
+  }
+
+  private async persistRecommendedContextCheckpoint(input: {
+    conversationId: string
+    record: ConversationRecord
+    selection: ModelSelection
+    contextPlan: AgentContextPlan
+  }): Promise<void> {
+    const { conversationId, record, selection, contextPlan } = input
     const recommended = contextPlan.compaction.recommendedCheckpoint
     if (!recommended || !this.store.saveContextCheckpoint) return
+    const semantic = await this.resolveSemanticCompactArtifact({
+      conversationId,
+      record,
+      selection,
+      recommended,
+    })
     const checkpoint: ConversationContextCheckpoint = {
       schemaVersion: AILA_CONTEXT_CHECKPOINT_SCHEMA_VERSION,
       id: recommended.id,
@@ -1736,8 +1895,9 @@ export class AgentRuntime implements AgentRuntimeApi {
       boundaryMessageId: recommended.boundaryMessageId,
       sourceMessageIds: cloneRuntimeValue(recommended.sourceMessageIds),
       omittedRoundCount: recommended.omittedRoundCount,
-      summary: recommended.summary,
-      charCost: recommended.charCost,
+      summary: semantic.summary,
+      charCost: JSON.stringify([{ role: 'system', content: semantic.summary }]).length,
+      artifact: cloneRuntimeValue(semantic.artifact),
     }
     try {
       const summary = cloneRuntimeConversationSummary(
@@ -1746,6 +1906,64 @@ export class AgentRuntime implements AgentRuntimeApi {
       this.emit(createRuntimeEvent('conversations:updated', summary))
     } catch (error) {
       this.logger.warn('[runtime] context checkpoint persistence failed:', error)
+    }
+  }
+
+  private createContextTurnLedgerEntry(input: {
+    assistantMessageId: string
+    selection: ModelSelection
+    contextPlan: AgentContextPlan
+    usage?: { promptTokens: number; completionTokens: number; totalTokens: number }
+  }): ConversationContextTurnLedgerEntry {
+    const { assistantMessageId, selection, contextPlan, usage } = input
+    return {
+      schemaVersion: AILA_CONTEXT_TURN_LEDGER_SCHEMA_VERSION,
+      messageId: assistantMessageId,
+      createdAt: this.now(),
+      providerId: selection.providerId,
+      modelId: selection.modelId,
+      estimatedInputTokens: contextPlan.ledger.totalEstimatedTokens,
+      inputBudgetTokens: contextPlan.ledger.inputBudgetTokens,
+      remainingInputTokens:
+        contextPlan.budget.remainingPreflightInputTokens ?? contextPlan.ledger.remainingInputTokens,
+      sectionCount: contextPlan.ledger.entries.length,
+      sections: contextPlan.ledger.entries.map((entry) => ({
+        kind: entry.kind,
+        messageCount: entry.messageCount,
+        charCost: entry.charCost,
+        estimatedTokens: entry.estimatedTokens,
+      })),
+      ...(contextPlan.ledger.preflight
+        ? { preflight: cloneRuntimeValue(contextPlan.ledger.preflight) }
+        : {}),
+      ...(usage ? { usage: cloneRuntimeValue(usage) } : {}),
+      compaction: {
+        activeCheckpointId: contextPlan.compaction.activeCheckpointId,
+        recommendedCheckpointId: contextPlan.compaction.recommendedCheckpoint?.id ?? null,
+        omittedRoundCount: contextPlan.compaction.omittedRoundCount,
+        shouldAutoCompact: contextPlan.compaction.shouldAutoCompact,
+      },
+    }
+  }
+
+  private async persistContextTurnLedger(input: {
+    conversationId: string
+    assistantMessageId: string
+    selection: ModelSelection
+    contextPlan: AgentContextPlan
+    usage?: { promptTokens: number; completionTokens: number; totalTokens: number }
+  }): Promise<void> {
+    if (!this.store.recordContextTurnLedger) return
+    try {
+      const summary = cloneRuntimeConversationSummary(
+        await this.store.recordContextTurnLedger(
+          input.conversationId,
+          this.createContextTurnLedgerEntry(input),
+        ),
+      )
+      this.emit(createRuntimeEvent('conversations:updated', summary))
+    } catch (error) {
+      this.logger.warn('[runtime] context turn ledger persistence failed:', error)
     }
   }
 
@@ -1870,6 +2088,13 @@ export class AgentRuntime implements AgentRuntimeApi {
                 this.logger.warn('[runtime] usage persistence failed:', err)
               }
             }
+            await this.persistContextTurnLedger({
+              conversationId,
+              assistantMessageId,
+              selection,
+              contextPlan,
+              usage: doneEvent.usage,
+            })
           },
           onError: async (event) => {
             const errorEvent = cloneRuntimeValue(event)

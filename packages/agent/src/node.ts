@@ -12,6 +12,11 @@ export {
   resolveConfiguredValue,
 } from './node/auth'
 export {
+  createNodeContextTokenCounter,
+  createNodeSemanticCompactGenerator,
+  type NodeContextServiceOptions,
+} from './node/context-services'
+export {
   createDefaultModelStreamClient,
   type DefaultModelStreamClientOptions,
 } from './node/default-model-stream'

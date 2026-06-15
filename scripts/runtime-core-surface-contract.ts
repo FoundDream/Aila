@@ -3,12 +3,16 @@ import {
   type AgentContextBudgetPlan,
   type AgentContextBudgetPressure,
   type AgentContextCompactionPlan,
+  type AgentContextMicrocompactPlan,
   type AgentContextPlan,
   type AgentContextPlanSection,
   type AgentContextRecommendedCheckpoint,
   type AgentContextSectionCachePolicy,
   type AgentContextSectionMetadata,
   type AgentContextSectionSource,
+  type AgentContextTokenLedger,
+  type AgentContextTokenLedgerEntry,
+  type AgentContextTokenPreflight,
   type AgentEvent,
   AgentRuntime,
   type AgentRuntimeApi,
@@ -25,8 +29,19 @@ import {
   ContextBudgetManager,
   type ContextBudgetManagerInput,
   type ContextBudgetSnapshot,
+  type ContextTokenEstimate,
+  type ContextTokenEstimateMethod,
+  ContextTokenEstimator,
+  type ContextTokenEstimatorSnapshot,
+  type ConversationCompactArtifact,
+  type ConversationCompactFileArtifact,
+  type ConversationCompactToolActivity,
+  type ConversationCompactToolResultArtifact,
   type ConversationContextCheckpoint,
+  type ConversationContextLedgerSection,
   type ConversationContextState,
+  type ConversationContextTokenPreflight,
+  type ConversationContextTurnLedgerEntry,
   type ConversationRecord,
   type ConversationRuntimeReplayState,
   type ConversationSummary,
@@ -44,6 +59,10 @@ import {
   type PersistedMessage,
   type PersistedToolResultRef,
   parseSkillDocument,
+  type RuntimeContextCompactArtifactInput,
+  type RuntimeContextCompactArtifactResult,
+  type RuntimeContextTokenCountInput,
+  type RuntimeContextTokenCountResult,
   type RuntimeModelInfoResolver,
   type RuntimeStableInstructionsInput,
   type RuntimeStreamChat,
@@ -68,10 +87,14 @@ export type RuntimeCorePublicSurfaceContract = {
   agentContextBudgetPlan: AgentContextBudgetPlan
   agentContextBudgetPressure: AgentContextBudgetPressure
   agentContextCompactionPlan: AgentContextCompactionPlan
+  agentContextMicrocompactPlan: AgentContextMicrocompactPlan
   agentContextRecommendedCheckpoint: AgentContextRecommendedCheckpoint
   agentContextSectionCachePolicy: AgentContextSectionCachePolicy
   agentContextSectionMetadata: AgentContextSectionMetadata
   agentContextSectionSource: AgentContextSectionSource
+  agentContextTokenLedger: AgentContextTokenLedger
+  agentContextTokenLedgerEntry: AgentContextTokenLedgerEntry
+  agentContextTokenPreflight: AgentContextTokenPreflight
   api: AgentRuntimeApi
   chatMessage: ChatMessage
   conversationApi: AgentRuntimeConversationApi
@@ -80,9 +103,15 @@ export type RuntimeCorePublicSurfaceContract = {
   conversationSummary: ConversationSummary
   conversationUsage: ConversationUsage
   conversationContextCheckpoint: ConversationContextCheckpoint
+  conversationContextLedgerSection: ConversationContextLedgerSection
   conversationContextState: ConversationContextState
+  conversationContextTokenPreflight: ConversationContextTokenPreflight
+  conversationContextTurnLedgerEntry: ConversationContextTurnLedgerEntry
   contextBudgetManagerInput: ContextBudgetManagerInput
   contextBudgetSnapshot: ContextBudgetSnapshot
+  contextTokenEstimate: ContextTokenEstimate
+  contextTokenEstimateMethod: ContextTokenEstimateMethod
+  contextTokenEstimatorSnapshot: ContextTokenEstimatorSnapshot
   event: AgentRuntimeEvent
   extensionApi: AgentRuntimeExtensionApi
   host: AgentRuntimeHost
@@ -90,9 +119,17 @@ export type RuntimeCorePublicSurfaceContract = {
   imageResult: ImageResult
   modelInfoResolver: RuntimeModelInfoResolver
   modelSelection: ModelSelection
+  conversationCompactArtifact: ConversationCompactArtifact
+  conversationCompactFileArtifact: ConversationCompactFileArtifact
+  conversationCompactToolActivity: ConversationCompactToolActivity
+  conversationCompactToolResultArtifact: ConversationCompactToolResultArtifact
   persistedMessage: PersistedMessage
   persistedToolResultRef: PersistedToolResultRef
   runtime: AgentRuntime
+  runtimeContextCompactArtifactInput: RuntimeContextCompactArtifactInput
+  runtimeContextCompactArtifactResult: RuntimeContextCompactArtifactResult
+  runtimeContextTokenCountInput: RuntimeContextTokenCountInput
+  runtimeContextTokenCountResult: RuntimeContextTokenCountResult
   stableInstructionsInput: RuntimeStableInstructionsInput
   settings: Settings
   shellRequest: ToolShellRequest
@@ -115,6 +152,7 @@ export const runtimeCorePublicValueSurfaceContract = {
   isRuntimeEventType,
   modelCatalog: MODEL_CATALOG,
   contextBudgetManager: ContextBudgetManager,
+  contextTokenEstimator: ContextTokenEstimator,
   runtime: AgentRuntime,
   runtimeEvent: createRuntimeEvent,
   sdkVersion: AILA_RUNTIME_SDK_VERSION,

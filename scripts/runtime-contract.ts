@@ -1156,6 +1156,35 @@ async function testRuntimeInjectableStoreContract(): Promise<void> {
   })
 }
 
+async function testConversationUsageAccumulatorContract(): Promise<void> {
+  const store = runtimeSdk.createInMemoryRuntimeStore()
+  const conversation = await store.createConversation?.()
+  assert(conversation, 'in-memory store should create a conversation for usage accumulation')
+  await store.recordUsage(conversation.id, {
+    promptTokens: 3,
+    completionTokens: 5,
+    totalTokens: 8,
+  })
+  await store.recordUsage(conversation.id, {
+    promptTokens: 2,
+    completionTokens: 4,
+    totalTokens: 6,
+  })
+  const record = await store.getConversation(conversation.id)
+  assertEqual(record.meta.usage?.totalTokens, 6, 'usage snapshot should keep the latest turn total')
+  assertEqual(record.meta.usage?.turnCount, 2, 'usage snapshot should count recorded turns')
+  assertEqual(
+    record.meta.usage?.cumulativeTotalTokens,
+    14,
+    'usage snapshot should accumulate total tokens across turns',
+  )
+  assertEqual(
+    record.meta.usage?.cumulativePromptTokens,
+    5,
+    'usage snapshot should accumulate prompt tokens across turns',
+  )
+}
+
 async function testRuntimeHostTransientContextUsesInjectedRecord(): Promise<void> {
   const conversationId = 'transient-context-contract'
   const calls: string[] = []
@@ -1461,6 +1490,7 @@ function testContextAssemblerSectionsContract(): void {
     dynamicContext: [{ role: 'system', content: 'dynamic runtime context' }],
     messages: baseMessages,
     modelInfo: { model: 'contract', contextLength: 100_000 },
+    providerId: 'anthropic',
   })
 
   assertEqual(
@@ -1483,6 +1513,10 @@ function testContextAssemblerSectionsContract(): void {
     'context assembler should expose deterministic section hashes',
   )
   assert(
+    assembled.sections.every((section) => section.metadata.estimatedTokens > 0),
+    'context assembler should expose estimated tokens for each section',
+  )
+  assert(
     assembled.sections
       .filter((section) => section.metadata.cachePolicy !== 'no_cache')
       .every((section) => section.metadata.cacheKey?.includes(`:${section.kind}:`)),
@@ -1495,6 +1529,26 @@ function testContextAssemblerSectionsContract(): void {
   )
   assertEqual(assembled.plan.version, 1, 'context assembler should expose a versioned context plan')
   assertEqual(assembled.plan.budget.pressure, 'ok', 'context plan should expose budget pressure')
+  assertEqual(
+    assembled.plan.ledger.estimator.providerId,
+    'anthropic',
+    'context ledger should preserve provider-aware token estimator metadata',
+  )
+  assertEqual(
+    assembled.plan.ledger.totalEstimatedTokens,
+    assembled.plan.totalEstimatedTokens,
+    'context ledger should mirror the plan estimated token total',
+  )
+  assertEqual(
+    assembled.plan.budget.totalEstimatedTokens,
+    assembled.plan.totalEstimatedTokens,
+    'context budget should expose the same estimated token total as the plan',
+  )
+  assertEqual(
+    assembled.plan.compaction.microcompact.clearedToolResultCount,
+    0,
+    'small context should not microcompact when no tool results are present',
+  )
   assertEqual(
     assembled.plan.compaction.shouldAutoCompact,
     false,
@@ -1545,6 +1599,78 @@ function testContextAssemblerSectionsContract(): void {
     'context assembler class should flatten assembled sections',
   )
 
+  const toolHistory: PersistedMessage[] = Array.from({ length: 8 }, (_, index) => ({
+    schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+    id: `microcompact-tool-${index}`,
+    role: 'assistant' as const,
+    blocks: [
+      {
+        type: 'tool_call' as const,
+        id: `microcompact-call-${index}`,
+        name: 'read',
+        arguments: `{"path":"packages/agent/src/context-${index}.ts"}`,
+        status: 'done' as const,
+        result: `tool output ${index} ${'x'.repeat(500)}`,
+      },
+    ],
+    status: 'done' as const,
+  }))
+  const microcompacted = runtimeSdk.assembleAgentContext({
+    messages: [
+      ...toolHistory,
+      {
+        schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+        id: 'microcompact-current',
+        role: 'user' as const,
+        blocks: [{ type: 'text' as const, content: 'current request after tool history' }],
+        status: 'done' as const,
+      },
+    ],
+    modelInfo: { model: 'contract', contextLength: 100_000 },
+  })
+  assert(
+    microcompacted.plan.compaction.microcompact.clearedToolResultCount > 0,
+    'context assembler should microcompact older tool results before selection',
+  )
+  assert(
+    microcompacted.messages.some(
+      (message) => message.role === 'tool' && message.content.includes('microcompacted'),
+    ),
+    'microcompacted context should replace old tool result content with a stable placeholder',
+  )
+  assert(
+    microcompacted.messages.some(
+      (message) => message.role === 'tool' && message.content.includes('tool output 7'),
+    ),
+    'microcompacted context should keep recent tool result content intact',
+  )
+
+  const largeToolResultMessage: PersistedMessage = {
+    schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+    id: 'context-large-tool-result',
+    role: 'assistant' as const,
+    blocks: [
+      {
+        type: 'text' as const,
+        content: 'implemented packages/agent/src/context.ts and persisted the large tool result',
+      },
+      {
+        type: 'tool_call' as const,
+        id: 'large-tool-call',
+        name: 'read_log',
+        arguments: '{"path":"packages/agent/src/context.ts"}',
+        status: 'done' as const,
+        resultRef: {
+          kind: 'file' as const,
+          path: '/tmp/aila/tool-results/conversation/large-tool-call.txt',
+          relativePath: 'tool-results/conversation/large-tool-call.txt',
+          sizeChars: 90_000,
+          preview: 'large persisted output preview',
+        },
+      },
+    ],
+    status: 'done' as const,
+  }
   const largeHistory: PersistedMessage[] = Array.from({ length: 30 }, (_, index) => ({
     schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
     id: `context-large-user-${index}`,
@@ -1559,6 +1685,7 @@ function testContextAssemblerSectionsContract(): void {
   }))
   const compacted = runtimeSdk.assembleAgentContext({
     messages: [
+      largeToolResultMessage,
       ...largeHistory,
       {
         schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
@@ -1604,8 +1731,21 @@ function testContextAssemblerSectionsContract(): void {
 
   const checkpoint = compacted.plan.compaction.recommendedCheckpoint
   assert(checkpoint, 'compacted context should include a recommended checkpoint')
+  assert(
+    checkpoint.artifact.toolResults.some(
+      (result) =>
+        result.toolCallId === 'large-tool-call' &&
+        result.relativePath === 'tool-results/conversation/large-tool-call.txt',
+    ),
+    'recommended checkpoint artifact should retain persisted tool result references',
+  )
+  assert(
+    checkpoint.summary.includes('Persisted tool outputs available for rehydration'),
+    'recommended checkpoint summary should render persisted tool output rehydration hints',
+  )
   const withCheckpoint = runtimeSdk.assembleAgentContext({
     messages: [
+      largeToolResultMessage,
       ...largeHistory,
       {
         schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
@@ -1625,6 +1765,7 @@ function testContextAssemblerSectionsContract(): void {
       omittedRoundCount: checkpoint.omittedRoundCount,
       summary: checkpoint.summary,
       charCost: checkpoint.charCost,
+      artifact: checkpoint.artifact,
     },
   })
   assertEqual(
@@ -1639,6 +1780,14 @@ function testContextAssemblerSectionsContract(): void {
         message.content.includes('Earlier conversation context checkpoint:'),
     ),
     'active checkpoint summary should be included in the assembled prompt',
+  )
+  assert(
+    withCheckpoint.messages.some(
+      (message) =>
+        message.role === 'system' &&
+        message.content.includes('tool-results/conversation/large-tool-call.txt'),
+    ),
+    'active checkpoint artifact should rehydrate persisted tool result references into the prompt',
   )
 }
 
@@ -1657,14 +1806,39 @@ async function testRuntimePersistsAutoContextCheckpoint(): Promise<void> {
   }
 
   let streamedPlan: AgentContextPlan | undefined
+  let semanticSourceMessageCount = 0
   const runtime = new AgentRuntime({
     store,
     getModelInfo: () => ({ model: 'small-context-contract', contextLength: 4_000 }),
+    countContextTokens: async (input) => {
+      assert(
+        input.contextPlan.compaction.recommendedCheckpoint,
+        'token preflight should receive the assembled context plan before streaming',
+      )
+      return {
+        inputTokens: 1_234,
+        method: 'contract_counter',
+        providerId: input.selection.providerId,
+        model: input.selection.modelId,
+      }
+    },
+    generateContextCompactArtifact: async (input) => {
+      semanticSourceMessageCount = input.sourceMessages.length
+      return {
+        artifact: {
+          ...input.recommendedCheckpoint.artifact,
+          summary: 'semantic compact artifact summary',
+          decisions: ['semantic compact retained the important implementation decision'],
+        },
+        summary: 'semantic compact rendered summary',
+      }
+    },
     streamChat: async (req, handlers) => {
       streamedPlan = req.contextPlan
       await handlers.onDone({
         conversationId: req.conversationId,
         messageId: req.assistantMessageId,
+        usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
         message: {
           schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
           id: req.assistantMessageId,
@@ -1692,6 +1866,52 @@ async function testRuntimePersistsAutoContextCheckpoint(): Promise<void> {
     record.meta.context.checkpoint.id,
     streamedPlan?.compaction.recommendedCheckpoint?.id,
     'persisted context checkpoint should match the streamed context plan recommendation',
+  )
+  assert(
+    record.meta.context.checkpoint.artifact,
+    'runtime should persist the recommended context checkpoint artifact',
+  )
+  assertEqual(
+    record.meta.context.checkpoint.summary,
+    'semantic compact rendered summary',
+    'runtime should allow a semantic compact hook to replace the persisted checkpoint summary',
+  )
+  assert(
+    record.meta.context.checkpoint.artifact.decisions.includes(
+      'semantic compact retained the important implementation decision',
+    ),
+    'runtime should persist semantic compact artifact fields returned by the host',
+  )
+  assert(
+    semanticSourceMessageCount > 0,
+    'semantic compact hook should receive the source messages covered by the checkpoint',
+  )
+  assertEqual(
+    streamedPlan?.ledger.estimator.providerId,
+    'openrouter',
+    'runtime should pass provider id into the context token ledger',
+  )
+  assertEqual(
+    streamedPlan?.ledger.preflight?.inputTokens,
+    1_234,
+    'runtime should attach provider token preflight results to the streamed context plan',
+  )
+  const turnLedger = record.meta.context.turns?.at(-1)
+  assert(turnLedger, 'runtime should persist a per-turn context ledger entry')
+  assertEqual(
+    turnLedger.preflight?.inputTokens,
+    1_234,
+    'context turn ledger should persist provider preflight token counts',
+  )
+  assertEqual(
+    turnLedger.usage?.totalTokens,
+    15,
+    'context turn ledger should persist actual model usage for the turn',
+  )
+  assertEqual(
+    turnLedger.compaction.recommendedCheckpointId,
+    streamedPlan?.compaction.recommendedCheckpoint?.id,
+    'context turn ledger should link the turn to the recommended checkpoint',
   )
 }
 
@@ -6528,6 +6748,165 @@ async function testNodeWebSearchRegistryFallbacksAndMerge(): Promise<void> {
   )
 }
 
+async function testNodeContextTokenCounterContract(): Promise<void> {
+  const anthropicRequests: { url: string; body: Record<string, unknown> }[] = []
+  const anthropicCounter = runtimePackageNodeSdk.createNodeContextTokenCounter({
+    providers: {
+      anthropic: { api: 'anthropic-messages', apiKey: 'anthropic-key' },
+    },
+    fetch: async (url, init) => {
+      anthropicRequests.push({
+        url: String(url),
+        body: JSON.parse(String(init?.body)) as Record<string, unknown>,
+      })
+      return new Response(JSON.stringify({ input_tokens: 321 }), {
+        headers: { 'Content-Type': 'application/json' },
+      })
+    },
+  })
+  const anthropicCount = await anthropicCounter({
+    conversationId: 'ctx-counter',
+    assistantMessageId: 'asst-counter',
+    selection: { providerId: 'anthropic', modelId: 'claude-haiku-4-5' },
+    messages: [
+      { role: 'system', content: 'system instructions' },
+      { role: 'user', content: 'count this' },
+    ],
+    contextPlan: runtimeSdk.assembleAgentContext({
+      messages: [],
+      modelInfo: { model: 'counter', contextLength: 100_000 },
+    }).plan,
+  })
+  assertEqual(
+    anthropicCount.method,
+    'anthropic_count_tokens',
+    'node context token counter should use Anthropic count_tokens when available',
+  )
+  assertEqual(anthropicCount.inputTokens, 321, 'Anthropic token counter should return input_tokens')
+  assert(
+    anthropicRequests[0]?.url.includes('/messages/count_tokens') &&
+      anthropicRequests[0]?.body.model === 'claude-haiku-4-5',
+    'Anthropic token counter should call the provider count endpoint',
+  )
+
+  const googleCounter = runtimePackageNodeSdk.createNodeContextTokenCounter({
+    providers: {
+      google: { api: 'google-generative-ai', apiKey: 'google-key' },
+    },
+    fetch: async () =>
+      new Response(JSON.stringify({ totalTokens: 222 }), {
+        headers: { 'Content-Type': 'application/json' },
+      }),
+  })
+  const googleCount = await googleCounter({
+    conversationId: 'ctx-counter',
+    assistantMessageId: 'asst-counter',
+    selection: { providerId: 'google', modelId: 'gemini-2.5-pro' },
+    messages: [{ role: 'user', content: 'count this' }],
+    contextPlan: runtimeSdk.assembleAgentContext({
+      messages: [],
+      modelInfo: { model: 'counter', contextLength: 100_000 },
+    }).plan,
+  })
+  assertEqual(
+    googleCount.method,
+    'google_count_tokens',
+    'node context token counter should use Google countTokens when available',
+  )
+  assertEqual(googleCount.inputTokens, 222, 'Google token counter should return totalTokens')
+
+  const fallbackCounter = runtimePackageNodeSdk.createNodeContextTokenCounter({
+    providers: {
+      openai: { api: 'openai-chat-completions' },
+    },
+  })
+  const fallbackCount = await fallbackCounter({
+    conversationId: 'ctx-counter',
+    assistantMessageId: 'asst-counter',
+    selection: { providerId: 'openai', modelId: 'gpt-5.4-mini' },
+    messages: [{ role: 'user', content: 'fallback count' }],
+    contextPlan: runtimeSdk.assembleAgentContext({
+      messages: [],
+      modelInfo: { model: 'counter', contextLength: 100_000 },
+    }).plan,
+  })
+  assertEqual(
+    fallbackCount.method,
+    'provider_char_ratio_fallback',
+    'node context token counter should fallback when exact provider counting is unavailable',
+  )
+  assert(
+    fallbackCount.inputTokens > 0,
+    'fallback token counter should still return a token estimate',
+  )
+}
+
+async function testNodeSemanticCompactGeneratorContract(): Promise<void> {
+  let compactRequestMessages: ChatMessage[] = []
+  const generator = runtimePackageNodeSdk.createNodeSemanticCompactGenerator({
+    providers: {
+      openai: { api: 'openai-chat-completions', apiKey: 'compact-key' },
+    },
+    modelStreamClient: {
+      async *stream(input) {
+        compactRequestMessages = input.messages
+        yield {
+          type: 'text-delta',
+          text: JSON.stringify({
+            summary: 'semantic summary from model',
+            userRequests: ['continue context work'],
+            decisions: ['use a model pass for semantic compact'],
+            files: [{ path: 'packages/agent/src/context.ts', mentions: 1 }],
+            toolActivity: [{ name: 'read', count: 2 }],
+            toolResults: [],
+            nextSteps: ['wire default host'],
+          }),
+        }
+        yield { type: 'finish-step', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 } }
+      },
+    },
+  })
+  const recommended = runtimeSdk.assembleAgentContext({
+    messages: Array.from({ length: 24 }, (_, index) => ({
+      schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+      id: `compact-source-user-${index}`,
+      role: 'user' as const,
+      blocks: [{ type: 'text' as const, content: `continue context work ${'x'.repeat(900)}` }],
+      status: 'done' as const,
+    })),
+    modelInfo: { model: 'tiny', contextLength: 4_000 },
+  }).plan.compaction.recommendedCheckpoint
+  assert(recommended, 'contract should produce a checkpoint recommendation')
+  const result = await generator({
+    conversationId: 'compact-conversation',
+    selection: { providerId: 'openai', modelId: 'gpt-5.4-mini' },
+    recommendedCheckpoint: recommended,
+    sourceMessages: [
+      {
+        schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+        id: 'compact-source-user',
+        role: 'user',
+        blocks: [{ type: 'text', content: 'continue context work' }],
+        status: 'done',
+      },
+    ],
+  })
+  assertEqual(
+    result?.artifact.summary,
+    'semantic summary from model',
+    'node semantic compact generator should parse model JSON into an artifact',
+  )
+  assert(
+    compactRequestMessages.some(
+      (message) =>
+        message.role === 'user' &&
+        typeof message.content === 'string' &&
+        message.content.includes('Existing heuristic artifact'),
+    ),
+    'node semantic compact generator should provide heuristic artifact context to the model pass',
+  )
+}
+
 async function testNativeOpenAiChatModelStreamContract(): Promise<void> {
   const requests: unknown[] = []
   const streamBodies = [
@@ -7543,9 +7922,16 @@ async function testRuntimeSdkDoesNotExportDocsContract(): Promise<void> {
     'AgentContextPlanSection',
     'AgentContextBudgetPlan',
     'AgentContextCompactionPlan',
+    'AgentContextMicrocompactPlan',
     'AgentContextRecommendedCheckpoint',
+    'AgentContextTokenLedger',
+    'AgentContextTokenLedgerEntry',
+    'AgentContextTokenPreflight',
     'ContextBudgetManagerInput',
     'ContextBudgetSnapshot',
+    'ContextTokenEstimate',
+    'ContextTokenEstimateMethod',
+    'ContextTokenEstimatorSnapshot',
     'AgentContextSectionCachePolicy',
     'AgentContextSectionMetadata',
     'AgentContextSectionSource',
@@ -7560,9 +7946,20 @@ async function testRuntimeSdkDoesNotExportDocsContract(): Promise<void> {
     'ConversationRecord',
     'ConversationSummary',
     'ConversationUsage',
+    'ConversationCompactArtifact',
+    'ConversationCompactFileArtifact',
+    'ConversationCompactToolActivity',
+    'ConversationCompactToolResultArtifact',
     'ConversationContextCheckpoint',
+    'ConversationContextLedgerSection',
     'ConversationContextState',
+    'ConversationContextTokenPreflight',
+    'ConversationContextTurnLedgerEntry',
     'PersistedToolResultRef',
+    'RuntimeContextCompactArtifactInput',
+    'RuntimeContextCompactArtifactResult',
+    'RuntimeContextTokenCountInput',
+    'RuntimeContextTokenCountResult',
     'AgentEvent',
     'AgentRuntimeEvent',
   ]) {
@@ -7593,6 +7990,8 @@ async function testRuntimeSdkDoesNotExportDocsContract(): Promise<void> {
     'createDefaultNodeRuntimeHost',
     'createNodeAgentRuntime',
     'createProviderStreamChat',
+    'createNodeContextTokenCounter',
+    'createNodeSemanticCompactGenerator',
     'createModelRegistry',
     'createProtocolRegistry',
     'createFileRuntimeStore',
@@ -7701,6 +8100,15 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
       hostSource.includes('saveImage'),
     'default runtime host should compose node image generation/storage dependencies from @aila/agent/node',
   )
+  const nodeRuntimeHostSource = await readFile(
+    join(process.cwd(), 'packages/agent/src/node/runtime-host.ts'),
+    'utf-8',
+  )
+  assert(
+    nodeRuntimeHostSource.includes('countContextTokens') &&
+      nodeRuntimeHostSource.includes('generateContextCompactArtifact'),
+    'default node runtime host should expose provider token preflight and semantic compact generation',
+  )
   assert(
     hostSource.includes("from './web-search'") && hostSource.includes('webSearch'),
     'default runtime host should own web search provider wiring',
@@ -7743,8 +8151,9 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
   assert(
     runtimeStoreSource.includes('saveMessage: upsertMessage') &&
       runtimeStoreSource.includes('recordUsage: setConversationUsage') &&
-      runtimeStoreSource.includes('saveContextCheckpoint: setConversationContextCheckpoint'),
-    'persisted runtime store adapter should map message, usage, and context checkpoint helpers into runtime names',
+      runtimeStoreSource.includes('saveContextCheckpoint: setConversationContextCheckpoint') &&
+      runtimeStoreSource.includes('recordContextTurnLedger: recordConversationContextTurnLedger'),
+    'persisted runtime store adapter should map message, usage, context checkpoint, and context ledger helpers into runtime names',
   )
   const runtimeSdkSource = await readFile(
     join(process.cwd(), 'packages/agent/src/index.ts'),
@@ -8866,6 +9275,7 @@ async function main(): Promise<void> {
   await testRuntimeHostStaticExtensionContract()
   await testRuntimeDynamicExtensionLoaderSnapshots()
   await testRuntimeInjectableStoreContract()
+  await testConversationUsageAccumulatorContract()
   await testRuntimeHostTransientContextUsesInjectedRecord()
   await testRuntimeHostStableInstructionsUsesInjectedRecord()
   testContextAssemblerSectionsContract()
@@ -8924,6 +9334,8 @@ async function main(): Promise<void> {
   await testWebSearchToolUsesInjectedHostDependency()
   await testWebSearchToolRequiresHostDependency()
   await testNodeWebSearchRegistryFallbacksAndMerge()
+  await testNodeContextTokenCounterContract()
+  await testNodeSemanticCompactGeneratorContract()
   await testNativeOpenAiChatModelStreamContract()
   await testNativeAnthropicModelStreamContract()
   await testNativeGoogleModelStreamContract()

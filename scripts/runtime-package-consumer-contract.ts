@@ -16,8 +16,12 @@ export type AgentPackageConsumerContract = {
   activityEvent: agent.AgentEvent
   api: agent.AgentRuntimeApi
   budgetPlan: agent.AgentContextBudgetPlan
+  compactArtifact: agent.ConversationCompactArtifact
   conversation: agent.ConversationRecord
   contextCheckpoint: agent.ConversationContextCheckpoint
+  contextLedgerEntry: agent.ConversationContextTurnLedgerEntry
+  contextLedger: agent.AgentContextTokenLedger
+  contextPreflight: agent.AgentContextTokenPreflight
   event: agent.AgentRuntimeEvent
   host: agent.AgentRuntimeHost
   model: agent.ModelSelection
@@ -27,6 +31,7 @@ export type AgentPackageConsumerContract = {
   settings: agent.Settings
   store: agent.AgentRuntimeStore
   stream: agent.RuntimeStreamChat
+  tokenCountInput: agent.RuntimeContextTokenCountInput
   toolPack: agent.ToolPack
 }
 
@@ -35,6 +40,7 @@ export const agentPackageValueContract = {
   ToolApprovalStore: agent.ToolApprovalStore,
   createInMemoryRuntimeStore: agent.createInMemoryRuntimeStore,
   ContextBudgetManager: agent.ContextBudgetManager,
+  ContextTokenEstimator: agent.ContextTokenEstimator,
   createRuntimeEvent: agent.createRuntimeEvent,
   createToolPolicy: agent.createToolPolicy,
   createSkillToolPack: agent.createSkillToolPack,
@@ -47,6 +53,8 @@ export const agentPackageValueContract = {
 export type AgentNodePackageConsumerContract = {
   host: agent.AgentRuntimeHost
   stream: agent.RuntimeStreamChat
+  tokenCounter: ReturnType<typeof agentNode.createNodeContextTokenCounter>
+  semanticCompactGenerator: ReturnType<typeof agentNode.createNodeSemanticCompactGenerator>
   toolResultStore: agentNode.ToolResultStore
 }
 
@@ -54,6 +62,8 @@ export const agentNodePackageValueContract = {
   createDefaultNodeRuntimeHost: agentNode.createDefaultNodeRuntimeHost,
   createNodeAgentRuntime: agentNode.createNodeAgentRuntime,
   createProviderStreamChat: agentNode.createProviderStreamChat,
+  createNodeContextTokenCounter: agentNode.createNodeContextTokenCounter,
+  createNodeSemanticCompactGenerator: agentNode.createNodeSemanticCompactGenerator,
   createNodeToolResultStore: agentNode.createNodeToolResultStore,
   createModelRegistry: agentNode.createModelRegistry,
   createProtocolRegistry: agentNode.createProtocolRegistry,

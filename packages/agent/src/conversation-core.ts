@@ -5,10 +5,15 @@ export const AILA_CONVERSATION_META_SCHEMA_VERSION = 1
 export const AILA_PERSISTED_MESSAGE_SCHEMA_VERSION = 1
 export const AILA_AGENT_EVENT_SCHEMA_VERSION = 1
 export const AILA_CONTEXT_CHECKPOINT_SCHEMA_VERSION = 1
+export const AILA_CONTEXT_ARTIFACT_SCHEMA_VERSION = 1
+export const AILA_CONTEXT_TURN_LEDGER_SCHEMA_VERSION = 1
 
 export const DEFAULT_CONVERSATION_TITLE = '新对话'
 const CONVERSATION_TITLE_MAX = 40
 const CONTEXT_CHECKPOINT_SUMMARY_MAX = 32_000
+const CONTEXT_ARTIFACT_ITEM_MAX = 20
+const CONTEXT_ARTIFACT_TEXT_MAX = 2_000
+const CONTEXT_TURN_LEDGER_MAX = 50
 
 export interface PersistedTextBlock {
   type: 'text' | 'reasoning'
@@ -31,6 +36,36 @@ export interface PersistedToolResultRef {
   relativePath: string
   sizeChars: number
   preview: string
+}
+
+export interface ConversationCompactFileArtifact {
+  path: string
+  mentions: number
+}
+
+export interface ConversationCompactToolActivity {
+  name: string
+  count: number
+}
+
+export interface ConversationCompactToolResultArtifact {
+  toolCallId: string
+  toolName: string
+  sizeChars: number
+  preview: string
+  path?: string
+  relativePath?: string
+}
+
+export interface ConversationCompactArtifact {
+  schemaVersion: typeof AILA_CONTEXT_ARTIFACT_SCHEMA_VERSION
+  summary: string
+  userRequests: string[]
+  decisions: string[]
+  files: ConversationCompactFileArtifact[]
+  toolActivity: ConversationCompactToolActivity[]
+  toolResults: ConversationCompactToolResultArtifact[]
+  nextSteps: string[]
 }
 
 export interface PersistedImageBlock {
@@ -68,6 +103,10 @@ export interface ConversationUsage {
   completionTokens: number
   totalTokens: number
   updatedAt: number
+  turnCount?: number
+  cumulativePromptTokens?: number
+  cumulativeCompletionTokens?: number
+  cumulativeTotalTokens?: number
 }
 
 export interface ConversationContextCheckpoint {
@@ -79,10 +118,52 @@ export interface ConversationContextCheckpoint {
   omittedRoundCount: number
   summary: string
   charCost: number
+  artifact?: ConversationCompactArtifact
+}
+
+export interface ConversationContextLedgerSection {
+  kind: string
+  messageCount: number
+  charCost: number
+  estimatedTokens: number
+}
+
+export interface ConversationContextTokenPreflight {
+  inputTokens: number
+  method: string
+  providerId?: ProviderId | 'unknown'
+  model?: string
+  countedAt: number
+}
+
+export interface ConversationContextTurnLedgerEntry {
+  schemaVersion: typeof AILA_CONTEXT_TURN_LEDGER_SCHEMA_VERSION
+  messageId: string
+  createdAt: number
+  providerId: ProviderId
+  modelId: string
+  estimatedInputTokens: number
+  inputBudgetTokens: number
+  remainingInputTokens: number
+  sectionCount: number
+  sections: ConversationContextLedgerSection[]
+  preflight?: ConversationContextTokenPreflight
+  usage?: {
+    promptTokens: number
+    completionTokens: number
+    totalTokens: number
+  }
+  compaction: {
+    activeCheckpointId: string | null
+    recommendedCheckpointId: string | null
+    omittedRoundCount: number
+    shouldAutoCompact: boolean
+  }
 }
 
 export interface ConversationContextState {
   checkpoint?: ConversationContextCheckpoint
+  turns?: ConversationContextTurnLedgerEntry[]
 }
 
 export type ConversationActivityState =
@@ -231,6 +312,246 @@ export function normalizeConversationWorkspaceRef(
   }
 }
 
+function normalizeTextList(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return value
+    .filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+    .map((item) =>
+      item.trim().length > CONTEXT_ARTIFACT_TEXT_MAX
+        ? item.trim().slice(0, CONTEXT_ARTIFACT_TEXT_MAX)
+        : item.trim(),
+    )
+    .slice(0, CONTEXT_ARTIFACT_ITEM_MAX)
+}
+
+function normalizeConversationCompactFileArtifact(
+  value: unknown,
+): ConversationCompactFileArtifact | null {
+  if (!value || typeof value !== 'object') return null
+  const record = value as Partial<ConversationCompactFileArtifact>
+  if (typeof record.path !== 'string' || record.path.trim().length === 0) return null
+  return {
+    path: record.path.trim(),
+    mentions: typeof record.mentions === 'number' && record.mentions > 0 ? record.mentions : 1,
+  }
+}
+
+function normalizeConversationCompactToolActivity(
+  value: unknown,
+): ConversationCompactToolActivity | null {
+  if (!value || typeof value !== 'object') return null
+  const record = value as Partial<ConversationCompactToolActivity>
+  if (typeof record.name !== 'string' || record.name.trim().length === 0) return null
+  return {
+    name: record.name.trim(),
+    count: typeof record.count === 'number' && record.count > 0 ? record.count : 1,
+  }
+}
+
+function normalizeConversationCompactToolResultArtifact(
+  value: unknown,
+): ConversationCompactToolResultArtifact | null {
+  if (!value || typeof value !== 'object') return null
+  const record = value as Partial<ConversationCompactToolResultArtifact>
+  if (typeof record.toolCallId !== 'string' || record.toolCallId.trim().length === 0) {
+    return null
+  }
+  if (typeof record.toolName !== 'string' || record.toolName.trim().length === 0) return null
+  const preview = typeof record.preview === 'string' ? record.preview : ''
+  return {
+    toolCallId: record.toolCallId.trim(),
+    toolName: record.toolName.trim(),
+    sizeChars: typeof record.sizeChars === 'number' && record.sizeChars >= 0 ? record.sizeChars : 0,
+    preview:
+      preview.length > CONTEXT_ARTIFACT_TEXT_MAX
+        ? preview.slice(0, CONTEXT_ARTIFACT_TEXT_MAX)
+        : preview,
+    ...(typeof record.path === 'string' && record.path.trim().length > 0
+      ? { path: record.path.trim() }
+      : {}),
+    ...(typeof record.relativePath === 'string' && record.relativePath.trim().length > 0
+      ? { relativePath: record.relativePath.trim() }
+      : {}),
+  }
+}
+
+export function normalizeConversationCompactArtifact(
+  value: unknown,
+): ConversationCompactArtifact | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const record = value as Partial<ConversationCompactArtifact>
+  if (typeof record.summary !== 'string' || record.summary.trim().length === 0) return undefined
+  return {
+    schemaVersion: AILA_CONTEXT_ARTIFACT_SCHEMA_VERSION,
+    summary:
+      record.summary.length > CONTEXT_CHECKPOINT_SUMMARY_MAX
+        ? record.summary.slice(0, CONTEXT_CHECKPOINT_SUMMARY_MAX)
+        : record.summary,
+    userRequests: normalizeTextList(record.userRequests),
+    decisions: normalizeTextList(record.decisions),
+    files: Array.isArray(record.files)
+      ? record.files
+          .map(normalizeConversationCompactFileArtifact)
+          .filter((item): item is ConversationCompactFileArtifact => item !== null)
+          .slice(0, CONTEXT_ARTIFACT_ITEM_MAX)
+      : [],
+    toolActivity: Array.isArray(record.toolActivity)
+      ? record.toolActivity
+          .map(normalizeConversationCompactToolActivity)
+          .filter((item): item is ConversationCompactToolActivity => item !== null)
+          .slice(0, CONTEXT_ARTIFACT_ITEM_MAX)
+      : [],
+    toolResults: Array.isArray(record.toolResults)
+      ? record.toolResults
+          .map(normalizeConversationCompactToolResultArtifact)
+          .filter((item): item is ConversationCompactToolResultArtifact => item !== null)
+          .slice(0, CONTEXT_ARTIFACT_ITEM_MAX)
+      : [],
+    nextSteps: normalizeTextList(record.nextSteps),
+  }
+}
+
+export function createConversationUsageSnapshot(
+  current: ConversationUsage | undefined,
+  usage: { promptTokens: number; completionTokens: number; totalTokens: number },
+  updatedAt: number,
+): ConversationUsage {
+  const previousTurnCount =
+    typeof current?.turnCount === 'number' && current.turnCount >= 0
+      ? current.turnCount
+      : current
+        ? 1
+        : 0
+  const previousPrompt = current?.cumulativePromptTokens ?? current?.promptTokens ?? 0
+  const previousCompletion = current?.cumulativeCompletionTokens ?? current?.completionTokens ?? 0
+  const previousTotal = current?.cumulativeTotalTokens ?? current?.totalTokens ?? 0
+  return {
+    ...usage,
+    updatedAt,
+    turnCount: previousTurnCount + 1,
+    cumulativePromptTokens: previousPrompt + usage.promptTokens,
+    cumulativeCompletionTokens: previousCompletion + usage.completionTokens,
+    cumulativeTotalTokens: previousTotal + usage.totalTokens,
+  }
+}
+
+function normalizeConversationContextLedgerSection(
+  value: unknown,
+): ConversationContextLedgerSection | null {
+  if (!value || typeof value !== 'object') return null
+  const record = value as Partial<ConversationContextLedgerSection>
+  if (typeof record.kind !== 'string' || record.kind.trim().length === 0) return null
+  return {
+    kind: record.kind.trim(),
+    messageCount:
+      typeof record.messageCount === 'number' && record.messageCount >= 0 ? record.messageCount : 0,
+    charCost: typeof record.charCost === 'number' && record.charCost >= 0 ? record.charCost : 0,
+    estimatedTokens:
+      typeof record.estimatedTokens === 'number' && record.estimatedTokens >= 0
+        ? record.estimatedTokens
+        : 0,
+  }
+}
+
+function normalizeConversationContextTokenPreflight(
+  value: unknown,
+): ConversationContextTokenPreflight | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const record = value as Partial<ConversationContextTokenPreflight>
+  if (typeof record.inputTokens !== 'number' || record.inputTokens < 0) return undefined
+  return {
+    inputTokens: record.inputTokens,
+    method:
+      typeof record.method === 'string' && record.method.trim().length > 0
+        ? record.method.trim()
+        : 'unknown',
+    ...(typeof record.providerId === 'string' && record.providerId.trim().length > 0
+      ? { providerId: record.providerId.trim() as ProviderId | 'unknown' }
+      : {}),
+    ...(typeof record.model === 'string' && record.model.trim().length > 0
+      ? { model: record.model.trim() }
+      : {}),
+    countedAt: typeof record.countedAt === 'number' ? record.countedAt : Date.now(),
+  }
+}
+
+function normalizeConversationContextTurnLedgerEntry(
+  value: unknown,
+): ConversationContextTurnLedgerEntry | null {
+  if (!value || typeof value !== 'object') return null
+  const record = value as Partial<ConversationContextTurnLedgerEntry>
+  if (typeof record.messageId !== 'string' || record.messageId.trim().length === 0) return null
+  if (typeof record.providerId !== 'string' || record.providerId.trim().length === 0) return null
+  if (typeof record.modelId !== 'string' || record.modelId.trim().length === 0) return null
+  const usage =
+    record.usage &&
+    typeof record.usage.promptTokens === 'number' &&
+    typeof record.usage.completionTokens === 'number' &&
+    typeof record.usage.totalTokens === 'number'
+      ? {
+          promptTokens: record.usage.promptTokens,
+          completionTokens: record.usage.completionTokens,
+          totalTokens: record.usage.totalTokens,
+        }
+      : undefined
+  return {
+    schemaVersion: AILA_CONTEXT_TURN_LEDGER_SCHEMA_VERSION,
+    messageId: record.messageId.trim(),
+    createdAt: typeof record.createdAt === 'number' ? record.createdAt : Date.now(),
+    providerId: record.providerId.trim() as ProviderId,
+    modelId: record.modelId.trim(),
+    estimatedInputTokens:
+      typeof record.estimatedInputTokens === 'number' && record.estimatedInputTokens >= 0
+        ? record.estimatedInputTokens
+        : 0,
+    inputBudgetTokens:
+      typeof record.inputBudgetTokens === 'number' && record.inputBudgetTokens >= 0
+        ? record.inputBudgetTokens
+        : 0,
+    remainingInputTokens:
+      typeof record.remainingInputTokens === 'number' ? record.remainingInputTokens : 0,
+    sectionCount:
+      typeof record.sectionCount === 'number' && record.sectionCount >= 0 ? record.sectionCount : 0,
+    sections: Array.isArray(record.sections)
+      ? record.sections
+          .map(normalizeConversationContextLedgerSection)
+          .filter((section): section is ConversationContextLedgerSection => section !== null)
+          .slice(0, CONTEXT_ARTIFACT_ITEM_MAX)
+      : [],
+    ...(normalizeConversationContextTokenPreflight(record.preflight)
+      ? { preflight: normalizeConversationContextTokenPreflight(record.preflight) }
+      : {}),
+    ...(usage ? { usage } : {}),
+    compaction: {
+      activeCheckpointId:
+        typeof record.compaction?.activeCheckpointId === 'string'
+          ? record.compaction.activeCheckpointId
+          : null,
+      recommendedCheckpointId:
+        typeof record.compaction?.recommendedCheckpointId === 'string'
+          ? record.compaction.recommendedCheckpointId
+          : null,
+      omittedRoundCount:
+        typeof record.compaction?.omittedRoundCount === 'number' &&
+        record.compaction.omittedRoundCount >= 0
+          ? record.compaction.omittedRoundCount
+          : 0,
+      shouldAutoCompact: record.compaction?.shouldAutoCompact === true,
+    },
+  }
+}
+
+export function appendConversationContextTurnLedgerEntry(
+  current: ConversationContextState | undefined,
+  entry: ConversationContextTurnLedgerEntry,
+): ConversationContextState {
+  const turns = [...(current?.turns ?? []), structuredClone(entry)]
+  return {
+    ...(current ?? {}),
+    turns: turns.slice(-CONTEXT_TURN_LEDGER_MAX),
+  }
+}
+
 export function normalizeConversationContextCheckpoint(
   value: unknown,
 ): ConversationContextCheckpoint | undefined {
@@ -245,6 +566,7 @@ export function normalizeConversationContextCheckpoint(
   }
   if (!Array.isArray(record.sourceMessageIds)) return undefined
   if (typeof record.summary !== 'string' || record.summary.trim().length === 0) return undefined
+  const artifact = normalizeConversationCompactArtifact(record.artifact)
   return {
     schemaVersion: AILA_CONTEXT_CHECKPOINT_SCHEMA_VERSION,
     id: record.id.trim(),
@@ -262,6 +584,7 @@ export function normalizeConversationContextCheckpoint(
         ? record.summary.slice(0, CONTEXT_CHECKPOINT_SUMMARY_MAX)
         : record.summary,
     charCost: typeof record.charCost === 'number' && record.charCost >= 0 ? record.charCost : 0,
+    ...(artifact ? { artifact } : {}),
   }
 }
 
@@ -272,7 +595,15 @@ export function normalizeConversationContextState(
   const checkpoint = normalizeConversationContextCheckpoint(
     (value as Partial<ConversationContextState>).checkpoint,
   )
-  return checkpoint ? { checkpoint } : undefined
+  const turns = Array.isArray((value as Partial<ConversationContextState>).turns)
+    ? (value as Partial<ConversationContextState>).turns
+        ?.map(normalizeConversationContextTurnLedgerEntry)
+        .filter((entry): entry is ConversationContextTurnLedgerEntry => entry !== null)
+        .slice(-CONTEXT_TURN_LEDGER_MAX)
+    : undefined
+  return checkpoint || (turns && turns.length > 0)
+    ? { ...(checkpoint ? { checkpoint } : {}), ...(turns && turns.length > 0 ? { turns } : {}) }
+    : undefined
 }
 
 export function normalizeConversationMeta(

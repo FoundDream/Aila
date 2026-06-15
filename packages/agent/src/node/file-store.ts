@@ -6,9 +6,11 @@ import {
   type AgentEventAppendResult,
   AILA_AGENT_EVENT_SCHEMA_VERSION,
   AILA_CONVERSATION_META_SCHEMA_VERSION,
+  appendConversationContextTurnLedgerEntry,
   type ConversationRecord,
   type ConversationSummary,
   type ConversationWorkspaceRef,
+  createConversationUsageSnapshot,
   createInterruptedConversationRecoveryEvent,
   DEFAULT_CONVERSATION_TITLE,
   deriveConversationTitle,
@@ -214,7 +216,7 @@ export function createFileRuntimeStore(options: FileRuntimeStoreOptions): AgentR
         meta: {
           ...current.meta,
           updatedAt: nextUpdatedAt(current.meta.updatedAt, timestamp),
-          usage: { ...usage, updatedAt: timestamp },
+          usage: createConversationUsageSnapshot(current.meta.usage, usage, timestamp),
         },
       }))
       return structuredClone(record.meta)
@@ -229,6 +231,17 @@ export function createFileRuntimeStore(options: FileRuntimeStoreOptions): AgentR
             ...(current.meta.context ?? {}),
             checkpoint: structuredClone(checkpoint),
           },
+        },
+      }))
+      return structuredClone(record.meta)
+    },
+    async recordContextTurnLedger(conversationId, entry): Promise<ConversationSummary> {
+      const record = await updateRecord(conversationId, (current) => ({
+        ...current,
+        meta: {
+          ...current.meta,
+          updatedAt: nextUpdatedAt(current.meta.updatedAt, entry.createdAt),
+          context: appendConversationContextTurnLedgerEntry(current.meta.context, entry),
         },
       }))
       return structuredClone(record.meta)

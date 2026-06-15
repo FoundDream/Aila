@@ -7,12 +7,15 @@ import {
   type AgentEventAppendResult,
   AILA_CONVERSATION_META_SCHEMA_VERSION,
   activityFromAgentEvent,
+  appendConversationContextTurnLedgerEntry,
   type ConversationContextCheckpoint,
+  type ConversationContextTurnLedgerEntry,
   type ConversationMeta,
   type ConversationRecord,
   type ConversationSummary,
   type ConversationWorkspaceRef,
   conversationActivityEquals,
+  createConversationUsageSnapshot,
   createInterruptedConversationRecoveryEvent,
   DEFAULT_CONVERSATION_TITLE,
   deriveConversationTitle,
@@ -37,8 +40,13 @@ export {
   AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
   type ConversationActivity,
   type ConversationActivityState,
+  type ConversationCompactArtifact,
+  type ConversationCompactFileArtifact,
+  type ConversationCompactToolActivity,
+  type ConversationCompactToolResultArtifact,
   type ConversationContextCheckpoint,
   type ConversationContextState,
+  type ConversationContextTurnLedgerEntry,
   type ConversationInterruptedRecoveryOptions,
   type ConversationMeta,
   type ConversationRecord,
@@ -416,10 +424,11 @@ export async function setConversationUsage(
   id: string,
   usage: { promptTokens: number; completionTokens: number; totalTokens: number },
 ): Promise<ConversationSummary> {
+  const timestamp = Date.now()
   return updateMeta(id, (current) => ({
     ...current,
-    updatedAt: nextUpdatedAt(current),
-    usage: { ...usage, updatedAt: Date.now() },
+    updatedAt: nextUpdatedAt(current, timestamp),
+    usage: createConversationUsageSnapshot(current.usage, usage, timestamp),
   }))
 }
 
@@ -434,6 +443,17 @@ export async function setConversationContextCheckpoint(
       ...(current.context ?? {}),
       checkpoint: structuredClone(checkpoint),
     },
+  }))
+}
+
+export async function recordConversationContextTurnLedger(
+  id: string,
+  entry: ConversationContextTurnLedgerEntry,
+): Promise<ConversationSummary> {
+  return updateMeta(id, (current) => ({
+    ...current,
+    updatedAt: nextUpdatedAt(current, entry.createdAt),
+    context: appendConversationContextTurnLedgerEntry(current.context, entry),
   }))
 }
 

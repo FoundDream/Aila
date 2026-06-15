@@ -7,6 +7,11 @@ import {
   type ModelSelection,
   type RuntimeStreamChat,
 } from '../core'
+import {
+  createNodeContextTokenCounter,
+  createNodeSemanticCompactGenerator,
+  type NodeContextServiceOptions,
+} from './context-services'
 import { createFileRuntimeStore } from './file-store'
 import { nodeFileSystem, nodeWorkspaceRoots } from './filesystem'
 import { createNodeImageGenerator } from './image-generation'
@@ -26,7 +31,8 @@ import {
 
 export interface CreateDefaultNodeRuntimeHostInput
   extends ProviderStreamChatOptions,
-    NodeSettingsOptions {
+    NodeSettingsOptions,
+    Pick<NodeContextServiceOptions, 'fetch'> {
   cwd?: string
   modelRegistry?: ModelRegistry
   modelRegistryOptions?: CreateModelRegistryInput
@@ -64,10 +70,17 @@ export function createDefaultNodeRuntimeHost(
       imageDir: imageStore?.imageDir,
       loadSettings: () => input.settings ?? loadNodeSettings(input),
     })
+  const contextServiceOptions: NodeContextServiceOptions = {
+    ...input,
+    modelRegistry,
+    loadSettings: () => input.settings ?? loadNodeSettings(input),
+  }
 
   return {
     loadSettings: () => input.settings ?? loadNodeSettings(input),
     getModelInfo: createModelInfoResolver(modelRegistry),
+    countContextTokens: createNodeContextTokenCounter(contextServiceOptions),
+    generateContextCompactArtifact: createNodeSemanticCompactGenerator(contextServiceOptions),
     streamChat,
     ...(input.enableFileSystem === false
       ? {}
