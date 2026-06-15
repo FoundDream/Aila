@@ -4,9 +4,11 @@ import type { ProviderId } from './models'
 export const AILA_CONVERSATION_META_SCHEMA_VERSION = 1
 export const AILA_PERSISTED_MESSAGE_SCHEMA_VERSION = 1
 export const AILA_AGENT_EVENT_SCHEMA_VERSION = 1
+export const AILA_CONTEXT_CHECKPOINT_SCHEMA_VERSION = 1
 
 export const DEFAULT_CONVERSATION_TITLE = '新对话'
 const CONVERSATION_TITLE_MAX = 40
+const CONTEXT_CHECKPOINT_SUMMARY_MAX = 32_000
 
 export interface PersistedTextBlock {
   type: 'text' | 'reasoning'
@@ -20,6 +22,15 @@ export interface PersistedToolCallBlock {
   arguments: string
   status: 'running' | 'done' | 'error'
   result?: string
+  resultRef?: PersistedToolResultRef
+}
+
+export interface PersistedToolResultRef {
+  kind: 'file'
+  path: string
+  relativePath: string
+  sizeChars: number
+  preview: string
 }
 
 export interface PersistedImageBlock {
@@ -57,6 +68,21 @@ export interface ConversationUsage {
   completionTokens: number
   totalTokens: number
   updatedAt: number
+}
+
+export interface ConversationContextCheckpoint {
+  schemaVersion: typeof AILA_CONTEXT_CHECKPOINT_SCHEMA_VERSION
+  id: string
+  createdAt: number
+  boundaryMessageId: string
+  sourceMessageIds: string[]
+  omittedRoundCount: number
+  summary: string
+  charCost: number
+}
+
+export interface ConversationContextState {
+  checkpoint?: ConversationContextCheckpoint
 }
 
 export type ConversationActivityState =
@@ -136,6 +162,7 @@ export interface ConversationMeta {
   // Optional workspace affinity for chat sessions. Runtime preserves this as
   // metadata; hosts decide whether and how it affects tool roots.
   workspace?: ConversationWorkspaceRef | null
+  context?: ConversationContextState
 }
 
 export type ConversationSummary = ConversationMeta
@@ -204,6 +231,50 @@ export function normalizeConversationWorkspaceRef(
   }
 }
 
+export function normalizeConversationContextCheckpoint(
+  value: unknown,
+): ConversationContextCheckpoint | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const record = value as Partial<ConversationContextCheckpoint>
+  if (typeof record.id !== 'string' || record.id.trim().length === 0) return undefined
+  if (
+    typeof record.boundaryMessageId !== 'string' ||
+    record.boundaryMessageId.trim().length === 0
+  ) {
+    return undefined
+  }
+  if (!Array.isArray(record.sourceMessageIds)) return undefined
+  if (typeof record.summary !== 'string' || record.summary.trim().length === 0) return undefined
+  return {
+    schemaVersion: AILA_CONTEXT_CHECKPOINT_SCHEMA_VERSION,
+    id: record.id.trim(),
+    createdAt: typeof record.createdAt === 'number' ? record.createdAt : Date.now(),
+    boundaryMessageId: record.boundaryMessageId.trim(),
+    sourceMessageIds: record.sourceMessageIds
+      .filter((id): id is string => typeof id === 'string' && id.trim().length > 0)
+      .map((id) => id.trim()),
+    omittedRoundCount:
+      typeof record.omittedRoundCount === 'number' && record.omittedRoundCount >= 0
+        ? record.omittedRoundCount
+        : 0,
+    summary:
+      record.summary.length > CONTEXT_CHECKPOINT_SUMMARY_MAX
+        ? record.summary.slice(0, CONTEXT_CHECKPOINT_SUMMARY_MAX)
+        : record.summary,
+    charCost: typeof record.charCost === 'number' && record.charCost >= 0 ? record.charCost : 0,
+  }
+}
+
+export function normalizeConversationContextState(
+  value: unknown,
+): ConversationContextState | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const checkpoint = normalizeConversationContextCheckpoint(
+    (value as Partial<ConversationContextState>).checkpoint,
+  )
+  return checkpoint ? { checkpoint } : undefined
+}
+
 export function normalizeConversationMeta(
   value: Partial<ConversationMeta>,
   fallbackId?: string,
@@ -213,6 +284,7 @@ export function normalizeConversationMeta(
   if (!id) throw new Error('conversation meta is missing id')
   const activity = normalizeConversationActivity(value.activity)
   const workspace = normalizeConversationWorkspaceRef(value.workspace)
+  const context = normalizeConversationContextState(value.context)
 
   return {
     schemaVersion: AILA_CONVERSATION_META_SCHEMA_VERSION,
@@ -227,6 +299,7 @@ export function normalizeConversationMeta(
     ...(activity ? { activity } : {}),
     ...(value.docId !== undefined ? { docId: value.docId } : {}),
     ...(value.workspace === null ? { workspace: null } : workspace ? { workspace } : {}),
+    ...(context ? { context } : {}),
   }
 }
 

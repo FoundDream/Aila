@@ -10,8 +10,11 @@ import {
   type PersistedImageBlock,
   type PersistedMessage,
   type PersistedToolCallBlock,
+  type PersistedToolResultRef,
   type RuntimeStreamChat,
+  type StreamHandlers,
   type ToolActivityTarget,
+  type ToolCall,
   type ToolContext,
   type ToolRegistry,
   type UsageInfo,
@@ -25,12 +28,19 @@ import {
   createModelRegistry,
   type ModelRegistry,
 } from './model-registry'
-import type { ModelStreamClient, ModelStreamToolDefinition } from './model-stream'
+import type { ModelStreamClient, ModelStreamToolDefinition, ModelStreamUsage } from './model-stream'
 import { createProtocolRegistry, type ProtocolAdapter, type ProtocolRegistry } from './protocols'
+import {
+  createNodeToolResultStore,
+  DEFAULT_MAX_INLINE_TOOL_RESULT_CHARS,
+  DEFAULT_TOOL_RESULT_PREVIEW_CHARS,
+  type ToolResultStore,
+} from './tool-result-store'
 
 type MaybePromise<T> = T | Promise<T>
 
 const EVENT_PREVIEW_CHARS = 1000
+const MAX_STEPS = 10
 
 export interface ProviderStreamChatOptions extends NodeAuthInput {
   modelRegistry?: ModelRegistry
@@ -41,6 +51,11 @@ export interface ProviderStreamChatOptions extends NodeAuthInput {
   settings?: Settings
   loadSettings?: () => Settings
   imageDir?: string
+  dataDir?: string
+  toolResultDir?: string
+  toolResultStore?: ToolResultStore | null
+  maxInlineToolResultChars?: number
+  toolResultPreviewChars?: number
 }
 
 export function createProviderStreamChat(
@@ -57,6 +72,17 @@ export function createProviderStreamChat(
       protocolRegistry,
       imageDir: options.imageDir,
     })
+  const toolResultStore =
+    options.toolResultStore === null
+      ? null
+      : (options.toolResultStore ??
+        createNodeToolResultStore({
+          dataDir: options.dataDir,
+          toolResultDir: options.toolResultDir,
+        }))
+  const maxInlineToolResultChars =
+    options.maxInlineToolResultChars ?? DEFAULT_MAX_INLINE_TOOL_RESULT_CHARS
+  const toolResultPreviewChars = options.toolResultPreviewChars ?? DEFAULT_TOOL_RESULT_PREVIEW_CHARS
 
   return async (req, handlers): Promise<void> => {
     const {
@@ -145,178 +171,261 @@ export function createProviderStreamChat(
     }
 
     try {
-      const result = modelStreamClient.stream({
-        descriptor,
-        apiKey,
-        messages,
-        tools: buildTools(
-          {
-            settings,
-            conversationId,
-            messageId: assistantMessageId,
-            workspaceRoots,
-            shellCwd,
-            signal,
-            onToolPolicy,
-            onToolApproval,
-            webSearch,
-            generateImage,
-            saveImage,
-            runShell,
-            fileSystem,
-            onImage: onImageFromTool,
-          },
-          emitAgentEvent,
-          toolRegistry,
-          toolTargets,
-        ),
-        signal,
-      })
+      const tools = buildTools(
+        {
+          settings,
+          conversationId,
+          messageId: assistantMessageId,
+          workspaceRoots,
+          shellCwd,
+          signal,
+          onToolPolicy,
+          onToolApproval,
+          webSearch,
+          generateImage,
+          saveImage,
+          runShell,
+          fileSystem,
+          onImage: onImageFromTool,
+        },
+        emitAgentEvent,
+        toolRegistry,
+        toolTargets,
+      )
+      const modelMessages = cloneAgentMessages(messages)
+      const totalUsage = createUsageAccumulator()
+      const startedToolCalls = new Set<string>()
 
-      for await (const part of result) {
-        switch (part.type) {
-          case 'text-delta':
-            builder.appendText('text', part.text)
-            callStreamHandler(handlers.onTextDelta, {
-              conversationId,
-              messageId: assistantMessageId,
-              delta: part.text,
-            })
-            break
-          case 'reasoning-delta':
-            builder.appendText('reasoning', part.text)
-            callStreamHandler(handlers.onReasoningDelta, {
-              conversationId,
-              messageId: assistantMessageId,
-              delta: part.text,
-            })
-            break
-          case 'tool-input-start':
-            builder.startToolCall(part.id, part.toolName, '')
-            emitAgentEvent('tool.requested', {
-              toolCallId: part.id,
-              toolName: part.toolName,
-            })
-            callStreamHandler(handlers.onToolCallStart, {
-              conversationId,
-              messageId: assistantMessageId,
-              toolCallId: part.id,
-              name: part.toolName,
-              arguments: '',
-            })
-            break
-          case 'tool-input-delta':
-            builder.appendToolCallArgs(part.id, part.delta)
-            emitAgentEvent('tool.input.delta', {
-              toolCallId: part.id,
-              deltaSize: part.delta.length,
-            })
-            callStreamHandler(handlers.onToolCallArgsDelta, {
-              conversationId,
-              messageId: assistantMessageId,
-              toolCallId: part.id,
-              delta: part.delta,
-            })
-            break
-          case 'tool-call': {
-            const input = part.input ?? {}
-            const args = JSON.stringify(input)
-            const target =
-              input && typeof input === 'object' && !Array.isArray(input)
-                ? summarizeToolTarget(part.toolName, input as Record<string, unknown>)
-                : null
-            if (target) toolTargets.set(part.toolCallId, target)
-            builder.startToolCall(part.toolCallId, part.toolName, args)
-            emitAgentEvent('tool.input.completed', {
-              toolCallId: part.toolCallId,
-              toolName: part.toolName,
-              input: previewEventValue(part.input ?? {}),
-              ...(target && { target }),
-            })
-            callStreamHandler(handlers.onToolCallStart, {
-              conversationId,
-              messageId: assistantMessageId,
-              toolCallId: part.toolCallId,
-              name: part.toolName,
-              arguments: args,
-            })
-            break
-          }
-          case 'tool-result': {
-            const out = part.output
-            const toolResult =
-              typeof out === 'string' ? out : out == null ? '' : JSON.stringify(out)
-            builder.finishToolCall(part.toolCallId, toolResult, false)
-            emitAgentEvent('tool.result.returned', {
-              toolCallId: part.toolCallId,
-              toolName: part.toolName,
-              result: previewEventValue(toolResult),
-              isError: false,
-              ...(toolTargets.get(part.toolCallId) && { target: toolTargets.get(part.toolCallId) }),
-            })
-            callStreamHandler(handlers.onToolCallResult, {
-              conversationId,
-              messageId: assistantMessageId,
-              toolCallId: part.toolCallId,
-              name: part.toolName,
-              result: toolResult,
-              isError: false,
-            })
-            break
-          }
-          case 'tool-error': {
-            const message = part.error instanceof Error ? part.error.message : String(part.error)
-            builder.finishToolCall(part.toolCallId, message, true)
-            emitAgentEvent('tool.result.returned', {
-              toolCallId: part.toolCallId,
-              toolName: part.toolName,
-              result: previewEventValue(message),
-              isError: true,
-              ...(toolTargets.get(part.toolCallId) && { target: toolTargets.get(part.toolCallId) }),
-            })
-            callStreamHandler(handlers.onToolCallResult, {
-              conversationId,
-              messageId: assistantMessageId,
-              toolCallId: part.toolCallId,
-              name: part.toolName,
-              result: message,
-              isError: true,
-            })
-            break
-          }
-          case 'finish-step':
-          case 'finish': {
-            const u = part.type === 'finish' ? part.totalUsage : part.usage
-            if (u) {
-              lastUsage = {
-                promptTokens: u.inputTokens ?? 0,
-                completionTokens: u.outputTokens ?? 0,
-                totalTokens: u.totalTokens ?? (u.inputTokens ?? 0) + (u.outputTokens ?? 0),
-              }
+      for (let step = 0; step < MAX_STEPS; step += 1) {
+        const assistantText: string[] = []
+        const stepToolCalls: ParsedModelToolCall[] = []
+        const externallyResolvedToolCalls = new Set<string>()
+        const result = modelStreamClient.stream({
+          descriptor,
+          apiKey,
+          messages: cloneAgentMessages(modelMessages),
+          tools,
+          signal,
+          step,
+        })
+
+        for await (const part of result) {
+          switch (part.type) {
+            case 'text-delta':
+              assistantText.push(part.text)
+              builder.appendText('text', part.text)
+              callStreamHandler(handlers.onTextDelta, {
+                conversationId,
+                messageId: assistantMessageId,
+                delta: part.text,
+              })
+              break
+            case 'reasoning-delta':
+              builder.appendText('reasoning', part.text)
+              callStreamHandler(handlers.onReasoningDelta, {
+                conversationId,
+                messageId: assistantMessageId,
+                delta: part.text,
+              })
+              break
+            case 'tool-input-start':
+              recordToolInputStart({
+                id: part.id,
+                name: part.toolName,
+                args: '',
+                builder,
+                startedToolCalls,
+                emitAgentEvent,
+                handlers,
+                conversationId,
+                assistantMessageId,
+              })
+              break
+            case 'tool-input-delta':
+              builder.appendToolCallArgs(part.id, part.delta)
+              emitAgentEvent('tool.input.delta', {
+                toolCallId: part.id,
+                deltaSize: part.delta.length,
+              })
+              callStreamHandler(handlers.onToolCallArgsDelta, {
+                conversationId,
+                messageId: assistantMessageId,
+                toolCallId: part.id,
+                delta: part.delta,
+              })
+              break
+            case 'tool-call': {
+              const parsed = parseModelToolCall(part.toolCallId, part.toolName, part.input)
+              stepToolCalls.push(parsed)
+              recordToolInputCompleted({
+                call: parsed,
+                builder,
+                startedToolCalls,
+                toolTargets,
+                emitAgentEvent,
+                handlers,
+                conversationId,
+                assistantMessageId,
+              })
+              break
             }
-            break
-          }
-          case 'abort':
-            await callAsyncStreamHandler(handlers.onError, {
-              conversationId,
-              messageId: assistantMessageId,
-              error: 'Aborted',
-              message: builder.build(assistantMessageId, 'error', selection, 'Aborted'),
-            })
-            emitAgentEvent('turn.cancelled', { phase: 'completed', reason: 'abort_signal' })
-            return
-          case 'error': {
-            const message = part.error instanceof Error ? part.error.message : String(part.error)
-            await callAsyncStreamHandler(handlers.onError, {
-              conversationId,
-              messageId: assistantMessageId,
-              error: message,
-              message: builder.build(assistantMessageId, 'error', selection, message),
-            })
-            emitAgentEvent('turn.failed', { error: message })
-            return
+            case 'tool-result': {
+              externallyResolvedToolCalls.add(part.toolCallId)
+              const toolResult = await prepareToolResultForModel({
+                store: toolResultStore,
+                content: stringifyToolOutput(part.output),
+                conversationId,
+                messageId: assistantMessageId,
+                toolCallId: part.toolCallId,
+                toolName: part.toolName,
+                maxInlineChars: maxInlineToolResultChars,
+                previewChars: toolResultPreviewChars,
+              })
+              recordToolResult({
+                toolCallId: part.toolCallId,
+                toolName: part.toolName,
+                result: toolResult.content,
+                ...(toolResult.resultRef && { resultRef: toolResult.resultRef }),
+                isError: false,
+                builder,
+                toolTargets,
+                emitAgentEvent,
+                handlers,
+                conversationId,
+                assistantMessageId,
+              })
+              break
+            }
+            case 'tool-error': {
+              externallyResolvedToolCalls.add(part.toolCallId)
+              const message = part.error instanceof Error ? part.error.message : String(part.error)
+              recordToolResult({
+                toolCallId: part.toolCallId,
+                toolName: part.toolName,
+                result: message,
+                isError: true,
+                builder,
+                toolTargets,
+                emitAgentEvent,
+                handlers,
+                conversationId,
+                assistantMessageId,
+              })
+              break
+            }
+            case 'finish-step':
+              if (part.usage) {
+                addUsage(totalUsage, part.usage)
+                lastUsage = usageInfo(totalUsage)
+              }
+              break
+            case 'finish':
+              if (part.totalUsage) lastUsage = usageInfoFromModelUsage(part.totalUsage)
+              break
+            case 'abort':
+              await callAsyncStreamHandler(handlers.onError, {
+                conversationId,
+                messageId: assistantMessageId,
+                error: 'Aborted',
+                message: builder.build(assistantMessageId, 'error', selection, 'Aborted'),
+              })
+              emitAgentEvent('turn.cancelled', { phase: 'completed', reason: 'abort_signal' })
+              return
+            case 'error': {
+              const message = part.error instanceof Error ? part.error.message : String(part.error)
+              await callAsyncStreamHandler(handlers.onError, {
+                conversationId,
+                messageId: assistantMessageId,
+                error: message,
+                message: builder.build(assistantMessageId, 'error', selection, message),
+              })
+              emitAgentEvent('turn.failed', { error: message })
+              return
+            }
           }
         }
+
+        const unresolvedToolCalls = stepToolCalls.filter(
+          (toolCall) => !externallyResolvedToolCalls.has(toolCall.id),
+        )
+        if (unresolvedToolCalls.length === 0) break
+
+        modelMessages.push({
+          role: 'assistant',
+          content: assistantText.join(''),
+          tool_calls: unresolvedToolCalls.map(toChatToolCall),
+        })
+
+        for (const toolCall of unresolvedToolCalls) {
+          const tool = tools.find((td) => td.name === toolCall.name)
+          if (!tool) {
+            const message = `Unknown tool "${toolCall.name}"`
+            recordToolResult({
+              toolCallId: toolCall.id,
+              toolName: toolCall.name,
+              result: message,
+              isError: true,
+              builder,
+              toolTargets,
+              emitAgentEvent,
+              handlers,
+              conversationId,
+              assistantMessageId,
+            })
+            modelMessages.push({ role: 'tool', tool_call_id: toolCall.id, content: message })
+            continue
+          }
+
+          try {
+            const output = await tool.execute(toolCall.args, { toolCallId: toolCall.id })
+            const toolResult = await prepareToolResultForModel({
+              store: toolResultStore,
+              content: stringifyToolOutput(output),
+              conversationId,
+              messageId: assistantMessageId,
+              toolCallId: toolCall.id,
+              toolName: toolCall.name,
+              maxInlineChars: maxInlineToolResultChars,
+              previewChars: toolResultPreviewChars,
+            })
+            recordToolResult({
+              toolCallId: toolCall.id,
+              toolName: toolCall.name,
+              result: toolResult.content,
+              ...(toolResult.resultRef && { resultRef: toolResult.resultRef }),
+              isError: false,
+              builder,
+              toolTargets,
+              emitAgentEvent,
+              handlers,
+              conversationId,
+              assistantMessageId,
+            })
+            modelMessages.push({
+              role: 'tool',
+              tool_call_id: toolCall.id,
+              content: toolResult.content,
+            })
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            recordToolResult({
+              toolCallId: toolCall.id,
+              toolName: toolCall.name,
+              result: message,
+              isError: true,
+              builder,
+              toolTargets,
+              emitAgentEvent,
+              handlers,
+              conversationId,
+              assistantMessageId,
+            })
+            modelMessages.push({ role: 'tool', tool_call_id: toolCall.id, content: message })
+          }
+        }
+
+        if (step === MAX_STEPS - 1)
+          throw new Error(`Maximum model tool steps exceeded (${MAX_STEPS})`)
       }
 
       emitAgentEvent('turn.completed', {
@@ -350,6 +459,257 @@ export function createModelInfoResolver(
   modelRegistry: ModelRegistry = createModelRegistry(),
 ): (selection: ModelSelection) => ModelInfo {
   return (selection) => modelRegistry.getModelInfo(selection)
+}
+
+interface ParsedModelToolCall {
+  id: string
+  name: string
+  args: Record<string, unknown>
+  argsJson: string
+}
+
+type EmitAgentEvent = (type: AgentEventType, data?: Record<string, unknown>) => void
+
+interface ToolStreamEventContext {
+  builder: AssistantBuilder
+  toolTargets: Map<string, ToolActivityTarget>
+  emitAgentEvent: EmitAgentEvent
+  handlers: StreamHandlers
+  conversationId: string
+  assistantMessageId: string
+}
+
+interface ToolInputStartContext extends Omit<ToolStreamEventContext, 'toolTargets'> {
+  startedToolCalls: Set<string>
+}
+
+interface ToolInputCompletedContext extends ToolStreamEventContext {
+  call: ParsedModelToolCall
+  startedToolCalls: Set<string>
+}
+
+interface ToolResultContext extends ToolStreamEventContext {
+  toolCallId: string
+  toolName: string
+  result: string
+  resultRef?: PersistedToolResultRef
+  isError: boolean
+}
+
+interface PreparedToolResult {
+  content: string
+  resultRef?: PersistedToolResultRef
+}
+
+function parseModelToolCall(id: string, name: string, input: unknown): ParsedModelToolCall {
+  const args =
+    input && typeof input === 'object' && !Array.isArray(input)
+      ? cloneAgentToolArgs(input as Record<string, unknown>)
+      : {}
+  return {
+    id,
+    name,
+    args,
+    argsJson: JSON.stringify(args),
+  }
+}
+
+function toChatToolCall(toolCall: ParsedModelToolCall): ToolCall {
+  return {
+    id: toolCall.id,
+    type: 'function',
+    function: {
+      name: toolCall.name,
+      arguments: toolCall.argsJson,
+    },
+  }
+}
+
+function recordToolInputStart(
+  input: {
+    id: string
+    name: string
+    args: string
+  } & ToolInputStartContext,
+): void {
+  const {
+    id,
+    name,
+    args,
+    builder,
+    startedToolCalls,
+    emitAgentEvent,
+    handlers,
+    conversationId,
+    assistantMessageId,
+  } = input
+  builder.startToolCall(id, name, args)
+  if (startedToolCalls.has(id)) return
+  startedToolCalls.add(id)
+  emitAgentEvent('tool.requested', {
+    toolCallId: id,
+    toolName: name,
+  })
+  callStreamHandler(handlers.onToolCallStart, {
+    conversationId,
+    messageId: assistantMessageId,
+    toolCallId: id,
+    name,
+    arguments: args,
+  })
+}
+
+function recordToolInputCompleted(input: ToolInputCompletedContext): void {
+  const {
+    call,
+    builder,
+    startedToolCalls,
+    toolTargets,
+    emitAgentEvent,
+    handlers,
+    conversationId,
+    assistantMessageId,
+  } = input
+  const target = summarizeToolTarget(call.name, call.args)
+  if (target) toolTargets.set(call.id, target)
+  builder.startToolCall(call.id, call.name, call.argsJson)
+  emitAgentEvent('tool.input.completed', {
+    toolCallId: call.id,
+    toolName: call.name,
+    input: previewEventValue(call.args),
+    ...(target && { target }),
+  })
+  if (startedToolCalls.has(call.id)) return
+  startedToolCalls.add(call.id)
+  emitAgentEvent('tool.requested', {
+    toolCallId: call.id,
+    toolName: call.name,
+  })
+  callStreamHandler(handlers.onToolCallStart, {
+    conversationId,
+    messageId: assistantMessageId,
+    toolCallId: call.id,
+    name: call.name,
+    arguments: call.argsJson,
+  })
+}
+
+function recordToolResult(input: ToolResultContext): void {
+  const {
+    toolCallId,
+    toolName,
+    result,
+    resultRef,
+    isError,
+    builder,
+    toolTargets,
+    emitAgentEvent,
+    handlers,
+    conversationId,
+    assistantMessageId,
+  } = input
+  builder.finishToolCall(toolCallId, result, isError, resultRef)
+  emitAgentEvent('tool.result.returned', {
+    toolCallId,
+    toolName,
+    result: previewEventValue(result),
+    ...(resultRef && { resultRef: cloneAgentValue(resultRef) }),
+    isError,
+    ...(toolTargets.get(toolCallId) && { target: toolTargets.get(toolCallId) }),
+  })
+  callStreamHandler(handlers.onToolCallResult, {
+    conversationId,
+    messageId: assistantMessageId,
+    toolCallId,
+    name: toolName,
+    result,
+    isError,
+  })
+}
+
+async function prepareToolResultForModel(input: {
+  store: ToolResultStore | null
+  content: string
+  conversationId: string
+  messageId: string
+  toolCallId: string
+  toolName: string
+  maxInlineChars: number
+  previewChars: number
+}): Promise<PreparedToolResult> {
+  if (!input.store || input.content.length <= input.maxInlineChars) {
+    return { content: input.content }
+  }
+
+  const resultRef = await input.store.persist({
+    conversationId: input.conversationId,
+    messageId: input.messageId,
+    toolCallId: input.toolCallId,
+    toolName: input.toolName,
+    content: input.content,
+    previewChars: input.previewChars,
+  })
+  return {
+    content: formatPersistedToolResultForModel(input.toolName, resultRef),
+    resultRef,
+  }
+}
+
+function formatPersistedToolResultForModel(
+  toolName: string,
+  resultRef: PersistedToolResultRef,
+): string {
+  const previewLine =
+    resultRef.preview.length < resultRef.sizeChars
+      ? `Preview (${resultRef.preview.length} of ${resultRef.sizeChars} chars):`
+      : `Preview (${resultRef.preview.length} chars):`
+  return [
+    `<tool-result name="${escapeToolResultAttribute(toolName)}" persisted="true">`,
+    `Full output stored at: ${resultRef.path}`,
+    `Relative path: ${resultRef.relativePath}`,
+    `Original size: ${resultRef.sizeChars} chars`,
+    previewLine,
+    resultRef.preview,
+    '</tool-result>',
+  ].join('\n')
+}
+
+function escapeToolResultAttribute(value: string): string {
+  return value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;')
+}
+
+function createUsageAccumulator(): UsageInfo {
+  return { promptTokens: 0, completionTokens: 0, totalTokens: 0 }
+}
+
+function addUsage(total: UsageInfo, usage: ModelStreamUsage): void {
+  total.promptTokens += usage.inputTokens ?? 0
+  total.completionTokens += usage.outputTokens ?? 0
+  total.totalTokens += usage.totalTokens ?? (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0)
+}
+
+function usageInfo(usage: UsageInfo): UsageInfo {
+  return { ...usage }
+}
+
+function usageInfoFromModelUsage(usage: ModelStreamUsage): UsageInfo {
+  const promptTokens = usage.inputTokens ?? 0
+  const completionTokens = usage.outputTokens ?? 0
+  return {
+    promptTokens,
+    completionTokens,
+    totalTokens: usage.totalTokens ?? promptTokens + completionTokens,
+  }
+}
+
+function stringifyToolOutput(output: unknown): string {
+  if (typeof output === 'string') return output
+  if (output == null) return ''
+  try {
+    return JSON.stringify(output)
+  } catch {
+    return String(output)
+  }
 }
 
 function previewEventValue(value: unknown): { preview: string; size: number } {
@@ -482,12 +842,18 @@ class AssistantBuilder {
     this.blocks.push(cloneAgentValue(block))
   }
 
-  finishToolCall(id: string, result: string, isError: boolean): void {
+  finishToolCall(
+    id: string,
+    result: string,
+    isError: boolean,
+    resultRef?: PersistedToolResultRef,
+  ): void {
     const idx = this.toolBlockIndex.get(id)
     if (idx === undefined) return
     const block = this.blocks[idx] as PersistedToolCallBlock
     block.status = isError ? 'error' : 'done'
     block.result = result
+    if (resultRef) block.resultRef = cloneAgentValue(resultRef)
   }
 
   build(

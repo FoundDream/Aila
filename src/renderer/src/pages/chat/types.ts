@@ -14,6 +14,15 @@ export interface ToolCallBlock {
   arguments: string
   status: 'running' | 'done' | 'error'
   result?: string
+  resultRef?: PersistedToolResultRef
+}
+
+export interface PersistedToolResultRef {
+  kind: 'file'
+  path: string
+  relativePath: string
+  sizeChars: number
+  preview: string
 }
 
 export interface ImageBlock {

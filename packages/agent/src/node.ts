@@ -83,6 +83,18 @@ export {
   type ProviderStreamChatOptions,
 } from './node/stream-chat'
 export {
+  createNodeToolResultStore,
+  DEFAULT_MAX_INLINE_TOOL_RESULT_CHARS,
+  DEFAULT_TOOL_RESULT_PREVIEW_CHARS,
+  getNodeToolResultsConversationDir,
+  getNodeToolResultsDir,
+  type NodeToolResultStoreOptions,
+  previewToolResult,
+  safeToolResultPathSegment,
+  type ToolResultStore,
+  type ToolResultStorePersistInput,
+} from './node/tool-result-store'
+export {
   type CreateWebSearchRegistryInput,
   createDefaultWebSearch,
   createWebSearchRegistry,

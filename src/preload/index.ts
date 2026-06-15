@@ -147,6 +147,15 @@ export interface PersistedToolCallBlock {
   arguments: string
   status: 'running' | 'done' | 'error'
   result?: string
+  resultRef?: PersistedToolResultRef
+}
+
+export interface PersistedToolResultRef {
+  kind: 'file'
+  path: string
+  relativePath: string
+  sizeChars: number
+  preview: string
 }
 
 export interface PersistedImageBlock {
@@ -237,6 +246,21 @@ export interface ConversationUsage {
   updatedAt: number
 }
 
+export interface ConversationContextCheckpoint {
+  schemaVersion: 1
+  id: string
+  createdAt: number
+  boundaryMessageId: string
+  sourceMessageIds: string[]
+  omittedRoundCount: number
+  summary: string
+  charCost: number
+}
+
+export interface ConversationContextState {
+  checkpoint?: ConversationContextCheckpoint
+}
+
 export type ConversationActivityState =
   | 'running'
   | 'approval'
@@ -306,6 +330,7 @@ export interface ConversationSummary {
   docId?: string | null
   // Optional chat session workspace affinity used by Desktop grouping.
   workspace?: ConversationWorkspaceRef | null
+  context?: ConversationContextState
 }
 
 export interface UsageInfo {

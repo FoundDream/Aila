@@ -10,7 +10,6 @@ import type {
 } from './model-stream'
 import { parseSseJson } from './sse'
 
-const MAX_STEPS = 10
 const AILA_IMAGE_URL_PREFIX = 'aila-image://i/'
 const OPENAI_CHAT_COMPLETIONS_ENDPOINT = 'https://api.openai.com/v1/chat/completions'
 const OPENROUTER_CHAT_COMPLETIONS_ENDPOINT = 'https://openrouter.ai/api/v1/chat/completions'
@@ -67,12 +66,6 @@ interface OpenAiUsage {
   output_tokens?: number
 }
 
-interface AccumulatedUsage {
-  inputTokens: number
-  outputTokens: number
-  totalTokens: number
-}
-
 interface PendingToolCall {
   index: number
   id: string
@@ -99,103 +92,40 @@ export function createOpenAiChatModelStreamClient(
       }
 
       const messages = await toOpenAiMessages(input.messages, options.imageDir)
-      const totalUsage: AccumulatedUsage = {
-        inputTokens: 0,
-        outputTokens: 0,
-        totalTokens: 0,
-      }
+      const assistant = createAssistantAccumulator()
+      let stepUsage: ModelStreamUsage | undefined
 
-      for (let step = 0; step < MAX_STEPS; step += 1) {
-        const assistant = createAssistantAccumulator()
-        let stepUsage: ModelStreamUsage | undefined
+      for await (const chunk of await streamOpenAiChat(input, messages, fetchImpl)) {
+        if (chunk.error) throw new Error(chunk.error.message ?? 'OpenAI-compatible stream error')
+        if (chunk.usage) stepUsage = normalizeOpenAiUsage(chunk.usage)
 
-        for await (const chunk of await streamOpenAiChat(input, messages, fetchImpl)) {
-          if (chunk.error) throw new Error(chunk.error.message ?? 'OpenAI-compatible stream error')
-          if (chunk.usage) {
-            stepUsage = normalizeOpenAiUsage(chunk.usage)
-            addUsage(totalUsage, stepUsage)
+        for (const choice of chunk.choices ?? []) {
+          const delta = choice.delta ?? {}
+          const text = stringDelta(delta.content)
+          if (text) {
+            assistant.content += text
+            yield { type: 'text-delta', text }
           }
 
-          for (const choice of chunk.choices ?? []) {
-            const delta = choice.delta ?? {}
-            const text = stringDelta(delta.content)
-            if (text) {
-              assistant.content += text
-              yield { type: 'text-delta', text }
-            }
+          const reasoning = reasoningDelta(delta)
+          if (reasoning) yield { type: 'reasoning-delta', text: reasoning }
 
-            const reasoning = reasoningDelta(delta)
-            if (reasoning) yield { type: 'reasoning-delta', text: reasoning }
-
-            for (const event of appendToolCallDeltas(assistant.toolCalls, delta)) {
-              yield event
-            }
-          }
-        }
-
-        yield { type: 'finish-step', usage: stepUsage }
-
-        const toolCalls = completedToolCalls(assistant.toolCalls)
-        if (toolCalls.length === 0) {
-          yield { type: 'finish', totalUsage }
-          return
-        }
-
-        messages.push({
-          role: 'assistant',
-          content: assistant.content || null,
-          tool_calls: toolCalls,
-        })
-
-        for (const toolCall of toolCalls) {
-          const tool = input.tools.find((td) => td.name === toolCall.function.name)
-          const args = parseToolArguments(toolCall.function.arguments)
-          yield {
-            type: 'tool-call',
-            toolCallId: toolCall.id,
-            toolName: toolCall.function.name,
-            input: args,
-          }
-
-          if (!tool) {
-            const message = `Unknown tool "${toolCall.function.name}"`
-            yield {
-              type: 'tool-error',
-              toolCallId: toolCall.id,
-              toolName: toolCall.function.name,
-              error: new Error(message),
-            }
-            messages.push({ role: 'tool', tool_call_id: toolCall.id, content: message })
-            continue
-          }
-
-          try {
-            const output = await tool.execute(args, { toolCallId: toolCall.id })
-            yield {
-              type: 'tool-result',
-              toolCallId: toolCall.id,
-              toolName: toolCall.function.name,
-              output,
-            }
-            messages.push({
-              role: 'tool',
-              tool_call_id: toolCall.id,
-              content: stringifyToolOutput(output),
-            })
-          } catch (error) {
-            const message = error instanceof Error ? error.message : String(error)
-            yield {
-              type: 'tool-error',
-              toolCallId: toolCall.id,
-              toolName: toolCall.function.name,
-              error,
-            }
-            messages.push({ role: 'tool', tool_call_id: toolCall.id, content: message })
+          for (const event of appendToolCallDeltas(assistant.toolCalls, delta)) {
+            yield event
           }
         }
       }
 
-      throw new Error(`Maximum model tool steps exceeded (${MAX_STEPS})`)
+      yield { type: 'finish-step', usage: stepUsage }
+
+      for (const toolCall of completedToolCalls(assistant.toolCalls)) {
+        yield {
+          type: 'tool-call',
+          toolCallId: toolCall.id,
+          toolName: toolCall.function.name,
+          input: parseToolArguments(toolCall.function.arguments),
+        }
+      }
     },
   }
 }
@@ -446,12 +376,6 @@ function normalizeOpenAiUsage(usage: OpenAiUsage): ModelStreamUsage {
   }
 }
 
-function addUsage(total: AccumulatedUsage, usage: ModelStreamUsage): void {
-  total.inputTokens += usage.inputTokens ?? 0
-  total.outputTokens += usage.outputTokens ?? 0
-  total.totalTokens += usage.totalTokens ?? (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0)
-}
-
 function parseToolArguments(args: string): Record<string, unknown> {
   try {
     const parsed = args ? (JSON.parse(args) as unknown) : {}
@@ -459,10 +383,6 @@ function parseToolArguments(args: string): Record<string, unknown> {
   } catch {
     return {}
   }
-}
-
-function stringifyToolOutput(output: unknown): string {
-  return typeof output === 'string' ? output : output == null ? '' : JSON.stringify(output)
 }
 
 function reasoningDelta(delta: Record<string, unknown>): string {

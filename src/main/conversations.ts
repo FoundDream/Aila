@@ -2,10 +2,12 @@ import { randomUUID } from 'node:crypto'
 import { appendFile, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { AgentEvent } from '@aila/agent'
+import { getNodeToolResultsConversationDir } from '@aila/agent/node'
 import {
   type AgentEventAppendResult,
   AILA_CONVERSATION_META_SCHEMA_VERSION,
   activityFromAgentEvent,
+  type ConversationContextCheckpoint,
   type ConversationMeta,
   type ConversationRecord,
   type ConversationSummary,
@@ -26,7 +28,7 @@ import {
   replayConversationActivity,
   upsertPersistedMessage,
 } from '../../packages/agent/src/conversation-core'
-import { getConversationsDir } from './paths'
+import { getConversationsDir, getDataDir } from './paths'
 
 export {
   type AgentEventAppendResult,
@@ -35,6 +37,8 @@ export {
   AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
   type ConversationActivity,
   type ConversationActivityState,
+  type ConversationContextCheckpoint,
+  type ConversationContextState,
   type ConversationInterruptedRecoveryOptions,
   type ConversationMeta,
   type ConversationRecord,
@@ -419,6 +423,20 @@ export async function setConversationUsage(
   }))
 }
 
+export async function setConversationContextCheckpoint(
+  id: string,
+  checkpoint: ConversationContextCheckpoint,
+): Promise<ConversationSummary> {
+  return updateMeta(id, (current) => ({
+    ...current,
+    updatedAt: nextUpdatedAt(current, checkpoint.createdAt),
+    context: {
+      ...(current.context ?? {}),
+      checkpoint: structuredClone(checkpoint),
+    },
+  }))
+}
+
 export async function deleteConversation(id: string): Promise<void> {
   await metaWriteChains.get(id)?.catch(() => {})
   await messageWriteChains.get(id)?.catch(() => {})
@@ -427,6 +445,10 @@ export async function deleteConversation(id: string): Promise<void> {
     rm(metaPath(id), { force: true }),
     rm(logPath(id), { force: true }),
     rm(eventLogPath(id), { force: true }),
+    rm(getNodeToolResultsConversationDir(id, { dataDir: getDataDir() }), {
+      recursive: true,
+      force: true,
+    }),
   ])
   metaWriteChains.delete(id)
   messageWriteChains.delete(id)

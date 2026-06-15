@@ -10,7 +10,6 @@ import type {
 } from './model-stream'
 import { parseSseJson } from './sse'
 
-const MAX_STEPS = 10
 const AILA_IMAGE_URL_PREFIX = 'aila-image://i/'
 const ANTHROPIC_MESSAGES_ENDPOINT = 'https://api.anthropic.com/v1/messages'
 const ANTHROPIC_VERSION = '2023-06-01'
@@ -53,12 +52,6 @@ interface PendingAnthropicToolCall {
   started: boolean
 }
 
-interface AccumulatedUsage {
-  inputTokens: number
-  outputTokens: number
-  totalTokens: number
-}
-
 export interface AnthropicModelStreamClientOptions {
   imageDir?: string
   fetch?: Fetch
@@ -76,159 +69,87 @@ export function createAnthropicModelStreamClient(
       }
 
       const conversation = await toAnthropicConversation(input.messages, options.imageDir)
-      const totalUsage: AccumulatedUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 }
+      const toolCalls = new Map<number, PendingAnthropicToolCall>()
+      let stepUsage: ModelStreamUsage | undefined
 
-      for (let step = 0; step < MAX_STEPS; step += 1) {
-        const assistantBlocks: AnthropicContentBlock[] = []
-        const toolCalls = new Map<number, PendingAnthropicToolCall>()
-        let textBuffer = ''
-        let thinkingBuffer = ''
-        let stepUsage: ModelStreamUsage | undefined
+      for await (const event of await streamAnthropic(input, conversation, fetchImpl)) {
+        if (event.type === 'error')
+          throw new Error(event.error?.message ?? 'Anthropic stream error')
+        if (event.type === 'message_start' && event.message?.usage) {
+          stepUsage = mergeAnthropicUsage(stepUsage, event.message.usage)
+        }
+        if (event.type === 'message_delta' && event.usage) {
+          stepUsage = mergeAnthropicUsage(stepUsage, event.usage)
+        }
 
-        for await (const event of await streamAnthropic(input, conversation, fetchImpl)) {
-          if (event.type === 'error')
-            throw new Error(event.error?.message ?? 'Anthropic stream error')
-          if (event.type === 'message_start' && event.message?.usage) {
-            stepUsage = mergeAnthropicUsage(stepUsage, event.message.usage)
-          }
-          if (event.type === 'message_delta' && event.usage) {
-            stepUsage = mergeAnthropicUsage(stepUsage, event.usage)
-          }
-
-          if (event.type === 'content_block_start') {
-            const block = event.content_block ?? {}
-            if (block.type === 'tool_use') {
-              const id = stringValue(block.id)
-              const name = stringValue(block.name)
-              const pending: PendingAnthropicToolCall = {
-                index: event.index ?? toolCalls.size,
-                id,
-                name,
-                inputJson: '',
-                started: Boolean(id && name),
-              }
-              toolCalls.set(pending.index, pending)
-              if (pending.started) {
-                yield { type: 'tool-input-start', id: pending.id, toolName: pending.name }
-              }
+        if (event.type === 'content_block_start') {
+          const block = event.content_block ?? {}
+          if (block.type === 'tool_use') {
+            const id = stringValue(block.id)
+            const name = stringValue(block.name)
+            const pending: PendingAnthropicToolCall = {
+              index: event.index ?? toolCalls.size,
+              id,
+              name,
+              inputJson: '',
+              started: Boolean(id && name),
             }
-            continue
-          }
-
-          if (event.type !== 'content_block_delta') continue
-          const delta = event.delta ?? {}
-          if (delta.type === 'text_delta') {
-            const text = stringValue(delta.text)
-            if (text) {
-              textBuffer += text
-              yield { type: 'text-delta', text }
-            }
-            continue
-          }
-          if (delta.type === 'thinking_delta') {
-            const text = stringValue(delta.thinking)
-            if (text) {
-              thinkingBuffer += text
-              yield { type: 'reasoning-delta', text }
-            }
-            continue
-          }
-          if (delta.type === 'input_json_delta') {
-            const index = event.index ?? toolCalls.size
-            const pending =
-              toolCalls.get(index) ??
-              ({
-                index,
-                id: `anthropic-tool-${step}-${index}`,
-                name: '',
-                inputJson: '',
-                started: false,
-              } satisfies PendingAnthropicToolCall)
-            const partialJson = stringValue(delta.partial_json)
-            pending.inputJson += partialJson
-            if (pending.id && pending.name && !pending.started) {
-              pending.started = true
+            toolCalls.set(pending.index, pending)
+            if (pending.started) {
               yield { type: 'tool-input-start', id: pending.id, toolName: pending.name }
             }
-            if (partialJson && pending.started) {
-              yield { type: 'tool-input-delta', id: pending.id, delta: partialJson }
-            }
-            toolCalls.set(index, pending)
           }
+          continue
         }
 
-        if (textBuffer) assistantBlocks.push({ type: 'text', text: textBuffer })
-        if (thinkingBuffer) assistantBlocks.push({ type: 'thinking', thinking: thinkingBuffer })
-        const completedToolCalls = Array.from(toolCalls.values())
-          .sort((a, b) => a.index - b.index)
-          .filter((toolCall) => toolCall.id && toolCall.name)
-
-        for (const toolCall of completedToolCalls) {
-          assistantBlocks.push({
-            type: 'tool_use',
-            id: toolCall.id,
-            name: toolCall.name,
-            input: parseToolArguments(toolCall.inputJson),
-          })
+        if (event.type !== 'content_block_delta') continue
+        const delta = event.delta ?? {}
+        if (delta.type === 'text_delta') {
+          const text = stringValue(delta.text)
+          if (text) yield { type: 'text-delta', text }
+          continue
         }
-
-        if (stepUsage) addUsage(totalUsage, stepUsage)
-        yield { type: 'finish-step', usage: stepUsage }
-
-        if (completedToolCalls.length === 0) {
-          yield { type: 'finish', totalUsage }
-          return
+        if (delta.type === 'thinking_delta') {
+          const text = stringValue(delta.thinking)
+          if (text) yield { type: 'reasoning-delta', text }
+          continue
         }
-
-        conversation.messages.push({ role: 'assistant', content: assistantBlocks })
-        const toolResultBlocks: AnthropicContentBlock[] = []
-
-        for (const toolCall of completedToolCalls) {
-          const tool = input.tools.find((td) => td.name === toolCall.name)
-          const args = parseToolArguments(toolCall.inputJson)
-          yield { type: 'tool-call', toolCallId: toolCall.id, toolName: toolCall.name, input: args }
-
-          if (!tool) {
-            const message = `Unknown tool "${toolCall.name}"`
-            yield {
-              type: 'tool-error',
-              toolCallId: toolCall.id,
-              toolName: toolCall.name,
-              error: new Error(message),
-            }
-            toolResultBlocks.push({
-              type: 'tool_result',
-              tool_use_id: toolCall.id,
-              content: message,
-              is_error: true,
-            })
-            continue
+        if (delta.type === 'input_json_delta') {
+          const index = event.index ?? toolCalls.size
+          const pending =
+            toolCalls.get(index) ??
+            ({
+              index,
+              id: `anthropic-tool-${input.step ?? 0}-${index}`,
+              name: '',
+              inputJson: '',
+              started: false,
+            } satisfies PendingAnthropicToolCall)
+          const partialJson = stringValue(delta.partial_json)
+          pending.inputJson += partialJson
+          if (pending.id && pending.name && !pending.started) {
+            pending.started = true
+            yield { type: 'tool-input-start', id: pending.id, toolName: pending.name }
           }
-
-          try {
-            const output = await tool.execute(args, { toolCallId: toolCall.id })
-            yield { type: 'tool-result', toolCallId: toolCall.id, toolName: toolCall.name, output }
-            toolResultBlocks.push({
-              type: 'tool_result',
-              tool_use_id: toolCall.id,
-              content: stringifyToolOutput(output),
-            })
-          } catch (error) {
-            const message = error instanceof Error ? error.message : String(error)
-            yield { type: 'tool-error', toolCallId: toolCall.id, toolName: toolCall.name, error }
-            toolResultBlocks.push({
-              type: 'tool_result',
-              tool_use_id: toolCall.id,
-              content: message,
-              is_error: true,
-            })
+          if (partialJson && pending.started) {
+            yield { type: 'tool-input-delta', id: pending.id, delta: partialJson }
           }
+          toolCalls.set(index, pending)
         }
-
-        conversation.messages.push({ role: 'user', content: toolResultBlocks })
       }
 
-      throw new Error(`Maximum model tool steps exceeded (${MAX_STEPS})`)
+      yield { type: 'finish-step', usage: stepUsage }
+
+      for (const toolCall of Array.from(toolCalls.values())
+        .sort((a, b) => a.index - b.index)
+        .filter((candidate) => candidate.id && candidate.name)) {
+        yield {
+          type: 'tool-call',
+          toolCallId: toolCall.id,
+          toolName: toolCall.name,
+          input: parseToolArguments(toolCall.inputJson),
+        }
+      }
     },
   }
 }
@@ -401,12 +322,6 @@ async function readErrorResponse(response: Response, provider: string): Promise<
   }
 }
 
-function addUsage(total: AccumulatedUsage, usage: ModelStreamUsage): void {
-  total.inputTokens += usage.inputTokens ?? 0
-  total.outputTokens += usage.outputTokens ?? 0
-  total.totalTokens += usage.totalTokens ?? (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0)
-}
-
 function parseToolArguments(args: string): Record<string, unknown> {
   try {
     const parsed = args ? (JSON.parse(args) as unknown) : {}
@@ -414,10 +329,6 @@ function parseToolArguments(args: string): Record<string, unknown> {
   } catch {
     return {}
   }
-}
-
-function stringifyToolOutput(output: unknown): string {
-  return typeof output === 'string' ? output : output == null ? '' : JSON.stringify(output)
 }
 
 function stringValue(value: unknown): string {

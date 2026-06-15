@@ -15,11 +15,14 @@ export const packageConfigureDataDirMustNotExist = agent.configureDataDir
 export type AgentPackageConsumerContract = {
   activityEvent: agent.AgentEvent
   api: agent.AgentRuntimeApi
+  budgetPlan: agent.AgentContextBudgetPlan
   conversation: agent.ConversationRecord
+  contextCheckpoint: agent.ConversationContextCheckpoint
   event: agent.AgentRuntimeEvent
   host: agent.AgentRuntimeHost
   model: agent.ModelSelection
   approvalMode: agent.ToolApprovalMode
+  persistedToolResultRef: agent.PersistedToolResultRef
   provider: agent.ProviderId
   settings: agent.Settings
   store: agent.AgentRuntimeStore
@@ -31,6 +34,7 @@ export const agentPackageValueContract = {
   AgentRuntime: agent.AgentRuntime,
   ToolApprovalStore: agent.ToolApprovalStore,
   createInMemoryRuntimeStore: agent.createInMemoryRuntimeStore,
+  ContextBudgetManager: agent.ContextBudgetManager,
   createRuntimeEvent: agent.createRuntimeEvent,
   createToolPolicy: agent.createToolPolicy,
   createSkillToolPack: agent.createSkillToolPack,
@@ -43,15 +47,18 @@ export const agentPackageValueContract = {
 export type AgentNodePackageConsumerContract = {
   host: agent.AgentRuntimeHost
   stream: agent.RuntimeStreamChat
+  toolResultStore: agentNode.ToolResultStore
 }
 
 export const agentNodePackageValueContract = {
   createDefaultNodeRuntimeHost: agentNode.createDefaultNodeRuntimeHost,
   createNodeAgentRuntime: agentNode.createNodeAgentRuntime,
   createProviderStreamChat: agentNode.createProviderStreamChat,
+  createNodeToolResultStore: agentNode.createNodeToolResultStore,
   createModelRegistry: agentNode.createModelRegistry,
   createProtocolRegistry: agentNode.createProtocolRegistry,
   createFileRuntimeStore: agentNode.createFileRuntimeStore,
+  getNodeToolResultsDir: agentNode.getNodeToolResultsDir,
   createDefaultWebSearch: agentNode.createDefaultWebSearch,
   createWebSearchRegistry: agentNode.createWebSearchRegistry,
   WebSearchRegistry: agentNode.WebSearchRegistry,

@@ -1,4 +1,14 @@
 import {
+  type AgentContextAutoCompactReason,
+  type AgentContextBudgetPlan,
+  type AgentContextBudgetPressure,
+  type AgentContextCompactionPlan,
+  type AgentContextPlan,
+  type AgentContextPlanSection,
+  type AgentContextRecommendedCheckpoint,
+  type AgentContextSectionCachePolicy,
+  type AgentContextSectionMetadata,
+  type AgentContextSectionSource,
   type AgentEvent,
   AgentRuntime,
   type AgentRuntimeApi,
@@ -12,6 +22,11 @@ import {
   AILA_RUNTIME_EVENT_TYPES,
   AILA_RUNTIME_SDK_VERSION,
   type ChatMessage,
+  ContextBudgetManager,
+  type ContextBudgetManagerInput,
+  type ContextBudgetSnapshot,
+  type ConversationContextCheckpoint,
+  type ConversationContextState,
   type ConversationRecord,
   type ConversationRuntimeReplayState,
   type ConversationSummary,
@@ -21,17 +36,13 @@ import {
   createSkillToolPack,
   createToolPolicy,
   findModel,
-  type AgentContextPlan,
-  type AgentContextPlanSection,
-  type AgentContextSectionCachePolicy,
-  type AgentContextSectionMetadata,
-  type AgentContextSectionSource,
   type ImageGenerateRequest,
   type ImageResult,
   isRuntimeEventType,
   MODEL_CATALOG,
   type ModelSelection,
   type PersistedMessage,
+  type PersistedToolResultRef,
   parseSkillDocument,
   type RuntimeModelInfoResolver,
   type RuntimeStableInstructionsInput,
@@ -53,6 +64,11 @@ export type RuntimeCorePublicSurfaceContract = {
   agentEvent: AgentEvent
   agentContextPlan: AgentContextPlan
   agentContextPlanSection: AgentContextPlanSection
+  agentContextAutoCompactReason: AgentContextAutoCompactReason
+  agentContextBudgetPlan: AgentContextBudgetPlan
+  agentContextBudgetPressure: AgentContextBudgetPressure
+  agentContextCompactionPlan: AgentContextCompactionPlan
+  agentContextRecommendedCheckpoint: AgentContextRecommendedCheckpoint
   agentContextSectionCachePolicy: AgentContextSectionCachePolicy
   agentContextSectionMetadata: AgentContextSectionMetadata
   agentContextSectionSource: AgentContextSectionSource
@@ -63,6 +79,10 @@ export type RuntimeCorePublicSurfaceContract = {
   conversationRuntimeState: ConversationRuntimeReplayState
   conversationSummary: ConversationSummary
   conversationUsage: ConversationUsage
+  conversationContextCheckpoint: ConversationContextCheckpoint
+  conversationContextState: ConversationContextState
+  contextBudgetManagerInput: ContextBudgetManagerInput
+  contextBudgetSnapshot: ContextBudgetSnapshot
   event: AgentRuntimeEvent
   extensionApi: AgentRuntimeExtensionApi
   host: AgentRuntimeHost
@@ -71,6 +91,7 @@ export type RuntimeCorePublicSurfaceContract = {
   modelInfoResolver: RuntimeModelInfoResolver
   modelSelection: ModelSelection
   persistedMessage: PersistedMessage
+  persistedToolResultRef: PersistedToolResultRef
   runtime: AgentRuntime
   stableInstructionsInput: RuntimeStableInstructionsInput
   settings: Settings
@@ -93,6 +114,7 @@ export const runtimeCorePublicValueSurfaceContract = {
   findModel,
   isRuntimeEventType,
   modelCatalog: MODEL_CATALOG,
+  contextBudgetManager: ContextBudgetManager,
   runtime: AgentRuntime,
   runtimeEvent: createRuntimeEvent,
   sdkVersion: AILA_RUNTIME_SDK_VERSION,

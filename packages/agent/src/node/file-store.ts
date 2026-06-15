@@ -22,9 +22,11 @@ import {
   upsertPersistedMessage,
 } from '../conversation-core'
 import type { AgentRuntimeStore } from '../runtime'
+import { getNodeToolResultsConversationDir } from './tool-result-store'
 
 export interface FileRuntimeStoreOptions {
   dataDir: string
+  toolResultDir?: string
   createId?: () => string
   now?: () => number
 }
@@ -217,10 +219,28 @@ export function createFileRuntimeStore(options: FileRuntimeStoreOptions): AgentR
       }))
       return structuredClone(record.meta)
     },
+    async saveContextCheckpoint(conversationId, checkpoint): Promise<ConversationSummary> {
+      const record = await updateRecord(conversationId, (current) => ({
+        ...current,
+        meta: {
+          ...current.meta,
+          updatedAt: nextUpdatedAt(current.meta.updatedAt, checkpoint.createdAt),
+          context: {
+            ...(current.meta.context ?? {}),
+            checkpoint: structuredClone(checkpoint),
+          },
+        },
+      }))
+      return structuredClone(record.meta)
+    },
     async deleteConversation(conversationId): Promise<void> {
       await Promise.all([
         rm(join(conversationsDir, `${conversationId}.json`), { force: true }),
         rm(join(eventsDir, `${conversationId}.json`), { force: true }),
+        rm(getNodeToolResultsConversationDir(conversationId, options), {
+          recursive: true,
+          force: true,
+        }),
       ])
     },
   }

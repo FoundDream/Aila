@@ -8,6 +8,7 @@ import {
   listConversations,
   recoverInterruptedConversationActivityResults,
   renameConversation,
+  setConversationContextCheckpoint,
   setConversationUsage,
   upsertMessage,
 } from './conversations'
@@ -23,6 +24,7 @@ export function createPersistedRuntimeStore(): AgentRuntimeStore {
     recoverInterruptedActivities: recoverInterruptedConversationActivityResults,
     renameConversation,
     recordUsage: setConversationUsage,
+    saveContextCheckpoint: setConversationContextCheckpoint,
     deleteConversation,
   }
 }

@@ -1494,6 +1494,12 @@ function testContextAssemblerSectionsContract(): void {
     'context assembler should not assign cache keys to current user messages',
   )
   assertEqual(assembled.plan.version, 1, 'context assembler should expose a versioned context plan')
+  assertEqual(assembled.plan.budget.pressure, 'ok', 'context plan should expose budget pressure')
+  assertEqual(
+    assembled.plan.compaction.shouldAutoCompact,
+    false,
+    'small context should not request auto compact',
+  )
   assertEqual(
     assembled.plan.totalMessages,
     assembled.messages.length,
@@ -1578,10 +1584,114 @@ function testContextAssemblerSectionsContract(): void {
     compacted.stats.omittedRounds > 0,
     'context assembler should report omitted rounds when history exceeds budget',
   )
+  assert(
+    compacted.plan.budget.fixedCharCost > 0 &&
+      compacted.plan.budget.selectedHistoryCharCost >= 0 &&
+      compacted.plan.budget.compactionCharCost > 0,
+    'context budget plan should account for fixed, selected history, and compaction costs',
+  )
+  assert(
+    compacted.plan.compaction.shouldAutoCompact &&
+      compacted.plan.compaction.reason === 'omitted_history' &&
+      compacted.plan.compaction.recommendedCheckpoint?.boundaryMessageId !== undefined,
+    'context compaction plan should recommend a checkpoint when history is omitted',
+  )
   assertEqual(
     compacted.sections.at(-1)?.kind,
     'current_user_message',
     'context assembler should keep current user message after compaction summary and selected history',
+  )
+
+  const checkpoint = compacted.plan.compaction.recommendedCheckpoint
+  assert(checkpoint, 'compacted context should include a recommended checkpoint')
+  const withCheckpoint = runtimeSdk.assembleAgentContext({
+    messages: [
+      ...largeHistory,
+      {
+        schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+        id: 'context-large-current',
+        role: 'user' as const,
+        blocks: [{ type: 'text' as const, content: 'current request after large history' }],
+        status: 'done' as const,
+      },
+    ],
+    modelInfo: { model: 'contract', contextLength: 4_000 },
+    compactionCheckpoint: {
+      schemaVersion: runtimeSdk.AILA_CONTEXT_CHECKPOINT_SCHEMA_VERSION,
+      id: checkpoint.id,
+      createdAt: 123,
+      boundaryMessageId: checkpoint.boundaryMessageId,
+      sourceMessageIds: checkpoint.sourceMessageIds,
+      omittedRoundCount: checkpoint.omittedRoundCount,
+      summary: checkpoint.summary,
+      charCost: checkpoint.charCost,
+    },
+  })
+  assertEqual(
+    withCheckpoint.plan.compaction.activeCheckpointId,
+    checkpoint.id,
+    'context assembler should recognize an active checkpoint boundary',
+  )
+  assert(
+    withCheckpoint.messages.some(
+      (message) =>
+        message.role === 'system' &&
+        message.content.includes('Earlier conversation context checkpoint:'),
+    ),
+    'active checkpoint summary should be included in the assembled prompt',
+  )
+}
+
+async function testRuntimePersistsAutoContextCheckpoint(): Promise<void> {
+  const store = runtimeSdk.createInMemoryRuntimeStore()
+  const conversation = await store.createConversation?.()
+  assert(conversation, 'in-memory store should create a conversation')
+  for (let index = 0; index < 16; index += 1) {
+    await store.saveMessage(conversation.id, {
+      schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+      id: `auto-compact-history-${index}`,
+      role: 'user',
+      blocks: [{ type: 'text', content: `history ${index} ${'x'.repeat(1200)}` }],
+      status: 'done',
+    })
+  }
+
+  let streamedPlan: AgentContextPlan | undefined
+  const runtime = new AgentRuntime({
+    store,
+    getModelInfo: () => ({ model: 'small-context-contract', contextLength: 4_000 }),
+    streamChat: async (req, handlers) => {
+      streamedPlan = req.contextPlan
+      await handlers.onDone({
+        conversationId: req.conversationId,
+        messageId: req.assistantMessageId,
+        message: {
+          schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+          id: req.assistantMessageId,
+          role: 'assistant',
+          blocks: [{ type: 'text', content: 'done' }],
+          status: 'done',
+          model: req.selection,
+        },
+      })
+    },
+  })
+
+  await runtime.send({
+    conversationId: conversation.id,
+    userText: 'current request',
+    selection: { providerId: 'openrouter', modelId: 'contract/small' },
+  })
+  await waitFor(() => streamedPlan !== undefined, 'runtime stream should receive context plan')
+  const record = await store.getConversation(conversation.id)
+  assert(
+    record.meta.context?.checkpoint,
+    'runtime should persist a recommended context checkpoint into conversation meta',
+  )
+  assertEqual(
+    record.meta.context.checkpoint.id,
+    streamedPlan?.compaction.recommendedCheckpoint?.id,
+    'persisted context checkpoint should match the streamed context plan recommendation',
   )
 }
 
@@ -6469,19 +6579,6 @@ async function testNativeOpenAiChatModelStreamContract(): Promise<void> {
         usage: { prompt_tokens: 7, completion_tokens: 3, total_tokens: 10 },
       },
     ]),
-    sse([
-      {
-        choices: [
-          {
-            delta: {
-              content: 'done',
-            },
-            finish_reason: 'stop',
-          },
-        ],
-        usage: { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 },
-      },
-    ]),
   ]
   const fetchImpl: typeof fetch = async (_url, init) => {
     requests.push(JSON.parse(String(init?.body ?? '{}')) as unknown)
@@ -6520,7 +6617,7 @@ async function testNativeOpenAiChatModelStreamContract(): Promise<void> {
     events.push(event)
   }
 
-  assertEqual(requests.length, 2, 'native OpenAI chat should continue after a tool result')
+  assertEqual(requests.length, 1, 'native OpenAI chat should perform one transport request')
   assert(
     events.some((event) => event.type === 'tool-input-start' && event.toolName === 'contract_echo'),
     'native OpenAI chat should emit tool input start',
@@ -6530,25 +6627,12 @@ async function testNativeOpenAiChatModelStreamContract(): Promise<void> {
     'native OpenAI chat should emit parsed tool call',
   )
   assert(
-    events.some((event) => event.type === 'tool-result' && event.output === 'echo:hello'),
-    'native OpenAI chat should execute tool and emit result',
+    !events.some((event) => event.type === 'tool-result'),
+    'native OpenAI chat should not execute tools inside the transport client',
   )
-  assert(
-    events.some((event) => event.type === 'text-delta' && event.text === 'done'),
-    'native OpenAI chat should emit final text after tool execution',
-  )
-  const finish = events.find((event) => event.type === 'finish')
-  assert(finish?.type === 'finish', 'native OpenAI chat should finish')
-  assertEqual(finish.totalUsage?.totalTokens, 17, 'native OpenAI chat should accumulate usage')
-  const secondRequest = requests[1] as {
-    messages?: Array<{ role?: string; tool_call_id?: string }>
-  }
-  assert(
-    secondRequest.messages?.some(
-      (message) => message.role === 'tool' && message.tool_call_id === 'call_contract',
-    ),
-    'native OpenAI chat should append tool result to the follow-up request',
-  )
+  const finishStep = events.find((event) => event.type === 'finish-step')
+  assert(finishStep?.type === 'finish-step', 'native OpenAI chat should finish the provider step')
+  assertEqual(finishStep.usage?.totalTokens, 10, 'native OpenAI chat should report step usage')
 }
 
 async function testNativeAnthropicModelStreamContract(): Promise<void> {
@@ -6582,18 +6666,6 @@ async function testNativeAnthropicModelStreamContract(): Promise<void> {
       {
         type: 'message_delta',
         usage: { output_tokens: 3 },
-      },
-      { type: 'message_stop' },
-    ]),
-    sse([
-      {
-        type: 'content_block_delta',
-        index: 0,
-        delta: { type: 'text_delta', text: 'done' },
-      },
-      {
-        type: 'message_delta',
-        usage: { input_tokens: 5, output_tokens: 2 },
       },
       { type: 'message_stop' },
     ]),
@@ -6633,7 +6705,7 @@ async function testNativeAnthropicModelStreamContract(): Promise<void> {
     events.push(event)
   }
 
-  assertEqual(requests.length, 2, 'native Anthropic should continue after a tool result')
+  assertEqual(requests.length, 1, 'native Anthropic should perform one transport request')
   assert(
     events.some((event) => event.type === 'tool-input-start' && event.toolName === 'contract_echo'),
     'native Anthropic should emit tool input start',
@@ -6643,29 +6715,12 @@ async function testNativeAnthropicModelStreamContract(): Promise<void> {
     'native Anthropic should emit parsed tool call',
   )
   assert(
-    events.some((event) => event.type === 'tool-result' && event.output === 'echo:hello'),
-    'native Anthropic should execute tool and emit result',
+    !events.some((event) => event.type === 'tool-result'),
+    'native Anthropic should not execute tools inside the transport client',
   )
-  assert(
-    events.some((event) => event.type === 'text-delta' && event.text === 'done'),
-    'native Anthropic should emit final text after tool execution',
-  )
-  const finish = events.find((event) => event.type === 'finish')
-  assert(finish?.type === 'finish', 'native Anthropic should finish')
-  assertEqual(finish.totalUsage?.totalTokens, 17, 'native Anthropic should accumulate usage')
-  const secondRequest = requests[1] as {
-    messages?: Array<{ role?: string; content?: Array<{ type?: string; tool_use_id?: string }> }>
-  }
-  assert(
-    secondRequest.messages?.some(
-      (message) =>
-        Array.isArray(message.content) &&
-        message.content.some(
-          (block) => block.type === 'tool_result' && block.tool_use_id === 'anthropic_contract',
-        ),
-    ),
-    'native Anthropic should append tool result to the follow-up request',
-  )
+  const finishStep = events.find((event) => event.type === 'finish-step')
+  assert(finishStep?.type === 'finish-step', 'native Anthropic should finish the provider step')
+  assertEqual(finishStep.usage?.totalTokens, 10, 'native Anthropic should report step usage')
 }
 
 async function testNativeGoogleModelStreamContract(): Promise<void> {
@@ -6682,19 +6737,6 @@ async function testNativeGoogleModelStreamContract(): Promise<void> {
           },
         ],
         usageMetadata: { promptTokenCount: 7, candidatesTokenCount: 3, totalTokenCount: 10 },
-      },
-    ]),
-    sse([
-      {
-        candidates: [
-          {
-            content: {
-              parts: [{ text: 'done' }],
-            },
-            finishReason: 'STOP',
-          },
-        ],
-        usageMetadata: { promptTokenCount: 5, candidatesTokenCount: 2, totalTokenCount: 7 },
       },
     ]),
   ]
@@ -6733,7 +6775,7 @@ async function testNativeGoogleModelStreamContract(): Promise<void> {
     events.push(event)
   }
 
-  assertEqual(requests.length, 2, 'native Google should continue after a tool result')
+  assertEqual(requests.length, 1, 'native Google should perform one transport request')
   assert(
     events.some((event) => event.type === 'tool-input-start' && event.toolName === 'contract_echo'),
     'native Google should emit tool input start',
@@ -6743,25 +6785,325 @@ async function testNativeGoogleModelStreamContract(): Promise<void> {
     'native Google should emit parsed tool call',
   )
   assert(
-    events.some((event) => event.type === 'tool-result' && event.output === 'echo:hello'),
-    'native Google should execute tool and emit result',
+    !events.some((event) => event.type === 'tool-result'),
+    'native Google should not execute tools inside the transport client',
   )
-  assert(
-    events.some((event) => event.type === 'text-delta' && event.text === 'done'),
-    'native Google should emit final text after tool execution',
-  )
-  const finish = events.find((event) => event.type === 'finish')
-  assert(finish?.type === 'finish', 'native Google should finish')
-  assertEqual(finish.totalUsage?.totalTokens, 17, 'native Google should accumulate usage')
-  const secondRequest = requests[1] as {
-    contents?: Array<{ role?: string; parts?: Array<{ functionResponse?: { name?: string } }> }>
+  const finishStep = events.find((event) => event.type === 'finish-step')
+  assert(finishStep?.type === 'finish-step', 'native Google should finish the provider step')
+  assertEqual(finishStep.usage?.totalTokens, 10, 'native Google should report step usage')
+}
+
+async function testProviderStreamChatOwnsToolLoopContract(): Promise<void> {
+  const modelRequests: ChatMessage[][] = []
+  const agentEvents: AgentEvent[] = []
+  const toolResults: string[] = []
+  const doneMessages: PersistedMessage[] = []
+  let toolRunCount = 0
+  let doneUsage: { promptTokens: number; completionTokens: number; totalTokens: number } | undefined
+
+  const modelStreamClient: runtimePackageNodeSdk.ModelStreamClient = {
+    async *stream(input) {
+      modelRequests.push(structuredClone(input.messages))
+      if (modelRequests.length === 1) {
+        yield { type: 'text-delta', text: 'Checking ' }
+        yield { type: 'tool-input-start', id: 'loop_tool', toolName: 'contract_echo' }
+        yield { type: 'tool-input-delta', id: 'loop_tool', delta: '{"message":"hello"}' }
+        yield {
+          type: 'finish-step',
+          usage: { inputTokens: 7, outputTokens: 3, totalTokens: 10 },
+        }
+        yield {
+          type: 'tool-call',
+          toolCallId: 'loop_tool',
+          toolName: 'contract_echo',
+          input: { message: 'hello' },
+        }
+        return
+      }
+
+      assert(
+        input.messages.some(
+          (message) =>
+            message.role === 'tool' &&
+            message.tool_call_id === 'loop_tool' &&
+            message.content === 'echo:hello',
+        ),
+        'provider stream loop should append tool output before second model request',
+      )
+      yield { type: 'text-delta', text: 'done' }
+      yield { type: 'finish-step', usage: { inputTokens: 5, outputTokens: 2, totalTokens: 7 } }
+    },
   }
-  assert(
-    secondRequest.contents?.some((content) =>
-      content.parts?.some((part) => part.functionResponse?.name === 'contract_echo'),
-    ),
-    'native Google should append function response to the follow-up request',
+
+  const toolPack: ToolPack = {
+    id: 'provider-loop-contract',
+    name: 'Provider Loop Contract',
+    tools: [
+      {
+        spec: {
+          type: 'function',
+          function: {
+            name: 'contract_echo',
+            description: 'Echo model loop input.',
+            parameters: {
+              type: 'object',
+              properties: { message: { type: 'string' } },
+              required: ['message'],
+              additionalProperties: false,
+            },
+          },
+          metadata: {
+            name: 'contract_echo',
+            readOnly: true,
+            destructive: false,
+            requiresApproval: false,
+            access: ['read'],
+            scope: ['workspace'],
+          },
+        },
+        async run(args) {
+          toolRunCount += 1
+          return `echo:${String(args.message ?? '')}`
+        },
+      },
+    ],
+  }
+
+  const streamChat = runtimePackageNodeSdk.createProviderStreamChat({
+    modelStreamClient,
+    settings: { apiKeys: { openrouter: 'contract-key' }, defaultModel: null },
+  })
+
+  await streamChat(
+    {
+      conversationId: 'provider-loop-conversation',
+      assistantMessageId: 'provider-loop-assistant',
+      messages: [{ role: 'user', content: 'hello' }],
+      selection: { providerId: 'openrouter', modelId: 'contract/mock' },
+      signal: new AbortController().signal,
+      onAgentEvent: (event) => agentEvents.push(event),
+      toolRegistry: createDefaultToolRegistry([toolPack]),
+    },
+    {
+      onTextDelta() {},
+      onReasoningDelta() {},
+      onToolCallStart() {},
+      onToolCallArgsDelta() {},
+      onToolCallResult(event) {
+        toolResults.push(event.result)
+      },
+      onImageBlock() {},
+      onDone(event) {
+        doneMessages.push(event.message)
+        doneUsage = event.usage
+      },
+      onError(event) {
+        throw new Error(event.error)
+      },
+    },
   )
+
+  assertEqual(modelRequests.length, 2, 'provider stream loop should perform the second model step')
+  assertEqual(toolRunCount, 1, 'provider stream loop should execute each tool once')
+  assertEqual(toolResults[0], 'echo:hello', 'provider stream loop should emit the tool result')
+  assertEqual(doneUsage?.totalTokens, 17, 'provider stream loop should accumulate step usage')
+  const completedMessage = doneMessages[0]
+  assert(completedMessage, 'provider stream loop should produce a done message')
+  assertEqual(
+    completedMessage.status,
+    'done',
+    'provider stream loop should finish the assistant message',
+  )
+  assert(
+    completedMessage.blocks.some(
+      (block) => block.type === 'tool_call' && block.id === 'loop_tool' && block.status === 'done',
+    ),
+    'provider stream loop should persist the completed tool block',
+  )
+  assert(
+    agentEvents.some((event) => event.type === 'tool.execution.completed'),
+    'provider stream loop should emit tool execution completion',
+  )
+}
+
+async function testProviderStreamChatPersistsLargeToolResultsContract(): Promise<void> {
+  const largeOutput = 'abcdefghijklmnopqrstuvwxyz'
+  const modelRequests: ChatMessage[][] = []
+  const storedInputs: runtimePackageNodeSdk.ToolResultStorePersistInput[] = []
+  const toolResults: string[] = []
+  const doneMessages: PersistedMessage[] = []
+
+  const toolResultStore: runtimePackageNodeSdk.ToolResultStore = {
+    async persist(input) {
+      storedInputs.push(structuredClone(input))
+      return {
+        kind: 'file',
+        path: '/tmp/aila-large-tool-result.txt',
+        relativePath: 'provider-large/large_tool.txt',
+        sizeChars: input.content.length,
+        preview: input.content.slice(0, input.previewChars),
+      }
+    },
+  }
+
+  const modelStreamClient: runtimePackageNodeSdk.ModelStreamClient = {
+    async *stream(input) {
+      modelRequests.push(structuredClone(input.messages))
+      if (modelRequests.length === 1) {
+        yield {
+          type: 'tool-call',
+          toolCallId: 'large_tool',
+          toolName: 'contract_large',
+          input: {},
+        }
+        yield { type: 'finish-step', usage: { inputTokens: 4, outputTokens: 1, totalTokens: 5 } }
+        return
+      }
+
+      const toolMessage = input.messages.find(
+        (message) => message.role === 'tool' && message.tool_call_id === 'large_tool',
+      )
+      assert(toolMessage?.role === 'tool', 'large tool result should be appended as a tool message')
+      assert(
+        typeof toolMessage.content === 'string' &&
+          toolMessage.content.includes('persisted="true"') &&
+          toolMessage.content.includes('/tmp/aila-large-tool-result.txt') &&
+          toolMessage.content.includes('Preview (4 of 26 chars):') &&
+          toolMessage.content.includes('abcd') &&
+          !toolMessage.content.includes(largeOutput),
+        'large tool result should be replaced with persisted reference plus preview for the model',
+      )
+      yield { type: 'text-delta', text: 'used reference' }
+      yield { type: 'finish-step', usage: { inputTokens: 6, outputTokens: 2, totalTokens: 8 } }
+    },
+  }
+
+  const toolPack: ToolPack = {
+    id: 'provider-large-tool-result-contract',
+    name: 'Provider Large Tool Result Contract',
+    tools: [
+      {
+        spec: {
+          type: 'function',
+          function: {
+            name: 'contract_large',
+            description: 'Return a large model loop output.',
+            parameters: { type: 'object', properties: {}, additionalProperties: false },
+          },
+          metadata: {
+            name: 'contract_large',
+            readOnly: true,
+            destructive: false,
+            requiresApproval: false,
+            access: ['read'],
+            scope: ['workspace'],
+          },
+        },
+        async run() {
+          return largeOutput
+        },
+      },
+    ],
+  }
+
+  const streamChat = runtimePackageNodeSdk.createProviderStreamChat({
+    modelStreamClient,
+    toolResultStore,
+    maxInlineToolResultChars: 10,
+    toolResultPreviewChars: 4,
+    settings: { apiKeys: { openrouter: 'contract-key' }, defaultModel: null },
+  })
+
+  await streamChat(
+    {
+      conversationId: 'provider-large-result-conversation',
+      assistantMessageId: 'provider-large-result-assistant',
+      messages: [{ role: 'user', content: 'large please' }],
+      selection: { providerId: 'openrouter', modelId: 'contract/mock' },
+      signal: new AbortController().signal,
+      toolRegistry: createDefaultToolRegistry([toolPack]),
+    },
+    {
+      onTextDelta() {},
+      onReasoningDelta() {},
+      onToolCallStart() {},
+      onToolCallArgsDelta() {},
+      onToolCallResult(event) {
+        toolResults.push(event.result)
+      },
+      onImageBlock() {},
+      onDone(event) {
+        doneMessages.push(event.message)
+      },
+      onError(event) {
+        throw new Error(event.error)
+      },
+    },
+  )
+
+  assertEqual(storedInputs.length, 1, 'large tool result should be persisted once')
+  assertEqual(storedInputs[0]?.content, largeOutput, 'tool store should receive the full output')
+  assertEqual(storedInputs[0]?.previewChars, 4, 'tool store should receive preview budget')
+  assertEqual(modelRequests.length, 2, 'large tool result flow should continue to the second step')
+  assert(
+    toolResults[0]?.includes('persisted="true"') === true,
+    'streamed tool result should expose the persisted reference marker',
+  )
+  const completedMessage = doneMessages[0]
+  assert(completedMessage, 'large tool result flow should produce a done message')
+  const block = completedMessage.blocks.find(
+    (candidate) => candidate.type === 'tool_call' && candidate.id === 'large_tool',
+  )
+  assert(block?.type === 'tool_call', 'large tool result should persist a tool call block')
+  assertEqual(
+    block.resultRef?.path,
+    '/tmp/aila-large-tool-result.txt',
+    'tool block should keep ref',
+  )
+  assert(
+    block.result?.includes('persisted="true"') === true && !block.result.includes(largeOutput),
+    'tool block result should keep the reference marker instead of the full output',
+  )
+}
+
+async function testNodeToolResultStorePersistsAndCleansUpContract(): Promise<void> {
+  await withTempDataDir(async (dir) => {
+    const runtimeStore = runtimePackageNodeSdk.createFileRuntimeStore({ dataDir: dir })
+    assert(runtimeStore.createConversation, 'file runtime store should support createConversation')
+    const conversation = await runtimeStore.createConversation()
+    const toolResultStore = runtimePackageNodeSdk.createNodeToolResultStore({ dataDir: dir })
+    const ref = await toolResultStore.persist({
+      conversationId: conversation.id,
+      messageId: 'message-1',
+      toolCallId: 'tool-call-1',
+      toolName: 'contract_large',
+      content: 'large-output-content',
+      previewChars: 5,
+    })
+
+    assertEqual(
+      await readFile(ref.path, 'utf-8'),
+      'large-output-content',
+      'store should write file',
+    )
+    assertEqual(ref.preview, 'large', 'store should return bounded preview')
+    assert(
+      ref.relativePath.includes(conversation.id),
+      'store relative path should include the conversation directory',
+    )
+    assert(runtimeStore.deleteConversation, 'file runtime store should support deleteConversation')
+    await runtimeStore.deleteConversation(conversation.id)
+
+    try {
+      await readFile(ref.path, 'utf-8')
+      throw new Error('tool result file unexpectedly remained after conversation delete')
+    } catch (error) {
+      assert(
+        error instanceof Error && 'code' in error && error.code === 'ENOENT',
+        'conversation delete should remove persisted tool result files',
+      )
+    }
+  })
 }
 
 function sse(items: unknown[]): string {
@@ -7199,6 +7541,11 @@ async function testRuntimeSdkDoesNotExportDocsContract(): Promise<void> {
     'AgentRuntimeStore',
     'AgentContextPlan',
     'AgentContextPlanSection',
+    'AgentContextBudgetPlan',
+    'AgentContextCompactionPlan',
+    'AgentContextRecommendedCheckpoint',
+    'ContextBudgetManagerInput',
+    'ContextBudgetSnapshot',
     'AgentContextSectionCachePolicy',
     'AgentContextSectionMetadata',
     'AgentContextSectionSource',
@@ -7213,6 +7560,9 @@ async function testRuntimeSdkDoesNotExportDocsContract(): Promise<void> {
     'ConversationRecord',
     'ConversationSummary',
     'ConversationUsage',
+    'ConversationContextCheckpoint',
+    'ConversationContextState',
+    'PersistedToolResultRef',
     'AgentEvent',
     'AgentRuntimeEvent',
   ]) {
@@ -7246,6 +7596,8 @@ async function testRuntimeSdkDoesNotExportDocsContract(): Promise<void> {
     'createModelRegistry',
     'createProtocolRegistry',
     'createFileRuntimeStore',
+    'createNodeToolResultStore',
+    'getNodeToolResultsDir',
     'loadNodeSettings',
     'createDefaultWebSearch',
     'createWebSearchRegistry',
@@ -7390,10 +7742,10 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
   )
   assert(
     runtimeStoreSource.includes('saveMessage: upsertMessage') &&
-      runtimeStoreSource.includes('recordUsage: setConversationUsage'),
-    'persisted runtime store adapter should map persisted message and usage helpers into runtime names',
+      runtimeStoreSource.includes('recordUsage: setConversationUsage') &&
+      runtimeStoreSource.includes('saveContextCheckpoint: setConversationContextCheckpoint'),
+    'persisted runtime store adapter should map message, usage, and context checkpoint helpers into runtime names',
   )
-
   const runtimeSdkSource = await readFile(
     join(process.cwd(), 'packages/agent/src/index.ts'),
     'utf-8',
@@ -7614,6 +7966,11 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
       conversationsSource.includes("from '../../packages/agent/src/conversation-core'") &&
       conversationsSource.includes('getConversationsDir'),
     'persisted conversations module should own filesystem IO and reuse pure conversation core contracts',
+  )
+  assert(
+    conversationsSource.includes('getNodeToolResultsConversationDir') &&
+      conversationsSource.includes('getDataDir()'),
+    'desktop conversation deletion should clean persisted tool result files under the data dir',
   )
 
   for (const adapterFile of [
@@ -8512,6 +8869,7 @@ async function main(): Promise<void> {
   await testRuntimeHostTransientContextUsesInjectedRecord()
   await testRuntimeHostStableInstructionsUsesInjectedRecord()
   testContextAssemblerSectionsContract()
+  await testRuntimePersistsAutoContextCheckpoint()
   await testRuntimeStreamHandlerSnapshots()
   await testRuntimeConversationStoreFacadeContract()
   await testRuntimeConversationRuntimeStateApiUsesEventReplay()
@@ -8569,6 +8927,9 @@ async function main(): Promise<void> {
   await testNativeOpenAiChatModelStreamContract()
   await testNativeAnthropicModelStreamContract()
   await testNativeGoogleModelStreamContract()
+  await testProviderStreamChatOwnsToolLoopContract()
+  await testProviderStreamChatPersistsLargeToolResultsContract()
+  await testNodeToolResultStorePersistsAndCleansUpContract()
   testToolActivityTargetContract()
   await testFilesystemToolWorkspaceRootsContract()
   await testDefaultRuntimeHostOwnsFilesystemTools()

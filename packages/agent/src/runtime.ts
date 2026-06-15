@@ -10,8 +10,10 @@ import { type AgentContextPlan, assembleAgentContext } from './context'
 import {
   type AgentEventAppendResult,
   AILA_AGENT_EVENT_SCHEMA_VERSION,
+  AILA_CONTEXT_CHECKPOINT_SCHEMA_VERSION,
   AILA_CONVERSATION_META_SCHEMA_VERSION,
   AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+  type ConversationContextCheckpoint,
   type ConversationRecord,
   type ConversationRuntimeReplayState,
   type ConversationSummary,
@@ -325,6 +327,10 @@ export interface AgentRuntimeStore {
     conversationId: string,
     usage: { promptTokens: number; completionTokens: number; totalTokens: number },
   ) => Promise<ConversationSummary>
+  saveContextCheckpoint?: (
+    conversationId: string,
+    checkpoint: ConversationContextCheckpoint,
+  ) => Promise<ConversationSummary>
   deleteConversation: (conversationId: string) => Promise<void>
 }
 
@@ -550,6 +556,16 @@ export function createInMemoryRuntimeStore(
         ...current,
         updatedAt: nextRuntimeUpdatedAt(current, now()),
         usage: { ...usage, updatedAt: now() },
+      }))
+    },
+    async saveContextCheckpoint(conversationId, checkpoint): Promise<ConversationSummary> {
+      return updateMeta(conversationId, (current) => ({
+        ...current,
+        updatedAt: nextRuntimeUpdatedAt(current, checkpoint.createdAt),
+        context: {
+          ...(current.context ?? {}),
+          checkpoint: cloneRuntimeValue(checkpoint),
+        },
       }))
     },
     async deleteConversation(conversationId): Promise<void> {
@@ -1109,9 +1125,11 @@ export class AgentRuntime implements AgentRuntimeApi {
         messages: cloneRuntimeValue(record.messages),
         modelInfo: await this.resolveModelInfo(selection),
         dynamicContext: inputTransientContext ?? hostTransientContext,
+        compactionCheckpoint: record.meta.context?.checkpoint,
       })
       messages = context.messages
       contextPlan = context.plan
+      await this.persistRecommendedContextCheckpoint(conversationId, contextPlan)
       toolRegistry = await this.getToolRegistry()
       toolContext = await this.buildToolContext({
         conversationId,
@@ -1702,6 +1720,32 @@ export class AgentRuntime implements AgentRuntimeApi {
     } catch (error) {
       this.logger.warn('[runtime] skill load failed; continuing without skills:', error)
       return cloneRuntimeSkills(this.staticSkills)
+    }
+  }
+
+  private async persistRecommendedContextCheckpoint(
+    conversationId: string,
+    contextPlan: AgentContextPlan,
+  ): Promise<void> {
+    const recommended = contextPlan.compaction.recommendedCheckpoint
+    if (!recommended || !this.store.saveContextCheckpoint) return
+    const checkpoint: ConversationContextCheckpoint = {
+      schemaVersion: AILA_CONTEXT_CHECKPOINT_SCHEMA_VERSION,
+      id: recommended.id,
+      createdAt: this.now(),
+      boundaryMessageId: recommended.boundaryMessageId,
+      sourceMessageIds: cloneRuntimeValue(recommended.sourceMessageIds),
+      omittedRoundCount: recommended.omittedRoundCount,
+      summary: recommended.summary,
+      charCost: recommended.charCost,
+    }
+    try {
+      const summary = cloneRuntimeConversationSummary(
+        await this.store.saveContextCheckpoint(conversationId, checkpoint),
+      )
+      this.emit(createRuntimeEvent('conversations:updated', summary))
+    } catch (error) {
+      this.logger.warn('[runtime] context checkpoint persistence failed:', error)
     }
   }
 

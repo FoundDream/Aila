@@ -40,6 +40,7 @@ export interface ModelStreamRequest {
   messages: ChatMessage[]
   tools: ModelStreamToolDefinition[]
   signal: AbortSignal
+  step?: number
 }
 
 export interface ModelStreamClient {

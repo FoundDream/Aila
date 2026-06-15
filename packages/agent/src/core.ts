@@ -23,8 +23,13 @@ export type {
   UserContentPart,
 } from './agent-protocol'
 export {
+  type AgentContextAutoCompactReason,
+  type AgentContextBudgetPlan,
+  type AgentContextBudgetPressure,
+  type AgentContextCompactionPlan,
   type AgentContextPlan,
   type AgentContextPlanSection,
+  type AgentContextRecommendedCheckpoint,
   type AgentContextResult,
   type AgentContextSection,
   type AgentContextSectionCachePolicy,
@@ -36,14 +41,20 @@ export {
   type BuildAgentContextInput,
   buildAgentContext,
   ContextAssembler,
+  ContextBudgetManager,
+  type ContextBudgetManagerInput,
+  type ContextBudgetSnapshot,
 } from './context'
 export {
   type AgentEventAppendResult,
   AILA_AGENT_EVENT_SCHEMA_VERSION,
+  AILA_CONTEXT_CHECKPOINT_SCHEMA_VERSION,
   AILA_CONVERSATION_META_SCHEMA_VERSION,
   AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
   type ConversationActivity,
   type ConversationActivityState,
+  type ConversationContextCheckpoint,
+  type ConversationContextState,
   type ConversationInterruptedRecoveryOptions,
   type ConversationRecord,
   type ConversationRuntimePendingApproval,
@@ -60,6 +71,7 @@ export {
   type PersistedMessage,
   type PersistedTextBlock,
   type PersistedToolCallBlock,
+  type PersistedToolResultRef,
   replayConversationActivity,
   replayConversationRuntimeState,
 } from './conversation-core'

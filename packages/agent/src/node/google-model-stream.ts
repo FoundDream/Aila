@@ -10,7 +10,6 @@ import type {
 } from './model-stream'
 import { parseSseJson } from './sse'
 
-const MAX_STEPS = 10
 const AILA_IMAGE_URL_PREFIX = 'aila-image://i/'
 const GOOGLE_GENERATIVE_LANGUAGE_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta'
 
@@ -42,12 +41,6 @@ interface GoogleStreamChunk {
   error?: { message?: string }
 }
 
-interface AccumulatedUsage {
-  inputTokens: number
-  outputTokens: number
-  totalTokens: number
-}
-
 interface PendingGoogleToolCall {
   id: string
   name: string
@@ -71,99 +64,46 @@ export function createGoogleModelStreamClient(
       }
 
       const conversation = await toGoogleConversation(input.messages, options.imageDir)
-      const totalUsage: AccumulatedUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 }
+      const toolCalls: PendingGoogleToolCall[] = []
+      let stepUsage: ModelStreamUsage | undefined
 
-      for (let step = 0; step < MAX_STEPS; step += 1) {
-        const modelParts: GooglePart[] = []
-        const toolCalls: PendingGoogleToolCall[] = []
-        let stepUsage: ModelStreamUsage | undefined
+      for await (const chunk of await streamGoogle(input, conversation, fetchImpl)) {
+        if (chunk.error) throw new Error(chunk.error.message ?? 'Google stream error')
+        if (chunk.usageMetadata) stepUsage = normalizeGoogleUsage(chunk.usageMetadata)
 
-        for await (const chunk of await streamGoogle(input, conversation, fetchImpl)) {
-          if (chunk.error) throw new Error(chunk.error.message ?? 'Google stream error')
-          if (chunk.usageMetadata) stepUsage = normalizeGoogleUsage(chunk.usageMetadata)
-
-          for (const candidate of chunk.candidates ?? []) {
-            for (const part of candidate.content?.parts ?? []) {
-              if ('text' in part && part.text) {
-                modelParts.push({ text: part.text })
-                yield { type: 'text-delta', text: part.text }
-                continue
+        for (const candidate of chunk.candidates ?? []) {
+          for (const part of candidate.content?.parts ?? []) {
+            if ('text' in part && part.text) {
+              yield { type: 'text-delta', text: part.text }
+              continue
+            }
+            if ('functionCall' in part) {
+              const toolCall: PendingGoogleToolCall = {
+                id: `google-tool-${input.step ?? 0}-${toolCalls.length}`,
+                name: part.functionCall.name,
+                args: part.functionCall.args ?? {},
               }
-              if ('functionCall' in part) {
-                const toolCall: PendingGoogleToolCall = {
-                  id: `google-tool-${step}-${toolCalls.length}`,
-                  name: part.functionCall.name,
-                  args: part.functionCall.args ?? {},
-                }
-                toolCalls.push(toolCall)
-                modelParts.push({
-                  functionCall: {
-                    name: toolCall.name,
-                    args: toolCall.args,
-                  },
-                })
-                const args = JSON.stringify(toolCall.args)
-                yield { type: 'tool-input-start', id: toolCall.id, toolName: toolCall.name }
-                if (args && args !== '{}') {
-                  yield { type: 'tool-input-delta', id: toolCall.id, delta: args }
-                }
+              toolCalls.push(toolCall)
+              const args = JSON.stringify(toolCall.args)
+              yield { type: 'tool-input-start', id: toolCall.id, toolName: toolCall.name }
+              if (args && args !== '{}') {
+                yield { type: 'tool-input-delta', id: toolCall.id, delta: args }
               }
             }
           }
         }
-
-        if (stepUsage) addUsage(totalUsage, stepUsage)
-        yield { type: 'finish-step', usage: stepUsage }
-
-        if (toolCalls.length === 0) {
-          yield { type: 'finish', totalUsage }
-          return
-        }
-
-        conversation.contents.push({ role: 'model', parts: modelParts })
-        const responseParts: GooglePart[] = []
-
-        for (const toolCall of toolCalls) {
-          const tool = input.tools.find((td) => td.name === toolCall.name)
-          yield {
-            type: 'tool-call',
-            toolCallId: toolCall.id,
-            toolName: toolCall.name,
-            input: toolCall.args,
-          }
-
-          if (!tool) {
-            const message = `Unknown tool "${toolCall.name}"`
-            yield {
-              type: 'tool-error',
-              toolCallId: toolCall.id,
-              toolName: toolCall.name,
-              error: new Error(message),
-            }
-            responseParts.push(toGoogleFunctionResponse(toolCall.name, message, true))
-            continue
-          }
-
-          try {
-            const output = await tool.execute(toolCall.args, { toolCallId: toolCall.id })
-            yield {
-              type: 'tool-result',
-              toolCallId: toolCall.id,
-              toolName: toolCall.name,
-              output,
-            }
-            responseParts.push(toGoogleFunctionResponse(toolCall.name, stringifyToolOutput(output)))
-          } catch (error) {
-            const message = error instanceof Error ? error.message : String(error)
-            yield { type: 'tool-error', toolCallId: toolCall.id, toolName: toolCall.name, error }
-            responseParts.push(toGoogleFunctionResponse(toolCall.name, message, true))
-          }
-        }
-
-        conversation.contents.push({ role: 'user', parts: responseParts })
       }
 
-      throw new Error(`Maximum model tool steps exceeded (${MAX_STEPS})`)
+      yield { type: 'finish-step', usage: stepUsage }
+
+      for (const toolCall of toolCalls) {
+        yield {
+          type: 'tool-call',
+          toolCallId: toolCall.id,
+          toolName: toolCall.name,
+          input: toolCall.args,
+        }
+      }
     },
   }
 }
@@ -349,12 +289,6 @@ async function readErrorResponse(response: Response, provider: string): Promise<
   }
 }
 
-function addUsage(total: AccumulatedUsage, usage: ModelStreamUsage): void {
-  total.inputTokens += usage.inputTokens ?? 0
-  total.outputTokens += usage.outputTokens ?? 0
-  total.totalTokens += usage.totalTokens ?? (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0)
-}
-
 function parseToolArguments(args: string): Record<string, unknown> {
   try {
     const parsed = args ? (JSON.parse(args) as unknown) : {}
@@ -362,10 +296,6 @@ function parseToolArguments(args: string): Record<string, unknown> {
   } catch {
     return {}
   }
-}
-
-function stringifyToolOutput(output: unknown): string {
-  return typeof output === 'string' ? output : output == null ? '' : JSON.stringify(output)
 }
 
 function imageNameFromUrl(url: string): string | null {

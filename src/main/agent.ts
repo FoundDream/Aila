@@ -4,7 +4,7 @@ import {
   createModelRegistry,
   createProviderStreamChat,
 } from '@aila/agent/node'
-import { getImagesDir } from './paths'
+import { getDataDir, getImagesDir } from './paths'
 import { loadSettings } from './settings'
 
 export type {
@@ -40,5 +40,6 @@ export function getModelInfo(providerId: ProviderId, modelId: string): ModelInfo
 export const streamChat = createProviderStreamChat({
   modelRegistry,
   loadSettings,
+  dataDir: getDataDir(),
   imageDir: getImagesDir(),
 })
