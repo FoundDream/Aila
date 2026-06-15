@@ -1,10 +1,12 @@
 import {
   ArrowLeftIcon,
   ArrowUpIcon,
+  ClockIcon,
   FileTextIcon,
   ImageIcon,
   NotebookTextIcon,
   PlusIcon,
+  RotateCcwIcon,
   SquareIcon,
   XIcon,
 } from 'lucide-react'
@@ -29,11 +31,13 @@ import type {
   Settings,
   UsageInfo,
 } from '../../types'
+import type { QueuedRun } from './useChatStreams'
 
 interface ComposerProps {
   isStreaming: boolean
   onSubmit: (text: string, attachments: ChatAttachmentInput[]) => Promise<void> | void
   onAbort: () => void
+  queuedRuns?: QueuedRun[]
   usage?: UsageInfo | null
   contextLength?: number | null
   configuredProviders: ProviderId[]
@@ -66,6 +70,32 @@ interface PendingAttachment {
   data: string
   /** data: URL for image thumbnails. */
   previewUrl?: string
+}
+
+function compactTextPreview(value: string): string {
+  return value.replace(/\s+/g, ' ').trim()
+}
+
+function pluralize(count: number, singular: string, plural = `${singular}s`): string {
+  return `${count} ${count === 1 ? singular : plural}`
+}
+
+function queuedRunPreview(queued: QueuedRun): string {
+  if (queued.kind === 'retryLast') return 'Resume last turn'
+  const text = compactTextPreview(queued.text)
+  if (text) return text
+  return queued.attachments.length > 0 ? 'Attachment-only prompt' : 'Empty prompt'
+}
+
+function queuedRunMeta(queued: QueuedRun): string | null {
+  if (queued.kind === 'retryLast') return 'Retry'
+  const images = queued.attachments.filter((attachment) => attachment.kind === 'image').length
+  const files = queued.attachments.length - images
+  const parts = [
+    images > 0 ? pluralize(images, 'image') : null,
+    files > 0 ? pluralize(files, 'file') : null,
+  ].filter((part): part is string => Boolean(part))
+  return parts.length > 0 ? parts.join(' · ') : null
 }
 
 function formatTokens(n: number): string {
@@ -130,10 +160,55 @@ function AttachMenuItem({
   )
 }
 
+function QueuedRunsList({ queuedRuns }: { queuedRuns: QueuedRun[] }): ReactElement | null {
+  if (queuedRuns.length === 0) return null
+
+  return (
+    <div className="border-b border-[var(--border)] px-4 py-2.5">
+      <div className="mb-1.5 flex items-center gap-1.5 px-1 text-[11.5px] font-medium text-[var(--text-dim)]">
+        <ClockIcon className="size-3.5" />
+        <span>Queue</span>
+      </div>
+      <div className="flex max-h-32 flex-col gap-1 overflow-y-auto pr-1">
+        {queuedRuns.map((queued, index) => {
+          const preview = queuedRunPreview(queued)
+          const meta = queuedRunMeta(queued)
+          return (
+            <div
+              key={queued.id}
+              className="flex min-h-7 items-center gap-2 rounded-lg px-2 py-1 text-[12px] text-[var(--text-soft)]"
+            >
+              <span className="w-9 shrink-0 text-[11px] text-[var(--text-dim)]">
+                {index === 0 ? 'Next' : `#${index + 1}`}
+              </span>
+              <span className="grid size-4 shrink-0 place-items-center text-[var(--text-dim)]">
+                {queued.kind === 'retryLast' ? (
+                  <RotateCcwIcon className="size-3.5" />
+                ) : (
+                  <ArrowUpIcon className="size-3.5" />
+                )}
+              </span>
+              <span className="min-w-0 flex-1 truncate" title={preview}>
+                {preview}
+              </span>
+              {meta && (
+                <span className="max-w-28 shrink-0 truncate text-[11px] text-[var(--text-dim)]">
+                  {meta}
+                </span>
+              )}
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 export function Composer({
   isStreaming,
   onSubmit,
   onAbort,
+  queuedRuns = [],
   usage,
   contextLength,
   configuredProviders,
@@ -242,8 +317,8 @@ export function Composer({
       .catch(() => setDocs([]))
   }, [])
 
-  // Sends always succeed even while streaming — they're queued and fire after
-  // the current run finishes. The Stop button is the way to interrupt.
+  // Sends always succeed even while streaming: they're queued and fire after
+  // the current run finishes. The primary action becomes Stop while empty.
   const submit = useCallback(async () => {
     const text = value
     if (!text.trim() && attachments.length === 0) return
@@ -303,8 +378,23 @@ export function Composer({
   )
 
   const canSend = value.trim().length > 0 || attachments.length > 0
+  const primaryActionIsAbort = isStreaming && !canSend
+  const primaryActionLabel = primaryActionIsAbort
+    ? 'Stop'
+    : isStreaming
+      ? 'Queue follow-up'
+      : 'Send'
+  const primaryActionDisabled = !primaryActionIsAbort && !canSend
   const activeApprovalMode = approvalMode ?? 'safe'
   const activeApprovalModeMeta = APPROVAL_MODES.find((mode) => mode.id === activeApprovalMode)
+
+  const handlePrimaryAction = useCallback(() => {
+    if (primaryActionIsAbort) {
+      onAbort()
+      return
+    }
+    void submit()
+  }, [primaryActionIsAbort, onAbort, submit])
 
   const setToolMode = useCallback(
     async (mode: ApprovalMode) => {
@@ -337,6 +427,8 @@ export function Composer({
           onDrop={handleDrop}
           className="rounded-[24px] border border-[var(--border)] bg-[var(--surface)] shadow-[0_2px_14px_rgba(0,0,0,0.035)] transition-shadow focus-within:shadow-[0_3px_18px_rgba(0,0,0,0.055)]"
         >
+          <QueuedRunsList queuedRuns={queuedRuns} />
+
           {(attachments.length > 0 || attachError) && (
             <div className="flex flex-wrap items-center gap-2 px-4 pt-3">
               {attachments.map((attachment) =>
@@ -391,7 +483,7 @@ export function Composer({
               onChange={(event) => setValue(event.target.value)}
               onKeyDown={handleKeyDown}
               onPaste={handlePaste}
-              placeholder={isStreaming ? 'Steer Aila…' : 'Ask Aila anything'}
+              placeholder={isStreaming ? 'Queue a follow-up' : 'Ask Aila anything'}
               rows={1}
               className="block min-h-7 max-h-[180px] w-full resize-none overflow-y-auto bg-transparent text-[15px] leading-[1.6] text-[var(--text)] outline-none placeholder:text-[var(--text-dim)]"
             />
@@ -582,34 +674,27 @@ export function Composer({
                 onOpenSettings={onOpenSettings}
                 recentOpenRouterModels={recentOpenRouterModels}
               />
-              {isStreaming && (
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button
-                      type="button"
-                      aria-label="Stop"
-                      onClick={onAbort}
-                      className="grid size-8 shrink-0 place-items-center rounded-full border border-[var(--border)] bg-[var(--surface)] text-[var(--text-soft)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
-                    >
-                      <SquareIcon className="size-3 fill-current" />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent>Stop</TooltipContent>
-                </Tooltip>
-              )}
               <Tooltip>
                 <TooltipTrigger asChild>
                   <button
                     type="button"
-                    aria-label={isStreaming ? 'Steer' : 'Send'}
-                    onClick={() => void submit()}
-                    disabled={!canSend}
-                    className="grid size-8 shrink-0 place-items-center rounded-full bg-[var(--brand-ink)] text-[var(--brand-ink-fg)] transition-opacity hover:opacity-85 disabled:cursor-not-allowed disabled:bg-[var(--surface-hover)] disabled:text-[var(--text-dim)]"
+                    aria-label={primaryActionLabel}
+                    onClick={handlePrimaryAction}
+                    disabled={primaryActionDisabled}
+                    className={`grid size-8 shrink-0 place-items-center rounded-full transition disabled:cursor-not-allowed ${
+                      primaryActionIsAbort
+                        ? 'border border-[var(--border)] bg-[var(--surface)] text-[var(--text-soft)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]'
+                        : 'bg-[var(--brand-ink)] text-[var(--brand-ink-fg)] hover:opacity-85 disabled:bg-[var(--surface-hover)] disabled:text-[var(--text-dim)]'
+                    }`}
                   >
-                    <ArrowUpIcon className="size-4" strokeWidth={2.4} />
+                    {primaryActionIsAbort ? (
+                      <SquareIcon className="size-3 fill-current" />
+                    ) : (
+                      <ArrowUpIcon className="size-4" strokeWidth={2.4} />
+                    )}
                   </button>
                 </TooltipTrigger>
-                <TooltipContent>{isStreaming ? 'Steer' : 'Send'}</TooltipContent>
+                <TooltipContent>{primaryActionLabel}</TooltipContent>
               </Tooltip>
             </div>
           </div>

@@ -52,10 +52,10 @@ export function ChatPage({
 
   const stream = conversationId ? streams.getStream(conversationId) : null
   const messages = stream?.messages ?? []
-  const displayMessages = stream?.displayMessages ?? []
   const isStreaming = stream?.runningMessageId !== null && stream?.runningMessageId !== undefined
   const usage = stream?.usage ?? null
-  const queuedCount = stream?.queue.length ?? 0
+  const queuedRuns = stream?.queue ?? []
+  const queuedCount = queuedRuns.length
   const lastMessage = messages.at(-1)
   const hasRetryableLastTurn =
     lastMessage?.role === 'user' ||
@@ -120,6 +120,7 @@ export function ChatPage({
       isStreaming={isStreaming}
       onSubmit={handleSubmit}
       onAbort={handleAbort}
+      queuedRuns={queuedRuns}
       usage={usage}
       contextLength={contextLength}
       configuredProviders={configuredProviders}
@@ -140,7 +141,7 @@ export function ChatPage({
         </span>
       </header>
       <main className="flex min-h-0 flex-1 flex-col">
-        {displayMessages.length === 0 ? (
+        {messages.length === 0 ? (
           // New-chat hero: prompt + composer sit together at the vertical
           // center; pb offsets the h-10 header so it reads optically centered.
           <div className="flex min-h-0 flex-1 flex-col justify-center pb-20">
@@ -152,7 +153,7 @@ export function ChatPage({
         ) : (
           <>
             <Transcript
-              messages={displayMessages}
+              messages={messages}
               canRetryLast={canRetryLast}
               onRetryLast={handleRetryLast}
               submitScrollKey={submitScrollKey}

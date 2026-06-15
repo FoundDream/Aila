@@ -59,11 +59,11 @@ export function DocChatPanel({
 
   const stream = activeId ? streams.getStream(activeId) : null
   const messages = stream?.messages ?? []
-  const displayMessages = stream?.displayMessages ?? []
   const isStreaming = stream?.runningMessageId !== null && stream?.runningMessageId !== undefined
   const usage = stream?.usage ?? null
   const events = stream?.events ?? []
-  const queuedCount = stream?.queue.length ?? 0
+  const queuedRuns = stream?.queue ?? []
+  const queuedCount = queuedRuns.length
   const lastMessage = messages.at(-1)
   const hasRetryableLastTurn =
     lastMessage?.role === 'user' ||
@@ -173,7 +173,7 @@ export function DocChatPanel({
         {isReady ? (
           <>
             <Transcript
-              messages={displayMessages}
+              messages={messages}
               canRetryLast={canRetryLast}
               onRetryLast={handleRetryLast}
             />
@@ -182,6 +182,7 @@ export function DocChatPanel({
               isStreaming={isStreaming}
               onSubmit={handleSubmit}
               onAbort={handleAbort}
+              queuedRuns={queuedRuns}
               usage={usage}
               contextLength={contextLength}
               configuredProviders={configuredProviders}

@@ -269,10 +269,7 @@ function queuedSendToMessage(
 }
 
 function displayMessagesForStream(stream: ConversationStreamState): Message[] {
-  const queuedMessages = stream.queue
-    .filter((queued): queued is Extract<QueuedRun, { kind: 'send' }> => queued.kind === 'send')
-    .map((queued) => queuedSendToMessage(queued, `queued:${queued.id}`, 'queued'))
-  return queuedMessages.length === 0 ? stream.messages : [...stream.messages, ...queuedMessages]
+  return stream.messages
 }
 
 function materializeStream(stream: ConversationStreamState): ConversationStream {
