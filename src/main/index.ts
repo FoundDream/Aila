@@ -39,6 +39,11 @@ import {
   registerRuntimeWorkbenchIpcHandlers,
 } from './runtime-workbench'
 import { configuredProviders, loadSettings, type Settings, saveSettings } from './settings'
+import {
+  createTerminalSessionManager,
+  registerTerminalIpcHandlers,
+  type TerminalSessionManager,
+} from './terminal'
 
 dotenv.config()
 
@@ -146,6 +151,13 @@ async function pickSkillDirectory(): Promise<string | null> {
 }
 
 const runtimeWorkbench = createDesktopRuntimeWorkbench({ emit: send, logger: console })
+let terminalManager: TerminalSessionManager | null = null
+
+function getTerminalManager(): TerminalSessionManager {
+  terminalManager ??= createTerminalSessionManager(send)
+  return terminalManager
+}
+
 configureDocConversationRefRewriter(async (rewrites) => {
   const summaries = await rewritePersistedDocRefs(rewrites.map((rewrite) => ({ ...rewrite })))
   for (const summary of summaries) send('conversations:updated', summary)
@@ -153,11 +165,13 @@ configureDocConversationRefRewriter(async (rewrites) => {
 })
 
 async function shutdownRuntimeWorkbench(): Promise<void> {
+  terminalManager?.shutdown()
   await runtimeWorkbench.shutdown()
 }
 
 function registerIpcHandlers(): void {
   registerRuntimeWorkbenchIpcHandlers(ipcMain, runtimeWorkbench)
+  registerTerminalIpcHandlers(ipcMain, getTerminalManager())
 
   async function reloadExtensions() {
     const [runtimeReload, report] = await Promise.all([

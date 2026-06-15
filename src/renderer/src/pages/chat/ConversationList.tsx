@@ -1,4 +1,11 @@
-import { FolderIcon, FolderPlusIcon, PencilIcon, PlusIcon, Trash2Icon } from 'lucide-react'
+import {
+  FolderIcon,
+  FolderPlusIcon,
+  PencilIcon,
+  PlusIcon,
+  TerminalIcon,
+  Trash2Icon,
+} from 'lucide-react'
 import { type ReactElement, useEffect, useMemo, useRef, useState } from 'react'
 import type { ConversationSummary, ConversationWorkspaceRef } from '../../../../preload/index'
 import { type ConversationStatusTone, getConversationStatus } from './conversationStatus'
@@ -11,6 +18,7 @@ interface ConversationListProps {
   onSelect: (id: string) => void
   onCreate: (workspace?: ConversationWorkspaceRef | null) => void
   onCreateWorkspaceChat: () => void
+  onOpenTerminal: (workspace: ConversationWorkspaceRef) => void
   onRename: (id: string, title: string) => void
   onDelete: (id: string) => void
 }
@@ -114,6 +122,7 @@ export function ConversationList({
   onSelect,
   onCreate,
   onCreateWorkspaceChat,
+  onOpenTerminal,
   onRename,
   onDelete,
 }: ConversationListProps): ReactElement {
@@ -155,6 +164,7 @@ export function ConversationList({
               {projects.map((project) => {
                 const isExpanded = project.id === expandedProjectId
                 const showAll = fullyShownProjectIds.has(project.id)
+                const workspace = project.workspace
                 const visibleConversations = showAll
                   ? project.conversations
                   : project.conversations.slice(0, PROJECT_SESSION_PREVIEW_LIMIT)
@@ -179,7 +189,18 @@ export function ConversationList({
                       </button>
                       <button
                         type="button"
-                        onClick={() => onCreate(project.workspace)}
+                        onClick={() => {
+                          if (workspace) onOpenTerminal(workspace)
+                        }}
+                        aria-label={`Open Terminal in ${project.label}`}
+                        title="Open Terminal"
+                        className="grid size-6 shrink-0 cursor-pointer place-items-center rounded-md text-[var(--text-dim)] opacity-0 transition group-hover/project:opacity-100 hover:bg-[var(--surface)] hover:text-[var(--text)]"
+                      >
+                        <TerminalIcon className="size-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onCreate(workspace)}
                         aria-label={`New chat in ${project.label}`}
                         title={`New chat in ${project.label}`}
                         className="mr-1 grid size-6 shrink-0 cursor-pointer place-items-center rounded-md text-[var(--text-dim)] opacity-0 transition group-hover/project:opacity-100 hover:bg-[var(--surface)] hover:text-[var(--text)]"

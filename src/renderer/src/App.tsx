@@ -6,9 +6,11 @@ import {
   SquarePenIcon,
 } from 'lucide-react'
 import {
+  lazy,
   type ReactElement,
   type ReactNode,
   type PointerEvent as ReactPointerEvent,
+  Suspense,
   useCallback,
   useEffect,
   useMemo,
@@ -30,7 +32,13 @@ import {
   resolveToolApproval as resolveToolApprovalState,
   resolveToolApprovalsForConversation,
 } from '@/toolApprovalsState'
-import type { ProviderId, Settings, SettingsState, ToolApprovalRequestEvent } from './types'
+import type {
+  ConversationWorkspaceRef,
+  ProviderId,
+  Settings,
+  SettingsState,
+  ToolApprovalRequestEvent,
+} from './types'
 
 type Tab = 'chat' | 'docs'
 
@@ -52,6 +60,12 @@ const navItems: NavItem[] = [
     icon: <FileTextIcon className="size-4" />,
   },
 ]
+
+const WorkspaceTerminalPanel = lazy(() =>
+  import('@/components/terminal/WorkspaceTerminalPanel').then((module) => ({
+    default: module.WorkspaceTerminalPanel,
+  })),
+)
 
 const SIDEBAR_DEFAULT_WIDTH = 260
 const SIDEBAR_MIN_WIDTH = 180
@@ -91,6 +105,7 @@ export default function App(): ReactElement {
   )
   const [settingsState, setSettingsState] = useState<SettingsState | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [terminalWorkspace, setTerminalWorkspace] = useState<ConversationWorkspaceRef | null>(null)
   const [toolApprovalsState, setToolApprovalsState] = useState(createToolApprovalsState)
   const toolApprovals = toolApprovalsState.pending
   const pendingApprovalConversationIds = useMemo(
@@ -116,6 +131,10 @@ export default function App(): ReactElement {
   }, [])
 
   const openSettings = useCallback(() => setSettingsOpen(true), [])
+
+  const openWorkspaceTerminal = useCallback((workspace: ConversationWorkspaceRef) => {
+    setTerminalWorkspace(workspace)
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -281,6 +300,7 @@ export default function App(): ReactElement {
                 onCreateWorkspaceChat={() => {
                   void conversationsState.createWorkspaceChat()
                 }}
+                onOpenTerminal={openWorkspaceTerminal}
                 onRename={(id, title) => {
                   void conversationsState.rename(id, title)
                 }}
@@ -353,29 +373,52 @@ export default function App(): ReactElement {
               : 'overflow-hidden rounded-tl-xl border-t border-l border-[var(--border)] shadow-[0_1px_4px_rgba(0,0,0,0.03)]'
           }`}
         >
-          <div className={tab === 'chat' ? 'h-full' : 'hidden'}>
-            <ChatPage
-              conversation={conversationsState.activeRecord}
-              onCreateConversation={conversationsState.create}
-              streams={chatStreams}
-              settings={settingsState?.settings ?? null}
-              configuredProviders={settingsState?.configuredProviders ?? ([] as ProviderId[])}
-              onUpdateSettings={updateSettings}
-              onOpenSettings={openSettings}
-            />
-          </div>
-          <div className={tab === 'docs' ? 'h-full' : 'hidden'}>
-            <DocsPage
-              active={tab === 'docs'}
-              state={docsState}
-              streams={chatStreams}
-              settings={settingsState?.settings ?? null}
-              configuredProviders={settingsState?.configuredProviders ?? ([] as ProviderId[])}
-              pendingApprovalConversationIds={pendingApprovalConversationIds}
-              onClearConversationApprovals={clearConversationApprovals}
-              onUpdateSettings={updateSettings}
-              onOpenSettings={openSettings}
-            />
+          <div className="flex h-full min-h-0 flex-col">
+            <div className="min-h-0 flex-1">
+              <div className={tab === 'chat' ? 'h-full' : 'hidden'}>
+                <ChatPage
+                  conversation={conversationsState.activeRecord}
+                  onCreateConversation={conversationsState.create}
+                  streams={chatStreams}
+                  settings={settingsState?.settings ?? null}
+                  configuredProviders={settingsState?.configuredProviders ?? ([] as ProviderId[])}
+                  onUpdateSettings={updateSettings}
+                  onOpenSettings={openSettings}
+                />
+              </div>
+              <div className={tab === 'docs' ? 'h-full' : 'hidden'}>
+                <DocsPage
+                  active={tab === 'docs'}
+                  state={docsState}
+                  streams={chatStreams}
+                  settings={settingsState?.settings ?? null}
+                  configuredProviders={settingsState?.configuredProviders ?? ([] as ProviderId[])}
+                  pendingApprovalConversationIds={pendingApprovalConversationIds}
+                  onClearConversationApprovals={clearConversationApprovals}
+                  onUpdateSettings={updateSettings}
+                  onOpenSettings={openSettings}
+                />
+              </div>
+            </div>
+            {terminalWorkspace && (
+              <Suspense
+                fallback={
+                  <section className="flex h-[min(34vh,340px)] min-h-[220px] shrink-0 flex-col border-t border-[var(--border)] bg-[var(--surface)]">
+                    <header className="flex h-9 shrink-0 items-center gap-2 border-b border-[var(--border)] px-3 text-[12px]">
+                      <span className="font-medium text-[var(--text)]">Terminal</span>
+                      <span className="text-[var(--text-dim)]">Loading...</span>
+                    </header>
+                    <div className="min-h-0 flex-1 bg-[var(--bg-soft)]" />
+                  </section>
+                }
+              >
+                <WorkspaceTerminalPanel
+                  key={terminalWorkspace.id}
+                  workspace={terminalWorkspace}
+                  onClose={() => setTerminalWorkspace(null)}
+                />
+              </Suspense>
+            )}
           </div>
         </main>
         {/* Rendered last on purpose: Electron folds -webkit-app-region rects

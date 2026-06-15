@@ -512,6 +512,30 @@ export interface RuntimeConversationHydration {
   activeTurn: ActiveAssistantTurn | null
 }
 
+export interface TerminalCreateRequest {
+  cwd?: string | null
+  cols?: number
+  rows?: number
+}
+
+export interface TerminalSessionCreated {
+  id: string
+  cwd: string
+  shell: string
+  pid: number
+}
+
+export interface TerminalDataEvent {
+  id: string
+  data: string
+}
+
+export interface TerminalExitEvent {
+  id: string
+  exitCode: number
+  signal?: number
+}
+
 function on<T>(channel: string, callback: (data: T) => void): () => void {
   const handler = (_event: Electron.IpcRendererEvent, data: T): void => callback(data)
   ipcRenderer.on(channel, handler)
@@ -579,6 +603,18 @@ const api = {
   workspaces: {
     pickDirectory: (): Promise<ConversationWorkspaceRef | null> =>
       ipcRenderer.invoke('workspaces:pick-directory'),
+  },
+  terminal: {
+    create: (request: TerminalCreateRequest): Promise<TerminalSessionCreated> =>
+      ipcRenderer.invoke('terminal:create', request),
+    write: (id: string, data: string): void => {
+      ipcRenderer.send('terminal:write', { id, data })
+    },
+    resize: (id: string, cols: number, rows: number): Promise<void> =>
+      ipcRenderer.invoke('terminal:resize', { id, cols, rows }),
+    close: (id: string): Promise<void> => ipcRenderer.invoke('terminal:close', id),
+    onData: (cb: (event: TerminalDataEvent) => void) => on<TerminalDataEvent>('terminal:data', cb),
+    onExit: (cb: (event: TerminalExitEvent) => void) => on<TerminalExitEvent>('terminal:exit', cb),
   },
   openrouter: {
     listModels: (): Promise<OrCatalog> => ipcRenderer.invoke('openrouter:list-models'),

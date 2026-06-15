@@ -7,6 +7,8 @@ files:
   - "!**/node_modules/*/{CHANGELOG.md,README.md,readme.md,LICENSE,license,License}"
 asarUnpack:
   - resources/**
+  - "**/node_modules/node-pty/prebuilds/**"
+  - "**/node_modules/.bun/node-pty*/node_modules/node-pty/prebuilds/**"
 mac:
   category: public.app-category.productivity
   icon: build/icon.icns

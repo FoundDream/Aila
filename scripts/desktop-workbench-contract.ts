@@ -227,6 +227,60 @@ async function testDesktopExposesRuntimeStateApi(): Promise<void> {
   )
 }
 
+async function testDesktopExposesEmbeddedTerminalApi(): Promise<void> {
+  const mainSource = await readFile(join(process.cwd(), 'src/main/index.ts'), 'utf-8')
+  const preloadSource = await readFile(join(process.cwd(), 'src/preload/index.ts'), 'utf-8')
+  const terminalSource = await readFile(join(process.cwd(), 'src/main/terminal.ts'), 'utf-8')
+  const appSource = await readFile(join(process.cwd(), 'src/renderer/src/App.tsx'), 'utf-8')
+  const sidebarSource = await readFile(
+    join(process.cwd(), 'src/renderer/src/pages/chat/ConversationList.tsx'),
+    'utf-8',
+  )
+  const panelSource = await readFile(
+    join(process.cwd(), 'src/renderer/src/components/terminal/WorkspaceTerminalPanel.tsx'),
+    'utf-8',
+  )
+
+  assert(
+    mainSource.includes('createTerminalSessionManager') &&
+      mainSource.includes('registerTerminalIpcHandlers(ipcMain, getTerminalManager())') &&
+      mainSource.includes('terminalManager?.shutdown()'),
+    'Desktop main process should own embedded terminal IPC and lifecycle',
+  )
+  assert(
+    preloadSource.includes('terminal: {') &&
+      preloadSource.includes("'terminal:create'") &&
+      preloadSource.includes("'terminal:write'") &&
+      preloadSource.includes("'terminal:data'") &&
+      preloadSource.includes("'terminal:exit'"),
+    'Desktop preload should expose a terminal namespace to the renderer',
+  )
+  assert(
+    terminalSource.includes("from 'node-pty'") &&
+      terminalSource.includes('pty.spawn') &&
+      terminalSource.includes("'terminal:data'") &&
+      terminalSource.includes("'terminal:exit'") &&
+      terminalSource.includes('registerTerminalIpcHandlers'),
+    'Embedded terminal adapter should create PTY sessions and bridge output through IPC',
+  )
+  assert(
+    appSource.includes('terminalWorkspace') &&
+      appSource.includes('<WorkspaceTerminalPanel') &&
+      sidebarSource.includes('TerminalIcon') &&
+      sidebarSource.includes('onOpenTerminal(workspace)'),
+    'Renderer project sidebar should open an embedded terminal dock for workspaces',
+  )
+  assert(
+    panelSource.includes("from '@xterm/xterm'") &&
+      panelSource.includes("from '@xterm/addon-fit'") &&
+      panelSource.includes('window.api.terminal') &&
+      panelSource.includes('.create({ cwd: workspace.path') &&
+      panelSource.includes('window.api.terminal.write') &&
+      panelSource.includes('window.api.terminal.resize'),
+    'Embedded terminal panel should render xterm and communicate through the terminal API',
+  )
+}
+
 async function testRendererUsesRuntimeHydrationApi(): Promise<void> {
   const streamSource = await readFile(
     join(process.cwd(), 'src/renderer/src/pages/chat/useChatStreams.ts'),
@@ -2122,6 +2176,7 @@ async function main(): Promise<void> {
   await testDesktopWorkspaceRoots()
   await testDesktopUsesSharedRuntimeFactory()
   await testDesktopExposesRuntimeStateApi()
+  await testDesktopExposesEmbeddedTerminalApi()
   await testRendererUsesRuntimeHydrationApi()
   await testConversationPartitionContract()
   await testDocConversationFollowsDocRename()
