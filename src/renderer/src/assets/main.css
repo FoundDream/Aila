@@ -545,3 +545,13 @@ body {
 .aila-md .footnotes p {
   color: var(--text);
 }
+
+/* Loading shimmer for widgets while CDN scripts load (WidgetRenderer). */
+@keyframes widget-shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}

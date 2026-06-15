@@ -1,6 +1,9 @@
+import { WIDGET_FENCE_LANG } from '@shared/widget/wire-format'
 import { CheckIcon, CopyIcon, DownloadIcon, Maximize2Icon, XIcon } from 'lucide-react'
 import {
   type ComponentProps,
+  cloneElement,
+  isValidElement,
   type ReactElement,
   type ReactNode,
   type RefObject,
@@ -20,6 +23,7 @@ import {
   tableDataToMarkdown,
   tableDataToTSV,
 } from 'streamdown'
+import { WidgetFence } from '@/components/widget/WidgetFence'
 import { cn } from '@/lib/utils'
 
 type MarkdownTableProps = ComponentProps<'table'> & ExtraProps
@@ -39,7 +43,60 @@ const downloadFormats: Array<{ format: DownloadFormat; label: string }> = [
 
 export const markdownComponents = {
   table: MarkdownTable,
+  pre: MarkdownPre,
 } satisfies Components
+
+// ── Widget fence interception ───────────────────────────────────────────────
+// A fenced code block ```show-widget``` is rendered as a live widget instead of
+// a code block. We hook at `pre` (not `code`) so every other fence falls
+// through to streamdown's default code rendering untouched.
+
+interface HastNode {
+  type?: string
+  tagName?: string
+  value?: string
+  properties?: { className?: unknown }
+  children?: HastNode[]
+}
+
+type MarkdownPreProps = ComponentProps<'pre'> & ExtraProps
+
+function MarkdownPre({ children, node }: MarkdownPreProps): ReactNode {
+  // `mode` (driven by message.status) is the reliable "still streaming" signal.
+  // `isAnimating` only tracks the text fade and flips false mid-stream, which
+  // would make a half-streamed fence look malformed instead of in-progress.
+  const { mode } = useContext(StreamdownContext)
+  const fence = extractFence(node as HastNode | undefined)
+
+  if (fence && fence.lang === WIDGET_FENCE_LANG) {
+    return <WidgetFence body={fence.code} isStreaming={mode === 'streaming'} />
+  }
+
+  // Default streamdown <pre> behavior: pass the rendered code block through.
+  return isValidElement(children)
+    ? cloneElement(children as ReactElement<Record<string, unknown>>, { 'data-block': 'true' })
+    : (children as ReactNode)
+}
+
+/** Pull the language tag + raw text out of a fenced-code HAST `<pre>` node. */
+function extractFence(node: HastNode | undefined): { lang: string; code: string } | null {
+  const codeEl = node?.children?.find((c) => c.type === 'element' && c.tagName === 'code')
+  if (!codeEl) return null
+  const raw = codeEl.properties?.className
+  const classes = Array.isArray(raw) ? raw : typeof raw === 'string' ? [raw] : []
+  const langClass = classes.find(
+    (c): c is string => typeof c === 'string' && c.startsWith('language-'),
+  )
+  return {
+    lang: langClass ? langClass.slice('language-'.length) : '',
+    code: collectText(codeEl),
+  }
+}
+
+function collectText(el: HastNode): string {
+  if (el.type === 'text') return el.value ?? ''
+  return (el.children ?? []).map(collectText).join('')
+}
 
 function MarkdownTable({
   children,

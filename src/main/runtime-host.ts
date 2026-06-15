@@ -5,10 +5,14 @@ import {
   type AgentRuntimeStore,
   type ChatMessage,
   createToolPolicy,
+  promptNeedsWidget,
   type RuntimeAttachmentBlock,
   type RuntimePersistAttachmentInput,
+  type RuntimeStableInstructionsInput,
+  WIDGET_SYSTEM_PROMPT,
 } from '@aila/agent'
 import { createDefaultNodeRuntimeHost } from '@aila/agent/node'
+import { WIDGET_TOOL_PACK } from './widget-tool-pack'
 import { saveImage } from './image-store'
 import { getDataDir, getImagesDir } from './paths'
 import { createPersistedRuntimeStore } from './runtime-store'
@@ -61,6 +65,26 @@ function buildStableInstructions(): ChatMessage[] {
   return [{ role: 'system', content: AILA_SYSTEM_PROMPT }]
 }
 
+/**
+ * Inject the widget capability prompt only when the conversation actually needs
+ * generative UI — keyword in the latest user turn, or a widget already present.
+ * Saves prompt tokens on non-visual conversations.
+ */
+function buildWidgetInstructions(input: RuntimeStableInstructionsInput): ChatMessage[] {
+  let lastUserText = ''
+  let conversationHasWidget = false
+  for (const msg of input.record.messages) {
+    for (const block of msg.blocks) {
+      if (block.type !== 'text') continue
+      if (msg.role === 'user') lastUserText = block.content
+      else if (block.content.includes('show-widget')) conversationHasWidget = true
+    }
+  }
+  return promptNeedsWidget(lastUserText, conversationHasWidget)
+    ? [{ role: 'system', content: WIDGET_SYSTEM_PROMPT }]
+    : []
+}
+
 function buildDateContext(): ChatMessage[] {
   return [{ role: 'system', content: `Current date: ${formatLocalDate()}` }]
 }
@@ -81,7 +105,10 @@ export function createDefaultRuntimeHost(overrides: AgentRuntimeHost = {}): Agen
     }),
     loadSettings,
     onToolPolicy: (request) => createToolPolicy(loadSettings().approvalMode)(request),
-    loadToolPacks: async () => (await loadToolPacksFromDir()).map((pack) => pack.toolPack),
+    loadToolPacks: async () => [
+      WIDGET_TOOL_PACK,
+      ...(await loadToolPacksFromDir()).map((pack) => pack.toolPack),
+    ],
     loadSkills: async () => (await loadSkillsFromDir()).skills,
     persistAttachment: persistRuntimeAttachment,
     webSearch,
@@ -89,7 +116,7 @@ export function createDefaultRuntimeHost(overrides: AgentRuntimeHost = {}): Agen
     ...hostOverrides,
     loadStableInstructions: async (input) => {
       const provided = await overrideStableInstructions?.(input)
-      return [...buildStableInstructions(), ...(provided ?? [])]
+      return [...buildStableInstructions(), ...buildWidgetInstructions(input), ...(provided ?? [])]
     },
     loadTransientContext: async (input) => {
       const provided = await overrideTransientContext?.(input)

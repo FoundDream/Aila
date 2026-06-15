@@ -44,6 +44,7 @@ import {
   registerTerminalIpcHandlers,
   type TerminalSessionManager,
 } from './terminal'
+import { handleWidgetProtocol, registerWidgetProtocolScheme } from './widget-protocol'
 
 dotenv.config()
 
@@ -59,6 +60,7 @@ if (is.dev) {
 
 // Custom schemes must be registered before the app `ready` event fires.
 registerImageProtocolScheme()
+registerWidgetProtocolScheme()
 
 // electron-vite injects the renderer dev server's *actual* URL here. Don't
 // hardcode the port: if another Vite app already holds 5173, our renderer
@@ -261,6 +263,7 @@ app.whenReady().then(async () => {
     console.log(`[startup] recovered ${recovered.length} interrupted conversation activities`)
   }
   handleImageProtocol()
+  handleWidgetProtocol()
   createWindow()
   registerIpcHandlers()
 
