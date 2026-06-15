@@ -32,9 +32,6 @@
     "test": "bun run test:runtime && bun run test:desktop && bun run test:cli && bun run test:tui"
   },
   "dependencies": {
-    "@ai-sdk/anthropic": "^3.0.74",
-    "@ai-sdk/google": "^3.0.67",
-    "@ai-sdk/openai": "^3.0.58",
     "@aila/agent": "workspace:*",
     "@codemirror/commands": "^6.10.3",
     "@codemirror/lang-markdown": "^6.5.0",
@@ -46,9 +43,7 @@
     "@electron-toolkit/utils": "^4.0.0",
     "@lezer/highlight": "^1.2.3",
     "@lezer/markdown": "^1.6.3",
-    "@openrouter/ai-sdk-provider": "^2.9.0",
     "@uiw/react-codemirror": "^4.25.9",
-    "ai": "^6.0.174",
     "chalk": "5.4.1",
     "cli-highlight": "2.1.11",
     "clsx": "^2.1.1",

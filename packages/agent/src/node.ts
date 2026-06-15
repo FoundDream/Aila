@@ -1,4 +1,8 @@
 export {
+  type AnthropicModelStreamClientOptions,
+  createAnthropicModelStreamClient,
+} from './node/anthropic-model-stream'
+export {
   configuredProviders,
   ENV_KEY_BY_PROVIDER,
   MissingApiKeyError,
@@ -8,6 +12,10 @@ export {
   resolveConfiguredValue,
 } from './node/auth'
 export {
+  createDefaultModelStreamClient,
+  type DefaultModelStreamClientOptions,
+} from './node/default-model-stream'
+export {
   createFileRuntimeStore,
   type FileRuntimeStoreOptions,
 } from './node/file-store'
@@ -15,6 +23,10 @@ export {
   nodeFileSystem,
   nodeWorkspaceRoots,
 } from './node/filesystem'
+export {
+  createGoogleModelStreamClient,
+  type GoogleModelStreamClientOptions,
+} from './node/google-model-stream'
 export { createNodeImageGenerator } from './node/image-generation'
 export {
   AILA_IMAGE_HOST,
@@ -31,6 +43,18 @@ export {
   ModelRegistry,
   type NodeProviderConfig,
 } from './node/model-registry'
+export type {
+  ModelStreamClient,
+  ModelStreamEvent,
+  ModelStreamRequest,
+  ModelStreamToolDefinition,
+  ModelStreamToolExecuteOptions,
+  ModelStreamUsage,
+} from './node/model-stream'
+export {
+  createOpenAiChatModelStreamClient,
+  type OpenAiChatModelStreamClientOptions,
+} from './node/openai-chat-model-stream'
 export {
   createProtocolRegistry,
   type ProtocolAdapter,

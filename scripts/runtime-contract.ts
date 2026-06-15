@@ -6418,6 +6418,365 @@ async function testNodeWebSearchRegistryFallbacksAndMerge(): Promise<void> {
   )
 }
 
+async function testNativeOpenAiChatModelStreamContract(): Promise<void> {
+  const requests: unknown[] = []
+  const streamBodies = [
+    sse([
+      {
+        choices: [
+          {
+            delta: {
+              content: 'Checking ',
+            },
+          },
+        ],
+      },
+      {
+        choices: [
+          {
+            delta: {
+              tool_calls: [
+                {
+                  index: 0,
+                  id: 'call_contract',
+                  type: 'function',
+                  function: {
+                    name: 'contract_echo',
+                    arguments: '{"message"',
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      },
+      {
+        choices: [
+          {
+            delta: {
+              tool_calls: [
+                {
+                  index: 0,
+                  function: {
+                    arguments: ':"hello"}',
+                  },
+                },
+              ],
+            },
+            finish_reason: 'tool_calls',
+          },
+        ],
+        usage: { prompt_tokens: 7, completion_tokens: 3, total_tokens: 10 },
+      },
+    ]),
+    sse([
+      {
+        choices: [
+          {
+            delta: {
+              content: 'done',
+            },
+            finish_reason: 'stop',
+          },
+        ],
+        usage: { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 },
+      },
+    ]),
+  ]
+  const fetchImpl: typeof fetch = async (_url, init) => {
+    requests.push(JSON.parse(String(init?.body ?? '{}')) as unknown)
+    const body = streamBodies.shift()
+    assert(body, 'native OpenAI chat test should have a fake stream body')
+    return new Response(textStream(body), { status: 200 })
+  }
+  const client = runtimePackageNodeSdk.createOpenAiChatModelStreamClient({ fetch: fetchImpl })
+  const events: runtimePackageNodeSdk.ModelStreamEvent[] = []
+
+  for await (const event of client.stream({
+    descriptor: {
+      provider: 'openrouter',
+      modelId: 'contract/mock',
+      api: 'openai-chat-completions',
+    },
+    apiKey: 'contract-key',
+    messages: [{ role: 'user', content: 'hello' }],
+    signal: new AbortController().signal,
+    tools: [
+      {
+        name: 'contract_echo',
+        description: 'Echo a message.',
+        parameters: {
+          type: 'object',
+          properties: {
+            message: { type: 'string' },
+          },
+          required: ['message'],
+          additionalProperties: false,
+        },
+        execute: async (args) => `echo:${String(args.message ?? '')}`,
+      },
+    ],
+  })) {
+    events.push(event)
+  }
+
+  assertEqual(requests.length, 2, 'native OpenAI chat should continue after a tool result')
+  assert(
+    events.some((event) => event.type === 'tool-input-start' && event.toolName === 'contract_echo'),
+    'native OpenAI chat should emit tool input start',
+  )
+  assert(
+    events.some((event) => event.type === 'tool-call' && event.toolCallId === 'call_contract'),
+    'native OpenAI chat should emit parsed tool call',
+  )
+  assert(
+    events.some((event) => event.type === 'tool-result' && event.output === 'echo:hello'),
+    'native OpenAI chat should execute tool and emit result',
+  )
+  assert(
+    events.some((event) => event.type === 'text-delta' && event.text === 'done'),
+    'native OpenAI chat should emit final text after tool execution',
+  )
+  const finish = events.find((event) => event.type === 'finish')
+  assert(finish?.type === 'finish', 'native OpenAI chat should finish')
+  assertEqual(finish.totalUsage?.totalTokens, 17, 'native OpenAI chat should accumulate usage')
+  const secondRequest = requests[1] as {
+    messages?: Array<{ role?: string; tool_call_id?: string }>
+  }
+  assert(
+    secondRequest.messages?.some(
+      (message) => message.role === 'tool' && message.tool_call_id === 'call_contract',
+    ),
+    'native OpenAI chat should append tool result to the follow-up request',
+  )
+}
+
+async function testNativeAnthropicModelStreamContract(): Promise<void> {
+  const requests: unknown[] = []
+  const streamBodies = [
+    sse([
+      {
+        type: 'message_start',
+        message: { usage: { input_tokens: 7, output_tokens: 1 } },
+      },
+      {
+        type: 'content_block_start',
+        index: 0,
+        content_block: {
+          type: 'tool_use',
+          id: 'anthropic_contract',
+          name: 'contract_echo',
+          input: {},
+        },
+      },
+      {
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'input_json_delta', partial_json: '{"message"' },
+      },
+      {
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'input_json_delta', partial_json: ':"hello"}' },
+      },
+      {
+        type: 'message_delta',
+        usage: { output_tokens: 3 },
+      },
+      { type: 'message_stop' },
+    ]),
+    sse([
+      {
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'text_delta', text: 'done' },
+      },
+      {
+        type: 'message_delta',
+        usage: { input_tokens: 5, output_tokens: 2 },
+      },
+      { type: 'message_stop' },
+    ]),
+  ]
+  const fetchImpl: typeof fetch = async (_url, init) => {
+    requests.push(JSON.parse(String(init?.body ?? '{}')) as unknown)
+    const body = streamBodies.shift()
+    assert(body, 'native Anthropic test should have a fake stream body')
+    return new Response(textStream(body), { status: 200 })
+  }
+  const client = runtimePackageNodeSdk.createAnthropicModelStreamClient({ fetch: fetchImpl })
+  const events: runtimePackageNodeSdk.ModelStreamEvent[] = []
+
+  for await (const event of client.stream({
+    descriptor: {
+      provider: 'anthropic',
+      modelId: 'claude-contract',
+      api: 'anthropic-messages',
+    },
+    apiKey: 'contract-key',
+    messages: [{ role: 'user', content: 'hello' }],
+    signal: new AbortController().signal,
+    tools: [
+      {
+        name: 'contract_echo',
+        description: 'Echo a message.',
+        parameters: {
+          type: 'object',
+          properties: { message: { type: 'string' } },
+          required: ['message'],
+          additionalProperties: false,
+        },
+        execute: async (args) => `echo:${String(args.message ?? '')}`,
+      },
+    ],
+  })) {
+    events.push(event)
+  }
+
+  assertEqual(requests.length, 2, 'native Anthropic should continue after a tool result')
+  assert(
+    events.some((event) => event.type === 'tool-input-start' && event.toolName === 'contract_echo'),
+    'native Anthropic should emit tool input start',
+  )
+  assert(
+    events.some((event) => event.type === 'tool-call' && event.toolCallId === 'anthropic_contract'),
+    'native Anthropic should emit parsed tool call',
+  )
+  assert(
+    events.some((event) => event.type === 'tool-result' && event.output === 'echo:hello'),
+    'native Anthropic should execute tool and emit result',
+  )
+  assert(
+    events.some((event) => event.type === 'text-delta' && event.text === 'done'),
+    'native Anthropic should emit final text after tool execution',
+  )
+  const finish = events.find((event) => event.type === 'finish')
+  assert(finish?.type === 'finish', 'native Anthropic should finish')
+  assertEqual(finish.totalUsage?.totalTokens, 17, 'native Anthropic should accumulate usage')
+  const secondRequest = requests[1] as {
+    messages?: Array<{ role?: string; content?: Array<{ type?: string; tool_use_id?: string }> }>
+  }
+  assert(
+    secondRequest.messages?.some(
+      (message) =>
+        Array.isArray(message.content) &&
+        message.content.some(
+          (block) => block.type === 'tool_result' && block.tool_use_id === 'anthropic_contract',
+        ),
+    ),
+    'native Anthropic should append tool result to the follow-up request',
+  )
+}
+
+async function testNativeGoogleModelStreamContract(): Promise<void> {
+  const requests: unknown[] = []
+  const streamBodies = [
+    sse([
+      {
+        candidates: [
+          {
+            content: {
+              parts: [{ functionCall: { name: 'contract_echo', args: { message: 'hello' } } }],
+            },
+            finishReason: 'STOP',
+          },
+        ],
+        usageMetadata: { promptTokenCount: 7, candidatesTokenCount: 3, totalTokenCount: 10 },
+      },
+    ]),
+    sse([
+      {
+        candidates: [
+          {
+            content: {
+              parts: [{ text: 'done' }],
+            },
+            finishReason: 'STOP',
+          },
+        ],
+        usageMetadata: { promptTokenCount: 5, candidatesTokenCount: 2, totalTokenCount: 7 },
+      },
+    ]),
+  ]
+  const fetchImpl: typeof fetch = async (_url, init) => {
+    requests.push(JSON.parse(String(init?.body ?? '{}')) as unknown)
+    const body = streamBodies.shift()
+    assert(body, 'native Google test should have a fake stream body')
+    return new Response(textStream(body), { status: 200 })
+  }
+  const client = runtimePackageNodeSdk.createGoogleModelStreamClient({ fetch: fetchImpl })
+  const events: runtimePackageNodeSdk.ModelStreamEvent[] = []
+
+  for await (const event of client.stream({
+    descriptor: {
+      provider: 'google',
+      modelId: 'gemini-contract',
+      api: 'google-generative-ai',
+    },
+    apiKey: 'contract-key',
+    messages: [{ role: 'user', content: 'hello' }],
+    signal: new AbortController().signal,
+    tools: [
+      {
+        name: 'contract_echo',
+        description: 'Echo a message.',
+        parameters: {
+          type: 'object',
+          properties: { message: { type: 'string' } },
+          required: ['message'],
+          additionalProperties: false,
+        },
+        execute: async (args) => `echo:${String(args.message ?? '')}`,
+      },
+    ],
+  })) {
+    events.push(event)
+  }
+
+  assertEqual(requests.length, 2, 'native Google should continue after a tool result')
+  assert(
+    events.some((event) => event.type === 'tool-input-start' && event.toolName === 'contract_echo'),
+    'native Google should emit tool input start',
+  )
+  assert(
+    events.some((event) => event.type === 'tool-call' && event.toolName === 'contract_echo'),
+    'native Google should emit parsed tool call',
+  )
+  assert(
+    events.some((event) => event.type === 'tool-result' && event.output === 'echo:hello'),
+    'native Google should execute tool and emit result',
+  )
+  assert(
+    events.some((event) => event.type === 'text-delta' && event.text === 'done'),
+    'native Google should emit final text after tool execution',
+  )
+  const finish = events.find((event) => event.type === 'finish')
+  assert(finish?.type === 'finish', 'native Google should finish')
+  assertEqual(finish.totalUsage?.totalTokens, 17, 'native Google should accumulate usage')
+  const secondRequest = requests[1] as {
+    contents?: Array<{ role?: string; parts?: Array<{ functionResponse?: { name?: string } }> }>
+  }
+  assert(
+    secondRequest.contents?.some((content) =>
+      content.parts?.some((part) => part.functionResponse?.name === 'contract_echo'),
+    ),
+    'native Google should append function response to the follow-up request',
+  )
+}
+
+function sse(items: unknown[]): string {
+  return `${items.map((item) => `data: ${JSON.stringify(item)}\n\n`).join('')}data: [DONE]\n\n`
+}
+
+function textStream(text: string): ReadableStream<Uint8Array> {
+  return new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(text))
+      controller.close()
+    },
+  })
+}
+
 function testToolActivityTargetContract(): void {
   assertEqual(
     summarizeToolTarget('read', { path: '/workspace/src/app.ts' })?.preview,
@@ -8207,6 +8566,9 @@ async function main(): Promise<void> {
   await testWebSearchToolUsesInjectedHostDependency()
   await testWebSearchToolRequiresHostDependency()
   await testNodeWebSearchRegistryFallbacksAndMerge()
+  await testNativeOpenAiChatModelStreamContract()
+  await testNativeAnthropicModelStreamContract()
+  await testNativeGoogleModelStreamContract()
   testToolActivityTargetContract()
   await testFilesystemToolWorkspaceRootsContract()
   await testDefaultRuntimeHostOwnsFilesystemTools()

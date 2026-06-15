@@ -1,6 +1,3 @@
-import { readFile } from 'node:fs/promises'
-import { join } from 'node:path'
-import { jsonSchema, type ModelMessage, smoothStream, stepCountIs, streamText, tool } from 'ai'
 import {
   type AgentEvent,
   type AgentEventType,
@@ -18,29 +15,29 @@ import {
   type ToolContext,
   type ToolRegistry,
   type UsageInfo,
-  type UserContentPart,
 } from '../core'
 import { executeTool, getToolDefinitions, summarizeToolTarget } from '../internal'
 import type { Settings } from '../settings-types'
 import { MissingApiKeyError, type NodeAuthInput, requireApiKey } from './auth'
+import { createDefaultModelStreamClient } from './default-model-stream'
 import {
   type CreateModelRegistryInput,
   createModelRegistry,
   type ModelRegistry,
 } from './model-registry'
+import type { ModelStreamClient, ModelStreamToolDefinition } from './model-stream'
 import { createProtocolRegistry, type ProtocolAdapter, type ProtocolRegistry } from './protocols'
 
 type MaybePromise<T> = T | Promise<T>
 
-const MAX_STEPS = 10
 const EVENT_PREVIEW_CHARS = 1000
-const AILA_IMAGE_URL_PREFIX = 'aila-image://i/'
 
 export interface ProviderStreamChatOptions extends NodeAuthInput {
   modelRegistry?: ModelRegistry
   modelRegistryOptions?: CreateModelRegistryInput
   protocolRegistry?: ProtocolRegistry
   protocolAdapters?: ProtocolAdapter[]
+  modelStreamClient?: ModelStreamClient
   settings?: Settings
   loadSettings?: () => Settings
   imageDir?: string
@@ -54,6 +51,12 @@ export function createProviderStreamChat(
     createModelRegistry(options.modelRegistryOptions ?? { providers: options.providers })
   const protocolRegistry =
     options.protocolRegistry ?? createProtocolRegistry(options.protocolAdapters)
+  const modelStreamClient =
+    options.modelStreamClient ??
+    createDefaultModelStreamClient({
+      protocolRegistry,
+      imageDir: options.imageDir,
+    })
 
   return async (req, handlers): Promise<void> => {
     const {
@@ -118,15 +121,12 @@ export function createProviderStreamChat(
       })
     }
 
-    let model: ReturnType<ProtocolAdapter['createLanguageModel']>
+    let apiKey: string
     try {
-      const apiKey = requireApiKey(descriptor, {
+      apiKey = requireApiKey(descriptor, {
         ...options,
         settings,
       })
-      model = protocolRegistry
-        .get(descriptor.api)
-        .createLanguageModel({ model: descriptor, apiKey })
     } catch (err) {
       const message =
         err instanceof MissingApiKeyError
@@ -145,9 +145,10 @@ export function createProviderStreamChat(
     }
 
     try {
-      const result = streamText({
-        model,
-        messages: await toModelMessages(messages, options.imageDir),
+      const result = modelStreamClient.stream({
+        descriptor,
+        apiKey,
+        messages,
         tools: buildTools(
           {
             settings,
@@ -169,15 +170,10 @@ export function createProviderStreamChat(
           toolRegistry,
           toolTargets,
         ),
-        stopWhen: stepCountIs(MAX_STEPS),
-        abortSignal: signal,
-        experimental_transform: smoothStream({
-          delayInMs: 15,
-          chunking: /[぀-ゟ゠-ヿ一-鿿가-힯]|\S+\s+/,
-        }),
+        signal,
       })
 
-      for await (const part of result.fullStream) {
+      for await (const part of result) {
         switch (part.type) {
           case 'text-delta':
             builder.appendText('text', part.text)
@@ -402,146 +398,43 @@ function buildTools(
   emitAgentEvent: (type: AgentEventType, data?: Record<string, unknown>) => void,
   toolRegistry?: ToolRegistry,
   toolTargets = new Map<string, ToolActivityTarget>(),
-) {
-  return Object.fromEntries(
-    getToolDefinitions(toolRegistry).map((td) => [
-      td.function.name,
-      tool({
-        description: td.function.description,
-        inputSchema: jsonSchema(td.function.parameters as Parameters<typeof jsonSchema>[0]),
-        execute: async (args, options) => {
-          const toolCallId = options.toolCallId
-          const toolName = td.function.name
-          const input = cloneAgentToolArgs(args as Record<string, unknown>)
-          const target = summarizeToolTarget(toolName, input)
-          if (target) toolTargets.set(toolCallId, target)
-          emitAgentEvent('tool.execution.started', {
-            toolCallId,
-            toolName,
-            input: previewEventValue(input),
-            ...(target && { target }),
-          })
-          try {
-            const result = await executeTool(toolName, input, { ...ctx, toolCallId }, toolRegistry)
-            emitAgentEvent('tool.execution.completed', {
-              toolCallId,
-              toolName,
-              result: previewEventValue(result),
-              ...(toolTargets.get(toolCallId) && { target: toolTargets.get(toolCallId) }),
-            })
-            return result
-          } catch (error) {
-            emitAgentEvent('tool.execution.failed', {
-              toolCallId,
-              toolName,
-              error: error instanceof Error ? error.message : String(error),
-              ...(toolTargets.get(toolCallId) && { target: toolTargets.get(toolCallId) }),
-            })
-            throw error
-          }
-        },
-      }),
-    ]),
-  )
-}
-
-async function resolveUserContent(
-  parts: UserContentPart[],
-  imageDir?: string,
-): Promise<Extract<ModelMessage, { role: 'user' }>['content']> {
-  const out: Array<
-    { type: 'text'; text: string } | { type: 'image'; image: Uint8Array; mediaType: string }
-  > = []
-  for (const part of parts) {
-    if (part.type === 'text') {
-      out.push({ type: 'text', text: part.text })
-      continue
-    }
-    const name = imageNameFromUrl(part.url)
-    try {
-      if (!name || !imageDir) throw new Error('unrecognized image url')
-      const bytes = await readFile(join(imageDir, name))
-      out.push({ type: 'image', image: bytes, mediaType: part.mime })
-    } catch {
-      out.push({ type: 'text', text: '[attached image is no longer available]' })
-    }
-  }
-  return out
-}
-
-async function toModelMessages(
-  messages: ChatMessage[],
-  imageDir?: string,
-): Promise<ModelMessage[]> {
-  const toolNameById = new Map<string, string>()
-  const out: ModelMessage[] = []
-
-  for (const msg of messages) {
-    if (msg.role === 'system') {
-      out.push({ role: 'system', content: msg.content })
-      continue
-    }
-
-    if (msg.role === 'user') {
-      if (typeof msg.content === 'string') {
-        out.push({ role: 'user', content: msg.content })
-      } else {
-        out.push({ role: 'user', content: await resolveUserContent(msg.content, imageDir) })
-      }
-      continue
-    }
-
-    if (msg.role === 'assistant') {
-      if (!msg.tool_calls || msg.tool_calls.length === 0) {
-        out.push({ role: 'assistant', content: msg.content })
-        continue
-      }
-      const parts: Array<
-        | { type: 'text'; text: string }
-        | {
-            type: 'tool-call'
-            toolCallId: string
-            toolName: string
-            input: unknown
-          }
-      > = []
-      if (msg.content) parts.push({ type: 'text', text: msg.content })
-      for (const tc of msg.tool_calls) {
-        toolNameById.set(tc.id, tc.function.name)
-        let input: unknown = {}
-        try {
-          input = tc.function.arguments ? JSON.parse(tc.function.arguments) : {}
-        } catch {
-          input = {}
-        }
-        parts.push({
-          type: 'tool-call',
-          toolCallId: tc.id,
-          toolName: tc.function.name,
-          input,
-        })
-      }
-      out.push({ role: 'assistant', content: parts })
-      continue
-    }
-
-    if (msg.role === 'tool') {
-      const toolName = toolNameById.get(msg.tool_call_id) ?? 'unknown'
-      out.push({
-        role: 'tool',
-        content: [
-          {
-            type: 'tool-result',
-            toolCallId: msg.tool_call_id,
-            toolName,
-            output: { type: 'text', value: msg.content },
-          },
-        ],
+): ModelStreamToolDefinition[] {
+  return getToolDefinitions(toolRegistry).map((td) => ({
+    name: td.function.name,
+    description: td.function.description,
+    parameters: td.function.parameters,
+    execute: async (args, options) => {
+      const toolCallId = options.toolCallId
+      const toolName = td.function.name
+      const input = cloneAgentToolArgs(args)
+      const target = summarizeToolTarget(toolName, input)
+      if (target) toolTargets.set(toolCallId, target)
+      emitAgentEvent('tool.execution.started', {
+        toolCallId,
+        toolName,
+        input: previewEventValue(input),
+        ...(target && { target }),
       })
-    }
-  }
-
-  return out
+      try {
+        const result = await executeTool(toolName, input, { ...ctx, toolCallId }, toolRegistry)
+        emitAgentEvent('tool.execution.completed', {
+          toolCallId,
+          toolName,
+          result: previewEventValue(result),
+          ...(toolTargets.get(toolCallId) && { target: toolTargets.get(toolCallId) }),
+        })
+        return result
+      } catch (error) {
+        emitAgentEvent('tool.execution.failed', {
+          toolCallId,
+          toolName,
+          error: error instanceof Error ? error.message : String(error),
+          ...(toolTargets.get(toolCallId) && { target: toolTargets.get(toolCallId) }),
+        })
+        throw error
+      }
+    },
+  }))
 }
 
 class AssistantBuilder {
@@ -613,11 +506,4 @@ class AssistantBuilder {
       model: cloneAgentValue(selection),
     }
   }
-}
-
-function imageNameFromUrl(url: string): string | null {
-  if (!url.startsWith(AILA_IMAGE_URL_PREFIX)) return null
-  const name = url.slice(AILA_IMAGE_URL_PREFIX.length)
-  if (!name || name.includes('/') || name.includes('\\') || name.includes('..')) return null
-  return name
 }
