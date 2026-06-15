@@ -26,6 +26,7 @@ import type {
   PersistedAgentEvent,
   PersistedMessage,
   ReasoningDeltaEvent,
+  RuntimeCompactConversationResult,
   TextDeltaEvent,
   ToolCallArgsDeltaEvent,
   ToolCallResultEvent,
@@ -715,6 +716,7 @@ export interface ChatStreamsApi {
     attachments?: ChatAttachmentInput[],
   ) => void
   enqueueRetryLast: (id: string, selection: ModelSelection) => void
+  compact: (id: string, selection: ModelSelection) => Promise<RuntimeCompactConversationResult>
   abort: (id: string) => void
   drop: (id: string) => void
 }
@@ -886,6 +888,12 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
     })
   }, [])
 
+  const compact = useCallback(
+    (id: string, selection: ModelSelection): Promise<RuntimeCompactConversationResult> =>
+      window.api.runtime.compactConversation({ conversationId: id, selection }),
+    [],
+  )
+
   const hydrate = useCallback(async (id: string): Promise<void> => {
     if (stateRef.current.streams.get(id)?.isHydrated) return
     const { record, events, runtimeState, activeTurn } =
@@ -1043,6 +1051,7 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
     markHydrated,
     enqueueSend,
     enqueueRetryLast,
+    compact,
     abort,
     drop,
   }

@@ -87,6 +87,8 @@ export type AgentEventType =
   | 'turn.failed'
   | 'turn.cancelled'
   | 'turn.interrupted'
+  | 'context:compacting'
+  | 'context:compacted'
   | 'tool.requested'
   | 'tool.input.delta'
   | 'tool.input.completed'
@@ -470,6 +472,18 @@ export interface RuntimeRetryLastRequest {
   selection: ModelSelection
 }
 
+export interface RuntimeCompactConversationRequest {
+  conversationId: string
+  selection: ModelSelection
+}
+
+export interface RuntimeCompactConversationResult {
+  compacted: boolean
+  summary: ConversationSummary
+  checkpoint?: ConversationContextCheckpoint
+  reason?: 'nothing_to_compact'
+}
+
 export interface RuntimeCreateConversationRequest {
   docId?: string | null
   workspace?: ConversationWorkspaceRef | null
@@ -510,6 +524,10 @@ const api = {
       ipcRenderer.invoke('runtime:send', request),
     retryLast: (request: RuntimeRetryLastRequest): Promise<SendResult> =>
       ipcRenderer.invoke('runtime:retry-last', request),
+    compactConversation: (
+      request: RuntimeCompactConversationRequest,
+    ): Promise<RuntimeCompactConversationResult> =>
+      ipcRenderer.invoke('runtime:compact-conversation', request),
     abort: (conversationId: string): Promise<void> =>
       ipcRenderer.invoke('runtime:abort', conversationId),
     listActiveTurns: (): Promise<ActiveAssistantTurn[]> =>

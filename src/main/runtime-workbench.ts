@@ -8,6 +8,7 @@ import {
   type ConversationSummary,
   type ConversationWorkspaceRef,
   type ModelSelection,
+  type RuntimeCompactConversationResult,
   type RuntimeListConversationsInput,
   type RuntimeSendResult,
   type ToolApprovalRequest,
@@ -38,6 +39,11 @@ export interface RuntimeWorkbenchRetryLastInput {
   selection: ModelSelection
 }
 
+export interface RuntimeWorkbenchCompactInput {
+  conversationId: string
+  selection: ModelSelection
+}
+
 export interface RuntimeWorkbenchCreateConversationInput {
   docId?: string | null
   workspace?: ConversationWorkspaceRef | null
@@ -51,6 +57,9 @@ export interface RuntimeWorkbenchReloadResult {
 export interface DesktopRuntimeWorkbench {
   send(input: RuntimeWorkbenchSendInput): Promise<RuntimeSendResult>
   retryLastUserMessage(input: RuntimeWorkbenchRetryLastInput): Promise<RuntimeSendResult>
+  compactConversation(
+    input: RuntimeWorkbenchCompactInput,
+  ): Promise<RuntimeCompactConversationResult>
   abort(conversationId: string): Promise<void>
   listActiveTurns(): ActiveAssistantTurn[]
   recoverInterruptedActivities(reason?: string): Promise<ConversationSummary[]>
@@ -128,6 +137,9 @@ export function createDesktopRuntimeWorkbench(
     retryLastUserMessage(input) {
       return runtime.retryLastUserMessage(input)
     },
+    compactConversation(input) {
+      return runtime.compactConversation(input)
+    },
     abort(conversationId) {
       return runtime.abort(conversationId)
     },
@@ -192,6 +204,9 @@ export function registerRuntimeWorkbenchIpcHandlers(
   )
   ipc.handle('runtime:retry-last', (_event, request: RuntimeWorkbenchRetryLastInput) =>
     workbench.retryLastUserMessage(request),
+  )
+  ipc.handle('runtime:compact-conversation', (_event, request: RuntimeWorkbenchCompactInput) =>
+    workbench.compactConversation(request),
   )
   ipc.handle('runtime:abort', (_event, conversationId: string) => workbench.abort(conversationId))
   ipc.handle('runtime:list-active-turns', () => workbench.listActiveTurns())

@@ -1,5 +1,6 @@
 import { type ReactElement, useCallback, useEffect, useRef, useState } from 'react'
 import { Composer } from '@/pages/chat/Composer'
+import { ContextCompactionStatus } from '@/pages/chat/ContextCompactionStatus'
 import { type ConversationStatusTone, getConversationStatus } from '@/pages/chat/conversationStatus'
 import { Transcript } from '@/pages/chat/Transcript'
 import type { ChatStreamsApi } from '@/pages/chat/useChatStreams'
@@ -58,6 +59,7 @@ export function DocChatPanel({
 
   const stream = activeId ? streams.getStream(activeId) : null
   const messages = stream?.messages ?? []
+  const events = stream?.events ?? []
   const isStreaming = stream?.runningMessageId !== null && stream?.runningMessageId !== undefined
   const usage = stream?.usage ?? null
   const queuedRuns = stream?.queue ?? []
@@ -90,6 +92,17 @@ export function DocChatPanel({
     if (!activeId) return
     streams.abort(activeId)
   }, [activeId, streams])
+
+  const handleCompact = useCallback(async (): Promise<{ compacted: boolean }> => {
+    if (!activeId) return { compacted: false }
+    if (isStreaming) throw new Error('Wait for the current response before compacting.')
+    const currentSelection = selectionRef.current
+    if (!currentSelection) {
+      onOpenSettings()
+      return { compacted: false }
+    }
+    return streams.compact(activeId, currentSelection)
+  }, [activeId, isStreaming, streams, onOpenSettings, selectionRef])
 
   const handleRetryLast = useCallback(() => {
     if (!activeId) return
@@ -175,9 +188,11 @@ export function DocChatPanel({
               canRetryLast={canRetryLast}
               onRetryLast={handleRetryLast}
             />
+            <ContextCompactionStatus events={events} />
             <Composer
               isStreaming={isStreaming}
               onSubmit={handleSubmit}
+              onCompact={handleCompact}
               onAbort={handleAbort}
               queuedRuns={queuedRuns}
               usage={usage}

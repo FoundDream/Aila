@@ -815,6 +815,20 @@ export function activityFromAgentEvent(event: PersistedAgentEvent): Conversation
         title: 'Interrupted',
         detail: dataString(data, 'reason'),
       }
+    case 'context:compacting':
+      return {
+        ...base,
+        state: 'running',
+        title: 'Compacting context',
+        detail: joinDetail(dataString(data, 'reason'), dataString(data, 'checkpointId')),
+      }
+    case 'context:compacted':
+      return {
+        ...base,
+        state: 'completed',
+        title: 'Context compacted',
+        detail: joinDetail(dataString(data, 'checkpointId'), dataString(data, 'modelId')),
+      }
     case 'tool.requested':
       return { ...base, state: 'running', title: `Tool requested: ${toolLabel}`, detail: target }
     case 'tool.input.delta':

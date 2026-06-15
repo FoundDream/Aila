@@ -59,6 +59,8 @@ import {
   type PersistedMessage,
   type PersistedToolResultRef,
   parseSkillDocument,
+  type RuntimeCompactConversationInput,
+  type RuntimeCompactConversationResult,
   type RuntimeContextCompactArtifactInput,
   type RuntimeContextCompactArtifactResult,
   type RuntimeContextTokenCountInput,
@@ -126,6 +128,8 @@ export type RuntimeCorePublicSurfaceContract = {
   persistedMessage: PersistedMessage
   persistedToolResultRef: PersistedToolResultRef
   runtime: AgentRuntime
+  runtimeCompactConversationInput: RuntimeCompactConversationInput
+  runtimeCompactConversationResult: RuntimeCompactConversationResult
   runtimeContextCompactArtifactInput: RuntimeContextCompactArtifactInput
   runtimeContextCompactArtifactResult: RuntimeContextCompactArtifactResult
   runtimeContextTokenCountInput: RuntimeContextTokenCountInput

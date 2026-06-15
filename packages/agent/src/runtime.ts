@@ -12,6 +12,7 @@ import {
   type AgentContextTokenPreflight,
   applyAgentContextTokenPreflight,
   assembleAgentContext,
+  recommendManualContextCheckpoint,
 } from './context'
 import {
   type AgentEventAppendResult,
@@ -73,6 +74,20 @@ interface RuntimeToolContextInput {
   messageId?: string
   toolCallId?: string
   signal?: AbortSignal
+}
+
+type RuntimeCompactArtifactSource = 'model' | 'heuristic'
+type RuntimeCompactArtifactFallbackReason =
+  | 'missing_hook'
+  | 'empty_result'
+  | 'invalid_artifact'
+  | 'error'
+
+interface RuntimeSemanticCompactArtifact {
+  artifact: ConversationCompactArtifact
+  summary: string
+  source: RuntimeCompactArtifactSource
+  fallbackReason?: RuntimeCompactArtifactFallbackReason
 }
 
 export interface AgentRuntimeEnvironment {
@@ -201,6 +216,18 @@ export interface RuntimeRetryLastInput {
   conversationId: string
   selection: ModelSelection
   transientContext?: ChatMessage[]
+}
+
+export interface RuntimeCompactConversationInput {
+  conversationId: string
+  selection: ModelSelection
+}
+
+export interface RuntimeCompactConversationResult {
+  compacted: boolean
+  summary: ConversationSummary
+  checkpoint?: ConversationContextCheckpoint
+  reason?: 'nothing_to_compact'
 }
 
 export interface RuntimeTransientContextInput {
@@ -388,6 +415,9 @@ export interface AgentRuntimeConversationApi {
   createConversation(input?: RuntimeCreateConversationInput): Promise<ConversationSummary>
   listConversations(input?: RuntimeListConversationsInput): Promise<ConversationSummary[]>
   getConversation(conversationId: string): Promise<ConversationRecord>
+  compactConversation(
+    input: RuntimeCompactConversationInput,
+  ): Promise<RuntimeCompactConversationResult>
   resolveConversation(
     input?: RuntimeResolveConversationInput,
   ): Promise<RuntimeResolveConversationResult>
@@ -1013,6 +1043,90 @@ export class AgentRuntime implements AgentRuntimeApi {
     )
   }
 
+  async compactConversation(
+    input: RuntimeCompactConversationInput,
+  ): Promise<RuntimeCompactConversationResult> {
+    return this.withTurnStartLock(input.conversationId, async () => {
+      const { conversationId, selection } = input
+      this.assertCanStartTurn(conversationId)
+      if (this.activeStreams.has(conversationId)) {
+        throw new Error('cannot compact while assistant turn is running')
+      }
+      if (!this.store.saveContextCheckpoint) {
+        throw new Error('runtime store cannot save context checkpoints')
+      }
+
+      const record = await this.getConversation(conversationId)
+      const contextInput = {
+        conversationId,
+        record,
+        selection,
+        source: 'send' as const,
+      }
+      const [resolvedStableInstructions, hostTransientContext] = await Promise.all([
+        this.resolveStableInstructions(contextInput),
+        this.resolveTransientContext(contextInput),
+      ])
+      const context = assembleAgentContext({
+        stableInstructions: resolvedStableInstructions,
+        messages: cloneRuntimeValue(record.messages),
+        modelInfo: await this.resolveModelInfo(selection),
+        providerId: selection.providerId,
+        dynamicContext: hostTransientContext,
+        compactionCheckpoint: record.meta.context?.checkpoint,
+      })
+      const manualMessageId = context.plan.compaction.recommendedCheckpoint?.boundaryMessageId
+      const contextPlan = await this.applyContextTokenPreflight({
+        conversationId,
+        assistantMessageId: manualMessageId ?? `compact:${this.createId()}`,
+        selection,
+        messages: context.messages,
+        contextPlan: context.plan,
+      })
+      const recommended =
+        contextPlan.compaction.recommendedCheckpoint ??
+        recommendManualContextCheckpoint({
+          stableInstructions: resolvedStableInstructions,
+          messages: cloneRuntimeValue(record.messages),
+          modelInfo: await this.resolveModelInfo(selection),
+          providerId: selection.providerId,
+          dynamicContext: hostTransientContext,
+          compactionCheckpoint: record.meta.context?.checkpoint,
+        })
+      if (!recommended) {
+        return {
+          compacted: false,
+          reason: 'nothing_to_compact',
+          summary: cloneRuntimeConversationSummary(record.meta),
+        }
+      }
+
+      const checkpoint = await this.persistContextCheckpoint({
+        conversationId,
+        messageId: recommended.boundaryMessageId,
+        record,
+        selection,
+        contextPlan,
+        recommended,
+        reason: contextPlan.compaction.reason ?? 'manual',
+        trigger: 'manual',
+      })
+      if (!checkpoint) {
+        return {
+          compacted: false,
+          reason: 'nothing_to_compact',
+          summary: cloneRuntimeConversationSummary(record.meta),
+        }
+      }
+      const nextRecord = await this.getConversation(conversationId)
+      return {
+        compacted: true,
+        summary: cloneRuntimeConversationSummary(nextRecord.meta),
+        checkpoint: cloneRuntimeValue(checkpoint),
+      }
+    })
+  }
+
   async send(input: RuntimeSendInput): Promise<RuntimeSendResult> {
     return this.withTurnStartLock(input.conversationId, async (turnStartLock) => {
       const { conversationId, userText, selection, attachments, transientContext } = input
@@ -1204,6 +1318,7 @@ export class AgentRuntime implements AgentRuntimeApi {
       })
       await this.persistRecommendedContextCheckpoint({
         conversationId,
+        assistantMessageId,
         record,
         selection,
         contextPlan,
@@ -1834,12 +1949,18 @@ export class AgentRuntime implements AgentRuntimeApi {
     record: ConversationRecord
     selection: ModelSelection
     recommended: AgentContextRecommendedCheckpoint
-  }): Promise<{ artifact: ConversationCompactArtifact; summary: string }> {
+  }): Promise<RuntimeSemanticCompactArtifact> {
+    const heuristic = (
+      fallbackReason: RuntimeCompactArtifactFallbackReason,
+    ): RuntimeSemanticCompactArtifact => ({
+      artifact: cloneRuntimeValue(input.recommended.artifact),
+      summary: input.recommended.summary,
+      source: 'heuristic',
+      fallbackReason,
+    })
+
     if (!this.host.generateContextCompactArtifact) {
-      return {
-        artifact: cloneRuntimeValue(input.recommended.artifact),
-        summary: input.recommended.summary,
-      }
+      return heuristic('missing_hook')
     }
     try {
       const sourceIdSet = new Set(input.recommended.sourceMessageIds)
@@ -1852,36 +1973,64 @@ export class AgentRuntime implements AgentRuntimeApi {
           input.record.messages.filter((message) => sourceIdSet.has(message.id)),
         ),
       })
+      if (!generated) return heuristic('empty_result')
       const artifact = normalizeConversationCompactArtifact(generated?.artifact)
       if (!artifact) {
-        return {
-          artifact: cloneRuntimeValue(input.recommended.artifact),
-          summary: input.recommended.summary,
-        }
+        return heuristic('invalid_artifact')
       }
       const summary =
         typeof generated?.summary === 'string' && generated.summary.trim().length > 0
           ? generated.summary.trim()
           : artifact.summary || input.recommended.summary
-      return { artifact, summary }
+      return { artifact, summary, source: 'model' }
     } catch (error) {
       this.logger.warn('[runtime] semantic context compact artifact generation failed:', error)
-      return {
-        artifact: cloneRuntimeValue(input.recommended.artifact),
-        summary: input.recommended.summary,
-      }
+      return heuristic('error')
     }
   }
 
   private async persistRecommendedContextCheckpoint(input: {
     conversationId: string
+    assistantMessageId: string
     record: ConversationRecord
     selection: ModelSelection
     contextPlan: AgentContextPlan
   }): Promise<void> {
-    const { conversationId, record, selection, contextPlan } = input
+    const { conversationId, assistantMessageId, record, selection, contextPlan } = input
     const recommended = contextPlan.compaction.recommendedCheckpoint
     if (!recommended || !this.store.saveContextCheckpoint) return
+    await this.persistContextCheckpoint({
+      conversationId,
+      messageId: assistantMessageId,
+      record,
+      selection,
+      contextPlan,
+      recommended,
+    })
+  }
+
+  private async persistContextCheckpoint(input: {
+    conversationId: string
+    messageId: string
+    record: ConversationRecord
+    selection: ModelSelection
+    contextPlan: AgentContextPlan
+    recommended: AgentContextRecommendedCheckpoint
+    reason?: string | null
+    trigger?: 'auto' | 'manual'
+  }): Promise<ConversationContextCheckpoint | null> {
+    const { conversationId, messageId, record, selection, contextPlan, recommended } = input
+    if (!this.store.saveContextCheckpoint) return null
+    await this.recordContextCompactionEvent({
+      conversationId,
+      messageId,
+      selection,
+      type: 'context:compacting',
+      contextPlan,
+      recommended,
+      reason: input.reason ?? contextPlan.compaction.reason,
+      trigger: input.trigger ?? 'auto',
+    })
     const semantic = await this.resolveSemanticCompactArtifact({
       conversationId,
       record,
@@ -1904,8 +2053,93 @@ export class AgentRuntime implements AgentRuntimeApi {
         await this.store.saveContextCheckpoint(conversationId, checkpoint),
       )
       this.emit(createRuntimeEvent('conversations:updated', summary))
+      await this.recordContextCompactionEvent({
+        conversationId,
+        messageId,
+        selection,
+        type: 'context:compacted',
+        contextPlan,
+        recommended,
+        checkpoint,
+        semantic,
+        reason: input.reason ?? contextPlan.compaction.reason,
+        trigger: input.trigger ?? 'auto',
+      })
+      return checkpoint
     } catch (error) {
       this.logger.warn('[runtime] context checkpoint persistence failed:', error)
+      return null
+    }
+  }
+
+  private async recordContextCompactionEvent(input: {
+    conversationId: string
+    messageId: string
+    selection: ModelSelection
+    type: 'context:compacting' | 'context:compacted'
+    contextPlan: AgentContextPlan
+    recommended: AgentContextRecommendedCheckpoint
+    checkpoint?: ConversationContextCheckpoint
+    semantic?: RuntimeSemanticCompactArtifact
+    reason?: string | null
+    trigger?: 'auto' | 'manual'
+  }): Promise<void> {
+    const { conversationId, messageId, selection, type, contextPlan, recommended } = input
+    const charsPerToken =
+      contextPlan.ledger.estimator.charsPerToken > 0
+        ? contextPlan.ledger.estimator.charsPerToken
+        : 4
+    const checkpointCharCost = input.checkpoint?.charCost ?? recommended.charCost
+    const checkpointEstimatedTokens = Math.max(0, Math.ceil(checkpointCharCost / charsPerToken))
+    const estimatedSavedTokens = Math.max(
+      0,
+      recommended.sourceEstimatedTokens - checkpointEstimatedTokens,
+    )
+    try {
+      await this.recordAgentEvent({
+        timestamp: this.now(),
+        conversationId,
+        messageId,
+        type,
+        data: {
+          providerId: selection.providerId,
+          modelId: selection.modelId,
+          checkpointId: recommended.id,
+          activeCheckpointId: contextPlan.compaction.activeCheckpointId,
+          boundaryMessageId: recommended.boundaryMessageId,
+          reason: input.reason ?? contextPlan.compaction.reason,
+          trigger: input.trigger ?? 'auto',
+          omittedRoundCount: recommended.omittedRoundCount,
+          sourceMessageCount: recommended.sourceMessageIds.length,
+          selectedRoundCount: contextPlan.compaction.selectedRoundCount,
+          sourceCharCost: recommended.sourceCharCost,
+          sourceEstimatedTokens: recommended.sourceEstimatedTokens,
+          checkpointCharCost,
+          checkpointEstimatedTokens,
+          estimatedSavedTokens,
+          estimatedInputTokens: contextPlan.ledger.totalEstimatedTokens,
+          inputBudgetTokens: contextPlan.ledger.inputBudgetTokens,
+          remainingInputTokens:
+            contextPlan.budget.remainingPreflightInputTokens ??
+            contextPlan.ledger.remainingInputTokens,
+          ...(contextPlan.ledger.preflight
+            ? { preflightInputTokens: contextPlan.ledger.preflight.inputTokens }
+            : {}),
+          ...(input.checkpoint
+            ? {
+                compactArtifactSource: input.semantic?.source ?? 'heuristic',
+                ...(input.semantic?.fallbackReason
+                  ? { compactArtifactFallbackReason: input.semantic.fallbackReason }
+                  : {}),
+                summaryChars: input.checkpoint.summary.length,
+                artifactFileCount: input.checkpoint.artifact?.files.length ?? 0,
+                artifactToolResultCount: input.checkpoint.artifact?.toolResults.length ?? 0,
+              }
+            : {}),
+        },
+      })
+    } catch (error) {
+      this.logger.warn('[runtime] context compaction activity append failed:', error)
     }
   }
 

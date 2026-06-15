@@ -1806,6 +1806,7 @@ async function testRuntimePersistsAutoContextCheckpoint(): Promise<void> {
   }
 
   let streamedPlan: AgentContextPlan | undefined
+  let streamedAssistantMessageId: string | undefined
   let semanticSourceMessageCount = 0
   const runtime = new AgentRuntime({
     store,
@@ -1835,6 +1836,7 @@ async function testRuntimePersistsAutoContextCheckpoint(): Promise<void> {
     },
     streamChat: async (req, handlers) => {
       streamedPlan = req.contextPlan
+      streamedAssistantMessageId = req.assistantMessageId
       await handlers.onDone({
         conversationId: req.conversationId,
         messageId: req.assistantMessageId,
@@ -1912,6 +1914,159 @@ async function testRuntimePersistsAutoContextCheckpoint(): Promise<void> {
     turnLedger.compaction.recommendedCheckpointId,
     streamedPlan?.compaction.recommendedCheckpoint?.id,
     'context turn ledger should link the turn to the recommended checkpoint',
+  )
+  const agentEvents = [...((await store.listAgentEvents?.(conversation.id)) ?? [])]
+  const compactingEvent = agentEvents.find((event) => event.type === 'context:compacting')
+  const compactedEvent = agentEvents.find((event) => event.type === 'context:compacted')
+  assert(compactingEvent, 'runtime should record a context compacting activity event')
+  assert(compactedEvent, 'runtime should record a context compacted activity event')
+  assertEqual(
+    compactingEvent.messageId,
+    streamedAssistantMessageId,
+    'context compacting event should attach to the assistant turn',
+  )
+  assertEqual(
+    compactedEvent.messageId,
+    streamedAssistantMessageId,
+    'context compacted event should attach to the assistant turn',
+  )
+  assertEqual(
+    compactingEvent.data?.checkpointId,
+    record.meta.context.checkpoint.id,
+    'context compacting event should identify the recommended checkpoint',
+  )
+  assertEqual(
+    compactedEvent.data?.checkpointId,
+    record.meta.context.checkpoint.id,
+    'context compacted event should identify the persisted checkpoint',
+  )
+  assertEqual(
+    compactedEvent.data?.preflightInputTokens,
+    1_234,
+    'context compacted event should include provider token preflight counts',
+  )
+  assertEqual(
+    compactedEvent.data?.summaryChars,
+    'semantic compact rendered summary'.length,
+    'context compacted event should include persisted summary size',
+  )
+  assertEqual(
+    compactedEvent.data?.compactArtifactSource,
+    'model',
+    'context compacted event should identify model-generated compact artifacts',
+  )
+  assertEqual(
+    compactedEvent.data?.sourceEstimatedTokens,
+    streamedPlan?.compaction.recommendedCheckpoint?.sourceEstimatedTokens,
+    'context compacted event should include source history token estimate',
+  )
+  assertEqual(
+    compactedEvent.data?.checkpointEstimatedTokens,
+    Math.ceil(
+      record.meta.context.checkpoint.charCost / (streamedPlan?.ledger.estimator.charsPerToken ?? 4),
+    ),
+    'context compacted event should include persisted checkpoint token estimate',
+  )
+  assert(
+    typeof compactedEvent.data?.estimatedSavedTokens === 'number' &&
+      compactedEvent.data.estimatedSavedTokens > 0,
+    'context compacted event should include estimated saved tokens',
+  )
+}
+
+async function testRuntimeManualCompactConversation(): Promise<void> {
+  const store = runtimeSdk.createInMemoryRuntimeStore()
+  const conversation = await store.createConversation?.()
+  assert(conversation, 'in-memory store should create a conversation')
+  for (let index = 0; index < 6; index += 1) {
+    await store.saveMessage(conversation.id, {
+      schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+      id: `manual-compact-history-${index}`,
+      role: 'user',
+      blocks: [{ type: 'text', content: `manual compact history ${index}` }],
+      status: 'done',
+    })
+  }
+
+  let semanticSourceIds: string[] = []
+  const runtime = new AgentRuntime({
+    store,
+    getModelInfo: () => ({ model: 'large-context-contract', contextLength: 128_000 }),
+    countContextTokens: async (input) => ({
+      inputTokens: 777,
+      method: 'manual_counter',
+      providerId: input.selection.providerId,
+      model: input.selection.modelId,
+    }),
+    generateContextCompactArtifact: async (input) => {
+      semanticSourceIds = input.sourceMessages.map((message) => message.id)
+      return {
+        artifact: {
+          ...input.recommendedCheckpoint.artifact,
+          summary: 'manual semantic compact artifact summary',
+        },
+        summary: 'manual semantic compact rendered summary',
+      }
+    },
+  })
+
+  const result = await runtime.compactConversation({
+    conversationId: conversation.id,
+    selection: { providerId: 'openrouter', modelId: 'contract/large' },
+  })
+  assert(result.compacted, 'manual compact should persist a checkpoint even without auto pressure')
+  assert(result.checkpoint, 'manual compact result should include the persisted checkpoint')
+  assertEqual(
+    result.checkpoint.summary,
+    'manual semantic compact rendered summary',
+    'manual compact should use the semantic compact hook',
+  )
+  assert(
+    result.checkpoint.sourceMessageIds.includes('manual-compact-history-0'),
+    'manual compact should cover older history',
+  )
+  assert(
+    !result.checkpoint.sourceMessageIds.includes('manual-compact-history-5'),
+    'manual compact should keep recent history outside the checkpoint',
+  )
+  assert(
+    semanticSourceIds.includes('manual-compact-history-0'),
+    'manual compact semantic hook should receive compacted source messages',
+  )
+  const record = await store.getConversation(conversation.id)
+  assertEqual(
+    record.meta.context?.checkpoint?.id,
+    result.checkpoint.id,
+    'manual compact should update conversation context metadata',
+  )
+
+  const agentEvents = [...((await store.listAgentEvents?.(conversation.id)) ?? [])]
+  const compactingEvent = agentEvents.find((event) => event.type === 'context:compacting')
+  const compactedEvent = agentEvents.find((event) => event.type === 'context:compacted')
+  assert(compactingEvent, 'manual compact should record a compacting event')
+  assert(compactedEvent, 'manual compact should record a compacted event')
+  assertEqual(compactingEvent.data?.trigger, 'manual', 'manual compacting event trigger')
+  assertEqual(compactedEvent.data?.trigger, 'manual', 'manual compacted event trigger')
+  assertEqual(compactedEvent.data?.reason, 'manual', 'manual compacted event reason')
+  assertEqual(
+    compactedEvent.data?.compactArtifactSource,
+    'model',
+    'manual compact event should identify model-generated compact artifacts',
+  )
+  assertEqual(
+    compactedEvent.data?.preflightInputTokens,
+    777,
+    'manual compact event should include provider token preflight counts',
+  )
+  assert(
+    typeof compactedEvent.data?.sourceEstimatedTokens === 'number' &&
+      compactedEvent.data.sourceEstimatedTokens > 0,
+    'manual compact event should include source history token estimate',
+  )
+  assert(
+    typeof compactedEvent.data?.estimatedSavedTokens === 'number' &&
+      compactedEvent.data.estimatedSavedTokens > 0,
+    'manual compact event should include estimated saved tokens',
   )
 }
 
@@ -6905,6 +7060,32 @@ async function testNodeSemanticCompactGeneratorContract(): Promise<void> {
     ),
     'node semantic compact generator should provide heuristic artifact context to the model pass',
   )
+
+  const invalidJsonGenerator = runtimePackageNodeSdk.createNodeSemanticCompactGenerator({
+    providers: {
+      openai: { api: 'openai-chat-completions', apiKey: 'compact-key' },
+    },
+    modelStreamClient: {
+      async *stream() {
+        yield {
+          type: 'text-delta',
+          text: '{"summary":"truncated compact artifact"',
+        }
+        yield { type: 'finish-step', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 } }
+      },
+    },
+  })
+  const invalidResult = await invalidJsonGenerator({
+    conversationId: 'compact-conversation',
+    selection: { providerId: 'openai', modelId: 'gpt-5.4-mini' },
+    recommendedCheckpoint: recommended,
+    sourceMessages: [],
+  })
+  assertEqual(
+    invalidResult,
+    null,
+    'node semantic compact generator should ignore invalid JSON and let runtime fallback',
+  )
 }
 
 async function testNativeOpenAiChatModelStreamContract(): Promise<void> {
@@ -7956,6 +8137,8 @@ async function testRuntimeSdkDoesNotExportDocsContract(): Promise<void> {
     'ConversationContextTokenPreflight',
     'ConversationContextTurnLedgerEntry',
     'PersistedToolResultRef',
+    'RuntimeCompactConversationInput',
+    'RuntimeCompactConversationResult',
     'RuntimeContextCompactArtifactInput',
     'RuntimeContextCompactArtifactResult',
     'RuntimeContextTokenCountInput',
@@ -9280,6 +9463,7 @@ async function main(): Promise<void> {
   await testRuntimeHostStableInstructionsUsesInjectedRecord()
   testContextAssemblerSectionsContract()
   await testRuntimePersistsAutoContextCheckpoint()
+  await testRuntimeManualCompactConversation()
   await testRuntimeStreamHandlerSnapshots()
   await testRuntimeConversationStoreFacadeContract()
   await testRuntimeConversationRuntimeStateApiUsesEventReplay()

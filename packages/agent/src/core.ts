@@ -53,6 +53,8 @@ export {
   type ContextTokenEstimateMethod,
   ContextTokenEstimator,
   type ContextTokenEstimatorSnapshot,
+  type RecommendManualContextCheckpointInput,
+  recommendManualContextCheckpoint,
 } from './context'
 export {
   type AgentEventAppendResult,
@@ -143,6 +145,8 @@ export {
   isRuntimeEventType,
   type RuntimeAppendUserMessageInput,
   type RuntimeAttachmentBlock,
+  type RuntimeCompactConversationInput,
+  type RuntimeCompactConversationResult,
   type RuntimeContextCompactArtifactInput,
   type RuntimeContextCompactArtifactResult,
   type RuntimeContextTokenCountInput,

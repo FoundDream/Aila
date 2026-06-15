@@ -52,6 +52,8 @@ export type {
   PersistedToolResultRef,
   ProviderId,
   ReasoningDeltaEvent,
+  RuntimeCompactConversationRequest,
+  RuntimeCompactConversationResult,
   RuntimeConversationHydration,
   RuntimeRetryLastRequest,
   RuntimeSendRequest,

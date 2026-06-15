@@ -26,6 +26,7 @@ const MAX_COMPACT_ARTIFACT_ITEMS = 20
 const MAX_COMPACT_ARTIFACT_TEXT_CHARS = 2_000
 const AUTO_COMPACT_THRESHOLD = 0.85
 const AUTO_COMPACT_MIN_HISTORY_ROUNDS = 4
+const MANUAL_COMPACT_KEEP_RECENT_ROUNDS = 2
 const MICROCOMPACT_KEEP_RECENT_TOOL_RESULTS = 6
 const MICROCOMPACT_CLEARED_TOOL_RESULT =
   '[Old tool result content microcompacted; use checkpoint artifacts or rerun the tool if full output is needed.]'
@@ -170,6 +171,8 @@ export interface AgentContextRecommendedCheckpoint {
   omittedRoundCount: number
   summary: string
   charCost: number
+  sourceCharCost: number
+  sourceEstimatedTokens: number
   artifact: ConversationCompactArtifact
 }
 
@@ -216,6 +219,10 @@ export interface AgentContextResult {
     omittedRounds: number
     shouldAutoCompact: boolean
   }
+}
+
+export interface RecommendManualContextCheckpointInput extends AssembleAgentContextInput {
+  keepRecentRounds?: number
 }
 
 function charCost(messages: ChatMessage[]): number {
@@ -811,6 +818,8 @@ function createRecommendedCheckpoint(
     ...rounds.map((round) => round.source.id),
   ]
   const boundaryMessageId = boundary.id
+  const sourceCharCost = contextRoundsCharCost(rounds)
+  const sourceEstimatedTokens = contextRoundsEstimatedTokens(rounds)
   return {
     id: `ctx_${contextHash({ boundaryMessageId, sourceMessageIds, summary }).slice(0, 16)}`,
     boundaryMessageId,
@@ -818,8 +827,40 @@ function createRecommendedCheckpoint(
     omittedRoundCount: (activeCheckpoint?.omittedRoundCount ?? 0) + rounds.length,
     summary,
     charCost: charCost([{ role: 'system', content: summary }]),
+    sourceCharCost,
+    sourceEstimatedTokens,
     artifact,
   }
+}
+
+export function recommendManualContextCheckpoint(
+  input: RecommendManualContextCheckpointInput,
+): AgentContextRecommendedCheckpoint | null {
+  const budgetManager = new ContextBudgetManager({
+    modelInfo: input.modelInfo,
+    providerId: input.providerId,
+  })
+  const estimator = budgetManager.estimator
+  const allRounds = input.messages
+    .map((message, index) => messageToRound(message, index, estimator))
+    .filter((round): round is ContextRound => round !== null)
+  const activeInput = activeCheckpointInput(input.messages, input.compactionCheckpoint)
+  const activeCheckpoint = activeInput?.checkpoint ?? null
+  const candidateRounds =
+    activeInput === null
+      ? allRounds
+      : allRounds.filter((round) => round.sourceIndex > activeInput.boundaryIndex)
+  const keepRecentRounds = Math.max(
+    0,
+    Math.floor(input.keepRecentRounds ?? MANUAL_COMPACT_KEEP_RECENT_ROUNDS),
+  )
+  const compactable = candidateRounds.slice(
+    0,
+    Math.max(0, candidateRounds.length - keepRecentRounds),
+  )
+  if (compactable.length === 0) return null
+  const { rounds } = microcompactHistoryRounds(compactable, estimator)
+  return createRecommendedCheckpoint(activeCheckpoint, rounds)
 }
 
 function stableStringify(value: unknown): string {

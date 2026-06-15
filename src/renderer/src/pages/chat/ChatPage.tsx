@@ -8,6 +8,7 @@ import type {
   Settings,
 } from '../../types'
 import { Composer } from './Composer'
+import { ContextCompactionStatus } from './ContextCompactionStatus'
 import { Transcript } from './Transcript'
 import type { ChatStreamsApi } from './useChatStreams'
 import { useModelSelection } from './useModelSelection'
@@ -52,6 +53,7 @@ export function ChatPage({
 
   const stream = conversationId ? streams.getStream(conversationId) : null
   const messages = stream?.messages ?? []
+  const events = stream?.events ?? []
   const isStreaming = stream?.runningMessageId !== null && stream?.runningMessageId !== undefined
   const usage = stream?.usage ?? null
   const queuedRuns = stream?.queue ?? []
@@ -94,6 +96,17 @@ export function ChatPage({
     streams.abort(conversationId)
   }, [conversationId, streams])
 
+  const handleCompact = useCallback(async (): Promise<{ compacted: boolean }> => {
+    if (!conversationId) return { compacted: false }
+    if (isStreaming) throw new Error('Wait for the current response before compacting.')
+    const currentSelection = selectionRef.current
+    if (!currentSelection) {
+      onOpenSettings()
+      return { compacted: false }
+    }
+    return streams.compact(conversationId, currentSelection)
+  }, [conversationId, isStreaming, streams, onOpenSettings, selectionRef])
+
   const handleRetryLast = useCallback(() => {
     if (!conversationId) return
     const currentSelection = selectionRef.current
@@ -119,6 +132,7 @@ export function ChatPage({
     <Composer
       isStreaming={isStreaming}
       onSubmit={handleSubmit}
+      onCompact={handleCompact}
       onAbort={handleAbort}
       queuedRuns={queuedRuns}
       usage={usage}
@@ -158,6 +172,7 @@ export function ChatPage({
               onRetryLast={handleRetryLast}
               submitScrollKey={submitScrollKey}
             />
+            <ContextCompactionStatus events={events} />
             {composer}
           </>
         )}

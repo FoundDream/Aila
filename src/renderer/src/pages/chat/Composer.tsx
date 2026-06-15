@@ -1,4 +1,5 @@
 import {
+  ArchiveIcon,
   ArrowLeftIcon,
   ArrowUpIcon,
   ClockIcon,
@@ -40,6 +41,7 @@ import type { QueuedRun } from './useChatStreams'
 interface ComposerProps {
   isStreaming: boolean
   onSubmit: (text: string, attachments: ChatAttachmentInput[]) => Promise<void> | void
+  onCompact: () => Promise<{ compacted: boolean }> | { compacted: boolean }
   onAbort: () => void
   queuedRuns?: QueuedRun[]
   usage?: UsageInfo | null
@@ -65,7 +67,7 @@ const APPROVAL_MODES: Array<{ id: ApprovalMode; label: string; description: stri
   { id: 'yolo', label: 'Yolo', description: 'Run tools without approval prompts.' },
 ]
 
-type SlashCommandId = 'image'
+type SlashCommandId = 'image' | 'compact'
 
 interface SlashState {
   rangeStart: number
@@ -314,6 +316,7 @@ function QueuedRunsList({ queuedRuns }: { queuedRuns: QueuedRun[] }): ReactEleme
 export function Composer({
   isStreaming,
   onSubmit,
+  onCompact,
   onAbort,
   queuedRuns = [],
   usage,
@@ -565,6 +568,16 @@ export function Composer({
         keywords: ['image', 'photo', 'picture', 'screenshot', 'png', 'jpg'],
         icon: <ImageIcon className="size-3.5" />,
       },
+      {
+        id: 'compact',
+        kind: 'builtin',
+        commandId: 'compact',
+        token: '/compact',
+        label: 'Compact context',
+        description: 'Summarize older history into a checkpoint',
+        keywords: ['compact', 'context', 'summary', 'checkpoint'],
+        icon: <ArchiveIcon className="size-3.5" />,
+      },
       ...skills.map((skill) => ({
         id: `skill:${skill.name}`,
         kind: 'skill' as const,
@@ -624,8 +637,18 @@ export function Composer({
 
       replaceSlashToken('')
       if (command.commandId === 'image') imageInputRef.current?.click()
+      if (command.commandId === 'compact') {
+        void (async () => {
+          try {
+            const result = await onCompact()
+            setAttachError(result.compacted ? null : 'Nothing to compact yet.')
+          } catch (error) {
+            setAttachError(error instanceof Error ? error.message : String(error))
+          }
+        })()
+      }
     },
-    [replaceSlashToken],
+    [onCompact, replaceSlashToken],
   )
 
   const handleKeyDown = useCallback(

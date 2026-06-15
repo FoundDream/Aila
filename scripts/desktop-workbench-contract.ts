@@ -204,6 +204,11 @@ async function testDesktopExposesRuntimeStateApi(): Promise<void> {
     'Desktop runtime workbench should expose conversation hydration through IPC',
   )
   assert(
+    workbenchSource.includes("'runtime:compact-conversation'") &&
+      workbenchSource.includes('workbench.compactConversation(request)'),
+    'Desktop runtime workbench should expose manual context compaction through IPC',
+  )
+  assert(
     workbenchSource.includes("'runtime:list-active-turns'") &&
       workbenchSource.includes('workbench.listActiveTurns()') &&
       workbenchSource.includes('return runtime.listActiveTurns()') &&
@@ -214,6 +219,8 @@ async function testDesktopExposesRuntimeStateApi(): Promise<void> {
     preloadSource.includes('runtime: {') &&
       preloadSource.includes('hydrateConversation:') &&
       preloadSource.includes("'runtime:hydrate-conversation'") &&
+      preloadSource.includes('compactConversation:') &&
+      preloadSource.includes("'runtime:compact-conversation'") &&
       preloadSource.includes('listActiveTurns:') &&
       preloadSource.includes("'runtime:list-active-turns'"),
     'Desktop preload should expose a runtime namespace to renderer',

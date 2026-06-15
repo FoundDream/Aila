@@ -247,7 +247,12 @@ function buildCompactMessages(input: RuntimeContextCompactArtifactInput): ChatMe
 function parseCompactResponse(value: string): RuntimeContextCompactArtifactResult | null {
   const json = extractJsonObject(value)
   if (!json) return null
-  const parsed = JSON.parse(json) as Partial<ConversationCompactArtifact> & { summary?: string }
+  let parsed: Partial<ConversationCompactArtifact> & { summary?: string }
+  try {
+    parsed = JSON.parse(json) as Partial<ConversationCompactArtifact> & { summary?: string }
+  } catch {
+    return null
+  }
   const artifact = normalizeConversationCompactArtifact({
     schemaVersion: AILA_CONTEXT_ARTIFACT_SCHEMA_VERSION,
     ...parsed,
