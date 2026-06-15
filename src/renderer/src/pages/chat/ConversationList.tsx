@@ -1,4 +1,5 @@
 import {
+  ChevronRightIcon,
   FolderIcon,
   FolderPlusIcon,
   PencilIcon,
@@ -127,8 +128,9 @@ export function ConversationList({
   onDelete,
 }: ConversationListProps): ReactElement {
   const [renamingId, setRenamingId] = useState<string | null>(null)
-  const [expandedProjectId, setExpandedProjectId] = useState<string | null>(null)
+  const [expandedProjectIds, setExpandedProjectIds] = useState<Set<string>>(() => new Set())
   const [fullyShownProjectIds, setFullyShownProjectIds] = useState<Set<string>>(() => new Set())
+  const initializedProjectExpansionRef = useRef(false)
   const { projects, chats } = useMemo(
     () => buildConversationSidebarSections(conversations),
     [conversations],
@@ -141,14 +143,43 @@ export function ConversationList({
 
   useEffect(() => {
     if (activeWorkspaceId) {
-      setExpandedProjectId(activeWorkspaceId)
+      setExpandedProjectIds((current) => {
+        if (current.has(activeWorkspaceId)) return current
+        const next = new Set(current)
+        next.add(activeWorkspaceId)
+        return next
+      })
     }
   }, [activeWorkspaceId])
 
   useEffect(() => {
-    if (expandedProjectId && projects.some((project) => project.id === expandedProjectId)) return
-    setExpandedProjectId(projects[0]?.id ?? null)
-  }, [expandedProjectId, projects])
+    if (initializedProjectExpansionRef.current || projects.length === 0) return
+    initializedProjectExpansionRef.current = true
+    setExpandedProjectIds((current) => {
+      if (current.size > 0) return current
+      return new Set([projects[0].id])
+    })
+  }, [projects])
+
+  useEffect(() => {
+    const projectIds = new Set(projects.map((project) => project.id))
+    setExpandedProjectIds((current) => {
+      const next = new Set(Array.from(current).filter((id) => projectIds.has(id)))
+      if (next.size === current.size && Array.from(next).every((id) => current.has(id))) {
+        return current
+      }
+      return next
+    })
+  }, [projects])
+
+  const toggleProjectExpanded = (projectId: string): void => {
+    setExpandedProjectIds((current) => {
+      const next = new Set(current)
+      if (next.has(projectId)) next.delete(projectId)
+      else next.add(projectId)
+      return next
+    })
+  }
 
   return (
     <div className="flex h-full flex-col text-[var(--text)]">
@@ -162,7 +193,7 @@ export function ConversationList({
           {projects.length > 0 && (
             <ul className="flex flex-col gap-0.5">
               {projects.map((project) => {
-                const isExpanded = project.id === expandedProjectId
+                const isExpanded = expandedProjectIds.has(project.id)
                 const showAll = fullyShownProjectIds.has(project.id)
                 const workspace = project.workspace
                 const visibleConversations = showAll
@@ -175,11 +206,18 @@ export function ConversationList({
                     <div className="group/project flex h-8 items-center rounded-xl transition-colors hover:bg-[var(--surface-hover)]">
                       <button
                         type="button"
-                        onClick={() => setExpandedProjectId(project.id)}
+                        onClick={() => toggleProjectExpanded(project.id)}
                         title={project.path ?? project.label}
                         aria-expanded={isExpanded}
-                        className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 px-2.5 text-left"
+                        className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 px-2 text-left"
                       >
+                        <span
+                          className={`grid size-4 shrink-0 place-items-center text-[var(--sidebar-text-dim)] transition-transform ${
+                            isExpanded ? 'rotate-90' : ''
+                          }`}
+                        >
+                          <ChevronRightIcon className="size-3.5" />
+                        </span>
                         <span className="grid size-5 shrink-0 place-items-center text-[var(--sidebar-text-soft)]">
                           <FolderIcon className="size-4" />
                         </span>
@@ -375,7 +413,7 @@ function ConversationRow({
             onClick={() => onSelect(conversation.id)}
             onDoubleClick={() => onStartRename(conversation.id)}
             className={`flex min-w-0 flex-1 cursor-pointer items-center gap-2 text-left ${
-              indented ? 'pl-11 pr-2' : 'px-2.5'
+              indented ? 'pl-14 pr-2' : 'px-2.5'
             }`}
           >
             <span
@@ -467,7 +505,7 @@ function ConversationRenameInput({
       }}
       onBlur={() => onSubmit(value.trim())}
       className={`h-8 min-w-0 flex-1 rounded-xl bg-transparent pr-2.5 text-[14px] text-[var(--text)] outline-none placeholder:text-[var(--sidebar-text-dim)] ${
-        indented ? 'pl-11' : 'pl-2.5'
+        indented ? 'pl-14' : 'pl-2.5'
       }`}
     />
   )
