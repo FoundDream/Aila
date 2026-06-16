@@ -275,7 +275,7 @@ export function ConversationList({
                                   return next
                                 })
                               }
-                              className="ml-11 flex h-8 cursor-pointer items-center rounded-xl px-2.5 text-[14px] text-[var(--sidebar-text-dim)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--sidebar-text-soft)]"
+                              className="ml-7 flex h-8 cursor-pointer items-center rounded-xl px-2.5 text-[14px] text-[var(--sidebar-text-dim)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--sidebar-text-soft)]"
                             >
                               Show more
                             </button>
@@ -413,7 +413,7 @@ function ConversationRow({
             onClick={() => onSelect(conversation.id)}
             onDoubleClick={() => onStartRename(conversation.id)}
             className={`flex min-w-0 flex-1 cursor-pointer items-center gap-2 text-left ${
-              indented ? 'pl-14 pr-2' : 'px-2.5'
+              indented ? 'pl-10 pr-2' : 'px-2.5'
             }`}
           >
             <span
@@ -505,7 +505,7 @@ function ConversationRenameInput({
       }}
       onBlur={() => onSubmit(value.trim())}
       className={`h-8 min-w-0 flex-1 rounded-xl bg-transparent pr-2.5 text-[14px] text-[var(--text)] outline-none placeholder:text-[var(--sidebar-text-dim)] ${
-        indented ? 'pl-14' : 'pl-2.5'
+        indented ? 'pl-10' : 'pl-2.5'
       }`}
     />
   )
