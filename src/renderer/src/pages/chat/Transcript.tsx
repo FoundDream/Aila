@@ -190,12 +190,14 @@ function BlockView({ block, isStreaming }: { block: Block; isStreaming: boolean 
   }
   if (block.type === 'image') {
     return (
-      <figure className="flex flex-col gap-1">
-        <img
-          src={block.url}
-          alt={block.prompt ?? 'generated image'}
-          className="max-w-full rounded-xl border border-[var(--border)]"
-        />
+      <figure className="flex w-64 max-w-full flex-col gap-1">
+        <div className="grid h-44 w-64 max-w-full place-items-center overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface)]">
+          <img
+            src={block.url}
+            alt={block.prompt ?? 'generated image'}
+            className="h-full w-full object-contain"
+          />
+        </div>
         {block.prompt && (
           <figcaption className="text-[11.5px] text-[var(--text-dim)]">{block.prompt}</figcaption>
         )}
