@@ -1,6 +1,5 @@
 import { type ReactElement, useCallback, useEffect, useRef, useState } from 'react'
 import { Composer } from '@/pages/chat/Composer'
-import { ContextCompactionStatus } from '@/pages/chat/ContextCompactionStatus'
 import { type ConversationStatusTone, getConversationStatus } from '@/pages/chat/conversationStatus'
 import { Transcript } from '@/pages/chat/Transcript'
 import type { ChatStreamsApi } from '@/pages/chat/useChatStreams'
@@ -185,10 +184,10 @@ export function DocChatPanel({
           <>
             <Transcript
               messages={messages}
+              events={events}
               canRetryLast={canRetryLast}
               onRetryLast={handleRetryLast}
             />
-            <ContextCompactionStatus events={events} />
             <Composer
               isStreaming={isStreaming}
               onSubmit={handleSubmit}

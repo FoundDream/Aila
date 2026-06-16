@@ -11,15 +11,19 @@ import { type ReactElement, useCallback, useEffect, useState } from 'react'
 import { Streamdown } from 'streamdown'
 import { useStickToBottom } from 'use-stick-to-bottom'
 import { markdownComponents } from '@/components/markdown/streamdownComponents'
+import type { PersistedAgentEvent } from '../../types'
+import { ContextCompactionStatus } from './ContextCompactionStatus'
 import type { Block, Message, ToolCallBlock } from './types'
 
 export function Transcript({
   messages,
+  events = [],
   canRetryLast = false,
   onRetryLast,
   submitScrollKey = 0,
 }: {
   messages: Message[]
+  events?: PersistedAgentEvent[]
   canRetryLast?: boolean
   onRetryLast?: () => void
   submitScrollKey?: number
@@ -49,6 +53,7 @@ export function Transcript({
           {messages.map((message) => (
             <MessageRow key={message.id} message={message} />
           ))}
+          <ContextCompactionStatus events={events} />
           {canRetryLast && onRetryLast && <RetryLastTurn onRetryLast={onRetryLast} />}
         </div>
       </div>

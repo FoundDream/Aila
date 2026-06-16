@@ -8,7 +8,6 @@ import type {
   Settings,
 } from '../../types'
 import { Composer } from './Composer'
-import { ContextCompactionStatus } from './ContextCompactionStatus'
 import { Transcript } from './Transcript'
 import type { ChatStreamsApi } from './useChatStreams'
 import { useModelSelection } from './useModelSelection'
@@ -168,11 +167,11 @@ export function ChatPage({
           <>
             <Transcript
               messages={messages}
+              events={events}
               canRetryLast={canRetryLast}
               onRetryLast={handleRetryLast}
               submitScrollKey={submitScrollKey}
             />
-            <ContextCompactionStatus events={events} />
             {composer}
           </>
         )}
