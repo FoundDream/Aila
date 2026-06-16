@@ -162,6 +162,7 @@ export {
   type RuntimeSendInput,
   type RuntimeSendResult,
   type RuntimeStableInstructionsInput,
+  type RuntimeToolPackLoadInput,
   type RuntimeTransientContextInput,
 } from './runtime'
 export type { Settings } from './settings-types'

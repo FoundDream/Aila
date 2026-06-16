@@ -12,14 +12,15 @@ import {
   WIDGET_SYSTEM_PROMPT,
 } from '@aila/agent'
 import { createDefaultNodeRuntimeHost } from '@aila/agent/node'
-import { WIDGET_TOOL_PACK } from './widget-tool-pack'
 import { saveImage } from './image-store'
+import { loadMcpToolPack } from './mcp-tool-pack'
 import { getDataDir, getImagesDir } from './paths'
 import { createPersistedRuntimeStore } from './runtime-store'
 import { loadSettings } from './settings'
 import { loadSkillsFromDir } from './skill-loader'
 import { loadToolPacksFromDir } from './tool-pack-loader'
 import { webSearch } from './web-search'
+import { WIDGET_TOOL_PACK } from './widget-tool-pack'
 
 export interface CreatePersistedAgentRuntimeInput {
   host?: AgentRuntimeHost
@@ -89,6 +90,11 @@ function buildDateContext(): ChatMessage[] {
   return [{ role: 'system', content: `Current date: ${formatLocalDate()}` }]
 }
 
+function resolveToolPackCwd(input: Parameters<NonNullable<AgentRuntimeHost['loadToolPacks']>>[0]) {
+  const path = input?.record?.meta.workspace?.path
+  return path?.trim() ? path : undefined
+}
+
 export function createDefaultRuntimeHost(overrides: AgentRuntimeHost = {}): AgentRuntimeHost {
   const overrideStableInstructions = overrides.loadStableInstructions
   const overrideTransientContext = overrides.loadTransientContext
@@ -105,10 +111,18 @@ export function createDefaultRuntimeHost(overrides: AgentRuntimeHost = {}): Agen
     }),
     loadSettings,
     onToolPolicy: (request) => createToolPolicy(loadSettings().approvalMode)(request),
-    loadToolPacks: async () => [
-      WIDGET_TOOL_PACK,
-      ...(await loadToolPacksFromDir()).map((pack) => pack.toolPack),
-    ],
+    loadToolPacks: async (input) => {
+      const cwd = resolveToolPackCwd(input)
+      const [toolPacks, mcpToolPack] = await Promise.all([
+        loadToolPacksFromDir(),
+        loadMcpToolPack({ cwd }),
+      ])
+      return [
+        WIDGET_TOOL_PACK,
+        ...toolPacks.map((pack) => pack.toolPack),
+        ...(mcpToolPack ? [mcpToolPack] : []),
+      ]
+    },
     loadSkills: async () => (await loadSkillsFromDir()).skills,
     persistAttachment: persistRuntimeAttachment,
     webSearch,

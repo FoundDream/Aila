@@ -29,9 +29,18 @@ import {
   renameFolder,
   updateDoc,
 } from './docs'
-import { getSkillExtensionReport, installSkillFromDirectory } from './extensions'
+import { getExtensionReport, installSkillFromDirectory } from './extensions'
 import { saveImage } from './image-store'
 import { handleImageProtocol, registerImageProtocolScheme } from './images'
+import { disposeMcpConnections } from './mcp-connection-manager'
+import {
+  deleteUserMcpServer,
+  type SaveMcpServerRequest,
+  saveUserMcpServerConfig,
+  setMcpServerEnabled,
+  testConfiguredMcpServer,
+  testMcpServerDraft,
+} from './mcp-management'
 import { getOpenRouterCatalog } from './openrouter-catalog'
 import { configureDataDir, getDataDir } from './paths'
 import {
@@ -169,6 +178,7 @@ configureDocConversationRefRewriter(async (rewrites) => {
 async function shutdownRuntimeWorkbench(): Promise<void> {
   terminalManager?.shutdown()
   await runtimeWorkbench.shutdown()
+  await disposeMcpConnections()
 }
 
 function registerIpcHandlers(): void {
@@ -176,10 +186,8 @@ function registerIpcHandlers(): void {
   registerTerminalIpcHandlers(ipcMain, getTerminalManager())
 
   async function reloadExtensions() {
-    const [runtimeReload, report] = await Promise.all([
-      runtimeWorkbench.reloadExtensions(),
-      getSkillExtensionReport(),
-    ])
+    const runtimeReload = await runtimeWorkbench.reloadExtensions()
+    const report = await getExtensionReport()
     return {
       toolCount: runtimeReload.toolCount,
       skillCount: report.skills.length,
@@ -240,7 +248,7 @@ function registerIpcHandlers(): void {
   ipcMain.handle('settings:set', (_event, next: Settings) => packSettings(saveSettings(next)))
   ipcMain.handle('workspaces:pick-directory', () => pickWorkspaceDirectory())
   ipcMain.handle('openrouter:list-models', () => getOpenRouterCatalog())
-  ipcMain.handle('extensions:report', () => getSkillExtensionReport())
+  ipcMain.handle('extensions:report', () => getExtensionReport())
   ipcMain.handle('extensions:reload', () => reloadExtensions())
   ipcMain.handle('extensions:install-skill', async () => {
     const directory = await pickSkillDirectory()
@@ -248,6 +256,23 @@ function registerIpcHandlers(): void {
     await installSkillFromDirectory(directory)
     return reloadExtensions()
   })
+  ipcMain.handle('extensions:mcp-save', async (_event, request: SaveMcpServerRequest) => {
+    await saveUserMcpServerConfig(request)
+    return reloadExtensions()
+  })
+  ipcMain.handle('extensions:mcp-delete', async (_event, name: string) => {
+    await deleteUserMcpServer(name)
+    return reloadExtensions()
+  })
+  ipcMain.handle('extensions:mcp-set-enabled', async (_event, name: string, enabled: boolean) => {
+    if (typeof enabled !== 'boolean') throw new Error('enabled must be a boolean')
+    await setMcpServerEnabled(name, enabled)
+    return reloadExtensions()
+  })
+  ipcMain.handle('extensions:mcp-test', (_event, name: string) => testConfiguredMcpServer(name))
+  ipcMain.handle('extensions:mcp-test-draft', (_event, request: SaveMcpServerRequest) =>
+    testMcpServerDraft(request),
+  )
 }
 
 app.whenReady().then(async () => {

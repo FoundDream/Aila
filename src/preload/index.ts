@@ -241,7 +241,7 @@ export interface SettingsState {
   configuredProviders: ProviderId[]
 }
 
-export type ExtensionReportErrorKind = 'skills'
+export type ExtensionReportErrorKind = 'toolPacks' | 'skills' | 'mcp'
 
 export interface ExtensionReportError {
   kind: ExtensionReportErrorKind
@@ -255,11 +255,38 @@ export interface ExtensionSkillReport {
   skillPath: string
 }
 
+export interface ExtensionToolPackReport {
+  id: string
+  name: string
+  directory: string
+  manifestPath: string
+  tools: string[]
+}
+
+export interface ExtensionMcpServerReport {
+  name: string
+  transport: 'stdio' | 'http' | 'sse'
+  source: 'project' | 'claude-json' | 'claude-settings' | 'user'
+  sourcePath: string
+  enabled: boolean
+  status: 'connected' | 'connecting' | 'failed' | 'disabled' | 'not_connected'
+  tools: string[]
+  command?: string
+  args?: string[]
+  url?: string
+  error?: string
+}
+
 export interface ExtensionReport {
   ok: boolean
   dataDir: string
+  toolPacksDir: string
   skillsDir: string
+  mcpConfigPath: string
+  projectMcpConfigPath: string
+  toolPacks: ExtensionToolPackReport[]
   skills: ExtensionSkillReport[]
+  mcpServers: ExtensionMcpServerReport[]
   errors: ExtensionReportError[]
 }
 
@@ -267,6 +294,41 @@ export interface ExtensionReloadResult {
   toolCount: number
   skillCount: number
   report: ExtensionReport
+}
+
+export type ExtensionMcpTransport = 'stdio' | 'http' | 'sse' | 'streamable-http'
+export type ExtensionMcpApprovalPolicy = 'ask' | 'auto' | 'deny'
+
+export interface ExtensionMcpToolPolicyInput {
+  approval?: ExtensionMcpApprovalPolicy
+}
+
+export interface ExtensionMcpServerConfigInput {
+  type?: ExtensionMcpTransport
+  command?: string
+  args?: string[]
+  cwd?: string
+  env?: Record<string, string>
+  url?: string
+  headers?: Record<string, string>
+  envHttpHeaders?: Record<string, string>
+  bearerTokenEnvVar?: string
+  enabled?: boolean
+  approval?: ExtensionMcpApprovalPolicy
+  tools?: Record<string, ExtensionMcpToolPolicyInput>
+  startupTimeoutMs?: number
+  toolTimeoutMs?: number
+}
+
+export interface ExtensionMcpSaveRequest {
+  name: string
+  server: ExtensionMcpServerConfigInput
+}
+
+export interface ExtensionMcpTestResult {
+  ok: boolean
+  tools: string[]
+  error?: string
 }
 
 export interface ConversationUsage {
@@ -624,6 +686,16 @@ const api = {
     reload: (): Promise<ExtensionReloadResult> => ipcRenderer.invoke('extensions:reload'),
     installSkill: (): Promise<ExtensionReloadResult | null> =>
       ipcRenderer.invoke('extensions:install-skill'),
+    saveMcpServer: (request: ExtensionMcpSaveRequest): Promise<ExtensionReloadResult> =>
+      ipcRenderer.invoke('extensions:mcp-save', request),
+    deleteMcpServer: (name: string): Promise<ExtensionReloadResult> =>
+      ipcRenderer.invoke('extensions:mcp-delete', name),
+    setMcpServerEnabled: (name: string, enabled: boolean): Promise<ExtensionReloadResult> =>
+      ipcRenderer.invoke('extensions:mcp-set-enabled', name, enabled),
+    testMcpServer: (name: string): Promise<ExtensionMcpTestResult> =>
+      ipcRenderer.invoke('extensions:mcp-test', name),
+    testMcpServerDraft: (request: ExtensionMcpSaveRequest): Promise<ExtensionMcpTestResult> =>
+      ipcRenderer.invoke('extensions:mcp-test-draft', request),
   },
   tools: {
     listPendingApprovals: (): Promise<ToolApprovalRequestEvent[]> =>

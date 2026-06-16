@@ -5,15 +5,27 @@ import {
   EyeOffIcon,
   KeyRoundIcon,
   PackagePlusIcon,
+  PowerIcon,
   PuzzleIcon,
   RefreshCwIcon,
+  SaveIcon,
   SearchIcon,
+  TestTubeIcon,
+  Trash2Icon,
   TriangleAlertIcon,
   XIcon,
 } from 'lucide-react'
 import { Dialog as DialogPrimitive } from 'radix-ui'
 import { type ReactElement, type ReactNode, useEffect, useMemo, useState } from 'react'
-import type { ExtensionReport, ModelSelection, OrCatalog, ProviderId, Settings } from '../types'
+import type {
+  ExtensionMcpServerConfigInput,
+  ExtensionMcpTestResult,
+  ExtensionReport,
+  ModelSelection,
+  OrCatalog,
+  ProviderId,
+  Settings,
+} from '../types'
 import { ProviderLogo } from './ProviderLogo'
 
 interface Props {
@@ -33,14 +45,35 @@ const API_KEY_PLACEHOLDERS: Record<ProviderId, string> = {
 const OPENROUTER_MODELS_TIMEOUT_MS = 20_000
 const EXTENSIONS_REPORT_TIMEOUT_MS = 10_000
 const EXTENSIONS_RELOAD_TIMEOUT_MS = 15_000
+const MCP_TEST_TIMEOUT_MS = 20_000
+
+const DEFAULT_MCP_SERVER_JSON = JSON.stringify(
+  {
+    type: 'stdio',
+    command: 'npx',
+    args: ['-y', '@modelcontextprotocol/server-filesystem', '/tmp'],
+    approval: 'ask',
+  },
+  null,
+  2,
+)
 
 type SettingsTab = 'provider' | 'models' | 'search' | 'extensions'
+type ExtensionsBusy =
+  | 'report'
+  | 'reload'
+  | 'install'
+  | 'mcp-save'
+  | 'mcp-delete'
+  | 'mcp-toggle'
+  | 'mcp-test'
+  | null
 
 const TABS: Array<{ id: SettingsTab; label: string; icon: typeof KeyRoundIcon }> = [
   { id: 'provider', label: 'Provider', icon: KeyRoundIcon },
   { id: 'models', label: 'Default Models', icon: BoxIcon },
   { id: 'search', label: 'Search', icon: SearchIcon },
-  { id: 'extensions', label: 'Skills', icon: PuzzleIcon },
+  { id: 'extensions', label: 'Extensions', icon: PuzzleIcon },
 ]
 
 type WebSearchProviders = NonNullable<NonNullable<Settings['webSearch']>['providers']>
@@ -98,6 +131,19 @@ function PathRow({ label, value }: { label: string; value: string }): ReactEleme
   )
 }
 
+function parseMcpServerJson(value: string): ExtensionMcpServerConfigInput {
+  const parsed = JSON.parse(value) as unknown
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('MCP config JSON must be an object')
+  }
+  return parsed as ExtensionMcpServerConfigInput
+}
+
+function formatMcpTestResult(result: ExtensionMcpTestResult): string {
+  if (!result.ok) return result.error ?? 'Connection failed'
+  return `Connected. ${result.tools.length} tool${result.tools.length === 1 ? '' : 's'} found.`
+}
+
 export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): ReactElement {
   const [draft, setDraft] = useState<Settings>(settings)
   const [saving, setSaving] = useState(false)
@@ -114,7 +160,10 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
   const [extensionsReport, setExtensionsReport] = useState<ExtensionReport | null>(null)
   const [extensionsError, setExtensionsError] = useState<string | null>(null)
   const [extensionsNotice, setExtensionsNotice] = useState<string | null>(null)
-  const [extensionsBusy, setExtensionsBusy] = useState<'report' | 'reload' | 'install' | null>(null)
+  const [extensionsBusy, setExtensionsBusy] = useState<ExtensionsBusy>(null)
+  const [mcpServerName, setMcpServerName] = useState('')
+  const [mcpServerJson, setMcpServerJson] = useState(DEFAULT_MCP_SERVER_JSON)
+  const [mcpTestResults, setMcpTestResults] = useState<Record<string, string>>({})
 
   // Reset draft each time we re-open with fresh settings.
   useEffect(() => {
@@ -128,6 +177,9 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
       setExtensionsError(null)
       setExtensionsNotice(null)
       setExtensionsBusy(null)
+      setMcpServerName('')
+      setMcpServerJson(DEFAULT_MCP_SERVER_JSON)
+      setMcpTestResults({})
     }
   }, [open, settings])
 
@@ -164,7 +216,7 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
         const report = await withTimeout(
           window.api.extensions.report(),
           EXTENSIONS_REPORT_TIMEOUT_MS,
-          'Skills report',
+          'Extensions report',
         )
         if (!cancelled) setExtensionsReport(report)
       } catch (err) {
@@ -247,10 +299,14 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
       const result = await withTimeout(
         window.api.extensions.reload(),
         EXTENSIONS_RELOAD_TIMEOUT_MS,
-        'Skills reload',
+        'Extensions reload',
       )
       setExtensionsReport(result.report)
-      setExtensionsNotice(`Loaded ${result.skillCount} skill${result.skillCount === 1 ? '' : 's'}.`)
+      setExtensionsNotice(
+        `Loaded ${result.toolCount} tool${result.toolCount === 1 ? '' : 's'} from ${
+          result.report.toolPacks.length + result.report.mcpServers.length
+        } extension source${result.report.toolPacks.length + result.report.mcpServers.length === 1 ? '' : 's'}.`,
+      )
     } catch (err) {
       setExtensionsError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -273,6 +329,141 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
           }.`,
         )
       }
+    } catch (err) {
+      setExtensionsError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setExtensionsBusy(null)
+    }
+  }
+
+  const handleSaveMcpServer = async (): Promise<void> => {
+    if (extensionsBusy) return
+    const name = mcpServerName.trim()
+    if (!name) {
+      setExtensionsError('MCP server name is required')
+      return
+    }
+    let server: ExtensionMcpServerConfigInput
+    try {
+      server = parseMcpServerJson(mcpServerJson)
+    } catch (err) {
+      setExtensionsError(err instanceof Error ? err.message : String(err))
+      return
+    }
+
+    setExtensionsBusy('mcp-save')
+    setExtensionsError(null)
+    setExtensionsNotice(null)
+    try {
+      const result = await withTimeout(
+        window.api.extensions.saveMcpServer({ name, server }),
+        EXTENSIONS_RELOAD_TIMEOUT_MS,
+        'MCP server save',
+      )
+      setExtensionsReport(result.report)
+      setExtensionsNotice(`Saved MCP server "${name}". Loaded ${result.toolCount} tools.`)
+    } catch (err) {
+      setExtensionsError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setExtensionsBusy(null)
+    }
+  }
+
+  const handleTestMcpDraft = async (): Promise<void> => {
+    if (extensionsBusy) return
+    const name = mcpServerName.trim()
+    if (!name) {
+      setExtensionsError('MCP server name is required')
+      return
+    }
+    let server: ExtensionMcpServerConfigInput
+    try {
+      server = parseMcpServerJson(mcpServerJson)
+    } catch (err) {
+      setExtensionsError(err instanceof Error ? err.message : String(err))
+      return
+    }
+
+    setExtensionsBusy('mcp-test')
+    setExtensionsError(null)
+    setExtensionsNotice(null)
+    try {
+      const result = await withTimeout(
+        window.api.extensions.testMcpServerDraft({ name, server }),
+        MCP_TEST_TIMEOUT_MS,
+        'MCP server test',
+      )
+      setExtensionsNotice(formatMcpTestResult(result))
+    } catch (err) {
+      setExtensionsError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setExtensionsBusy(null)
+    }
+  }
+
+  const handleTestMcpServer = async (name: string): Promise<void> => {
+    if (extensionsBusy) return
+    setExtensionsBusy('mcp-test')
+    setExtensionsError(null)
+    setExtensionsNotice(null)
+    try {
+      const result = await withTimeout(
+        window.api.extensions.testMcpServer(name),
+        MCP_TEST_TIMEOUT_MS,
+        'MCP server test',
+      )
+      setMcpTestResults((prev) => ({ ...prev, [name]: formatMcpTestResult(result) }))
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      setMcpTestResults((prev) => ({ ...prev, [name]: message }))
+      setExtensionsError(message)
+    } finally {
+      setExtensionsBusy(null)
+    }
+  }
+
+  const handleToggleMcpServer = async (
+    server: NonNullable<ExtensionReport['mcpServers']>[number],
+  ): Promise<void> => {
+    if (extensionsBusy) return
+    const enabled = !server.enabled
+    setExtensionsBusy('mcp-toggle')
+    setExtensionsError(null)
+    setExtensionsNotice(null)
+    try {
+      const result = await withTimeout(
+        window.api.extensions.setMcpServerEnabled(server.name, enabled),
+        EXTENSIONS_RELOAD_TIMEOUT_MS,
+        'MCP server update',
+      )
+      setExtensionsReport(result.report)
+      setExtensionsNotice(`${enabled ? 'Enabled' : 'Disabled'} MCP server "${server.name}".`)
+    } catch (err) {
+      setExtensionsError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setExtensionsBusy(null)
+    }
+  }
+
+  const handleDeleteMcpServer = async (name: string): Promise<void> => {
+    if (extensionsBusy) return
+    if (!window.confirm(`Delete MCP server "${name}" from Aila user config?`)) return
+    setExtensionsBusy('mcp-delete')
+    setExtensionsError(null)
+    setExtensionsNotice(null)
+    try {
+      const result = await withTimeout(
+        window.api.extensions.deleteMcpServer(name),
+        EXTENSIONS_RELOAD_TIMEOUT_MS,
+        'MCP server delete',
+      )
+      setExtensionsReport(result.report)
+      setExtensionsNotice(`Deleted MCP server "${name}".`)
+      setMcpTestResults((prev) => {
+        const next = { ...prev }
+        delete next[name]
+        return next
+      })
     } catch (err) {
       setExtensionsError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -812,9 +1003,9 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
               <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
                 <div className="mb-4 flex items-center justify-between gap-3">
                   <div className="min-w-0">
-                    <div className="text-[13px] font-medium text-[var(--text)]">Skills</div>
+                    <div className="text-[13px] font-medium text-[var(--text)]">Extensions</div>
                     <div className="mt-0.5 text-[11px] text-[var(--text-dim)]">
-                      Local skill packages loaded from the data directory.
+                      Tool packs, skills, and MCP servers loaded by the runtime.
                     </div>
                   </div>
                   <div className="flex shrink-0 items-center gap-2">
@@ -856,7 +1047,7 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
 
                 {extensionsBusy === 'report' && !extensionsReport && (
                   <p className="rounded-md border border-[var(--border)] px-2.5 py-2 text-[12px] text-[var(--text-dim)]">
-                    Loading skills...
+                    Loading extensions...
                   </p>
                 )}
 
@@ -866,8 +1057,53 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
                       <SectionTitle>Locations</SectionTitle>
                       <div className="divide-y divide-[var(--border)] rounded-md border border-[var(--border)]">
                         <PathRow label="Data" value={extensionsReport.dataDir} />
+                        <PathRow label="Tool packs" value={extensionsReport.toolPacksDir} />
                         <PathRow label="Skills" value={extensionsReport.skillsDir} />
+                        <PathRow label="MCP user" value={extensionsReport.mcpConfigPath} />
+                        <PathRow
+                          label="MCP project"
+                          value={extensionsReport.projectMcpConfigPath}
+                        />
                       </div>
+                    </section>
+
+                    <section>
+                      <div className="mb-1.5 flex items-center gap-2">
+                        <SectionTitle>Tool Packs</SectionTitle>
+                        <span className="rounded-full bg-[var(--surface-hover)] px-1.5 py-px text-[10px] tabular-nums text-[var(--text-dim)]">
+                          {extensionsReport.toolPacks.length}
+                        </span>
+                      </div>
+                      <ul className="divide-y divide-[var(--border)] rounded-md border border-[var(--border)]">
+                        {extensionsReport.toolPacks.map((pack) => (
+                          <li key={pack.manifestPath} className="px-2.5 py-2">
+                            <div className="flex items-center gap-2">
+                              <span className="truncate text-[12px] font-medium text-[var(--text)]">
+                                {pack.name}
+                              </span>
+                              <span className="rounded bg-[var(--surface-hover)] px-1 py-px text-[9.5px] uppercase tracking-wide text-[var(--text-dim)]">
+                                pack
+                              </span>
+                              <span className="ml-auto shrink-0 text-[10.5px] tabular-nums text-[var(--text-dim)]">
+                                {pack.tools.length} tools
+                              </span>
+                            </div>
+                            <div className="mt-1 truncate font-mono text-[10.5px] text-[var(--text-dim)]">
+                              {pack.manifestPath}
+                            </div>
+                            {pack.tools.length > 0 && (
+                              <div className="mt-1 truncate font-mono text-[10.5px] text-[var(--text-soft)]">
+                                {pack.tools.join(', ')}
+                              </div>
+                            )}
+                          </li>
+                        ))}
+                        {extensionsReport.toolPacks.length === 0 && (
+                          <li className="px-2.5 py-2 text-[12px] text-[var(--text-dim)]">
+                            No tool packs installed.
+                          </li>
+                        )}
+                      </ul>
                     </section>
 
                     <section>
@@ -899,6 +1135,145 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
                         {extensionsReport.skills.length === 0 && (
                           <li className="px-2.5 py-2 text-[12px] text-[var(--text-dim)]">
                             No skills installed.
+                          </li>
+                        )}
+                      </ul>
+                    </section>
+
+                    <section>
+                      <div className="mb-1.5 flex items-center gap-2">
+                        <SectionTitle>MCP Servers</SectionTitle>
+                        <span className="rounded-full bg-[var(--surface-hover)] px-1.5 py-px text-[10px] tabular-nums text-[var(--text-dim)]">
+                          {extensionsReport.mcpServers.length}
+                        </span>
+                      </div>
+                      <div className="mb-3 rounded-md border border-[var(--border)] bg-[var(--bg-soft)] p-2.5">
+                        <div className="mb-2 flex items-center gap-2">
+                          <input
+                            type="text"
+                            value={mcpServerName}
+                            onChange={(event) => setMcpServerName(event.target.value)}
+                            placeholder="server name"
+                            className="min-w-0 flex-1 rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 py-1.5 text-[12px] outline-none focus:border-[var(--border-strong)]"
+                          />
+                          <button
+                            type="button"
+                            title="Test draft"
+                            onClick={() => void handleTestMcpDraft()}
+                            disabled={extensionsBusy !== null}
+                            className="grid size-7 place-items-center rounded-md border border-[var(--border)] bg-[var(--surface)] text-[var(--text-dim)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)] disabled:opacity-50"
+                          >
+                            <TestTubeIcon className="size-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            title="Save MCP server"
+                            onClick={() => void handleSaveMcpServer()}
+                            disabled={extensionsBusy !== null}
+                            className="grid size-7 place-items-center rounded-md border border-[var(--border)] bg-[var(--surface)] text-[var(--text-dim)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)] disabled:opacity-50"
+                          >
+                            <SaveIcon className="size-3.5" />
+                          </button>
+                        </div>
+                        <textarea
+                          value={mcpServerJson}
+                          onChange={(event) => setMcpServerJson(event.target.value)}
+                          rows={7}
+                          spellCheck={false}
+                          className="min-h-[128px] w-full resize-y rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 py-1.5 font-mono text-[11px] leading-4 text-[var(--text)] outline-none focus:border-[var(--border-strong)]"
+                        />
+                      </div>
+                      <ul className="divide-y divide-[var(--border)] rounded-md border border-[var(--border)]">
+                        {extensionsReport.mcpServers.map((server) => (
+                          <li key={`${server.source}:${server.name}`} className="px-2.5 py-2">
+                            <div className="flex items-start gap-2">
+                              <div className="min-w-0 flex-1">
+                                <div className="flex min-w-0 items-center gap-2">
+                                  <span className="truncate text-[12px] font-medium text-[var(--text)]">
+                                    {server.name}
+                                  </span>
+                                  <span className="rounded bg-[var(--surface-hover)] px-1 py-px text-[9.5px] uppercase tracking-wide text-[var(--text-dim)]">
+                                    {server.transport}
+                                  </span>
+                                  <span className="rounded bg-[var(--surface-hover)] px-1 py-px text-[9.5px] uppercase tracking-wide text-[var(--text-dim)]">
+                                    {server.source}
+                                  </span>
+                                </div>
+                              </div>
+                              <div className="flex shrink-0 items-center gap-1">
+                                <button
+                                  type="button"
+                                  title="Test connection"
+                                  onClick={() => void handleTestMcpServer(server.name)}
+                                  disabled={extensionsBusy !== null}
+                                  className="grid size-6 place-items-center rounded-md text-[var(--text-dim)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)] disabled:opacity-50"
+                                >
+                                  <TestTubeIcon className="size-3.5" />
+                                </button>
+                                <button
+                                  type="button"
+                                  title={server.enabled ? 'Disable server' : 'Enable server'}
+                                  onClick={() => void handleToggleMcpServer(server)}
+                                  disabled={extensionsBusy !== null}
+                                  className="grid size-6 place-items-center rounded-md text-[var(--text-dim)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)] disabled:opacity-50"
+                                >
+                                  <PowerIcon className="size-3.5" />
+                                </button>
+                                {server.source === 'user' && (
+                                  <button
+                                    type="button"
+                                    title="Delete server"
+                                    onClick={() => void handleDeleteMcpServer(server.name)}
+                                    disabled={extensionsBusy !== null}
+                                    className="grid size-6 place-items-center rounded-md text-[var(--text-dim)] hover:bg-red-50 hover:text-red-700 disabled:opacity-50"
+                                  >
+                                    <Trash2Icon className="size-3.5" />
+                                  </button>
+                                )}
+                                <span
+                                  className={`rounded px-1.5 py-0.5 text-[10px] ${
+                                    server.status === 'connected'
+                                      ? 'bg-emerald-50 text-emerald-700'
+                                      : server.status === 'failed'
+                                        ? 'bg-red-50 text-red-700'
+                                        : 'bg-[var(--surface-hover)] text-[var(--text-dim)]'
+                                  }`}
+                                >
+                                  {server.status}
+                                </span>
+                              </div>
+                            </div>
+                            <div className="mt-1 truncate font-mono text-[10.5px] text-[var(--text-dim)]">
+                              {server.command
+                                ? [server.command, ...(server.args ?? [])].join(' ')
+                                : server.url}
+                            </div>
+                            <div className="mt-1 flex items-center gap-2 text-[10.5px] text-[var(--text-soft)]">
+                              <span className="truncate">{server.sourcePath}</span>
+                              <span className="shrink-0 tabular-nums">
+                                {server.tools.length} tools
+                              </span>
+                            </div>
+                            {server.tools.length > 0 && (
+                              <div className="mt-1 truncate font-mono text-[10.5px] text-[var(--text-soft)]">
+                                {server.tools.join(', ')}
+                              </div>
+                            )}
+                            {server.error && (
+                              <div className="mt-1 break-words text-[11px] text-red-700">
+                                {server.error}
+                              </div>
+                            )}
+                            {mcpTestResults[server.name] && (
+                              <div className="mt-1 break-words text-[11px] text-[var(--text-dim)]">
+                                {mcpTestResults[server.name]}
+                              </div>
+                            )}
+                          </li>
+                        ))}
+                        {extensionsReport.mcpServers.length === 0 && (
+                          <li className="px-2.5 py-2 text-[12px] text-[var(--text-dim)]">
+                            No MCP servers configured.
                           </li>
                         )}
                       </ul>

@@ -76,6 +76,11 @@ interface RuntimeToolContextInput {
   signal?: AbortSignal
 }
 
+export interface RuntimeToolPackLoadInput {
+  conversationId?: string
+  record?: ConversationRecord
+}
+
 type RuntimeCompactArtifactSource = 'model' | 'heuristic'
 type RuntimeCompactArtifactFallbackReason =
   | 'missing_hook'
@@ -348,7 +353,7 @@ export interface AgentRuntimeHost {
   cleanupConversationAssets?: (record: ConversationRecord) => MaybePromise<void>
   persistAttachment?: (input: RuntimePersistAttachmentInput) => MaybePromise<RuntimeAttachmentBlock>
   toolPacks?: readonly ToolPack[]
-  loadToolPacks?: () => Promise<readonly ToolPack[]>
+  loadToolPacks?: (input?: RuntimeToolPackLoadInput) => Promise<readonly ToolPack[]>
   skills?: readonly LoadedSkill[]
   loadSkills?: () => Promise<readonly LoadedSkill[]>
   loadSettings?: () => MaybePromise<Settings>
@@ -444,7 +449,7 @@ export interface AgentRuntimeTurnApi {
 }
 
 export interface AgentRuntimeExtensionApi {
-  getToolRegistry(): Promise<ToolRegistry>
+  getToolRegistry(input?: RuntimeToolPackLoadInput): Promise<ToolRegistry>
   getSkills(): Promise<LoadedSkill[]>
   reloadToolPacks(): Promise<ToolRegistry>
   executeTool(input: RuntimeExecuteToolInput): Promise<string>
@@ -787,6 +792,16 @@ function cloneRuntimeConversationRecord(record: ConversationRecord): Conversatio
   return cloneRuntimeValue(record)
 }
 
+function cloneRuntimeToolPackLoadInput(
+  input: RuntimeToolPackLoadInput | undefined,
+): RuntimeToolPackLoadInput | undefined {
+  if (!input) return undefined
+  return {
+    ...(input.conversationId && { conversationId: input.conversationId }),
+    ...(input.record && { record: cloneRuntimeConversationRecord(input.record) }),
+  }
+}
+
 function cloneRuntimeConversationSummary(summary: ConversationSummary): ConversationSummary {
   return cloneRuntimeValue(summary)
 }
@@ -890,9 +905,12 @@ export class AgentRuntime implements AgentRuntimeApi {
     ])
   }
 
-  async getToolRegistry(): Promise<ToolRegistry> {
+  async getToolRegistry(input?: RuntimeToolPackLoadInput): Promise<ToolRegistry> {
     if (!this.host.loadToolPacks && !this.host.loadSkills) {
       return cloneRuntimeToolRegistry(this.fallbackToolRegistry)
+    }
+    if (input) {
+      return cloneRuntimeToolRegistry(await this.loadToolRegistry(input))
     }
     if (!this.toolRegistryLoad) this.toolRegistryLoad = this.loadToolRegistry()
     return cloneRuntimeToolRegistry(await this.toolRegistryLoad)
@@ -1029,7 +1047,22 @@ export class AgentRuntime implements AgentRuntimeApi {
   }
 
   async executeTool(input: RuntimeExecuteToolInput): Promise<string> {
-    const registry = await this.getToolRegistry()
+    let record: ConversationRecord | undefined
+    if (input.conversationId) {
+      try {
+        record = await this.getConversation(input.conversationId)
+      } catch {
+        record = undefined
+      }
+    }
+    const registry = await this.getToolRegistry(
+      record
+        ? {
+            ...(input.conversationId && { conversationId: input.conversationId }),
+            record,
+          }
+        : undefined,
+    )
     return executeRegisteredTool(
       input.name,
       input.args,
@@ -1323,7 +1356,7 @@ export class AgentRuntime implements AgentRuntimeApi {
         selection,
         contextPlan,
       })
-      toolRegistry = await this.getToolRegistry()
+      toolRegistry = await this.getToolRegistry({ conversationId, record })
       toolContext = await this.buildToolContext({
         conversationId,
         messageId: assistantMessageId,
@@ -1888,9 +1921,9 @@ export class AgentRuntime implements AgentRuntimeApi {
     }
   }
 
-  private async loadToolRegistry(): Promise<ToolRegistry> {
+  private async loadToolRegistry(input?: RuntimeToolPackLoadInput): Promise<ToolRegistry> {
     try {
-      const loaded = await this.host.loadToolPacks?.()
+      const loaded = await this.host.loadToolPacks?.(cloneRuntimeToolPackLoadInput(input))
       const skills = await this.getSkills()
       return createDefaultToolRegistry([
         ...this.staticToolPacks,
