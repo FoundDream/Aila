@@ -76,7 +76,7 @@ export function ModelPicker({
         align="start"
         side="top"
         sideOffset={6}
-        className="w-80 max-h-[460px] overflow-hidden border-0 p-0"
+        className="w-80 max-w-[calc(100vw-1.5rem)] max-h-[460px] overflow-hidden border-0 p-0"
       >
         {view === 'main' ? (
           <MainView

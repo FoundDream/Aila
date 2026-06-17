@@ -1045,14 +1045,14 @@ export function Composer({
               </Popover>
             </div>
 
-            <div className="flex shrink-0 items-center gap-2">
+            <div className="flex min-w-0 items-center gap-2">
               {showMeter && (
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <span
                       role="img"
                       aria-label="Context used"
-                      className={`inline-flex ${meterColor}`}
+                      className={`inline-flex shrink-0 ${meterColor}`}
                     >
                       <ContextRing ratio={ratio} />
                     </span>
