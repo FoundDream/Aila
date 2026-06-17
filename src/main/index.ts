@@ -41,6 +41,7 @@ import {
   testConfiguredMcpServer,
   testMcpServerDraft,
 } from './mcp-management'
+import { loadMcpToolPack } from './mcp-tool-pack'
 import { getOpenRouterCatalog } from './openrouter-catalog'
 import { configureDataDir, getDataDir } from './paths'
 import {
@@ -291,6 +292,14 @@ app.whenReady().then(async () => {
   handleWidgetProtocol()
   createWindow()
   registerIpcHandlers()
+
+  // Warm MCP connections in the background so the first turn of a new session
+  // doesn't pay the cold spawn + handshake cost inline. syncMcpConnections is
+  // idempotent and skips already-connected servers, so the first send reuses
+  // these instead of blocking on connect()/listTools().
+  void loadMcpToolPack().catch((error) => {
+    console.warn('[startup] MCP connection warm-up failed:', error)
+  })
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
