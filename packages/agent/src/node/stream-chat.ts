@@ -40,7 +40,21 @@ import {
 type MaybePromise<T> = T | Promise<T>
 
 const EVENT_PREVIEW_CHARS = 1000
-const MAX_STEPS = 10
+
+/**
+ * Backstop on how many tool-using model steps a single turn may take. Context
+ * auto-compaction keeps the window bounded, so this is a runaway/cost guard, not
+ * a context guard. Hitting it is graceful: the model gets one final, tool-free
+ * step to wrap up (see TOOL_BUDGET_EXHAUSTED_NOTICE) instead of a thrown error.
+ * Override per instance via ProviderStreamChatOptions.maxSteps.
+ */
+const DEFAULT_MAX_TOOL_STEPS = 50
+
+const TOOL_BUDGET_EXHAUSTED_NOTICE =
+  'You have reached the maximum number of tool-using steps for this turn. ' +
+  'Do not request any more tools. Using the results you already have, give the ' +
+  'user a clear final answer: what you did, the current state, and any remaining ' +
+  'next steps they should take.'
 
 export interface ProviderStreamChatOptions extends NodeAuthInput {
   modelRegistry?: ModelRegistry
@@ -56,6 +70,8 @@ export interface ProviderStreamChatOptions extends NodeAuthInput {
   toolResultStore?: ToolResultStore | null
   maxInlineToolResultChars?: number
   toolResultPreviewChars?: number
+  /** Backstop on tool-using model steps per turn. Defaults to DEFAULT_MAX_TOOL_STEPS. */
+  maxSteps?: number
 }
 
 export function createProviderStreamChat(
@@ -83,6 +99,7 @@ export function createProviderStreamChat(
   const maxInlineToolResultChars =
     options.maxInlineToolResultChars ?? DEFAULT_MAX_INLINE_TOOL_RESULT_CHARS
   const toolResultPreviewChars = options.toolResultPreviewChars ?? DEFAULT_TOOL_RESULT_PREVIEW_CHARS
+  const maxToolSteps = Math.max(1, Math.floor(options.maxSteps ?? DEFAULT_MAX_TOOL_STEPS))
 
   return async (req, handlers): Promise<void> => {
     const {
@@ -196,7 +213,16 @@ export function createProviderStreamChat(
       const totalUsage = createUsageAccumulator()
       const startedToolCalls = new Set<string>()
 
-      for (let step = 0; step < MAX_STEPS; step += 1) {
+      // Run up to maxToolSteps tool-enabled steps, plus one final tool-free step
+      // (step === maxToolSteps) that lets the model wrap up gracefully if it has
+      // exhausted the budget but still wants to keep going.
+      let toolBudgetNoticeSent = false
+      for (let step = 0; step <= maxToolSteps; step += 1) {
+        const toolsWithdrawn = step >= maxToolSteps
+        if (toolsWithdrawn && !toolBudgetNoticeSent) {
+          toolBudgetNoticeSent = true
+          modelMessages.push({ role: 'system', content: TOOL_BUDGET_EXHAUSTED_NOTICE })
+        }
         const assistantText: string[] = []
         const stepToolCalls: ParsedModelToolCall[] = []
         const externallyResolvedToolCalls = new Set<string>()
@@ -204,7 +230,7 @@ export function createProviderStreamChat(
           descriptor,
           apiKey,
           messages: cloneAgentMessages(modelMessages),
-          tools,
+          tools: toolsWithdrawn ? [] : tools,
           signal,
           step,
         })
@@ -350,6 +376,27 @@ export function createProviderStreamChat(
         )
         if (unresolvedToolCalls.length === 0) break
 
+        if (toolsWithdrawn) {
+          // Budget already withdrawn, but the model still emitted tool calls. Close
+          // them out as errors so the persisted message has no dangling "running"
+          // calls, then finish the turn normally instead of throwing.
+          for (const toolCall of unresolvedToolCalls) {
+            recordToolResult({
+              toolCallId: toolCall.id,
+              toolName: toolCall.name,
+              result: TOOL_BUDGET_EXHAUSTED_NOTICE,
+              isError: true,
+              builder,
+              toolTargets,
+              emitAgentEvent,
+              handlers,
+              conversationId,
+              assistantMessageId,
+            })
+          }
+          break
+        }
+
         modelMessages.push({
           role: 'assistant',
           content: assistantText.join(''),
@@ -423,9 +470,6 @@ export function createProviderStreamChat(
             modelMessages.push({ role: 'tool', tool_call_id: toolCall.id, content: message })
           }
         }
-
-        if (step === MAX_STEPS - 1)
-          throw new Error(`Maximum model tool steps exceeded (${MAX_STEPS})`)
       }
 
       emitAgentEvent('turn.completed', {
