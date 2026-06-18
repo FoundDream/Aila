@@ -4,6 +4,9 @@ import {
   EyeIcon,
   EyeOffIcon,
   KeyRoundIcon,
+  LinkIcon,
+  LogOutIcon,
+  MailIcon,
   PackagePlusIcon,
   PowerIcon,
   PuzzleIcon,
@@ -46,6 +49,7 @@ const OPENROUTER_MODELS_TIMEOUT_MS = 20_000
 const EXTENSIONS_REPORT_TIMEOUT_MS = 10_000
 const EXTENSIONS_RELOAD_TIMEOUT_MS = 15_000
 const MCP_TEST_TIMEOUT_MS = 20_000
+const MCP_OAUTH_TIMEOUT_MS = 180_000
 
 const DEFAULT_MCP_SERVER_JSON = JSON.stringify(
   {
@@ -63,6 +67,9 @@ type ExtensionsBusy =
   | 'report'
   | 'reload'
   | 'install'
+  | 'integration-save'
+  | 'mcp-oauth'
+  | 'mcp-oauth-clear'
   | 'mcp-save'
   | 'mcp-delete'
   | 'mcp-toggle'
@@ -164,6 +171,9 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
   const [mcpServerName, setMcpServerName] = useState('')
   const [mcpServerJson, setMcpServerJson] = useState(DEFAULT_MCP_SERVER_JSON)
   const [mcpTestResults, setMcpTestResults] = useState<Record<string, string>>({})
+  const [gmailClientId, setGmailClientId] = useState('')
+  const [gmailClientSecret, setGmailClientSecret] = useState('')
+  const [gmailRedirectUri, setGmailRedirectUri] = useState('')
 
   // Reset draft each time we re-open with fresh settings.
   useEffect(() => {
@@ -180,6 +190,9 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
       setMcpServerName('')
       setMcpServerJson(DEFAULT_MCP_SERVER_JSON)
       setMcpTestResults({})
+      setGmailClientId('')
+      setGmailClientSecret('')
+      setGmailRedirectUri('')
     }
   }, [open, settings])
 
@@ -289,6 +302,16 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
   const providerConfigured = configuredInDraft.includes(selectedProvider)
   const providerModels = MODEL_CATALOG.filter((m) => m.providerId === selectedProvider)
   const providerImageModels = IMAGE_MODEL_CATALOG.filter((m) => m.providerId === selectedProvider)
+  const gmailIntegration = extensionsReport?.integrations.find(
+    (integration) => integration.id === 'gmail',
+  )
+  const gmailServer =
+    gmailIntegration?.server ??
+    extensionsReport?.mcpServers.find(
+      (server) => server.integrationId === 'gmail' || server.name === 'gmail',
+    )
+  const gmailAuth = gmailServer?.auth
+  const gmailScopes = gmailIntegration?.requiredScopes ?? gmailAuth?.scopes ?? []
 
   const handleReloadExtensions = async (): Promise<void> => {
     if (extensionsBusy) return
@@ -329,6 +352,86 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
           }.`,
         )
       }
+    } catch (err) {
+      setExtensionsError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setExtensionsBusy(null)
+    }
+  }
+
+  const handleSaveGmailIntegration = async (): Promise<void> => {
+    if (extensionsBusy) return
+    const clientId = gmailClientId.trim()
+    if (!clientId) {
+      setExtensionsError('Gmail OAuth client ID is required to save the integration')
+      return
+    }
+
+    setExtensionsBusy('integration-save')
+    setExtensionsError(null)
+    setExtensionsNotice(null)
+    try {
+      const result = await withTimeout(
+        window.api.extensions.saveIntegration({
+          id: 'gmail',
+          oauth: {
+            clientId,
+            ...(gmailClientSecret.trim() && { clientSecret: gmailClientSecret.trim() }),
+            ...(gmailRedirectUri.trim() && { redirectUri: gmailRedirectUri.trim() }),
+          },
+        }),
+        EXTENSIONS_RELOAD_TIMEOUT_MS,
+        'Gmail integration save',
+      )
+      setExtensionsReport(result.report)
+      setExtensionsNotice(`Saved Gmail integration. Loaded ${result.toolCount} tools.`)
+      setGmailClientSecret('')
+    } catch (err) {
+      setExtensionsError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setExtensionsBusy(null)
+    }
+  }
+
+  const handleConnectGmail = async (): Promise<void> => {
+    if (extensionsBusy) return
+    if (!gmailServer) {
+      setExtensionsError('Save the Gmail integration before connecting OAuth')
+      return
+    }
+
+    setExtensionsBusy('mcp-oauth')
+    setExtensionsError(null)
+    setExtensionsNotice(null)
+    try {
+      const result = await withTimeout(
+        window.api.extensions.startMcpOAuth(gmailServer.name),
+        MCP_OAUTH_TIMEOUT_MS,
+        'Gmail OAuth',
+      )
+      setExtensionsReport(result.report)
+      setExtensionsNotice(`Connected Gmail OAuth. Loaded ${result.toolCount} tools.`)
+    } catch (err) {
+      setExtensionsError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setExtensionsBusy(null)
+    }
+  }
+
+  const handleClearGmailOAuth = async (): Promise<void> => {
+    if (extensionsBusy || !gmailServer) return
+    if (!window.confirm('Remove saved Gmail OAuth tokens from this device?')) return
+    setExtensionsBusy('mcp-oauth-clear')
+    setExtensionsError(null)
+    setExtensionsNotice(null)
+    try {
+      const result = await withTimeout(
+        window.api.extensions.clearMcpOAuth(gmailServer.name),
+        EXTENSIONS_RELOAD_TIMEOUT_MS,
+        'Gmail OAuth clear',
+      )
+      setExtensionsReport(result.report)
+      setExtensionsNotice('Cleared Gmail OAuth credentials.')
     } catch (err) {
       setExtensionsError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -1138,6 +1241,130 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
                           </li>
                         )}
                       </ul>
+                    </section>
+
+                    <section>
+                      <div className="mb-1.5 flex items-center gap-2">
+                        <SectionTitle>Integrations</SectionTitle>
+                        <span className="rounded-full bg-[var(--surface-hover)] px-1.5 py-px text-[10px] tabular-nums text-[var(--text-dim)]">
+                          {extensionsReport.integrations.length}
+                        </span>
+                      </div>
+                      <div className="rounded-md border border-[var(--border)] px-2.5 py-2">
+                        <div className="flex items-start gap-2">
+                          <MailIcon className="mt-0.5 size-4 shrink-0 text-[var(--text-dim)]" />
+                          <div className="min-w-0 flex-1">
+                            <div className="flex min-w-0 items-center gap-2">
+                              <span className="truncate text-[12px] font-medium text-[var(--text)]">
+                                {gmailIntegration?.label ?? 'Gmail'}
+                              </span>
+                              <span className="rounded bg-[var(--surface-hover)] px-1 py-px text-[9.5px] uppercase tracking-wide text-[var(--text-dim)]">
+                                {gmailIntegration?.provider ?? 'Google Workspace'}
+                              </span>
+                              <span
+                                className={`rounded px-1.5 py-0.5 text-[10px] ${
+                                  gmailAuth?.authorized
+                                    ? 'bg-emerald-50 text-emerald-700'
+                                    : gmailServer
+                                      ? 'bg-amber-50 text-amber-700'
+                                      : 'bg-[var(--surface-hover)] text-[var(--text-dim)]'
+                                }`}
+                              >
+                                {gmailAuth?.authorized
+                                  ? 'authorized'
+                                  : gmailServer
+                                    ? 'needs oauth'
+                                    : 'not configured'}
+                              </span>
+                            </div>
+                            <div className="mt-1 truncate font-mono text-[10.5px] text-[var(--text-dim)]">
+                              {gmailIntegration?.endpoint ??
+                                'https://gmailmcp.googleapis.com/mcp/v1'}
+                            </div>
+                          </div>
+                          <div className="flex shrink-0 items-center gap-1">
+                            <button
+                              type="button"
+                              title="Save Gmail integration"
+                              onClick={() => void handleSaveGmailIntegration()}
+                              disabled={extensionsBusy !== null}
+                              className="grid size-6 place-items-center rounded-md text-[var(--text-dim)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)] disabled:opacity-50"
+                            >
+                              <SaveIcon className="size-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              title="Connect Gmail OAuth"
+                              onClick={() => void handleConnectGmail()}
+                              disabled={extensionsBusy !== null || !gmailServer}
+                              className="grid size-6 place-items-center rounded-md text-[var(--text-dim)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)] disabled:opacity-50"
+                            >
+                              <LinkIcon className="size-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              title="Clear Gmail OAuth"
+                              onClick={() => void handleClearGmailOAuth()}
+                              disabled={extensionsBusy !== null || !gmailServer}
+                              className="grid size-6 place-items-center rounded-md text-[var(--text-dim)] hover:bg-red-50 hover:text-red-700 disabled:opacity-50"
+                            >
+                              <LogOutIcon className="size-3.5" />
+                            </button>
+                          </div>
+                        </div>
+                        <div className="mt-2 grid gap-2 md:grid-cols-3">
+                          <input
+                            type="text"
+                            value={gmailClientId}
+                            onChange={(event) => setGmailClientId(event.target.value)}
+                            placeholder={
+                              gmailAuth?.clientIdSuffix
+                                ? `client id ending ${gmailAuth.clientIdSuffix}`
+                                : 'OAuth client ID'
+                            }
+                            aria-label="Gmail OAuth client ID"
+                            className="min-w-0 rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 py-1.5 text-[12px] outline-none focus:border-[var(--border-strong)]"
+                          />
+                          <input
+                            type="password"
+                            value={gmailClientSecret}
+                            onChange={(event) => setGmailClientSecret(event.target.value)}
+                            placeholder="OAuth client secret"
+                            aria-label="Gmail OAuth client secret"
+                            className="min-w-0 rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 py-1.5 text-[12px] outline-none focus:border-[var(--border-strong)]"
+                          />
+                          <input
+                            type="text"
+                            value={gmailRedirectUri}
+                            onChange={(event) => setGmailRedirectUri(event.target.value)}
+                            placeholder={gmailAuth?.redirectUri ?? 'loopback redirect URI'}
+                            aria-label="Gmail OAuth redirect URI"
+                            className="min-w-0 rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 py-1.5 text-[12px] outline-none focus:border-[var(--border-strong)]"
+                          />
+                        </div>
+                        {gmailScopes.length > 0 && (
+                          <div className="mt-1 truncate font-mono text-[10.5px] text-[var(--text-soft)]">
+                            {gmailScopes.join(', ')}
+                          </div>
+                        )}
+                        {gmailServer && (
+                          <div className="mt-1 flex items-center gap-2 text-[10.5px] text-[var(--text-soft)]">
+                            <span className="truncate">{gmailServer.sourcePath}</span>
+                            <span className="shrink-0 tabular-nums">
+                              {gmailServer.tools.length} tools
+                            </span>
+                            <span className="shrink-0">{gmailServer.status}</span>
+                            {gmailAuth?.hasRefreshToken && (
+                              <span className="shrink-0 text-emerald-700">refresh token</span>
+                            )}
+                          </div>
+                        )}
+                        {gmailServer?.error && (
+                          <div className="mt-1 break-words text-[11px] text-red-700">
+                            {gmailServer.error}
+                          </div>
+                        )}
+                      </div>
                     </section>
 
                     <section>

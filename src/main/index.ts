@@ -12,6 +12,7 @@ import {
   nativeImage,
   nativeTheme,
   type OpenDialogOptions,
+  shell,
 } from 'electron'
 import { getModelInfo } from './agent'
 import { rewriteDocRefs as rewritePersistedDocRefs } from './conversations'
@@ -32,12 +33,19 @@ import {
 import { getExtensionReport, installSkillFromDirectory } from './extensions'
 import { saveImage } from './image-store'
 import { handleImageProtocol, registerImageProtocolScheme } from './images'
+import {
+  listIntegrationDefinitions,
+  type SaveIntegrationRequest,
+  saveIntegrationMcpServerConfig,
+} from './integration-management'
 import { disposeMcpConnections } from './mcp-connection-manager'
 import {
+  clearMcpOAuthForServer,
   deleteUserMcpServer,
   type SaveMcpServerRequest,
   saveUserMcpServerConfig,
   setMcpServerEnabled,
+  startMcpOAuthForServer,
   testConfiguredMcpServer,
   testMcpServerDraft,
 } from './mcp-management'
@@ -251,6 +259,11 @@ function registerIpcHandlers(): void {
   ipcMain.handle('openrouter:list-models', () => getOpenRouterCatalog())
   ipcMain.handle('extensions:report', () => getExtensionReport())
   ipcMain.handle('extensions:reload', () => reloadExtensions())
+  ipcMain.handle('extensions:integrations-list', () => listIntegrationDefinitions())
+  ipcMain.handle('extensions:integration-save', async (_event, request: SaveIntegrationRequest) => {
+    await saveIntegrationMcpServerConfig(request)
+    return reloadExtensions()
+  })
   ipcMain.handle('extensions:install-skill', async () => {
     const directory = await pickSkillDirectory()
     if (!directory) return null
@@ -274,6 +287,16 @@ function registerIpcHandlers(): void {
   ipcMain.handle('extensions:mcp-test-draft', (_event, request: SaveMcpServerRequest) =>
     testMcpServerDraft(request),
   )
+  ipcMain.handle('extensions:mcp-oauth-start', async (_event, name: string) => {
+    await startMcpOAuthForServer(name, { openExternal: (url) => shell.openExternal(url) })
+    await disposeMcpConnections()
+    return reloadExtensions()
+  })
+  ipcMain.handle('extensions:mcp-oauth-clear', async (_event, name: string) => {
+    await clearMcpOAuthForServer(name)
+    await disposeMcpConnections()
+    return reloadExtensions()
+  })
 }
 
 app.whenReady().then(async () => {

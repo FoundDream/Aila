@@ -303,6 +303,46 @@ async function testRendererUsesRuntimeHydrationApi(): Promise<void> {
   }
 }
 
+async function testDesktopExposesMcpIntegrationOAuthApi(): Promise<void> {
+  const mainSource = await readFile(join(process.cwd(), 'src/main/index.ts'), 'utf-8')
+  const preloadSource = await readFile(join(process.cwd(), 'src/preload/index.ts'), 'utf-8')
+  const settingsSource = await readFile(
+    join(process.cwd(), 'src/renderer/src/components/SettingsModal.tsx'),
+    'utf-8',
+  )
+  const integrationSource = await readFile(join(process.cwd(), 'src/main/integrations.ts'), 'utf-8')
+
+  assert(
+    mainSource.includes("'extensions:integration-save'") &&
+      mainSource.includes("'extensions:mcp-oauth-start'") &&
+      mainSource.includes("'extensions:mcp-oauth-clear'") &&
+      mainSource.includes('shell.openExternal(url)'),
+    'Desktop main should expose integration save and MCP OAuth IPC',
+  )
+  assert(
+    preloadSource.includes('saveIntegration:') &&
+      preloadSource.includes("'extensions:integration-save'") &&
+      preloadSource.includes('startMcpOAuth:') &&
+      preloadSource.includes("'extensions:mcp-oauth-start'") &&
+      preloadSource.includes('clearMcpOAuth:') &&
+      preloadSource.includes("'extensions:mcp-oauth-clear'"),
+    'Desktop preload should expose integration and MCP OAuth APIs',
+  )
+  assert(
+    settingsSource.includes('handleSaveGmailIntegration') &&
+      settingsSource.includes('handleConnectGmail') &&
+      settingsSource.includes('handleClearGmailOAuth') &&
+      settingsSource.includes('Gmail'),
+    'Settings extensions view should expose a Gmail integration surface',
+  )
+  assert(
+    integrationSource.includes('https://gmailmcp.googleapis.com/mcp/v1') &&
+      integrationSource.includes('https://www.googleapis.com/auth/gmail.readonly') &&
+      integrationSource.includes('https://www.googleapis.com/auth/gmail.compose'),
+    'Gmail integration preset should target the official Gmail MCP endpoint and scopes',
+  )
+}
+
 async function testConversationPartitionContract(): Promise<void> {
   await withTempDataDir(async () => {
     const chat = await createConversation()
@@ -2178,6 +2218,7 @@ async function main(): Promise<void> {
   await testDesktopExposesRuntimeStateApi()
   await testDesktopExposesEmbeddedTerminalApi()
   await testRendererUsesRuntimeHydrationApi()
+  await testDesktopExposesMcpIntegrationOAuthApi()
   await testConversationPartitionContract()
   await testDocConversationFollowsDocRename()
   await testDocRenameUsesInjectedConversationRefRewriter()

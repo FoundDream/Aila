@@ -9,9 +9,21 @@ export const PROJECT_MCP_CONFIG_FILE = '.mcp.json'
 export type McpTransportType = 'stdio' | 'http' | 'sse'
 export type McpApprovalPolicy = 'ask' | 'auto' | 'deny'
 export type McpConfigSourceKind = 'project' | 'claude-json' | 'claude-settings' | 'user'
+export type McpOAuthTokenEndpointAuthMethod = 'client_secret_basic' | 'client_secret_post' | 'none'
 
 export interface McpToolPolicy {
   approval?: McpApprovalPolicy
+}
+
+export interface McpOAuthConfig {
+  type: 'oauth'
+  clientId?: string
+  clientSecret?: string
+  scopes?: string[]
+  redirectUri?: string
+  clientName?: string
+  authorizationParams?: Record<string, string>
+  tokenEndpointAuthMethod?: McpOAuthTokenEndpointAuthMethod
 }
 
 export interface McpServerConfig {
@@ -25,6 +37,8 @@ export interface McpServerConfig {
   envHttpHeaders?: Record<string, string>
   bearerTokenEnvVar?: string
   enabled?: boolean
+  integrationId?: string
+  auth?: McpOAuthConfig
   approval?: McpApprovalPolicy
   tools?: Record<string, McpToolPolicy>
   startupTimeoutMs?: number
@@ -145,6 +159,19 @@ function parseApproval(value: unknown, serverName: string): McpApprovalPolicy | 
   throw new Error(`MCP server "${serverName}" field "approval" must be ask, auto, or deny`)
 }
 
+function parseTokenEndpointAuthMethod(
+  value: unknown,
+  serverName: string,
+): McpOAuthTokenEndpointAuthMethod | undefined {
+  if (value === undefined) return undefined
+  if (value === 'client_secret_basic' || value === 'client_secret_post' || value === 'none') {
+    return value
+  }
+  throw new Error(
+    `MCP server "${serverName}" field "auth.tokenEndpointAuthMethod" must be client_secret_basic, client_secret_post, or none`,
+  )
+}
+
 function parseTimeout(value: unknown, field: string, serverName: string): number | undefined {
   if (value === undefined) return undefined
   if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
@@ -193,6 +220,66 @@ function resolveHttpHeaders(
     if (token) out.Authorization = `Bearer ${token}`
   }
   return Object.keys(out).length > 0 ? out : undefined
+}
+
+function parseOptionalTrimmedString(
+  value: unknown,
+  field: string,
+  serverName: string,
+): string | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== 'string') {
+    throw new Error(`MCP server "${serverName}" field "${field}" must be a string`)
+  }
+  const trimmed = value.trim()
+  return trimmed ? trimmed : undefined
+}
+
+function parseOAuthConfig(value: unknown, serverName: string): McpOAuthConfig | undefined {
+  if (value === undefined) return undefined
+  const object = asObject(value)
+  if (!object) throw new Error(`MCP server "${serverName}" field "auth" must be an object`)
+  if (object.type !== 'oauth') {
+    throw new Error(`MCP server "${serverName}" field "auth.type" must be oauth`)
+  }
+
+  const clientId = parseOptionalTrimmedString(object.clientId, 'auth.clientId', serverName)
+  const clientSecret = parseOptionalTrimmedString(
+    object.clientSecret,
+    'auth.clientSecret',
+    serverName,
+  )
+  const scopes = parseStringArray(object.scopes, 'auth.scopes', serverName)
+    ?.map((scope) => scope.trim())
+    .filter(Boolean)
+  const redirectUri = parseOptionalTrimmedString(object.redirectUri, 'auth.redirectUri', serverName)
+  const clientName = parseOptionalTrimmedString(object.clientName, 'auth.clientName', serverName)
+  const authorizationParams =
+    object.authorizationParams !== undefined
+      ? parseStringMap(object.authorizationParams, 'auth.authorizationParams', serverName)
+      : undefined
+  const tokenEndpointAuthMethod = parseTokenEndpointAuthMethod(
+    object.tokenEndpointAuthMethod,
+    serverName,
+  )
+  if (redirectUri) {
+    try {
+      new URL(redirectUri)
+    } catch {
+      throw new Error(`MCP server "${serverName}" field "auth.redirectUri" must be a URL`)
+    }
+  }
+
+  return {
+    type: 'oauth',
+    ...(clientId && { clientId }),
+    ...(clientSecret && { clientSecret }),
+    ...(scopes && scopes.length > 0 && { scopes }),
+    ...(redirectUri && { redirectUri }),
+    ...(clientName && { clientName }),
+    ...(authorizationParams && { authorizationParams }),
+    ...(tokenEndpointAuthMethod && { tokenEndpointAuthMethod }),
+  }
 }
 
 function parseToolPolicies(
@@ -246,6 +333,8 @@ function parseServerConfig(
     typeof object.cwd === 'string' && object.cwd.trim()
       ? resolve(dirname(source.path), object.cwd)
       : undefined
+  const integrationId = parseOptionalTrimmedString(object.integrationId, 'integrationId', name)
+  const auth = parseOAuthConfig(object.auth, name)
 
   return {
     name,
@@ -260,6 +349,8 @@ function parseServerConfig(
     ...(headers && { headers }),
     ...(bearerTokenEnvVar && { bearerTokenEnvVar }),
     ...(typeof object.enabled === 'boolean' && { enabled: object.enabled }),
+    ...(integrationId && { integrationId }),
+    ...(auth && { auth }),
     ...(object.approval !== undefined && { approval: parseApproval(object.approval, name) }),
     ...(object.tools !== undefined && { tools: parseToolPolicies(object.tools, name) }),
     ...(object.startupTimeoutMs !== undefined && {
@@ -426,6 +517,12 @@ export function redactMcpServerConfig(config: LoadedMcpServerConfig): LoadedMcpS
     }),
     ...(config.headers && {
       headers: Object.fromEntries(Object.keys(config.headers).map((key) => [key, '[redacted]'])),
+    }),
+    ...(config.auth && {
+      auth: {
+        ...config.auth,
+        ...(config.auth.clientSecret && { clientSecret: '[redacted]' }),
+      },
     }),
   }
 }

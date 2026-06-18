@@ -6,6 +6,12 @@ import {
   upsertUserMcpServerConfig,
 } from './mcp-config'
 import { type McpServerProbeResult, probeMcpServer } from './mcp-connection-manager'
+import {
+  clearMcpOAuthCredentials,
+  type McpOAuthFlowResult,
+  type OpenExternalUrl,
+  startMcpOAuthFlow,
+} from './mcp-oauth'
 
 export interface SaveMcpServerRequest {
   name: string
@@ -46,4 +52,23 @@ export async function testMcpServerDraft(
   request: SaveMcpServerRequest,
 ): Promise<McpServerProbeResult> {
   return probeMcpServer(parseUserMcpServerConfig(request.name, request.server))
+}
+
+export async function startMcpOAuthForServer(
+  name: string,
+  options: { openExternal: OpenExternalUrl; cwd?: string },
+): Promise<McpOAuthFlowResult> {
+  const serverName = name.trim()
+  const config = await loadMcpServerConfigs(options.cwd)
+  const server = config.servers[serverName]
+  if (!server) throw new Error(`MCP server "${serverName}" is not configured`)
+  return startMcpOAuthFlow(server, { openExternal: options.openExternal })
+}
+
+export async function clearMcpOAuthForServer(name: string, cwd = process.cwd()): Promise<void> {
+  const serverName = name.trim()
+  const config = await loadMcpServerConfigs(cwd)
+  const server = config.servers[serverName]
+  if (!server) throw new Error(`MCP server "${serverName}" is not configured`)
+  await clearMcpOAuthCredentials(server)
 }

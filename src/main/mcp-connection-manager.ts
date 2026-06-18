@@ -9,6 +9,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import type { CallToolResult, Tool as SdkMcpTool } from '@modelcontextprotocol/sdk/types.js'
 import type { LoadedMcpServerConfig, McpApprovalPolicy } from './mcp-config'
+import { createMcpOAuthProvider } from './mcp-oauth'
 
 const DEFAULT_STARTUP_TIMEOUT_MS = 15_000
 const DEFAULT_TOOL_TIMEOUT_MS = 60_000
@@ -190,10 +191,15 @@ function createTransport(config: LoadedMcpServerConfig): Transport {
   if (!config.url) throw new Error(`MCP server "${config.name}" has no url`)
   const headers = createHttpHeaders(config)
   const requestInit = headers ? { headers } : undefined
-  if (config.type === 'sse') {
-    return new SSEClientTransport(new URL(config.url), { requestInit })
+  const authProvider = config.auth?.type === 'oauth' ? createMcpOAuthProvider(config) : undefined
+  const transportOptions = {
+    ...(requestInit && { requestInit }),
+    ...(authProvider && { authProvider }),
   }
-  return new StreamableHTTPClientTransport(new URL(config.url), { requestInit })
+  if (config.type === 'sse') {
+    return new SSEClientTransport(new URL(config.url), transportOptions)
+  }
+  return new StreamableHTTPClientTransport(new URL(config.url), transportOptions)
 }
 
 export async function connectMcpServer(name: string, config: LoadedMcpServerConfig): Promise<void> {

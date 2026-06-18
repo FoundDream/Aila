@@ -1,7 +1,9 @@
 import { cp, mkdir, realpath, rename, rm, stat } from 'node:fs/promises'
 import { basename, join, resolve } from 'node:path'
+import { listIntegrationDefinitions } from './integrations'
 import { type LoadedMcpServerConfig, loadMcpServerConfigs } from './mcp-config'
 import { getMcpConnectionSnapshots } from './mcp-connection-manager'
+import { getMcpOAuthStatus, type PublicMcpOAuthStatus } from './mcp-oauth'
 import { getMcpConnectionScopeKey } from './mcp-tool-pack'
 import { getDataDir, getSkillsDir, getToolPacksDir } from './paths'
 import { loadSkillFromDir, loadSkillsFromDir } from './skill-loader'
@@ -40,7 +42,21 @@ export interface ExtensionMcpServerReport {
   command?: string
   args?: string[]
   url?: string
+  integrationId?: string
+  auth?: PublicMcpOAuthStatus
   error?: string
+}
+
+export interface ExtensionIntegrationReport {
+  id: string
+  label: string
+  provider: string
+  mcpServerName: string
+  endpoint: string
+  requiredScopes: string[]
+  configured: boolean
+  docsUrl: string
+  server?: ExtensionMcpServerReport
 }
 
 export interface ExtensionReport {
@@ -52,6 +68,7 @@ export interface ExtensionReport {
   projectMcpConfigPath: string
   toolPacks: ExtensionToolPackReport[]
   skills: ExtensionSkillReport[]
+  integrations: ExtensionIntegrationReport[]
   mcpServers: ExtensionMcpServerReport[]
   errors: ExtensionReportError[]
 }
@@ -108,31 +125,59 @@ async function buildMcpServerReports(cwd = process.cwd()): Promise<{
   return {
     mcpConfigPath: config.userConfigPath,
     projectMcpConfigPath: config.projectConfigPath,
-    mcpServers: Object.entries(config.servers).map(([name, server]) => {
-      const snapshot = snapshots.get(name)
-      const status =
-        server.enabled === false
-          ? 'disabled'
-          : (snapshot?.status ?? ('not_connected' as ExtensionMcpServerReport['status']))
-      return {
-        name,
-        transport: server.type,
-        source: server.source,
-        sourcePath: server.sourcePath,
-        enabled: server.enabled !== false,
-        status,
-        tools: snapshot?.tools.map((tool) => tool.qualifiedName) ?? [],
-        ...(server.command && { command: server.command }),
-        ...(server.args && { args: [...server.args] }),
-        ...(server.url && { url: server.url }),
-        ...(snapshot?.error && { error: snapshot.error }),
-      }
-    }),
+    mcpServers: await Promise.all(
+      Object.entries(config.servers).map(async ([name, server]) => {
+        const snapshot = snapshots.get(name)
+        const status =
+          server.enabled === false
+            ? 'disabled'
+            : (snapshot?.status ?? ('not_connected' as ExtensionMcpServerReport['status']))
+        const auth = await getMcpOAuthStatus(server)
+        return {
+          name,
+          transport: server.type,
+          source: server.source,
+          sourcePath: server.sourcePath,
+          enabled: server.enabled !== false,
+          status,
+          tools: snapshot?.tools.map((tool) => tool.qualifiedName) ?? [],
+          ...(server.command && { command: server.command }),
+          ...(server.args && { args: [...server.args] }),
+          ...(server.url && { url: server.url }),
+          ...(server.integrationId && { integrationId: server.integrationId }),
+          ...(auth && { auth }),
+          ...(snapshot?.error && { error: snapshot.error }),
+        }
+      }),
+    ),
     errors: config.errors.map((error) => ({
       kind: 'mcp' as const,
       message: `${error.source} ${error.path}: ${error.message}`,
     })),
   }
+}
+
+function buildIntegrationReports(
+  mcpServers: ExtensionMcpServerReport[],
+): ExtensionIntegrationReport[] {
+  return listIntegrationDefinitions().map((integration) => {
+    const server = mcpServers.find(
+      (candidate) =>
+        candidate.integrationId === integration.id ||
+        (candidate.source === 'user' && candidate.name === integration.mcpServerName),
+    )
+    return {
+      id: integration.id,
+      label: integration.label,
+      provider: integration.provider,
+      mcpServerName: integration.mcpServerName,
+      endpoint: integration.endpoint,
+      requiredScopes: [...integration.requiredScopes],
+      configured: Boolean(server),
+      docsUrl: integration.docsUrl,
+      ...(server && { server }),
+    }
+  })
 }
 
 export async function installSkillFromDirectory(directory: string): Promise<ExtensionSkillReport> {
@@ -199,6 +244,7 @@ export async function getSkillExtensionReport(cwd = process.cwd()): Promise<Exte
       directory: skill.directory,
       skillPath: skill.skillPath,
     })),
+    integrations: buildIntegrationReports(mcp.mcpServers),
     mcpServers: mcp.mcpServers,
     errors: [...errors, ...mcp.errors],
   }
@@ -250,6 +296,7 @@ export async function getExtensionReport(cwd = process.cwd()): Promise<Extension
       directory: skill.directory,
       skillPath: skill.skillPath,
     })),
+    integrations: buildIntegrationReports(mcp.mcpServers),
     mcpServers: mcp.mcpServers,
     errors,
   }

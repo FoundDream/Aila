@@ -274,7 +274,33 @@ export interface ExtensionMcpServerReport {
   command?: string
   args?: string[]
   url?: string
+  integrationId?: string
+  auth?: ExtensionMcpOAuthReport
   error?: string
+}
+
+export interface ExtensionMcpOAuthReport {
+  type: 'oauth'
+  configured: boolean
+  authorized: boolean
+  hasRefreshToken: boolean
+  scopes: string[]
+  clientIdSuffix?: string
+  redirectUri?: string
+  lastAuthorizedAt?: number
+  updatedAt?: number
+}
+
+export interface ExtensionIntegrationReport {
+  id: string
+  label: string
+  provider: string
+  mcpServerName: string
+  endpoint: string
+  requiredScopes: string[]
+  configured: boolean
+  docsUrl: string
+  server?: ExtensionMcpServerReport
 }
 
 export interface ExtensionReport {
@@ -286,6 +312,7 @@ export interface ExtensionReport {
   projectMcpConfigPath: string
   toolPacks: ExtensionToolPackReport[]
   skills: ExtensionSkillReport[]
+  integrations: ExtensionIntegrationReport[]
   mcpServers: ExtensionMcpServerReport[]
   errors: ExtensionReportError[]
 }
@@ -314,10 +341,23 @@ export interface ExtensionMcpServerConfigInput {
   envHttpHeaders?: Record<string, string>
   bearerTokenEnvVar?: string
   enabled?: boolean
+  integrationId?: string
+  auth?: ExtensionMcpOAuthConfigInput
   approval?: ExtensionMcpApprovalPolicy
   tools?: Record<string, ExtensionMcpToolPolicyInput>
   startupTimeoutMs?: number
   toolTimeoutMs?: number
+}
+
+export interface ExtensionMcpOAuthConfigInput {
+  type: 'oauth'
+  clientId?: string
+  clientSecret?: string
+  scopes?: string[]
+  redirectUri?: string
+  clientName?: string
+  authorizationParams?: Record<string, string>
+  tokenEndpointAuthMethod?: 'client_secret_basic' | 'client_secret_post' | 'none'
 }
 
 export interface ExtensionMcpSaveRequest {
@@ -329,6 +369,28 @@ export interface ExtensionMcpTestResult {
   ok: boolean
   tools: string[]
   error?: string
+}
+
+export interface ExtensionIntegrationDefinition {
+  id: string
+  label: string
+  provider: string
+  mcpServerName: string
+  endpoint: string
+  transport: 'http'
+  requiredScopes: string[]
+  tools: Array<{ name: string; approval: ExtensionMcpApprovalPolicy; risk: 'read' | 'write' }>
+  docsUrl: string
+}
+
+export interface ExtensionIntegrationSaveRequest {
+  id: 'gmail'
+  oauth?: {
+    clientId?: string
+    clientSecret?: string
+    redirectUri?: string
+    scopes?: string[]
+  }
 }
 
 export interface ConversationUsage {
@@ -684,6 +746,10 @@ const api = {
   extensions: {
     report: (): Promise<ExtensionReport> => ipcRenderer.invoke('extensions:report'),
     reload: (): Promise<ExtensionReloadResult> => ipcRenderer.invoke('extensions:reload'),
+    listIntegrations: (): Promise<ExtensionIntegrationDefinition[]> =>
+      ipcRenderer.invoke('extensions:integrations-list'),
+    saveIntegration: (request: ExtensionIntegrationSaveRequest): Promise<ExtensionReloadResult> =>
+      ipcRenderer.invoke('extensions:integration-save', request),
     installSkill: (): Promise<ExtensionReloadResult | null> =>
       ipcRenderer.invoke('extensions:install-skill'),
     saveMcpServer: (request: ExtensionMcpSaveRequest): Promise<ExtensionReloadResult> =>
@@ -696,6 +762,10 @@ const api = {
       ipcRenderer.invoke('extensions:mcp-test', name),
     testMcpServerDraft: (request: ExtensionMcpSaveRequest): Promise<ExtensionMcpTestResult> =>
       ipcRenderer.invoke('extensions:mcp-test-draft', request),
+    startMcpOAuth: (name: string): Promise<ExtensionReloadResult> =>
+      ipcRenderer.invoke('extensions:mcp-oauth-start', name),
+    clearMcpOAuth: (name: string): Promise<ExtensionReloadResult> =>
+      ipcRenderer.invoke('extensions:mcp-oauth-clear', name),
   },
   tools: {
     listPendingApprovals: (): Promise<ToolApprovalRequestEvent[]> =>
