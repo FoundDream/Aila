@@ -2,7 +2,9 @@ import { randomUUID } from 'node:crypto'
 import {
   type AgentRuntimeApi,
   type AgentRuntimeEvent,
+  type AilaExecutionMode,
   type ConversationSummary,
+  isAilaExecutionMode,
   MODEL_CATALOG,
   type ModelSelection,
   PROVIDER_LABELS,
@@ -60,6 +62,8 @@ type SlashResult = 'agent' | 'exit' | 'handled'
 
 interface SessionState {
   selection: ModelSelection
+  mode: AilaExecutionMode
+  planId?: string
 }
 
 function entry(kind: TranscriptEntry['kind'], title: string, body = ''): TranscriptEntry {
@@ -116,6 +120,8 @@ export async function runFullScreenTui(argv: string[] = process.argv.slice(2)): 
 
   const session: SessionState = {
     selection: resolveSelection(options.model),
+    mode: options.mode,
+    ...(options.planId ? { planId: options.planId } : {}),
   }
 
   const app = new AilaFullScreenApp({
@@ -218,6 +224,8 @@ class AilaFullScreenApp {
         `Tool packs: ${getToolPacksDir()}`,
         `Conversation: ${resolved.conversationId}${resolved.isExisting ? ' (resumed)' : ''}`,
         `Model: ${modelLabel(this.session.selection)}`,
+        `Runtime mode: ${this.session.mode}`,
+        ...(this.session.planId ? [`Plan: ${this.session.planId}`] : []),
       ].join('\n'),
     )
 
@@ -328,6 +336,23 @@ class AilaFullScreenApp {
       await this.retryLastTurn()
       return
     }
+    if (text.startsWith('/')) {
+      const commandText = text.slice(1).trim()
+      const command = readShellToken(commandText)
+      const name = command?.token.toLowerCase() ?? ''
+      const rest = command?.rest ?? ''
+      if (name === 'plan' && rest) {
+        await this.sendAgentPrompt(rest, { mode: 'plan' })
+        return
+      }
+      if (name === 'approve-plan') {
+        const [planId] = splitShellWords(rest)
+        const targetPlanId = planId ?? this.session.planId
+        if (!targetPlanId) throw new Error('usage: /approve-plan [id]')
+        await this.approvePlan(targetPlanId)
+        return
+      }
+    }
 
     const command = await this.handleSlashCommand(text)
     if (command === 'exit') {
@@ -339,14 +364,29 @@ class AilaFullScreenApp {
     await this.sendAgentPrompt(text)
   }
 
-  private async sendAgentPrompt(text: string): Promise<void> {
+  private async sendAgentPrompt(
+    text: string,
+    input: { mode?: AilaExecutionMode; planId?: string } = {},
+  ): Promise<void> {
     this.addEntry('user', 'message', text)
     this.setState({ active: true, status: 'sending prompt' })
-    const { assistantMessageId } = await this.runtime.send({
-      conversationId: this.conversationId,
-      selection: this.session.selection,
-      userText: text,
-    })
+    const mode = input.mode ?? this.session.mode
+    const planId = input.planId ?? this.session.planId
+    const { assistantMessageId } =
+      mode === 'plan' && planId
+        ? await this.runtime.revisePlan({
+            conversationId: this.conversationId,
+            planId,
+            selection: this.session.selection,
+            userText: text,
+          })
+        : await this.runtime.send({
+            conversationId: this.conversationId,
+            mode,
+            ...(planId ? { planId } : {}),
+            selection: this.session.selection,
+            userText: text,
+          })
     this.activeConversationId = this.conversationId
     this.terminal.setProgress(true)
     try {
@@ -363,6 +403,8 @@ class AilaFullScreenApp {
     try {
       const { assistantMessageId } = await this.runtime.retryLastUserMessage({
         conversationId: this.conversationId,
+        mode: this.session.mode,
+        ...(this.session.planId ? { planId: this.session.planId } : {}),
         selection: this.session.selection,
       })
       this.activeConversationId = this.conversationId
@@ -372,6 +414,24 @@ class AilaFullScreenApp {
     } catch (error) {
       this.addEntry('error', 'retry failed', error instanceof Error ? error.message : String(error))
     } finally {
+      this.activeConversationId = null
+      this.terminal.setProgress(false)
+    }
+  }
+
+  private async approvePlan(planId: string): Promise<void> {
+    this.setState({ active: true, status: `approving plan: ${planId}` })
+    const { assistantMessageId } = await this.runtime.approvePlan({
+      conversationId: this.conversationId,
+      planId,
+      selection: this.session.selection,
+    })
+    this.activeConversationId = this.conversationId
+    this.terminal.setProgress(true)
+    try {
+      await new Promise<void>((resolve) => this.completions.set(assistantMessageId, resolve))
+    } finally {
+      this.completions.delete(assistantMessageId)
       this.activeConversationId = null
       this.terminal.setProgress(false)
     }
@@ -406,6 +466,21 @@ class AilaFullScreenApp {
           return 'handled'
         case 'model':
           await this.handleModel(rest)
+          return 'handled'
+        case 'mode':
+          this.handleMode(rest)
+          return 'handled'
+        case 'plan':
+          this.setMode('plan')
+          return 'handled'
+        case 'plans':
+          await this.showPlanList()
+          return 'handled'
+        case 'use-plan':
+          this.selectPlan(rest)
+          return 'handled'
+        case 'cancel-plan':
+          await this.cancelPlan(rest)
           return 'handled'
         case 'sessions':
         case 'session':
@@ -498,6 +573,62 @@ class AilaFullScreenApp {
     this.session = { ...this.session, selection }
     this.addEntry('system', 'model changed', modelLabel(selection))
     this.setState({ selection, status: `model: ${modelLabel(selection)}` })
+  }
+
+  private handleMode(rest: string): void {
+    const words = splitShellWords(rest)
+    if (words.length === 0) {
+      this.addEntry('system', 'runtime mode', this.session.mode)
+      return
+    }
+    if (words.length > 1) throw new Error('usage: /mode [agent|plan|chat]')
+    this.setMode(parseExecutionMode(words[0]))
+  }
+
+  private setMode(mode: AilaExecutionMode): void {
+    this.session = { ...this.session, mode }
+    this.addEntry('system', 'runtime mode changed', mode)
+    this.setState({ status: `mode: ${mode}` })
+  }
+
+  private async showPlanList(): Promise<void> {
+    const plans = await this.runtime.listPlans(this.conversationId)
+    const body =
+      plans.length === 0
+        ? 'No plans found.'
+        : plans
+            .map((plan) => {
+              const revision = plan.latestRevisionId ? `, revision ${plan.latestRevisionId}` : ''
+              return `${formatDate(plan.updatedAt)}  ${plan.id}  ${plan.status}${revision}  ${plan.title}`
+            })
+            .join('\n')
+    this.addEntry('local', 'plans', body)
+    showPanelOverlay(this.ui, 'Aila plans', body)
+  }
+
+  private selectPlan(rest: string): void {
+    const [planId] = splitShellWords(rest)
+    if (!planId) throw new Error('usage: /use-plan <id>')
+    this.session = { ...this.session, planId }
+    this.addEntry('system', 'plan selected', planId)
+    this.setState({ status: `plan: ${planId}` })
+  }
+
+  private async cancelPlan(rest: string): Promise<void> {
+    const [planId] = splitShellWords(rest)
+    const targetPlanId = planId ?? this.session.planId
+    if (!targetPlanId) throw new Error('usage: /cancel-plan [id]')
+    const plan = await this.runtime.cancelPlan({
+      conversationId: this.conversationId,
+      planId: targetPlanId,
+      reason: 'tui',
+    })
+    if (this.session.planId === targetPlanId) {
+      const { planId: _removed, ...nextSession } = this.session
+      this.session = nextSession
+    }
+    this.addEntry('system', 'plan cancelled', `${plan.id} (${plan.status})`)
+    this.setState({ status: `plan cancelled: ${plan.id}` })
   }
 
   private async showSessionPicker(): Promise<void> {
@@ -701,6 +832,12 @@ class AilaFullScreenApp {
           this.addEntry('error', 'interrupted', reason)
           this.setState({ active: false, status: 'interrupted' })
           this.completions.get(event.data.messageId)?.()
+        } else if (event.data.type.startsWith('plan.')) {
+          const data = event.data.data ?? {}
+          const planId = typeof data.planId === 'string' ? data.planId : ''
+          const status = typeof data.status === 'string' ? ` (${data.status})` : ''
+          this.addEntry('system', event.data.type, `${planId}${status}`.trim())
+          this.setState({ status: event.data.type })
         }
         break
       case 'conversations:updated':
@@ -782,9 +919,20 @@ function slashCommands() {
     { name: 'sessions', description: 'Open saved conversation picker' },
     { name: 'extensions', description: 'Show extension manifests', argumentHint: '[reload]' },
     { name: 'model', description: 'Show or switch model', argumentHint: '[provider:model]' },
+    { name: 'mode', description: 'Show or switch runtime mode', argumentHint: '[agent|plan|chat]' },
+    { name: 'plan', description: 'Switch to Plan mode or plan a prompt', argumentHint: '[prompt]' },
+    { name: 'plans', description: 'Show plans for this conversation' },
+    { name: 'use-plan', description: 'Bind prompts to a plan', argumentHint: '<id>' },
+    { name: 'approve-plan', description: 'Approve a ready plan', argumentHint: '[id]' },
+    { name: 'cancel-plan', description: 'Cancel a plan', argumentHint: '[id]' },
     { name: 'read', description: 'Read file into context', argumentHint: '<path>' },
     { name: 'run', description: 'Run shell command', argumentHint: '<command>' },
     { name: 'write', description: 'Write file', argumentHint: '<path> <content>' },
     { name: 'edit', description: 'Edit file', argumentHint: '<path> <old> => <new>' },
   ]
+}
+
+function parseExecutionMode(value: string): AilaExecutionMode {
+  if (isAilaExecutionMode(value)) return value
+  throw new Error('mode must be agent, plan, or chat')
 }

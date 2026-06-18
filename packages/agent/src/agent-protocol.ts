@@ -1,7 +1,9 @@
 import type { AgentContextPlan } from './context'
 import type { PersistedImageBlock, PersistedMessage } from './conversation-core'
 import type { ModelDescriptor, ProviderId } from './models'
+import type { PlanArtifact } from './plan-core'
 import type { Settings } from './settings-types'
+import type { AilaExecutionMode } from './tool-policy'
 import type { ToolContext, ToolRegistry } from './tools'
 
 type MaybePromise<T> = T | Promise<T>
@@ -96,6 +98,21 @@ export type AgentEventType =
   | 'tool.result.returned'
   | 'tool.approval.requested'
   | 'tool.approval.resolved'
+  | 'plan.started'
+  | 'plan.exploring'
+  | 'plan.question.requested'
+  | 'plan.question.answered'
+  | 'plan.updated'
+  | 'plan.ready'
+  | 'plan.approved'
+  | 'plan.rejected'
+  | 'plan.cancelled'
+  | 'plan.implementation.started'
+  | 'plan.task.started'
+  | 'plan.task.completed'
+  | 'plan.task.blocked'
+  | 'plan.drift.detected'
+  | 'plan.completed'
 
 export interface AgentEvent {
   timestamp: number
@@ -134,6 +151,9 @@ export interface StreamRequest {
   assistantMessageId: string
   messages: ChatMessage[]
   contextPlan?: AgentContextPlan
+  mode?: AilaExecutionMode
+  plan?: PlanArtifact
+  planOperation?: 'create' | 'revise' | 'implement'
   selection: ModelSelection
   signal: AbortSignal
   onAgentEvent?: AgentEventSink

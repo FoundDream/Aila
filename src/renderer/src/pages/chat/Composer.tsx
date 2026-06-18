@@ -135,6 +135,7 @@ function pluralize(
 
 function queuedRunPreview(queued: QueuedRun): string {
   if (queued.kind === "retryLast") return "Resume last turn";
+  if (queued.kind === "approvePlan") return `Approve plan ${queued.planId}`;
   const text = compactTextPreview(queued.text);
   if (text) return text;
   return queued.attachments.length > 0
@@ -144,6 +145,7 @@ function queuedRunPreview(queued: QueuedRun): string {
 
 function queuedRunMeta(queued: QueuedRun): string | null {
   if (queued.kind === "retryLast") return "Retry";
+  if (queued.kind === "approvePlan") return "Plan approval";
   const images = queued.attachments.filter(
     (attachment) => attachment.kind === "image",
   ).length;

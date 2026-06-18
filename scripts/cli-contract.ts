@@ -131,6 +131,37 @@ async function testRetryLastDoesNotDuplicateUser(): Promise<void> {
   })
 }
 
+async function testPlanListRequiresConversationScope(): Promise<void> {
+  await withTempDataDir(async (dataDir) => {
+    const result = await runCli(['--data-dir', dataDir, '--list-plans'])
+    assertEqual(result.code, 1, 'plan list without a conversation scope should fail')
+    assert(
+      result.stderr.includes('plan management options require --conversation or --resume'),
+      'plan list should require an explicit conversation scope',
+    )
+  })
+}
+
+async function testPlanListForConversation(): Promise<void> {
+  await withTempDataDir(async (dataDir) => {
+    const conversation = await createConversation()
+    const result = await runCli([
+      '--data-dir',
+      dataDir,
+      '--conversation',
+      conversation.id,
+      '--list-plans',
+    ])
+    assertEqual(result.code, 0, 'plan list for a conversation should exit cleanly')
+    assert(result.stdout.includes('Aila plans'), 'plan list should print a plan header')
+    assert(
+      result.stdout.includes(`Conversation: ${conversation.id}`),
+      'plan list should print scope',
+    )
+    assert(result.stdout.includes('No plans found.'), 'empty plan list should be explicit')
+  })
+}
+
 function testInterruptedAgentEventCompletesCliAdapter(): void {
   const completionRef: {
     current: {
@@ -198,6 +229,19 @@ async function testCliUsesSharedRuntimeFactory(): Promise<void> {
     'CLI adapter should expose safe/yolo tool execution modes through the shared policy helper',
   )
   assert(
+    source.includes('isAilaExecutionMode') &&
+      source.includes('--mode <mode>') &&
+      source.includes('--plan <id>') &&
+      source.includes('--list-plans') &&
+      source.includes('--approve-plan <id>') &&
+      source.includes('--cancel-plan <id>') &&
+      source.includes('runtime.listPlans(conversationId)') &&
+      source.includes('runtime.revisePlan({') &&
+      source.includes('runtime.approvePlan({') &&
+      source.includes('runtime.cancelPlan({'),
+    'CLI adapter should expose Plan mode and use the shared runtime Plan API',
+  )
+  assert(
     !source.includes('createPersistedRuntimeStore'),
     'CLI adapter should not wire the persisted store directly',
   )
@@ -210,6 +254,8 @@ async function testCliUsesSharedRuntimeFactory(): Promise<void> {
 async function main(): Promise<void> {
   await testExtensionReportFailure()
   await testRetryLastDoesNotDuplicateUser()
+  await testPlanListRequiresConversationScope()
+  await testPlanListForConversation()
   testInterruptedAgentEventCompletesCliAdapter()
   await testCliUsesSharedRuntimeFactory()
   console.log('cli contract: ok')

@@ -1,9 +1,19 @@
-import { type ReactElement, useCallback, useEffect, useState } from 'react'
+import {
+  BotIcon,
+  CheckIcon,
+  ListChecksIcon,
+  MessageCircleIcon,
+  SaveIcon,
+  XIcon,
+} from 'lucide-react'
+import { type ReactElement, useCallback, useEffect, useMemo, useState } from 'react'
 import type {
+  AilaExecutionMode,
   ChatAttachmentInput,
   ConversationRecord,
   ConversationSummary,
   ConversationWorkspaceRef,
+  PlanArtifact,
   ProviderId,
   Settings,
 } from '../../types'
@@ -39,6 +49,7 @@ export function ChatPage({
     onUpdateSettings,
   )
   const [submitScrollKey, setSubmitScrollKey] = useState(0)
+  const [executionMode, setExecutionMode] = useState<AilaExecutionMode>('agent')
 
   const conversationId = conversation?.meta.id ?? null
 
@@ -53,6 +64,7 @@ export function ChatPage({
   const stream = conversationId ? streams.getStream(conversationId) : null
   const messages = stream?.messages ?? []
   const events = stream?.events ?? []
+  const plans = stream?.plans ?? []
   const isStreaming = stream?.runningMessageId !== null && stream?.runningMessageId !== undefined
   const usage = stream?.usage ?? null
   const queuedRuns = stream?.queue ?? []
@@ -63,6 +75,7 @@ export function ChatPage({
     (lastMessage?.role === 'assistant' && lastMessage.status === 'error')
   const canRetryLast =
     Boolean(conversationId) && !isStreaming && queuedCount === 0 && hasRetryableLastTurn
+  const activePlan = useMemo(() => selectActivePlan(plans), [plans])
 
   const handleSubmit = useCallback(
     async (text: string, attachments: ChatAttachmentInput[]) => {
@@ -84,10 +97,21 @@ export function ChatPage({
         streams.markHydrated(id)
       }
 
-      streams.enqueueSend(id, trimmed, currentSelection, attachments)
+      streams.enqueueSend(id, trimmed, currentSelection, attachments, {
+        mode: executionMode,
+        ...(executionMode === 'plan' && activePlan ? { planId: activePlan.id } : {}),
+      })
       setSubmitScrollKey((key) => key + 1)
     },
-    [conversationId, onCreateConversation, streams, onOpenSettings, selectionRef.current],
+    [
+      activePlan,
+      conversationId,
+      executionMode,
+      onCreateConversation,
+      streams,
+      onOpenSettings,
+      selectionRef,
+    ],
   )
 
   const handleAbort = useCallback(() => {
@@ -113,8 +137,51 @@ export function ChatPage({
       onOpenSettings()
       return
     }
-    streams.enqueueRetryLast(conversationId, currentSelection)
-  }, [conversationId, streams, onOpenSettings, selectionRef.current])
+    streams.enqueueRetryLast(conversationId, currentSelection, {
+      mode: executionMode,
+      ...(executionMode === 'plan' && activePlan ? { planId: activePlan.id } : {}),
+    })
+  }, [activePlan, conversationId, executionMode, streams, onOpenSettings, selectionRef])
+
+  const handleSavePlanMarkdown = useCallback(
+    async (plan: PlanArtifact, markdown: string): Promise<void> => {
+      if (!conversationId) return
+      await window.api.runtime.savePlanMarkdown({
+        conversationId,
+        planId: plan.id,
+        markdown,
+        expectedRevisionId: plan.latestRevisionId,
+      })
+      await streams.refreshPlans(conversationId)
+    },
+    [conversationId, streams],
+  )
+
+  const handleApprovePlan = useCallback(
+    (plan: PlanArtifact): void => {
+      if (!conversationId || isStreaming || queuedCount > 0) return
+      const currentSelection = selectionRef.current
+      if (!currentSelection) {
+        onOpenSettings()
+        return
+      }
+      streams.enqueueApprovePlan(conversationId, plan.id, currentSelection, plan.latestRevisionId)
+    },
+    [conversationId, isStreaming, queuedCount, streams, onOpenSettings, selectionRef],
+  )
+
+  const handleCancelPlan = useCallback(
+    async (plan: PlanArtifact): Promise<void> => {
+      if (!conversationId) return
+      await window.api.runtime.cancelPlan({
+        conversationId,
+        planId: plan.id,
+        reason: 'desktop',
+      })
+      await streams.refreshPlans(conversationId)
+    },
+    [conversationId, streams],
+  )
 
   const handleApprovalModeChange = useCallback(
     async (approvalMode: NonNullable<Settings['approvalMode']>) => {
@@ -148,12 +215,25 @@ export function ChatPage({
 
   return (
     <div className="flex h-full flex-col text-[var(--text)]">
-      <header className="flex h-10 shrink-0 items-center justify-center px-8 [-webkit-app-region:drag]">
-        <span className="max-w-[60%] truncate text-[13px] font-medium text-[var(--text-soft)]">
+      <header className="relative flex h-10 shrink-0 items-center justify-center px-8 [-webkit-app-region:drag]">
+        <span className="min-w-0 max-w-[42%] truncate text-[13px] font-medium text-[var(--text-soft)]">
           {conversation?.meta.title ?? ''}
         </span>
+        <div className="absolute right-4 [-webkit-app-region:no-drag]">
+          <ModeSegmentedControl value={executionMode} onChange={setExecutionMode} />
+        </div>
       </header>
       <main className="flex min-h-0 flex-1 flex-col">
+        {(activePlan || executionMode === 'plan') && (
+          <PlanReviewPanel
+            plan={activePlan}
+            mode={executionMode}
+            busy={isStreaming || queuedCount > 0}
+            onSave={handleSavePlanMarkdown}
+            onApprove={handleApprovePlan}
+            onCancel={handleCancelPlan}
+          />
+        )}
         {messages.length === 0 ? (
           // New-chat hero: prompt + composer sit together at the vertical
           // center; pb offsets the h-10 header so it reads optically centered.
@@ -177,5 +257,238 @@ export function ChatPage({
         )}
       </main>
     </div>
+  )
+}
+
+const ACTIVE_PLAN_STATUSES = new Set<PlanArtifact['status']>([
+  'draft',
+  'needs_input',
+  'ready',
+  'approved',
+  'implementing',
+])
+
+function selectActivePlan(plans: PlanArtifact[]): PlanArtifact | null {
+  return plans.find((plan) => ACTIVE_PLAN_STATUSES.has(plan.status)) ?? plans[0] ?? null
+}
+
+const MODE_OPTIONS: Array<{
+  id: AilaExecutionMode
+  label: string
+  icon: ReactElement
+}> = [
+  { id: 'agent', label: 'Agent', icon: <BotIcon className="size-3.5" /> },
+  { id: 'plan', label: 'Plan', icon: <ListChecksIcon className="size-3.5" /> },
+  { id: 'chat', label: 'Chat', icon: <MessageCircleIcon className="size-3.5" /> },
+]
+
+function ModeSegmentedControl({
+  value,
+  onChange,
+}: {
+  value: AilaExecutionMode
+  onChange: (mode: AilaExecutionMode) => void
+}): ReactElement {
+  return (
+    <div className="inline-flex h-7 items-center rounded-md border border-[var(--border)] bg-[var(--surface)] p-0.5 shadow-[0_1px_2px_rgba(0,0,0,0.04)]">
+      {MODE_OPTIONS.map((option) => {
+        const selected = value === option.id
+        return (
+          <button
+            key={option.id}
+            type="button"
+            onClick={() => onChange(option.id)}
+            aria-pressed={selected}
+            title={`${option.label} mode`}
+            className={`inline-flex h-6 items-center gap-1.5 rounded px-2 text-[11.5px] font-medium transition-colors ${
+              selected
+                ? 'bg-[var(--text)] text-[var(--surface)]'
+                : 'text-[var(--text-soft)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]'
+            }`}
+          >
+            {option.icon}
+            <span>{option.label}</span>
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
+function PlanReviewPanel({
+  plan,
+  mode,
+  busy,
+  onSave,
+  onApprove,
+  onCancel,
+}: {
+  plan: PlanArtifact | null
+  mode: AilaExecutionMode
+  busy: boolean
+  onSave: (plan: PlanArtifact, markdown: string) => Promise<void>
+  onApprove: (plan: PlanArtifact) => void
+  onCancel: (plan: PlanArtifact) => Promise<void>
+}): ReactElement {
+  const [draftMarkdown, setDraftMarkdown] = useState(plan?.markdown ?? '')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    setDraftMarkdown(plan?.markdown ?? '')
+    setError(null)
+  }, [plan])
+
+  const dirty = Boolean(plan && draftMarkdown !== plan.markdown)
+  const canApprove = Boolean(plan && plan.status === 'ready' && !busy && !saving)
+  const canCancel = Boolean(plan && !busy && !saving && plan.status !== 'cancelled')
+  const canSave = Boolean(plan && dirty && !busy && !saving)
+
+  const save = useCallback(async (): Promise<void> => {
+    if (!plan || !canSave) return
+    setSaving(true)
+    setError(null)
+    try {
+      await onSave(plan, draftMarkdown)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setSaving(false)
+    }
+  }, [canSave, draftMarkdown, onSave, plan])
+
+  const cancel = useCallback(async (): Promise<void> => {
+    if (!plan || !canCancel) return
+    setSaving(true)
+    setError(null)
+    try {
+      await onCancel(plan)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setSaving(false)
+    }
+  }, [canCancel, onCancel, plan])
+
+  return (
+    <section className="shrink-0 border-y border-[var(--border)] bg-[var(--surface)]/88 px-8 py-3">
+      <div className="mx-auto flex max-w-[880px] gap-4">
+        <div className="min-w-0 flex-1">
+          <div className="mb-2 flex items-center gap-2">
+            <ListChecksIcon className="size-4 shrink-0 text-[var(--text-soft)]" />
+            <h2 className="min-w-0 truncate text-[13px] font-semibold text-[var(--text)]">
+              {plan?.title ?? (mode === 'plan' ? 'Planning' : 'Plan')}
+            </h2>
+            <PlanStatusPill status={plan?.status ?? (mode === 'plan' ? 'draft' : 'cancelled')} />
+            {plan?.latestRevisionId && (
+              <span className="truncate text-[11px] text-[var(--text-dim)]">
+                {plan.latestRevisionId}
+              </span>
+            )}
+          </div>
+
+          {plan ? (
+            <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_260px]">
+              <textarea
+                value={draftMarkdown}
+                onChange={(event) => setDraftMarkdown(event.target.value)}
+                spellCheck={false}
+                className="h-32 min-h-24 resize-y rounded-md border border-[var(--border)] bg-[var(--bg)] px-3 py-2 font-mono text-[12px] leading-5 text-[var(--text)] outline-none transition-colors focus:border-[var(--border-strong)]"
+              />
+              <div className="min-w-0">
+                <div className="mb-1.5 text-[11px] font-medium uppercase text-[var(--text-dim)]">
+                  Tasks
+                </div>
+                <div className="flex max-h-32 flex-col gap-1 overflow-y-auto pr-1">
+                  {plan.tasks.length === 0 ? (
+                    <p className="text-[12px] text-[var(--text-dim)]">No tasks recorded.</p>
+                  ) : (
+                    plan.tasks.map((task) => (
+                      <div key={task.id} className="flex min-w-0 items-start gap-2 text-[12px]">
+                        <span className="mt-1 size-1.5 shrink-0 rounded-full bg-[var(--text-dim)]" />
+                        <div className="min-w-0">
+                          <div className="truncate text-[var(--text)]">{task.title}</div>
+                          <div className="text-[11px] text-[var(--text-dim)]">{task.status}</div>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            </div>
+          ) : (
+            <p className="text-[12.5px] text-[var(--text-soft)]">
+              Plan mode is active for the next prompt.
+            </p>
+          )}
+
+          {error && <p className="mt-2 text-[12px] text-[var(--error)]">{error}</p>}
+        </div>
+
+        {plan && (
+          <div className="flex shrink-0 flex-col gap-1.5">
+            <PlanActionButton
+              icon={<SaveIcon className="size-3.5" />}
+              label={saving ? 'Saving' : 'Save'}
+              disabled={!canSave}
+              onClick={save}
+            />
+            <PlanActionButton
+              icon={<CheckIcon className="size-3.5" />}
+              label="Approve"
+              disabled={!canApprove}
+              onClick={() => onApprove(plan)}
+            />
+            <PlanActionButton
+              icon={<XIcon className="size-3.5" />}
+              label="Cancel"
+              disabled={!canCancel}
+              onClick={cancel}
+            />
+          </div>
+        )}
+      </div>
+    </section>
+  )
+}
+
+function PlanStatusPill({ status }: { status: PlanArtifact['status'] }): ReactElement {
+  const tone =
+    status === 'ready'
+      ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+      : status === 'implementing' || status === 'approved'
+        ? 'border-blue-200 bg-blue-50 text-blue-700'
+        : status === 'cancelled' || status === 'superseded'
+          ? 'border-[var(--border)] bg-[var(--bg-soft)] text-[var(--text-dim)]'
+          : 'border-amber-200 bg-amber-50 text-amber-700'
+
+  return (
+    <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-medium ${tone}`}>
+      {status.replaceAll('_', ' ')}
+    </span>
+  )
+}
+
+function PlanActionButton({
+  icon,
+  label,
+  disabled,
+  onClick,
+}: {
+  icon: ReactElement
+  label: string
+  disabled: boolean
+  onClick: () => void
+}): ReactElement {
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onClick}
+      className="inline-flex h-7 items-center justify-center gap-1.5 rounded-md border border-[var(--border)] px-2.5 text-[12px] font-medium text-[var(--text-soft)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)] disabled:cursor-not-allowed disabled:opacity-45"
+    >
+      {icon}
+      {label}
+    </button>
   )
 }

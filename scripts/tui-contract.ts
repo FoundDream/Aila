@@ -130,9 +130,17 @@ async function testLocalSlashCommands(): Promise<void> {
 
 async function testExtensionAndSessionSlashCommands(): Promise<void> {
   await withTempDataDir(async (dataDir) => {
-    const stdin = ['/extensions', '/model openai:gpt-5.4', '/extensions reload', '/exit', ''].join(
-      '\n',
-    )
+    const stdin = [
+      '/extensions',
+      '/model openai:gpt-5.4',
+      '/mode',
+      '/plan',
+      '/mode agent',
+      '/plans',
+      '/extensions reload',
+      '/exit',
+      '',
+    ].join('\n')
     const result = await runTui(
       ['--data-dir', dataDir, '--model', 'openrouter:minimax/minimax-m3', '--no-history'],
       stdin,
@@ -141,6 +149,9 @@ async function testExtensionAndSessionSlashCommands(): Promise<void> {
     assertEqual(result.code, 0, 'TUI extension slash commands should exit cleanly')
     assert(result.stdout.includes('Aila extensions'), 'TUI should display extension report')
     assert(result.stdout.includes('[model] OpenAI / GPT-5.4'), 'TUI should switch active model')
+    assert(result.stdout.includes('[mode] agent'), 'TUI should display active runtime mode')
+    assert(result.stdout.includes('[mode] plan'), 'TUI /plan should switch to plan mode')
+    assert(result.stdout.includes('Aila plans'), 'TUI should list plans for the conversation')
     assert(result.stdout.includes('[extensions] reloaded'), 'TUI should reload extension caches')
   })
 }
@@ -293,6 +304,19 @@ async function testTuiUsesSharedRuntimeFactory(): Promise<void> {
       source.includes('--approval-mode <mode>') &&
       source.includes('--yolo'),
     'TUI adapter should expose safe/yolo tool execution modes through the shared policy helper',
+  )
+  assert(
+    source.includes('isAilaExecutionMode') &&
+      source.includes('--mode <mode>') &&
+      source.includes('--plan <id>') &&
+      source.includes('/approve-plan [id]') &&
+      source.includes('runtime.revisePlan({') &&
+      source.includes('runtime.approvePlan({') &&
+      source.includes('runtime.cancelPlan({') &&
+      fullscreenSource.includes('runtime.revisePlan({') &&
+      fullscreenSource.includes('runtime.approvePlan({') &&
+      fullscreenSource.includes('runtime.cancelPlan({'),
+    'TUI adapters should expose Plan mode and use the shared runtime Plan API',
   )
   assert(
     !source.includes('createPersistedRuntimeStore'),

@@ -8,9 +8,11 @@ import { stdin as input, stdout as output, stderr } from 'node:process'
 import {
   type AgentRuntimeApi,
   type AgentRuntimeEvent,
+  type AilaExecutionMode,
   type ConversationSummary,
   createToolPolicy,
   findModel,
+  isAilaExecutionMode,
   isToolApprovalMode,
   MODEL_CATALOG,
   type ModelSelection,
@@ -44,6 +46,12 @@ interface CliOptions {
   list: boolean
   limit: number
   model?: ModelSelection
+  mode: AilaExecutionMode
+  planId?: string
+  listPlans: boolean
+  approvePlanId?: string
+  cancelPlanId?: string
+  expectedRevisionId?: string
   prompt?: string
   retryLast: boolean
   resumeLatest: boolean
@@ -74,6 +82,12 @@ function usage(): string {
     '  --list                  List saved conversations and exit',
     '  --limit <n>             Limit rows for --list (default: 20)',
     '  --model <provider:id>   Override model, e.g. openai:gpt-5.4',
+    '  --mode <mode>           Runtime mode: agent, plan, or chat (default: agent)',
+    '  --plan <id>             Bind a prompt, revision, or approval to a plan id',
+    '  --list-plans            List plans for the resolved conversation and exit',
+    '  --approve-plan <id>     Approve a ready plan and start implementation',
+    '  --cancel-plan <id>      Cancel a plan and exit',
+    '  --expected-revision <id> Guard plan edit/approval against stale revisions',
     '  --resume                Continue the most recently updated conversation',
     '  --retry-last            Retry the last failed or dangling user turn without duplicating it',
     '  --json                  Print a final JSON result instead of streaming text',
@@ -92,7 +106,9 @@ function parseArgs(argv: string[]): CliOptions {
     extensions: false,
     json: false,
     list: false,
+    listPlans: false,
     limit: 20,
+    mode: 'agent',
     retryLast: false,
     resumeLatest: false,
   }
@@ -134,6 +150,26 @@ function parseArgs(argv: string[]): CliOptions {
       case '--model':
         options.model = parseModel(requireValue(argv, ++i, arg))
         break
+      case '--mode':
+        options.mode = parseExecutionMode(requireValue(argv, ++i, arg))
+        break
+      case '--plan':
+        options.planId = requireValue(argv, ++i, arg)
+        break
+      case '--list-plans':
+        options.listPlans = true
+        break
+      case '--approve-plan':
+        options.approvePlanId = requireValue(argv, ++i, arg)
+        options.planId = options.approvePlanId
+        break
+      case '--cancel-plan':
+        options.cancelPlanId = requireValue(argv, ++i, arg)
+        options.planId = options.cancelPlanId
+        break
+      case '--expected-revision':
+        options.expectedRevisionId = requireValue(argv, ++i, arg)
+        break
       case '--approval-mode':
         options.approvalMode = parseApprovalMode(requireValue(argv, ++i, arg))
         break
@@ -170,6 +206,9 @@ function parseArgs(argv: string[]): CliOptions {
   if (options.conversationId && options.list) {
     throw new Error('--conversation and --list cannot be combined')
   }
+  if (options.list && options.listPlans) {
+    throw new Error('--list and --list-plans cannot be combined')
+  }
   if (options.events && options.json) {
     throw new Error('--events and --json cannot be combined because both write structured stdout')
   }
@@ -184,6 +223,27 @@ function parseArgs(argv: string[]): CliOptions {
   }
   if (options.retryLast && options.prompt !== undefined) {
     throw new Error('--retry-last cannot be combined with a prompt')
+  }
+  const planActions = [
+    options.listPlans ? '--list-plans' : '',
+    options.approvePlanId ? '--approve-plan' : '',
+    options.cancelPlanId ? '--cancel-plan' : '',
+  ].filter(Boolean)
+  if (planActions.length > 1) {
+    throw new Error(`${planActions.join(' and ')} cannot be combined`)
+  }
+  if ((options.approvePlanId || options.cancelPlanId || options.listPlans) && options.retryLast) {
+    throw new Error('--retry-last cannot be combined with plan management options')
+  }
+  if ((options.approvePlanId || options.cancelPlanId || options.listPlans) && options.prompt) {
+    throw new Error('plan management options cannot be combined with a prompt')
+  }
+  if (
+    (options.approvePlanId || options.cancelPlanId || options.listPlans) &&
+    !options.conversationId &&
+    !options.resumeLatest
+  ) {
+    throw new Error('plan management options require --conversation or --resume')
   }
 
   return options
@@ -206,6 +266,11 @@ function parseLimit(value: string): number {
 function parseApprovalMode(value: string): ToolApprovalMode {
   if (isToolApprovalMode(value)) return value
   throw new Error('--approval-mode must be safe or yolo')
+}
+
+function parseExecutionMode(value: string): AilaExecutionMode {
+  if (isAilaExecutionMode(value)) return value
+  throw new Error('--mode must be agent, plan, or chat')
 }
 
 function parseModel(value: string): ModelSelection {
@@ -286,6 +351,25 @@ async function printConversationList(
   }
   if (conversations.length > shown.length) {
     output.write(`Showing ${shown.length} of ${conversations.length}. Use --limit to show more.\n`)
+  }
+}
+
+async function printPlanList(runtime: AgentRuntimeApi, conversationId: string): Promise<void> {
+  const plans = await runtime.listPlans(conversationId)
+
+  output.write('Aila plans\n')
+  output.write(`Data: ${getDataDir()}\n`)
+  output.write(`Conversation: ${conversationId}\n`)
+  if (plans.length === 0) {
+    output.write('No plans found.\n')
+    return
+  }
+
+  for (const plan of plans) {
+    const revision = plan.latestRevisionId ? `, revision ${plan.latestRevisionId}` : ''
+    output.write(
+      `${formatDate(plan.updatedAt)}  ${plan.id}  ${plan.status}${revision}  ${plan.title}\n`,
+    )
   }
 }
 
@@ -473,6 +557,11 @@ export function handleRuntimeEvent(
           status: 'error',
           usage: null,
         })
+      } else if (event.data.type.startsWith('plan.') && !state.events && !state.json) {
+        const data = event.data.data ?? {}
+        const planId = typeof data.planId === 'string' ? ` ${data.planId}` : ''
+        const status = typeof data.status === 'string' ? ` (${data.status})` : ''
+        stderr.write(`[plan] ${event.data.type}${planId}${status}\n`)
       }
       break
     case 'chat:reasoning-delta':
@@ -502,7 +591,34 @@ async function main(): Promise<void> {
     return
   }
 
-  const prompt = options.retryLast ? null : readPrompt(options)
+  if (options.listPlans || options.cancelPlanId) {
+    const runtime = createRuntime({
+      approvalMode: options.approvalMode,
+      events: options.events,
+      json: options.json,
+    })
+    const { conversationId } = await runtime.resolveConversation({
+      conversationId: options.conversationId,
+      resumeLatest: options.resumeLatest,
+    })
+    if (options.listPlans) {
+      await printPlanList(runtime, conversationId)
+      return
+    }
+    const plan = await runtime.cancelPlan({
+      conversationId,
+      planId: options.cancelPlanId ?? '',
+      reason: 'cli',
+    })
+    if (options.json) {
+      output.write(`${JSON.stringify({ conversationId, plan }, null, 2)}\n`)
+    } else {
+      output.write(`Plan cancelled: ${plan.id} (${plan.status})\n`)
+    }
+    return
+  }
+
+  const prompt = options.retryLast || options.approvePlanId ? null : readPrompt(options)
   if (prompt !== null && !prompt.trim()) throw new Error('prompt is empty')
 
   const selection = resolveSelection(options.model)
@@ -530,20 +646,42 @@ async function main(): Promise<void> {
     stderr.write(`Tool packs: ${getToolPacksDir()}\n`)
     stderr.write(`Conversation: ${conversationId}${isExisting ? ' (resumed)' : ''}\n`)
     stderr.write(`Model: ${modelLabel(selection)}\n`)
-    stderr.write(`Tool mode: ${options.approvalMode}\n`)
+    stderr.write(`Runtime mode: ${options.mode}\n`)
+    if (options.planId) stderr.write(`Plan: ${options.planId}\n`)
+    stderr.write(`Tool approval: ${options.approvalMode}\n`)
   }
 
   try {
-    const result = options.retryLast
-      ? await runtime.retryLastUserMessage({
+    const result = options.approvePlanId
+      ? await runtime.approvePlan({
           conversationId,
+          planId: options.approvePlanId,
           selection,
+          expectedRevisionId: options.expectedRevisionId,
+          approvalMode: options.approvalMode,
         })
-      : await runtime.send({
-          conversationId,
-          userText: prompt ?? '',
-          selection,
-        })
+      : options.retryLast
+        ? await runtime.retryLastUserMessage({
+            conversationId,
+            selection,
+            mode: options.mode,
+            ...(options.planId ? { planId: options.planId } : {}),
+          })
+        : options.planId && options.mode === 'plan'
+          ? await runtime.revisePlan({
+              conversationId,
+              planId: options.planId,
+              userText: prompt ?? '',
+              selection,
+              expectedRevisionId: options.expectedRevisionId,
+            })
+          : await runtime.send({
+              conversationId,
+              userText: prompt ?? '',
+              selection,
+              mode: options.mode,
+              ...(options.planId ? { planId: options.planId } : {}),
+            })
     const { assistantMessageId } = result
     process.on('SIGINT', () => {
       runtime.abort(conversationId)
@@ -567,6 +705,8 @@ async function main(): Promise<void> {
           conversationId,
           dataDir: getDataDir(),
           model: selection,
+          mode: options.mode,
+          planId: options.planId ?? null,
           status: completed.status,
           text: completed.assistantText,
           error: completed.error,

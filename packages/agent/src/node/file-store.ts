@@ -23,6 +23,7 @@ import {
   replayConversationActivity,
   upsertPersistedMessage,
 } from '../conversation-core'
+import { appendPlanRevisionToPlan, type PlanArtifact, preparePlanArtifact } from '../plan-core'
 import type { AgentRuntimeStore } from '../runtime'
 import { getNodeToolResultsConversationDir } from './tool-result-store'
 
@@ -36,6 +37,7 @@ export interface FileRuntimeStoreOptions {
 export function createFileRuntimeStore(options: FileRuntimeStoreOptions): AgentRuntimeStore {
   const conversationsDir = join(options.dataDir, 'conversations')
   const eventsDir = join(options.dataDir, 'events')
+  const plansDir = join(options.dataDir, 'plans')
   const createId = options.createId ?? randomUUID
   const now = options.now ?? Date.now
 
@@ -82,6 +84,41 @@ export function createFileRuntimeStore(options: FileRuntimeStoreOptions): AgentR
       `${JSON.stringify(orderedUniqueAgentEvents(events), null, 2)}\n`,
       'utf-8',
     )
+  }
+
+  function planConversationDir(conversationId: string): string {
+    return join(plansDir, conversationId)
+  }
+
+  function planJsonPath(conversationId: string, planId: string): string {
+    return join(planConversationDir(conversationId), `${planId}.json`)
+  }
+
+  function planMarkdownPath(conversationId: string, planId: string): string {
+    return join(planConversationDir(conversationId), `${planId}.md`)
+  }
+
+  async function readPlan(conversationId: string, planId: string): Promise<PlanArtifact> {
+    const raw = await readFile(planJsonPath(conversationId, planId), 'utf-8')
+    return preparePlanArtifact(JSON.parse(raw) as PlanArtifact)
+  }
+
+  async function writePlan(plan: PlanArtifact): Promise<PlanArtifact> {
+    const prepared = preparePlanArtifact(plan)
+    await mkdir(planConversationDir(prepared.conversationId), { recursive: true })
+    await Promise.all([
+      writeFile(
+        planJsonPath(prepared.conversationId, prepared.id),
+        `${JSON.stringify(prepared, null, 2)}\n`,
+        'utf-8',
+      ),
+      writeFile(
+        planMarkdownPath(prepared.conversationId, prepared.id),
+        `${prepared.markdown}\n`,
+        'utf-8',
+      ),
+    ])
+    return prepared
   }
 
   async function updateRecord(
@@ -246,10 +283,52 @@ export function createFileRuntimeStore(options: FileRuntimeStoreOptions): AgentR
       }))
       return structuredClone(record.meta)
     },
+    async createPlan(plan): Promise<PlanArtifact> {
+      await readRecord(plan.conversationId)
+      const prepared = preparePlanArtifact(plan)
+      try {
+        await readPlan(prepared.conversationId, prepared.id)
+        throw new Error(`plan already exists: ${prepared.conversationId}/${prepared.id}`)
+      } catch (error) {
+        if (!isErrnoCode(error, 'ENOENT')) throw error
+      }
+      return structuredClone(await writePlan(prepared))
+    },
+    async getPlan(conversationId, planId): Promise<PlanArtifact> {
+      return structuredClone(await readPlan(conversationId, planId))
+    },
+    async listPlans(conversationId): Promise<readonly PlanArtifact[]> {
+      await mkdir(planConversationDir(conversationId), { recursive: true })
+      const files = await readdir(planConversationDir(conversationId))
+      const plans = await Promise.all(
+        files
+          .filter((file) => file.endsWith('.json'))
+          .map((file) =>
+            readPlan(conversationId, file.slice(0, -'.json'.length)).catch(() => null),
+          ),
+      )
+      return plans
+        .filter((plan): plan is PlanArtifact => plan !== null)
+        .map((plan) => structuredClone(plan))
+        .sort((left, right) => right.updatedAt - left.updatedAt)
+    },
+    async updatePlan(plan): Promise<PlanArtifact> {
+      await readRecord(plan.conversationId)
+      const prepared = preparePlanArtifact(plan)
+      await readPlan(prepared.conversationId, prepared.id)
+      return structuredClone(await writePlan(prepared))
+    },
+    async appendPlanRevision(input): Promise<PlanArtifact> {
+      await readRecord(input.conversationId)
+      const current = await readPlan(input.conversationId, input.planId)
+      const updated = appendPlanRevisionToPlan(current, input.revision, now())
+      return structuredClone(await writePlan(updated))
+    },
     async deleteConversation(conversationId): Promise<void> {
       await Promise.all([
         rm(join(conversationsDir, `${conversationId}.json`), { force: true }),
         rm(join(eventsDir, `${conversationId}.json`), { force: true }),
+        rm(planConversationDir(conversationId), { recursive: true, force: true }),
         rm(getNodeToolResultsConversationDir(conversationId, options), {
           recursive: true,
           force: true,
@@ -261,6 +340,10 @@ export function createFileRuntimeStore(options: FileRuntimeStoreOptions): AgentR
 
 function nextUpdatedAt(current: number, candidate: number): number {
   return candidate > current ? candidate : current + 1
+}
+
+function isErrnoCode(error: unknown, code: string): boolean {
+  return error instanceof Error && 'code' in error && (error as NodeJS.ErrnoException).code === code
 }
 
 function sameConversationActivity(

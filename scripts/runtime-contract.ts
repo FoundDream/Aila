@@ -10,14 +10,23 @@ import {
   type AgentRuntimeEvent,
   type AgentRuntimeHost,
   type AgentRuntimeStore,
+  AILA_EXECUTION_MODES,
+  AILA_PLAN_ARTIFACT_SCHEMA_VERSION,
+  AILA_PLAN_REVISION_SCHEMA_VERSION,
   AILA_RUNTIME_EVENT_SCHEMA_VERSION,
   AILA_RUNTIME_EVENT_TYPES,
   AILA_SKILL_FILE,
   type ChatMessage,
+  createExecutionModeToolPolicy,
   createInMemoryRuntimeStore,
   createInterruptedConversationRecoveryEvent,
   createRuntimeEvent,
+  evaluateExecutionModeToolPolicy,
+  isPlanSafeToolMetadata,
   isRuntimeEventType,
+  normalizePlanArtifact,
+  type PlanArtifact,
+  type PlanRevision,
   parseSkillDocument,
   type RuntimeAttachmentBlock,
   type RuntimePersistAttachmentInput,
@@ -50,6 +59,7 @@ import {
   getConversationsDir,
   getExtensionReport,
   getImagesDir,
+  getPlansDir,
   getSkillsDir,
   getToolPacksDir,
   loadSkillFromDir,
@@ -94,6 +104,76 @@ async function withTempDataDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
     return await fn(dir)
   } finally {
     await rm(dir, { recursive: true, force: true })
+  }
+}
+
+function createPlanRevisionFixture(
+  planId: string,
+  id = 'revision-1',
+  createdAt = 2,
+  markdown = '# Plan: Runtime Plan\n\n## Tasks\n- [ ] task-1: Inspect runtime store',
+): PlanRevision {
+  return {
+    schemaVersion: AILA_PLAN_REVISION_SCHEMA_VERSION,
+    id,
+    planId,
+    createdAt,
+    author: 'assistant',
+    markdown,
+    tasks: [
+      {
+        id: 'task-1',
+        title: 'Inspect runtime store',
+        status: 'todo',
+        files: [
+          {
+            path: 'packages/agent/src/runtime.ts',
+            reason: 'Plan store API hangs off the runtime store contract.',
+            kind: 'modify',
+          },
+        ],
+        verification: ['bun run typecheck:agent'],
+        dependsOn: [],
+      },
+    ],
+    summary: 'Initial plan draft.',
+  }
+}
+
+function createPlanFixture(input: {
+  conversationId: string
+  planId?: string
+  createdAt?: number
+  updatedAt?: number
+}): PlanArtifact {
+  const planId = input.planId ?? 'plan-1'
+  const createdAt = input.createdAt ?? 1
+  const revision = createPlanRevisionFixture(planId, 'revision-1', createdAt)
+  return {
+    schemaVersion: AILA_PLAN_ARTIFACT_SCHEMA_VERSION,
+    id: planId,
+    conversationId: input.conversationId,
+    sourceUserMessageId: 'user-message-1',
+    title: 'Runtime Plan',
+    status: 'ready',
+    markdown: revision.markdown,
+    tasks: revision.tasks,
+    questions: [],
+    assumptions: ['Plan artifacts are stored outside assistant prose.'],
+    risks: ['Store contracts must stay host agnostic.'],
+    files: [
+      {
+        path: 'packages/agent/src/runtime.ts',
+        reason: 'Runtime store exposes optional plan persistence methods.',
+        kind: 'modify',
+      },
+    ],
+    verification: ['bun run typecheck:agent'],
+    drift: [],
+    revisions: [revision],
+    latestRevisionId: revision.id,
+    createdAt,
+    updatedAt: input.updatedAt ?? createdAt,
   }
 }
 
@@ -1183,6 +1263,373 @@ async function testConversationUsageAccumulatorContract(): Promise<void> {
     5,
     'usage snapshot should accumulate prompt tokens across turns',
   )
+}
+
+function testPlanArtifactNormalizationContract(): void {
+  const normalized = normalizePlanArtifact({
+    schemaVersion: 0,
+    id: ' plan-1 ',
+    conversationId: ' conversation-1 ',
+    sourceUserMessageId: ' user-1 ',
+    title: ' Runtime Plan ',
+    status: 'not-a-status',
+    markdown: '# Plan: Runtime Plan\n',
+    tasks: [
+      {
+        id: ' task-1 ',
+        title: ' Inspect runtime ',
+        status: 'not-a-task-status',
+        files: [
+          {
+            path: ' packages/agent/src/runtime.ts ',
+            reason: ' runtime contract ',
+            kind: 'modify',
+          },
+        ],
+        verification: [' bun run typecheck:agent ', '', 7],
+        dependsOn: [' task-0 ', null],
+      },
+    ],
+    questions: [{ id: ' q-1 ', prompt: ' Continue? ', status: 'not-a-question-status' }],
+    assumptions: [' artifact is canonical ', '', 3],
+    risks: [' schema drift '],
+    files: [{ path: ' PLAN_SYSTEM_DESIGN.md ', reason: ' design source ', kind: 'read' }],
+    verification: [' bun scripts/runtime-contract.ts '],
+    drift: [{ id: ' drift-1 ', createdAt: 3, severity: 'bad', summary: ' drift item ' }],
+    revisions: [
+      createPlanRevisionFixture('plan-1', 'revision-1', 2),
+      createPlanRevisionFixture('plan-1', 'revision-1', 4, '# Plan: Replaced'),
+    ],
+    createdAt: 10,
+    updatedAt: 1,
+  })
+
+  assert(normalized, 'valid plan artifact should normalize')
+  assertEqual(
+    normalized.schemaVersion,
+    AILA_PLAN_ARTIFACT_SCHEMA_VERSION,
+    'plan artifact schema version',
+  )
+  assertEqual(normalized.id, 'plan-1', 'plan id should trim')
+  assertEqual(normalized.conversationId, 'conversation-1', 'conversation id should trim')
+  assertEqual(normalized.status, 'draft', 'unknown plan status should fall back to draft')
+  assertEqual(normalized.tasks[0]?.status, 'todo', 'unknown task status should fall back to todo')
+  assertEqual(normalized.questions[0]?.status, 'open', 'unknown question status should fall back')
+  assertEqual(normalized.drift[0]?.severity, 'info', 'unknown drift severity should fall back')
+  assertEqual(normalized.updatedAt, 10, 'updatedAt should not precede createdAt')
+  assertEqual(normalized.revisions.length, 1, 'duplicate revision ids should be collapsed')
+  assertEqual(normalized.revisions[0]?.markdown, '# Plan: Replaced', 'last revision wins')
+  assertEqual(
+    normalizePlanArtifact({ id: '', conversationId: 'conversation-1' }),
+    null,
+    'invalid plan artifact should reject',
+  )
+}
+
+async function testInMemoryRuntimeStorePlanContract(): Promise<void> {
+  const store = createInMemoryRuntimeStore({ createId: () => 'conversation-plan-memory' })
+  const conversation = await store.createConversation?.()
+  assert(conversation, 'in-memory store should create a conversation for plan tests')
+  assert(store.createPlan, 'in-memory store should expose createPlan')
+  assert(store.getPlan, 'in-memory store should expose getPlan')
+  assert(store.listPlans, 'in-memory store should expose listPlans')
+  assert(store.updatePlan, 'in-memory store should expose updatePlan')
+  assert(store.appendPlanRevision, 'in-memory store should expose appendPlanRevision')
+
+  const plan = await store.createPlan(createPlanFixture({ conversationId: conversation.id }))
+  plan.title = 'mutated caller copy'
+
+  const loaded = await store.getPlan(conversation.id, 'plan-1')
+  assertEqual(loaded.title, 'Runtime Plan', 'plan store should return cloned artifacts')
+
+  const revision = createPlanRevisionFixture(
+    'plan-1',
+    'revision-2',
+    50,
+    '# Plan: Runtime Plan Updated',
+  )
+  const revised = await store.appendPlanRevision({
+    conversationId: conversation.id,
+    planId: 'plan-1',
+    revision,
+  })
+  assertEqual(revised.latestRevisionId, 'revision-2', 'append revision should update latest id')
+  assertEqual(revised.markdown, revision.markdown, 'append revision should update markdown view')
+  assertEqual(revised.revisions.length, 2, 'append revision should preserve revision history')
+
+  const listed = await store.listPlans(conversation.id)
+  assertEqual(listed.length, 1, 'in-memory store should list conversation plans')
+  assertEqual(listed[0]?.id, 'plan-1', 'listed plan id')
+
+  await store.deleteConversation(conversation.id)
+  const afterDelete = await store.listPlans(conversation.id)
+  assertEqual(afterDelete.length, 0, 'deleting conversation should delete in-memory plans')
+}
+
+async function testFileRuntimeStorePlanContract(): Promise<void> {
+  await withTempDataDir(async (dir) => {
+    const store = runtimePackageNodeSdk.createFileRuntimeStore({
+      dataDir: dir,
+      createId: () => 'conversation-plan-file',
+      now: () => 10,
+    })
+    const conversation = await store.createConversation?.()
+    assert(conversation, 'file store should create a conversation for plan tests')
+    assert(store.createPlan, 'file store should expose createPlan')
+    assert(store.getPlan, 'file store should expose getPlan')
+    assert(store.listPlans, 'file store should expose listPlans')
+    assert(store.appendPlanRevision, 'file store should expose appendPlanRevision')
+
+    await store.createPlan(
+      createPlanFixture({
+        conversationId: conversation.id,
+        planId: 'file-plan',
+        createdAt: 10,
+        updatedAt: 10,
+      }),
+    )
+
+    const rawJson = JSON.parse(
+      await readFile(join(dir, 'plans', conversation.id, 'file-plan.json'), 'utf-8'),
+    ) as { schemaVersion?: number; revisions?: unknown[] }
+    assertEqual(
+      rawJson.schemaVersion,
+      AILA_PLAN_ARTIFACT_SCHEMA_VERSION,
+      'file store should persist versioned plan json',
+    )
+    assertEqual(rawJson.revisions?.length, 1, 'file store should persist initial revisions')
+
+    const rawMarkdown = await readFile(join(dir, 'plans', conversation.id, 'file-plan.md'), 'utf-8')
+    assert(
+      rawMarkdown.includes('# Plan: Runtime Plan'),
+      'file store should persist editable markdown export',
+    )
+
+    const reopened = runtimePackageNodeSdk.createFileRuntimeStore({ dataDir: dir })
+    const loaded = await reopened.getPlan?.(conversation.id, 'file-plan')
+    assert(loaded, 'reopened file store should load persisted plan')
+    assertEqual(loaded.revisions.length, 1, 'reopened plan should keep revisions')
+
+    const revision = createPlanRevisionFixture(
+      'file-plan',
+      'revision-2',
+      20,
+      '# Plan: Runtime Plan File Updated',
+    )
+    const revised = await reopened.appendPlanRevision?.({
+      conversationId: conversation.id,
+      planId: 'file-plan',
+      revision,
+    })
+    assert(revised, 'file store should append plan revision')
+    assertEqual(revised.latestRevisionId, 'revision-2', 'file store latest revision id')
+    assertEqual(revised.revisions.length, 2, 'file store should keep revision history')
+
+    const listed = await reopened.listPlans?.(conversation.id)
+    assert(listed, 'file store should list plans')
+    assertEqual(listed.length, 1, 'file store should list persisted plan')
+    assertEqual(listed[0]?.id, 'file-plan', 'file store listed plan id')
+
+    await reopened.deleteConversation(conversation.id)
+    const afterDelete = await reopened.listPlans?.(conversation.id)
+    assert(afterDelete, 'file store should list after delete')
+    assertEqual(afterDelete.length, 0, 'deleting conversation should delete file-backed plans')
+  })
+}
+
+async function testPersistedRuntimeStorePlanContract(): Promise<void> {
+  await withTempDataDir(async () => {
+    const store = createPersistedRuntimeStore()
+    const conversation = await store.createConversation?.()
+    assert(conversation, 'persisted runtime store should create a conversation for plan tests')
+    assert(store.createPlan, 'persisted runtime store should expose createPlan')
+    assert(store.getPlan, 'persisted runtime store should expose getPlan')
+    assert(store.listPlans, 'persisted runtime store should expose listPlans')
+    assert(store.appendPlanRevision, 'persisted runtime store should expose appendPlanRevision')
+
+    await store.createPlan(
+      createPlanFixture({
+        conversationId: conversation.id,
+        planId: 'desktop-plan',
+        createdAt: 100,
+        updatedAt: 100,
+      }),
+    )
+    const rawJson = JSON.parse(
+      await readFile(join(getPlansDir(), conversation.id, 'desktop-plan.json'), 'utf-8'),
+    ) as { schemaVersion?: number }
+    assertEqual(
+      rawJson.schemaVersion,
+      AILA_PLAN_ARTIFACT_SCHEMA_VERSION,
+      'persisted runtime store should write versioned plan json',
+    )
+
+    const revision = createPlanRevisionFixture(
+      'desktop-plan',
+      'revision-2',
+      120,
+      '# Plan: Desktop Runtime Plan Updated',
+    )
+    const revised = await store.appendPlanRevision({
+      conversationId: conversation.id,
+      planId: 'desktop-plan',
+      revision,
+    })
+    assertEqual(
+      revised.latestRevisionId,
+      'revision-2',
+      'persisted runtime store should append plan revisions',
+    )
+
+    const reopened = createPersistedRuntimeStore()
+    const loaded = await reopened.getPlan?.(conversation.id, 'desktop-plan')
+    assert(loaded, 'persisted runtime store should load plan across store instances')
+    assertEqual(loaded.revisions.length, 2, 'persisted runtime store should keep revisions')
+
+    await reopened.deleteConversation(conversation.id)
+    const afterDelete = await reopened.listPlans?.(conversation.id)
+    assert(afterDelete, 'persisted runtime store should list after delete')
+    assertEqual(afterDelete.length, 0, 'conversation delete should remove persisted plans')
+  })
+}
+
+async function testRuntimePlanApprovalStaleRevisionContract(): Promise<void> {
+  const store = createInMemoryRuntimeStore()
+  const runtime = new AgentRuntime({ store, logger: { warn() {}, error() {} } })
+  const conversation = await runtime.createConversation()
+  assert(store.createPlan, 'in-memory store should create plan fixture')
+  await store.createPlan(createPlanFixture({ conversationId: conversation.id }))
+  const revised = await runtime.savePlanMarkdown({
+    conversationId: conversation.id,
+    planId: 'plan-1',
+    expectedRevisionId: 'revision-1',
+    markdown: '# Plan: Runtime Plan Revised\n\n## Tasks\n- [ ] task-1: Inspect runtime store',
+  })
+  assertEqual(revised.latestRevisionId === 'revision-1', false, 'fixture should revise plan')
+
+  let rejected = false
+  try {
+    await runtime.approvePlan({
+      conversationId: conversation.id,
+      planId: 'plan-1',
+      expectedRevisionId: 'revision-1',
+      selection: { providerId: 'openrouter', modelId: 'contract/mock' },
+    })
+  } catch (error) {
+    rejected = error instanceof Error && error.message.includes('stale plan revision')
+  }
+  assertEqual(rejected, true, 'approvePlan should reject stale revision approvals')
+}
+
+async function testRuntimeApprovedPlanExecutionContract(): Promise<void> {
+  const store = createInMemoryRuntimeStore()
+  let sawPlanContext = false
+  let sawPlanOperation = false
+  let sawImplementationTools = false
+  const runtime = new AgentRuntime({
+    store,
+    streamChat: async (req, handlers) => {
+      sawPlanOperation = req.planOperation === 'implement'
+      sawPlanContext =
+        req.plan?.id === 'plan-1' &&
+        req.messages.some(
+          (message) =>
+            message.role === 'system' &&
+            typeof message.content === 'string' &&
+            message.content.includes('Approved Aila plan context') &&
+            message.content.includes('Plan ID: plan-1'),
+        )
+      sawImplementationTools =
+        req.toolRegistry?.specsByName.has('start_plan_task') === true &&
+        req.toolRegistry.specsByName.has('complete_plan_task') &&
+        req.toolRegistry.specsByName.has('record_plan_drift') &&
+        req.toolRegistry.specsByName.has('complete_plan')
+      const startTask = req.toolRegistry?.runnersByName.get('start_plan_task')
+      const completeTask = req.toolRegistry?.runnersByName.get('complete_plan_task')
+      const recordDrift = req.toolRegistry?.runnersByName.get('record_plan_drift')
+      const completePlan = req.toolRegistry?.runnersByName.get('complete_plan')
+      assert(startTask, 'approved plan turn should expose start_plan_task')
+      assert(completeTask, 'approved plan turn should expose complete_plan_task')
+      assert(recordDrift, 'approved plan turn should expose record_plan_drift')
+      assert(completePlan, 'approved plan turn should expose complete_plan')
+      const toolContext = {
+        settings: { apiKeys: {}, defaultModel: null },
+        conversationId: req.conversationId,
+        messageId: req.assistantMessageId,
+      }
+      await startTask({ planId: 'plan-1', taskId: 'task-1', summary: 'Started' }, toolContext)
+      await completeTask({ planId: 'plan-1', taskId: 'task-1', summary: 'Done' }, toolContext)
+      await recordDrift(
+        {
+          planId: 'plan-1',
+          driftId: 'drift-1',
+          severity: 'warning',
+          summary: 'Implementation detail changed',
+          proposedChange: 'Keep approved scope and note the detail.',
+        },
+        toolContext,
+      )
+      await completePlan({ planId: 'plan-1', summary: 'Verified' }, toolContext)
+      await handlers.onDone({
+        conversationId: req.conversationId,
+        messageId: req.assistantMessageId,
+        message: {
+          schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+          id: req.assistantMessageId,
+          role: 'assistant',
+          blocks: [{ type: 'text', content: 'approved plan implemented' }],
+          status: 'done',
+          model: req.selection,
+        },
+      })
+    },
+    logger: { warn() {}, error() {} },
+  })
+  const conversation = await runtime.createConversation()
+  assert(store.createPlan, 'in-memory store should create approved execution fixture')
+  await store.createPlan(createPlanFixture({ conversationId: conversation.id }))
+
+  await runtime.approvePlan({
+    conversationId: conversation.id,
+    planId: 'plan-1',
+    expectedRevisionId: 'revision-1',
+    selection: { providerId: 'openrouter', modelId: 'contract/mock' },
+  })
+  await waitFor(
+    () => runtime.listActiveStreams().length === 0,
+    'approved plan execution stream should settle',
+  )
+
+  assertEqual(sawPlanOperation, true, 'approved execution should pass planOperation implement')
+  assertEqual(sawPlanContext, true, 'approved execution should inject approved plan context')
+  assertEqual(
+    sawImplementationTools,
+    true,
+    'approved execution should expose implementation progress tools',
+  )
+  const plan = await runtime.getPlan(conversation.id, 'plan-1')
+  assertEqual(plan.status, 'completed', 'complete_plan should mark plan completed')
+  assertEqual(plan.approvedRevisionId, 'revision-1', 'approvePlan should pin approved revision')
+  assertEqual(plan.tasks[0]?.status, 'done', 'complete_plan_task should mark task done')
+  assertEqual(plan.drift[0]?.id, 'drift-1', 'record_plan_drift should append drift')
+
+  const events = (await store.listAgentEvents?.(conversation.id)) ?? []
+  for (const type of [
+    'plan.approved',
+    'plan.implementation.started',
+    'plan.task.started',
+    'plan.task.completed',
+    'plan.drift.detected',
+    'plan.completed',
+  ] as const) {
+    assert(
+      events.some((event) => event.type === type),
+      `approved execution should record ${type}`,
+    )
+  }
+  const runtimeState = replayConversationRuntimeState(events)
+  assertEqual(runtimeState.phase, 'completed', 'plan completion should replay as completed')
+  assertEqual(runtimeState.plan?.planId, 'plan-1', 'runtime replay should preserve plan id')
 }
 
 async function testRuntimeHostTransientContextUsesInjectedRecord(): Promise<void> {
@@ -2396,12 +2843,20 @@ async function testRuntimeConversationStoreFacadeContract(): Promise<void> {
 }
 
 async function testRuntimeConversationRuntimeStateApiUsesEventReplay(): Promise<void> {
+  const store = createInMemoryRuntimeStore()
   const runtime = new AgentRuntime({
-    store: createInMemoryRuntimeStore(),
+    store,
     logger: { warn() {}, error() {} },
   })
   const chat = await runtime.createConversation()
   const docChat = await runtime.createConversation({ docId: 'docs@aila/agent-state.md' })
+  await store.createPlan?.(
+    createPlanFixture({
+      conversationId: chat.id,
+      planId: 'hydrated-plan',
+      updatedAt: 25,
+    }),
+  )
 
   await runtime.recordAgentEvent({
     timestamp: 10,
@@ -2483,11 +2938,16 @@ async function testRuntimeConversationRuntimeStateApiUsesEventReplay(): Promise<
     'approval',
     'runtime hydrate should include replayed lifecycle state',
   )
+  assertEqual(hydration.plans.length, 1, 'runtime hydrate should include conversation plans')
+  assertEqual(hydration.plans[0]?.id, 'hydrated-plan', 'runtime hydrate plan id')
   assertEqual(hydration.activeTurn, null, 'runtime hydrate should report no live active turn')
   hydration.record.meta.title = 'caller-mutated-hydration'
   const firstHydrationEvent = hydration.events[0]
   assert(firstHydrationEvent, 'runtime hydrate should include first event')
   firstHydrationEvent.data = { providerId: 'mutated', modelId: 'mutated' }
+  const hydratedPlan = hydration.plans[0]
+  assert(hydratedPlan, 'runtime hydrate should include plan')
+  hydratedPlan.title = 'caller-mutated-plan'
   const pendingApproval = hydration.runtimeState.turn?.pendingApproval
   assert(pendingApproval, 'runtime hydrate should include pending approval')
   pendingApproval.requestId = 'mutated-hydration'
@@ -2506,6 +2966,11 @@ async function testRuntimeConversationRuntimeStateApiUsesEventReplay(): Promise<
     hydratedAgain.runtimeState.turn?.pendingApproval?.requestId,
     'approval-runtime-state',
     'runtime hydrate should isolate replay state from caller mutation',
+  )
+  assertEqual(
+    hydratedAgain.plans[0]?.title,
+    'Runtime Plan',
+    'runtime hydrate should isolate plans from caller mutation',
   )
 
   const chatStates = await runtime.listConversationRuntimeStates({ docId: null })
@@ -5693,6 +6158,104 @@ function testAgentEventReplayDerivesRuntimeState(): void {
   assertEqual(cancelledState.active, false, 'completed cancellation should not be active')
 }
 
+function testPlanEventReplayDerivesActivityAndRuntimeState(): void {
+  const baseEvents: PersistedAgentEvent[] = [
+    {
+      schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+      timestamp: 10,
+      conversationId: 'conversation-plan-replay',
+      messageId: 'assistant-plan-replay',
+      type: 'plan.started',
+      data: { planId: 'plan-1', title: 'Plan Replay' },
+    },
+    {
+      schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+      timestamp: 20,
+      conversationId: 'conversation-plan-replay',
+      messageId: 'assistant-plan-replay',
+      type: 'plan.updated',
+      data: { planId: 'plan-1', status: 'draft', summary: 'Initial draft' },
+    },
+    {
+      schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+      timestamp: 30,
+      conversationId: 'conversation-plan-replay',
+      messageId: 'assistant-plan-replay',
+      type: 'plan.ready',
+      data: { planId: 'plan-1', status: 'ready', title: 'Plan Replay' },
+    },
+  ]
+
+  const readyActivity = replayConversationActivity(baseEvents)
+  const readyState = replayConversationRuntimeState(baseEvents)
+  assertEqual(readyActivity?.state, 'plan_ready', 'plan.ready should derive ready activity')
+  assertEqual(readyState.phase, 'plan_ready', 'plan.ready should derive runtime phase')
+  assertEqual(readyState.active, false, 'plan_ready should not be treated as an active turn')
+  assertEqual(readyState.plan?.planId, 'plan-1', 'plan replay should preserve plan id')
+  assertEqual(readyState.plan?.status, 'ready', 'plan replay should preserve status')
+
+  const implementingEvents: PersistedAgentEvent[] = [
+    ...baseEvents,
+    {
+      schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+      timestamp: 40,
+      conversationId: 'conversation-plan-replay',
+      messageId: 'assistant-plan-replay',
+      type: 'plan.implementation.started',
+      data: { planId: 'plan-1', status: 'implementing', title: 'Plan Replay' },
+    },
+    {
+      schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+      timestamp: 50,
+      conversationId: 'conversation-plan-replay',
+      messageId: 'assistant-plan-replay',
+      type: 'plan.task.started',
+      data: { planId: 'plan-1', taskId: 'task-1', summary: 'Editing runtime' },
+    },
+  ]
+  const implementingActivity = replayConversationActivity(implementingEvents)
+  const implementingState = replayConversationRuntimeState(implementingEvents)
+  assertEqual(
+    implementingActivity?.state,
+    'implementing_plan',
+    'plan task events should derive implementing activity',
+  )
+  assertEqual(
+    implementingState.phase,
+    'implementing_plan',
+    'plan implementation should derive runtime phase',
+  )
+  assertEqual(implementingState.active, true, 'implementing_plan should be active')
+  assertEqual(implementingState.plan?.taskId, 'task-1', 'plan replay should preserve task id')
+
+  const recoveryEvent = createInterruptedConversationRecoveryEvent(implementingEvents, {
+    reason: 'contract restart',
+    timestamp: 60,
+    activity: implementingActivity,
+  })
+  assert(recoveryEvent, 'active plan implementation should create interrupted recovery event')
+  assertEqual(
+    recoveryEvent.data?.previousState,
+    'implementing_plan',
+    'plan recovery should record implementing phase',
+  )
+
+  const completedState = replayConversationRuntimeState([
+    ...implementingEvents,
+    {
+      schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+      timestamp: 70,
+      conversationId: 'conversation-plan-replay',
+      messageId: 'assistant-plan-replay',
+      type: 'plan.completed',
+      data: { planId: 'plan-1', status: 'completed', summary: 'Verified' },
+    },
+  ])
+  assertEqual(completedState.phase, 'completed', 'plan.completed should be terminal')
+  assertEqual(completedState.active, false, 'completed plan should not be active')
+  assertEqual(completedState.plan?.status, 'completed', 'completed plan status should replay')
+}
+
 function testAgentEventReplayKeepsToolFailureActive(): void {
   const events: PersistedAgentEvent[] = [
     {
@@ -6103,6 +6666,205 @@ async function testImmediateToolApprovalActivityHelper(): Promise<void> {
     failedRecorded[1]?.data?.reason,
     'cancelled',
     'failed approval helper resolved reason',
+  )
+}
+
+async function testExecutionModeToolPolicyContract(): Promise<void> {
+  assertEqual(AILA_EXECUTION_MODES.includes('plan'), true, 'execution modes should include plan')
+  const readRequest: ToolApprovalRequest = {
+    name: 'read',
+    args: { path: '/workspace/file.txt' },
+    metadata: {
+      name: 'read',
+      readOnly: true,
+      destructive: false,
+      requiresApproval: false,
+      access: ['read'],
+      scope: ['workspace'],
+    },
+  }
+  const writeRequest: ToolApprovalRequest = {
+    name: 'write',
+    args: { path: '/workspace/file.txt', content: 'new content' },
+    metadata: {
+      name: 'write',
+      readOnly: false,
+      destructive: true,
+      requiresApproval: true,
+      access: ['write'],
+      scope: ['workspace'],
+    },
+  }
+
+  assertEqual(
+    isPlanSafeToolMetadata(readRequest.metadata),
+    true,
+    'read-only workspace tools should be plan safe',
+  )
+  assertEqual(
+    isPlanSafeToolMetadata(writeRequest.metadata),
+    false,
+    'write tools should not be plan safe',
+  )
+  assertEqual(
+    evaluateExecutionModeToolPolicy('plan', readRequest),
+    undefined,
+    'plan-safe tools should pass the execution mode gate',
+  )
+  assertEqual(
+    evaluateExecutionModeToolPolicy('plan', writeRequest)?.action,
+    'deny',
+    'plan mode should deny write tools',
+  )
+
+  let nextPolicyCalls = 0
+  const planPolicy = createExecutionModeToolPolicy('plan', () => {
+    nextPolicyCalls += 1
+    return { action: 'allow', reason: 'host allow' }
+  })
+  assertEqual(
+    (await planPolicy(writeRequest))?.action,
+    'deny',
+    'plan mode should deny before host policy can allow writes',
+  )
+  assertEqual(nextPolicyCalls, 0, 'denied plan-mode writes should not call host policy')
+  assertEqual(
+    (await planPolicy(readRequest))?.action,
+    'allow',
+    'plan-safe tools should continue to host policy',
+  )
+  assertEqual(nextPolicyCalls, 1, 'plan-safe tools should call host policy')
+}
+
+async function testRuntimePlanModeToolBoundaryContract(): Promise<void> {
+  let hostPolicyCalls = 0
+  const runtime = new AgentRuntime({
+    onToolPolicy: () => {
+      hostPolicyCalls += 1
+      return { action: 'allow', reason: 'host allow' }
+    },
+    logger: { warn() {}, error() {} },
+  })
+
+  try {
+    await runtime.executeTool({
+      mode: 'plan',
+      name: 'write',
+      args: { path: '/tmp/aila-plan-mode-denied.txt', content: 'denied' },
+    })
+    throw new Error('plan mode write unexpectedly succeeded')
+  } catch (error) {
+    assert(
+      error instanceof Error && error.message.includes('plan mode only allows read-only'),
+      'runtime executeTool should deny writes in plan mode',
+    )
+  }
+  assertEqual(hostPolicyCalls, 0, 'plan mode denial should not call host policy')
+}
+
+async function testRuntimePlanModeFiltersStreamToolsContract(): Promise<void> {
+  await withTempDataDir(async () => {
+    let sawMode: unknown
+    let sawRead = false
+    let sawPlanCreate = false
+    let sawWrite = false
+    let sawShell = false
+    const runtime = new AgentRuntime({
+      streamChat: async (req, handlers) => {
+        sawMode = req.mode
+        sawRead = req.toolRegistry?.specsByName.has('read') === true
+        sawPlanCreate = req.toolRegistry?.specsByName.has('plan_create') === true
+        sawWrite = req.toolRegistry?.specsByName.has('write') === true
+        sawShell = req.toolRegistry?.specsByName.has('bash') === true
+        await handlers.onDone({
+          conversationId: req.conversationId,
+          messageId: req.assistantMessageId,
+          message: {
+            schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+            id: req.assistantMessageId,
+            role: 'assistant',
+            blocks: [{ type: 'text', content: 'plan mode done' }],
+            status: 'done',
+            model: req.selection,
+          },
+        })
+      },
+      logger: { warn() {}, error() {} },
+    })
+    const conversation = await runtime.createConversation()
+    await runtime.send({
+      conversationId: conversation.id,
+      userText: 'plan this change',
+      mode: 'plan',
+      selection: { providerId: 'openrouter', modelId: 'contract/mock' },
+    })
+    await waitFor(() => runtime.listActiveStreams().length === 0, 'plan mode stream should settle')
+    assertEqual(sawMode, 'plan', 'stream request should receive plan mode')
+    assertEqual(sawRead, true, 'plan mode stream should keep read-only tools')
+    assertEqual(sawPlanCreate, true, 'plan mode stream should expose plan artifact tools')
+    assertEqual(sawWrite, false, 'plan mode stream should filter write tools')
+    assertEqual(sawShell, false, 'plan mode stream should filter shell tools')
+  })
+}
+
+async function testRuntimePlanModePlanToolPersistsArtifactContract(): Promise<void> {
+  const store = createInMemoryRuntimeStore()
+  const runtime = new AgentRuntime({
+    store,
+    streamChat: async (req, handlers) => {
+      const runner = req.toolRegistry?.runnersByName.get('plan_create')
+      assert(runner, 'plan mode stream should expose plan_create runner')
+      const result = JSON.parse(
+        await runner(
+          {
+            id: 'tool-plan',
+            title: 'Tool Created Plan',
+            status: 'ready',
+            markdown: '# Plan: Tool Created Plan\n\n## Tasks\n- [ ] task-1: Verify',
+            tasks: [{ id: 'task-1', title: 'Verify', status: 'todo' }],
+            verification: ['bun run typecheck:agent'],
+          },
+          {
+            settings: { apiKeys: {}, defaultModel: null },
+            conversationId: req.conversationId,
+            messageId: req.assistantMessageId,
+          },
+        ),
+      ) as { ok?: boolean; planId?: string; status?: string }
+      assertEqual(result.ok, true, 'plan_create should return ok result')
+      assertEqual(result.planId, 'tool-plan', 'plan_create should return plan id')
+      await handlers.onDone({
+        conversationId: req.conversationId,
+        messageId: req.assistantMessageId,
+        message: {
+          schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+          id: req.assistantMessageId,
+          role: 'assistant',
+          blocks: [{ type: 'text', content: 'plan created' }],
+          status: 'done',
+          model: req.selection,
+        },
+      })
+    },
+    logger: { warn() {}, error() {} },
+  })
+  const conversation = await runtime.createConversation()
+  await runtime.send({
+    conversationId: conversation.id,
+    userText: 'make a durable plan',
+    mode: 'plan',
+    selection: { providerId: 'openrouter', modelId: 'contract/mock' },
+  })
+  await waitFor(() => runtime.listActiveStreams().length === 0, 'plan tool stream should settle')
+
+  const plan = await store.getPlan?.(conversation.id, 'tool-plan')
+  assert(plan, 'plan_create should persist a plan artifact')
+  assertEqual(plan.status, 'ready', 'plan_create should persist ready status')
+  assertEqual(plan.revisions.length, 1, 'plan_create should persist initial revision')
+  const events = (await store.listAgentEvents?.(conversation.id)) ?? []
+  assert(
+    events.some((event) => event.type === 'plan.ready' && event.data?.planId === 'tool-plan'),
+    'plan_create ready status should record plan.ready event',
   )
 }
 
@@ -8099,6 +8861,7 @@ async function testRuntimeSdkDoesNotExportDocsContract(): Promise<void> {
     'AgentRuntimeApi',
     'AgentRuntimeHost',
     'AgentRuntimeStore',
+    'AgentRuntimePlanApi',
     'AgentContextPlan',
     'AgentContextPlanSection',
     'AgentContextBudgetPlan',
@@ -8119,12 +8882,17 @@ async function testRuntimeSdkDoesNotExportDocsContract(): Promise<void> {
     'RuntimeStreamChat',
     'RuntimeModelInfoResolver',
     'RuntimeStableInstructionsInput',
+    'RuntimeApprovePlanInput',
+    'RuntimeCancelPlanInput',
+    'RuntimeRevisePlanInput',
+    'RuntimeSavePlanMarkdownInput',
     'Settings',
     'ToolPack',
     'ToolApprovalMode',
     'ToolApprovalRequest',
     'ToolApprovalRequestPayload',
     'ConversationRecord',
+    'ConversationRuntimeReplayPlan',
     'ConversationSummary',
     'ConversationUsage',
     'ConversationCompactArtifact',
@@ -8347,8 +9115,8 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
     'runtime SDK must not expose Desktop doc ref rewrite types',
   )
   assert(
-    runtimeSdkSource.trim() === "export * from './core'",
-    'agent package SDK should expose the core surface only',
+    runtimeSdkSource.trim() === "export * from './core'\nexport * from './widget-guidelines'",
+    'agent package SDK should expose the core surface and host-agnostic widget guidelines only',
   )
   const packageJson = JSON.parse(await readFile(join(process.cwd(), 'package.json'), 'utf-8')) as {
     scripts?: Record<string, string>
@@ -9459,6 +10227,12 @@ async function main(): Promise<void> {
   await testRuntimeDynamicExtensionLoaderSnapshots()
   await testRuntimeInjectableStoreContract()
   await testConversationUsageAccumulatorContract()
+  testPlanArtifactNormalizationContract()
+  await testInMemoryRuntimeStorePlanContract()
+  await testFileRuntimeStorePlanContract()
+  await testPersistedRuntimeStorePlanContract()
+  await testRuntimePlanApprovalStaleRevisionContract()
+  await testRuntimeApprovedPlanExecutionContract()
   await testRuntimeHostTransientContextUsesInjectedRecord()
   await testRuntimeHostStableInstructionsUsesInjectedRecord()
   testContextAssemblerSectionsContract()
@@ -9504,6 +10278,7 @@ async function main(): Promise<void> {
   await testAgentEventReplayPreservesAppendOrderForSameTimestamp()
   testAgentEventReplayDerivesLatestActivity()
   testAgentEventReplayDerivesRuntimeState()
+  testPlanEventReplayDerivesActivityAndRuntimeState()
   testAgentEventReplayKeepsToolFailureActive()
   testInterruptedRecoveryEventHelper()
   await testInterruptedRecoveryUsesEventReplayOverStaleMeta()
@@ -9511,6 +10286,10 @@ async function main(): Promise<void> {
   await testInterruptedRecoveryUsesRuntimeReplayForNonTerminalToolFailure()
   await testLegacyPersistenceNormalization()
   await testImmediateToolApprovalActivityHelper()
+  await testExecutionModeToolPolicyContract()
+  await testRuntimePlanModeToolBoundaryContract()
+  await testRuntimePlanModeFiltersStreamToolsContract()
+  await testRuntimePlanModePlanToolPersistsArtifactContract()
   await testToolRegistryContract()
   await testRuntimeExecuteToolUsesHostBoundary()
   await testGenerateImageToolUsesInjectedImageDependencies()

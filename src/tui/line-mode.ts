@@ -8,9 +8,11 @@ import { createInterface } from 'node:readline/promises'
 import {
   type AgentRuntimeApi,
   type AgentRuntimeEvent,
+  type AilaExecutionMode,
   type ConversationSummary,
   createToolPolicy,
   findModel,
+  isAilaExecutionMode,
   isToolApprovalMode,
   MODEL_CATALOG,
   type ModelSelection,
@@ -41,6 +43,8 @@ export interface CliOptions {
   list: boolean
   limit: number
   model?: ModelSelection
+  mode: AilaExecutionMode
+  planId?: string
   approvalMode: ToolApprovalMode
   retryLast: boolean
   resumeLatest: boolean
@@ -54,6 +58,8 @@ export interface PromptReader {
 
 export interface TuiSessionState {
   selection: ModelSelection
+  mode: AilaExecutionMode
+  planId?: string
 }
 
 export interface TuiRuntimeInput {
@@ -96,6 +102,8 @@ export function usage(): string {
     '  --list                  List saved conversations and exit',
     '  --limit <n>             Limit rows for --list (default: 20)',
     '  --model <provider:id>   Override model, e.g. openai:gpt-5.4',
+    '  --mode <mode>           Runtime mode: agent, plan, or chat (default: agent)',
+    '  --plan <id>             Bind prompts and approvals to a plan id',
     '  --approval-mode <mode>  Tool execution mode: safe or yolo (default: safe)',
     '  --safe                  Use safe tool mode',
     '  --yolo                  Run tools without approval prompts',
@@ -112,6 +120,12 @@ export function usage(): string {
     '  /sessions               List saved conversations',
     '  /extensions [reload]    List extension manifests, optionally refresh runtime caches',
     '  /model [provider:id]    Show or switch the active model',
+    '  /mode [agent|plan|chat] Show or switch runtime mode',
+    '  /plan [prompt]          Switch to Plan mode, or run prompt in Plan mode',
+    '  /plans                  List plans for this conversation',
+    '  /use-plan <id>          Bind following prompts to a plan',
+    '  /approve-plan [id]      Approve a ready plan and start implementation',
+    '  /cancel-plan [id]       Cancel a plan',
     '  /read <path>            Read a workspace file and attach it as context',
     '  /run <command>          Run an approved shell command and attach output',
     '  /write <path> <content> Write a file after approval',
@@ -139,6 +153,7 @@ export function parseArgs(argv: string[]): CliOptions {
     approvalMode: 'safe',
     list: false,
     limit: 20,
+    mode: 'agent',
     retryLast: false,
     resumeLatest: false,
     showHistory: true,
@@ -166,6 +181,12 @@ export function parseArgs(argv: string[]): CliOptions {
         break
       case '--model':
         options.model = parseModel(requireValue(argv, ++i, arg))
+        break
+      case '--mode':
+        options.mode = parseExecutionMode(requireValue(argv, ++i, arg))
+        break
+      case '--plan':
+        options.planId = requireValue(argv, ++i, arg)
         break
       case '--approval-mode':
         options.approvalMode = parseApprovalMode(requireValue(argv, ++i, arg))
@@ -217,6 +238,11 @@ function parseLimit(value: string): number {
 function parseApprovalMode(value: string): ToolApprovalMode {
   if (isToolApprovalMode(value)) return value
   throw new Error('--approval-mode must be safe or yolo')
+}
+
+function parseExecutionMode(value: string): AilaExecutionMode {
+  if (isAilaExecutionMode(value)) return value
+  throw new Error('--mode must be agent, plan, or chat')
 }
 
 export function resolveSelection(explicit?: ModelSelection): ModelSelection {
@@ -331,6 +357,24 @@ export async function printConversationList(
   }
 }
 
+export async function printPlanList(
+  runtime: AgentRuntimeApi,
+  conversationId: string,
+): Promise<void> {
+  const plans = await runtime.listPlans(conversationId)
+  writeLine('Aila plans')
+  writeLine(`Conversation: ${conversationId}`)
+  if (plans.length === 0) {
+    writeLine('No plans found.')
+    return
+  }
+
+  for (const plan of plans) {
+    const revision = plan.latestRevisionId ? `, revision ${plan.latestRevisionId}` : ''
+    writeLine(`${formatDate(plan.updatedAt)}  ${plan.id}  ${plan.status}${revision}  ${plan.title}`)
+  }
+}
+
 export function blockPreview(message: PersistedMessage): string {
   const text = message.blocks
     .map((block) => {
@@ -359,6 +403,12 @@ export function commandHelp(): string {
     '  /sessions               List saved conversations',
     '  /extensions [reload]    List extension manifests, optionally refresh runtime caches',
     '  /model [provider:id]    Show or switch the active model',
+    '  /mode [agent|plan|chat] Show or switch runtime mode',
+    '  /plan [prompt]          Switch to Plan mode, or run prompt in Plan mode',
+    '  /plans                  List plans for this conversation',
+    '  /use-plan <id>          Bind following prompts to a plan',
+    '  /approve-plan [id]      Approve a ready plan and start implementation',
+    '  /cancel-plan [id]       Cancel a plan',
     '  /read <path>            Read a workspace file and attach it as context',
     '  /run <command>          Run an approved shell command and attach output',
     '  /write <path> <content> Write a file after approval',
@@ -556,6 +606,44 @@ export async function handleSlashCommand(input: {
         writeLine(`[model] ${modelLabel(session.selection)}`)
         return 'handled'
       }
+      case 'mode': {
+        const words = splitShellWords(rest)
+        if (words.length === 0) {
+          writeLine(`[mode] ${session.mode}`)
+          return 'handled'
+        }
+        if (words.length > 1) throw new Error('usage: /mode [agent|plan|chat]')
+        session.mode = parseExecutionMode(words[0])
+        writeLine(`[mode] ${session.mode}`)
+        return 'handled'
+      }
+      case 'plan':
+        session.mode = 'plan'
+        writeLine('[mode] plan')
+        return 'handled'
+      case 'plans':
+        await printPlanList(runtime, conversationId)
+        return 'handled'
+      case 'use-plan': {
+        const [planId] = splitShellWords(rest)
+        if (!planId) throw new Error('usage: /use-plan <id>')
+        session.planId = planId
+        writeLine(`[plan] using ${planId}`)
+        return 'handled'
+      }
+      case 'cancel-plan': {
+        const [planId] = splitShellWords(rest)
+        const targetPlanId = planId ?? session.planId
+        if (!targetPlanId) throw new Error('usage: /cancel-plan [id]')
+        const plan = await runtime.cancelPlan({
+          conversationId,
+          planId: targetPlanId,
+          reason: 'tui',
+        })
+        if (session.planId === targetPlanId) session.planId = undefined
+        writeLine(`[plan] cancelled ${plan.id} (${plan.status})`)
+        return 'handled'
+      }
       case 'read': {
         const [pathArg] = splitShellWords(rest)
         if (!pathArg) throw new Error('usage: /read <path>')
@@ -664,6 +752,8 @@ export async function runLineMode(argv: string[] = process.argv.slice(2)): Promi
 
   const session: TuiSessionState = {
     selection: resolveSelection(options.model),
+    mode: options.mode,
+    ...(options.planId ? { planId: options.planId } : {}),
   }
 
   let activeConversationId: string | null = null
@@ -709,15 +799,12 @@ export async function runLineMode(argv: string[] = process.argv.slice(2)): Promi
   writeLine(`Tool packs: ${getToolPacksDir()}`)
   writeLine(`Conversation: ${conversationId}${isExisting ? ' (resumed)' : ''}`)
   writeLine(`Model: ${modelLabel(session.selection)}`)
+  writeLine(`Runtime mode: ${session.mode}`)
+  if (session.planId) writeLine(`Plan: ${session.planId}`)
   writeLine('Type /exit to quit. Ctrl+C aborts an active response.')
   if (isExisting && options.showHistory) await printRecentHistory(runtime, conversationId)
 
-  async function retryLastTurn(): Promise<void> {
-    startedAssistantText = false
-    const { assistantMessageId } = await runtime.retryLastUserMessage({
-      conversationId,
-      selection: session.selection,
-    })
+  async function waitForAssistantTurn(assistantMessageId: string): Promise<void> {
     activeConversationId = conversationId
     try {
       await new Promise<void>((resolve) => completions.set(assistantMessageId, resolve))
@@ -725,6 +812,52 @@ export async function runLineMode(argv: string[] = process.argv.slice(2)): Promi
       completions.delete(assistantMessageId)
       activeConversationId = null
     }
+  }
+
+  async function runSendTurn(
+    userText: string,
+    input: { mode?: AilaExecutionMode; planId?: string } = {},
+  ): Promise<void> {
+    startedAssistantText = false
+    const mode = input.mode ?? session.mode
+    const planId = input.planId ?? session.planId
+    const { assistantMessageId } =
+      mode === 'plan' && planId
+        ? await runtime.revisePlan({
+            conversationId,
+            planId,
+            userText,
+            selection: session.selection,
+          })
+        : await runtime.send({
+            conversationId,
+            userText,
+            selection: session.selection,
+            mode,
+            ...(planId ? { planId } : {}),
+          })
+    await waitForAssistantTurn(assistantMessageId)
+  }
+
+  async function runApprovePlan(planId: string): Promise<void> {
+    startedAssistantText = false
+    const { assistantMessageId } = await runtime.approvePlan({
+      conversationId,
+      planId,
+      selection: session.selection,
+    })
+    await waitForAssistantTurn(assistantMessageId)
+  }
+
+  async function retryLastTurn(): Promise<void> {
+    startedAssistantText = false
+    const { assistantMessageId } = await runtime.retryLastUserMessage({
+      conversationId,
+      selection: session.selection,
+      mode: session.mode,
+      ...(session.planId ? { planId: session.planId } : {}),
+    })
+    await waitForAssistantTurn(assistantMessageId)
   }
 
   if (options.retryLast) {
@@ -751,6 +884,31 @@ export async function runLineMode(argv: string[] = process.argv.slice(2)): Promi
         }
         continue
       }
+      if (text.startsWith('/')) {
+        const commandText = text.slice(1).trim()
+        const command = readShellToken(commandText)
+        const name = command?.token.toLowerCase() ?? ''
+        const rest = command?.rest ?? ''
+        if (name === 'plan') {
+          if (!rest) {
+            session.mode = 'plan'
+            writeLine('[mode] plan')
+            continue
+          }
+          await runSendTurn(rest, {
+            mode: 'plan',
+            ...(session.planId ? { planId: session.planId } : {}),
+          })
+          continue
+        }
+        if (name === 'approve-plan') {
+          const [planId] = splitShellWords(rest)
+          const targetPlanId = planId ?? session.planId
+          if (!targetPlanId) throw new Error('usage: /approve-plan [id]')
+          await runApprovePlan(targetPlanId)
+          continue
+        }
+      }
 
       const slashResult = await handleSlashCommand({
         text,
@@ -763,16 +921,7 @@ export async function runLineMode(argv: string[] = process.argv.slice(2)): Promi
         continue
       }
 
-      startedAssistantText = false
-      const { assistantMessageId } = await runtime.send({
-        conversationId,
-        userText: text,
-        selection: session.selection,
-      })
-      activeConversationId = conversationId
-      await new Promise<void>((resolve) => completions.set(assistantMessageId, resolve))
-      completions.delete(assistantMessageId)
-      activeConversationId = null
+      await runSendTurn(text)
     }
   } finally {
     prompt.close()
@@ -847,6 +996,11 @@ export function handleRuntimeEvent(
             : 'Interrupted'
         writeLine(`\n[interrupted] ${reason}`)
         state.completions.get(event.data.messageId)?.()
+      } else if (event.data.type.startsWith('plan.')) {
+        const data = event.data.data ?? {}
+        const planId = typeof data.planId === 'string' ? ` ${data.planId}` : ''
+        const status = typeof data.status === 'string' ? ` (${data.status})` : ''
+        writeLine(`\n[plan] ${event.data.type}${planId}${status}`)
       }
       break
     case 'conversations:updated':

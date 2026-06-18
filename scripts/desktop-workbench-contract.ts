@@ -227,6 +227,81 @@ async function testDesktopExposesRuntimeStateApi(): Promise<void> {
   )
 }
 
+async function testDesktopExposesPlanRuntimeApi(): Promise<void> {
+  const workbenchSource = await readFile(
+    join(process.cwd(), 'src/main/runtime-workbench.ts'),
+    'utf-8',
+  )
+  const preloadSource = await readFile(join(process.cwd(), 'src/preload/index.ts'), 'utf-8')
+  const chatPageSource = await readFile(
+    join(process.cwd(), 'src/renderer/src/pages/chat/ChatPage.tsx'),
+    'utf-8',
+  )
+  const streamsSource = await readFile(
+    join(process.cwd(), 'src/renderer/src/pages/chat/useChatStreams.ts'),
+    'utf-8',
+  )
+
+  assert(
+    workbenchSource.includes('mode?: AilaExecutionMode') &&
+      workbenchSource.includes('planId?: string') &&
+      workbenchSource.includes('return runtime.listPlans(conversationId)') &&
+      workbenchSource.includes('return runtime.getPlan(conversationId, planId)') &&
+      workbenchSource.includes('return runtime.savePlanMarkdown(input)') &&
+      workbenchSource.includes('return runtime.revisePlan(input)') &&
+      workbenchSource.includes('return runtime.approvePlan(input)') &&
+      workbenchSource.includes('return runtime.cancelPlan(input)'),
+    'Desktop runtime workbench should expose typed Plan API methods and send mode/plan ids',
+  )
+  assert(
+    workbenchSource.includes("'runtime:plans:list'") &&
+      workbenchSource.includes("'runtime:plans:get'") &&
+      workbenchSource.includes("'runtime:plans:save-markdown'") &&
+      workbenchSource.includes("'runtime:plans:revise'") &&
+      workbenchSource.includes("'runtime:plans:approve'") &&
+      workbenchSource.includes("'runtime:plans:cancel'"),
+    'Desktop runtime workbench should register Plan API IPC handlers',
+  )
+  assert(
+    preloadSource.includes('listPlans:') &&
+      preloadSource.includes("'runtime:plans:list'") &&
+      preloadSource.includes('getPlan:') &&
+      preloadSource.includes("'runtime:plans:get'") &&
+      preloadSource.includes('savePlanMarkdown:') &&
+      preloadSource.includes("'runtime:plans:save-markdown'") &&
+      preloadSource.includes('revisePlan:') &&
+      preloadSource.includes("'runtime:plans:revise'") &&
+      preloadSource.includes('approvePlan:') &&
+      preloadSource.includes("'runtime:plans:approve'") &&
+      preloadSource.includes('cancelPlan:') &&
+      preloadSource.includes("'runtime:plans:cancel'"),
+    'Desktop preload should expose Plan API methods through window.api.runtime',
+  )
+  assert(
+    preloadSource.includes("'plan.ready'") &&
+      preloadSource.includes("'plan.implementation.started'") &&
+      preloadSource.includes('plan?: ConversationRuntimeReplayPlan'),
+    'Desktop preload runtime types should include plan lifecycle events and replay state',
+  )
+  assert(
+    streamsSource.includes('plans: PlanArtifact[]') &&
+      streamsSource.includes('const { record, events, runtimeState, activeTurn, plans }') &&
+      streamsSource.includes('window.api.runtime.approvePlan({') &&
+      streamsSource.includes('window.api.runtime.listPlans(id)') &&
+      streamsSource.includes('event.type.startsWith'),
+    'Desktop chat streams should hydrate plans and refresh them from plan lifecycle events',
+  )
+  assert(
+    chatPageSource.includes('ModeSegmentedControl') &&
+      chatPageSource.includes('PlanReviewPanel') &&
+      chatPageSource.includes('streams.enqueueApprovePlan') &&
+      chatPageSource.includes('window.api.runtime.savePlanMarkdown') &&
+      chatPageSource.includes('window.api.runtime.cancelPlan') &&
+      chatPageSource.includes("executionMode === 'plan'"),
+    'Desktop chat page should expose mode controls and a plan review/approval panel',
+  )
+}
+
 async function testDesktopExposesEmbeddedTerminalApi(): Promise<void> {
   const mainSource = await readFile(join(process.cwd(), 'src/main/index.ts'), 'utf-8')
   const preloadSource = await readFile(join(process.cwd(), 'src/preload/index.ts'), 'utf-8')
@@ -2216,6 +2291,7 @@ async function main(): Promise<void> {
   await testDesktopWorkspaceRoots()
   await testDesktopUsesSharedRuntimeFactory()
   await testDesktopExposesRuntimeStateApi()
+  await testDesktopExposesPlanRuntimeApi()
   await testDesktopExposesEmbeddedTerminalApi()
   await testRendererUsesRuntimeHydrationApi()
   await testDesktopExposesMcpIntegrationOAuthApi()

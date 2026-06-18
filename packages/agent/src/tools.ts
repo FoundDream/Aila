@@ -29,6 +29,7 @@ export interface ToolMetadata {
   requiresApproval: boolean
   access: ToolAccess[]
   scope: ToolScope[]
+  planSafe?: boolean
   maxResultBytes?: number
 }
 

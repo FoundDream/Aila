@@ -40,9 +40,33 @@ import {
   replayConversationActivity,
   replayConversationRuntimeState,
 } from './conversation-core'
+import {
+  type AgentRuntimePlanStore,
+  AILA_PLAN_ARTIFACT_SCHEMA_VERSION,
+  AILA_PLAN_REVISION_SCHEMA_VERSION,
+  appendPlanRevisionToPlan,
+  normalizePlanArtifact,
+  normalizePlanRevision,
+  PLAN_DRIFT_SEVERITIES,
+  PLAN_STATUSES,
+  type PlanApprovedBy,
+  type PlanArtifact,
+  type PlanDriftSeverity,
+  type PlanQuestion,
+  type PlanStatus,
+  type PlanTaskStatus,
+  preparePlanArtifact,
+} from './plan-core'
 import { type AgentRuntimeEvent, createRuntimeEvent } from './runtime-events'
 import type { Settings } from './settings-types'
 import { createSkillToolPack, type LoadedSkill } from './skills'
+import {
+  type AilaExecutionMode,
+  createExecutionModeToolPolicy,
+  isPlanSafeToolMetadata,
+  normalizeAilaExecutionMode,
+  type ToolApprovalMode,
+} from './tool-policy'
 import {
   createDefaultToolRegistry,
   createToolRegistry,
@@ -73,6 +97,7 @@ interface RuntimeToolContextInput {
   conversationId?: string
   messageId?: string
   toolCallId?: string
+  mode?: AilaExecutionMode
   signal?: AbortSignal
 }
 
@@ -213,6 +238,8 @@ export interface RuntimeSendInput {
   conversationId: string
   userText: string
   selection: ModelSelection
+  mode?: AilaExecutionMode
+  planId?: string
   attachments?: ChatAttachmentInput[]
   transientContext?: ChatMessage[]
 }
@@ -220,6 +247,8 @@ export interface RuntimeSendInput {
 export interface RuntimeRetryLastInput {
   conversationId: string
   selection: ModelSelection
+  mode?: AilaExecutionMode
+  planId?: string
   transientContext?: ChatMessage[]
 }
 
@@ -239,7 +268,9 @@ export interface RuntimeTransientContextInput {
   conversationId: string
   record: ConversationRecord
   selection: ModelSelection
-  source: 'send' | 'retry'
+  source: 'send' | 'retry' | 'plan_approval'
+  mode?: AilaExecutionMode
+  planId?: string
 }
 
 export type RuntimeStableInstructionsInput = RuntimeTransientContextInput
@@ -277,6 +308,39 @@ export interface RuntimeSendResult {
   assistantMessageId: string
 }
 
+export interface RuntimeSavePlanMarkdownInput {
+  conversationId: string
+  planId: string
+  markdown: string
+  title?: string
+  status?: PlanStatus
+  expectedRevisionId?: string
+}
+
+export interface RuntimeApprovePlanInput {
+  conversationId: string
+  planId: string
+  selection: ModelSelection
+  expectedRevisionId?: string
+  implementationMode?: 'same_session' | 'new_turn'
+  approvalMode?: ToolApprovalMode
+  approvedBy?: PlanApprovedBy
+}
+
+export interface RuntimeRevisePlanInput {
+  conversationId: string
+  planId: string
+  userText: string
+  selection: ModelSelection
+  expectedRevisionId?: string
+}
+
+export interface RuntimeCancelPlanInput {
+  conversationId: string
+  planId: string
+  reason?: string
+}
+
 export interface ActiveAssistantTurn {
   conversationId: string
   assistantMessageId: string
@@ -302,6 +366,7 @@ export interface ConversationRuntimeHydration {
   events: PersistedAgentEvent[]
   runtimeState: ConversationRuntimeReplayState
   activeTurn: ActiveAssistantTurn | null
+  plans: PlanArtifact[]
 }
 
 export interface RuntimeResolveConversationInput {
@@ -324,6 +389,7 @@ export interface RuntimeAppendUserMessageInput {
 export interface RuntimeExecuteToolInput {
   name: string
   args: Record<string, unknown>
+  mode?: AilaExecutionMode
   conversationId?: string
   messageId?: string
   toolCallId?: string
@@ -413,6 +479,11 @@ export interface AgentRuntimeStore {
     conversationId: string,
     entry: ConversationContextTurnLedgerEntry,
   ) => Promise<ConversationSummary>
+  createPlan?: AgentRuntimePlanStore['createPlan']
+  getPlan?: AgentRuntimePlanStore['getPlan']
+  listPlans?: AgentRuntimePlanStore['listPlans']
+  updatePlan?: AgentRuntimePlanStore['updatePlan']
+  appendPlanRevision?: AgentRuntimePlanStore['appendPlanRevision']
   deleteConversation: (conversationId: string) => Promise<void>
 }
 
@@ -448,6 +519,15 @@ export interface AgentRuntimeTurnApi {
   recoverInterruptedActivities(reason?: string): Promise<ConversationSummary[]>
 }
 
+export interface AgentRuntimePlanApi {
+  listPlans(conversationId: string): Promise<PlanArtifact[]>
+  getPlan(conversationId: string, planId: string): Promise<PlanArtifact>
+  savePlanMarkdown(input: RuntimeSavePlanMarkdownInput): Promise<PlanArtifact>
+  revisePlan(input: RuntimeRevisePlanInput): Promise<RuntimeSendResult>
+  approvePlan(input: RuntimeApprovePlanInput): Promise<RuntimeSendResult>
+  cancelPlan(input: RuntimeCancelPlanInput): Promise<PlanArtifact>
+}
+
 export interface AgentRuntimeExtensionApi {
   getToolRegistry(input?: RuntimeToolPackLoadInput): Promise<ToolRegistry>
   getSkills(): Promise<LoadedSkill[]>
@@ -458,6 +538,7 @@ export interface AgentRuntimeExtensionApi {
 export interface AgentRuntimeApi
   extends AgentRuntimeConversationApi,
     AgentRuntimeTurnApi,
+    AgentRuntimePlanApi,
     AgentRuntimeExtensionApi {}
 
 function cloneRuntimeValue<T>(value: T): T {
@@ -498,11 +579,22 @@ export function createInMemoryRuntimeStore(
   const now = input.now ?? defaultRuntimeNow
   const records = new Map<string, ConversationRecord>()
   const agentEvents = new Map<string, PersistedAgentEvent[]>()
+  const plans = new Map<string, PlanArtifact>()
 
   function requireRecord(conversationId: string): ConversationRecord {
     const record = records.get(conversationId)
     if (!record) throw new Error(`conversation not found: ${conversationId}`)
     return record
+  }
+
+  function planKey(conversationId: string, planId: string): string {
+    return `${conversationId}:${planId}`
+  }
+
+  function requirePlan(conversationId: string, planId: string): PlanArtifact {
+    const plan = plans.get(planKey(conversationId, planId))
+    if (!plan) throw new Error(`plan not found: ${conversationId}/${planId}`)
+    return plan
   }
 
   function summary(record: ConversationRecord): ConversationSummary {
@@ -661,9 +753,45 @@ export function createInMemoryRuntimeStore(
         context: appendConversationContextTurnLedgerEntry(current.context, entry),
       }))
     },
+    async createPlan(plan): Promise<PlanArtifact> {
+      requireRecord(plan.conversationId)
+      const prepared = preparePlanArtifact(plan)
+      const key = planKey(prepared.conversationId, prepared.id)
+      if (plans.has(key)) {
+        throw new Error(`plan already exists: ${prepared.conversationId}/${prepared.id}`)
+      }
+      plans.set(key, cloneRuntimeValue(prepared))
+      return cloneRuntimeValue(prepared)
+    },
+    async getPlan(conversationId, planId): Promise<PlanArtifact> {
+      return cloneRuntimeValue(requirePlan(conversationId, planId))
+    },
+    async listPlans(conversationId): Promise<readonly PlanArtifact[]> {
+      return [...plans.values()]
+        .filter((plan) => plan.conversationId === conversationId)
+        .map((plan) => cloneRuntimeValue(plan))
+        .sort((left, right) => right.updatedAt - left.updatedAt)
+    },
+    async updatePlan(plan): Promise<PlanArtifact> {
+      requireRecord(plan.conversationId)
+      const prepared = preparePlanArtifact(plan)
+      requirePlan(prepared.conversationId, prepared.id)
+      plans.set(planKey(prepared.conversationId, prepared.id), cloneRuntimeValue(prepared))
+      return cloneRuntimeValue(prepared)
+    },
+    async appendPlanRevision(input): Promise<PlanArtifact> {
+      requireRecord(input.conversationId)
+      const current = requirePlan(input.conversationId, input.planId)
+      const updated = appendPlanRevisionToPlan(current, input.revision, now())
+      plans.set(planKey(input.conversationId, input.planId), cloneRuntimeValue(updated))
+      return cloneRuntimeValue(updated)
+    },
     async deleteConversation(conversationId): Promise<void> {
       records.delete(conversationId)
       agentEvents.delete(conversationId)
+      for (const key of plans.keys()) {
+        if (key.startsWith(`${conversationId}:`)) plans.delete(key)
+      }
     },
   }
 }
@@ -751,6 +879,114 @@ function cloneRuntimeToolPack(toolPack: ToolPack): ToolPack {
 
 function cloneRuntimeToolRegistry(registry: ToolRegistry): ToolRegistry {
   return createToolRegistry(registry.toolPacks.map(cloneRuntimeToolPack))
+}
+
+function filterRuntimeToolRegistryForMode(
+  registry: ToolRegistry,
+  mode: AilaExecutionMode,
+): ToolRegistry {
+  if (mode === 'agent') return cloneRuntimeToolRegistry(registry)
+  const toolPacks = registry.toolPacks
+    .map((toolPack) => ({
+      ...toolPack,
+      tools: toolPack.tools.filter((entry) => isPlanSafeToolMetadata(entry.spec.metadata)),
+    }))
+    .filter((toolPack) => toolPack.tools.length > 0)
+  return createToolRegistry(toolPacks)
+}
+
+function runtimeStringArg(args: Record<string, unknown>, key: string): string {
+  const value = args[key]
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    throw new Error(`plan tool argument "${key}" must be a non-empty string`)
+  }
+  return value.trim()
+}
+
+function runtimeOptionalStringArg(args: Record<string, unknown>, key: string): string | undefined {
+  const value = args[key]
+  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined
+}
+
+function runtimeArrayArg(args: Record<string, unknown>, key: string): unknown[] {
+  const value = args[key]
+  return Array.isArray(value) ? value : []
+}
+
+function runtimePlanStatusArg(
+  args: Record<string, unknown>,
+  key: string,
+  fallback: PlanStatus,
+): PlanStatus {
+  const value = args[key]
+  return typeof value === 'string' && PLAN_STATUSES.includes(value as PlanStatus)
+    ? (value as PlanStatus)
+    : fallback
+}
+
+function runtimePlanDriftSeverityArg(
+  args: Record<string, unknown>,
+  key: string,
+  fallback: PlanDriftSeverity,
+): PlanDriftSeverity {
+  const value = args[key]
+  return typeof value === 'string' && PLAN_DRIFT_SEVERITIES.includes(value as PlanDriftSeverity)
+    ? (value as PlanDriftSeverity)
+    : fallback
+}
+
+function updateRuntimePlanTaskStatus(
+  plan: PlanArtifact,
+  taskId: string,
+  status: PlanTaskStatus,
+): PlanArtifact {
+  let found = false
+  const tasks = plan.tasks.map((task) => {
+    if (task.id !== taskId) return task
+    found = true
+    return { ...task, status }
+  })
+  if (!found) throw new Error(`plan task not found: ${taskId}`)
+  return { ...plan, tasks }
+}
+
+function renderRuntimePlanContext(
+  plan: PlanArtifact,
+  operation: 'revise' | 'implement',
+): ChatMessage {
+  const taskLines = plan.tasks.map((task) => {
+    const status = task.status.replaceAll('_', ' ')
+    return `- [${status}] ${task.id}: ${task.title}`
+  })
+  const verificationLines = plan.verification.map((entry) => `- ${entry}`)
+  const fileLines = plan.files.map(
+    (file) => `- ${file.path}${file.kind ? ` (${file.kind})` : ''}: ${file.reason}`,
+  )
+  return {
+    role: 'system',
+    content: [
+      operation === 'implement'
+        ? 'Approved Aila plan context. Implement this approved plan. Do not silently change task scope; record drift when material changes are discovered.'
+        : 'Aila plan context. Revise this plan and keep the plan artifact in sync.',
+      '',
+      `Plan ID: ${plan.id}`,
+      `Title: ${plan.title}`,
+      `Status: ${plan.status}`,
+      `Approved revision: ${plan.approvedRevisionId ?? plan.latestRevisionId ?? 'none'}`,
+      '',
+      'Markdown:',
+      plan.markdown,
+      '',
+      taskLines.length > 0 ? 'Tasks:' : '',
+      ...taskLines,
+      verificationLines.length > 0 ? 'Verification:' : '',
+      ...verificationLines,
+      fileLines.length > 0 ? 'Affected files:' : '',
+      ...fileLines,
+    ]
+      .filter((line) => line.length > 0)
+      .join('\n'),
+  }
 }
 
 function cloneRuntimeSettings(settings: Settings): Settings {
@@ -905,6 +1141,47 @@ export class AgentRuntime implements AgentRuntimeApi {
     ])
   }
 
+  private requirePlanStore<K extends keyof AgentRuntimePlanStore>(
+    method: K,
+  ): AgentRuntimePlanStore[K] {
+    const fn = this.store[method]
+    if (!fn) throw new Error(`runtime store cannot ${String(method)}`)
+    return fn as AgentRuntimePlanStore[K]
+  }
+
+  private assertPlanRevisionCurrent(plan: PlanArtifact, expectedRevisionId?: string): void {
+    if (!expectedRevisionId) return
+    if (plan.latestRevisionId !== expectedRevisionId) {
+      throw new Error(
+        `stale plan revision: expected ${expectedRevisionId}, latest is ${
+          plan.latestRevisionId ?? 'none'
+        }`,
+      )
+    }
+  }
+
+  private async recordPlanLifecycleEvent(
+    type: AgentEvent['type'],
+    input: {
+      plan: PlanArtifact
+      messageId: string
+      data?: Record<string, unknown>
+    },
+  ): Promise<void> {
+    await this.recordAgentEvent({
+      timestamp: this.now(),
+      conversationId: input.plan.conversationId,
+      messageId: input.messageId,
+      type,
+      data: {
+        planId: input.plan.id,
+        title: input.plan.title,
+        status: input.plan.status,
+        ...input.data,
+      },
+    })
+  }
+
   async getToolRegistry(input?: RuntimeToolPackLoadInput): Promise<ToolRegistry> {
     if (!this.host.loadToolPacks && !this.host.loadSkills) {
       return cloneRuntimeToolRegistry(this.fallbackToolRegistry)
@@ -914,6 +1191,486 @@ export class AgentRuntime implements AgentRuntimeApi {
     }
     if (!this.toolRegistryLoad) this.toolRegistryLoad = this.loadToolRegistry()
     return cloneRuntimeToolRegistry(await this.toolRegistryLoad)
+  }
+
+  private createPlanToolPack(input: {
+    conversationId: string
+    assistantMessageId: string
+    sourceUserMessageId: string
+  }): ToolPack {
+    const { conversationId, assistantMessageId, sourceUserMessageId } = input
+    const planToolMetadata = (name: string) => ({
+      name,
+      readOnly: true,
+      destructive: false,
+      requiresApproval: false,
+      access: [],
+      scope: [],
+      planSafe: true,
+    })
+    const recordPlanEvent = async (
+      type: AgentEvent['type'],
+      plan: PlanArtifact,
+      data: Record<string, unknown> = {},
+    ): Promise<void> => {
+      await this.recordAgentEvent({
+        timestamp: this.now(),
+        conversationId,
+        messageId: assistantMessageId,
+        type,
+        data: {
+          planId: plan.id,
+          title: plan.title,
+          status: plan.status,
+          ...data,
+        },
+      })
+    }
+
+    return {
+      id: 'aila-plan-tools',
+      name: 'Aila Plan Tools',
+      description: 'Create and revise first-class Aila plan artifacts.',
+      tools: [
+        {
+          spec: {
+            type: 'function',
+            function: {
+              name: 'plan_create',
+              description:
+                'Create a first-class plan artifact for the current conversation. Use this in Plan mode after exploration.',
+              parameters: {
+                type: 'object',
+                properties: {
+                  id: { type: 'string', description: 'Stable plan id.' },
+                  revisionId: { type: 'string', description: 'Optional initial revision id.' },
+                  title: { type: 'string', description: 'Short plan title.' },
+                  status: {
+                    type: 'string',
+                    enum: ['draft', 'needs_input', 'ready'],
+                    description: 'Initial plan status. Defaults to draft.',
+                  },
+                  markdown: { type: 'string', description: 'User-reviewable Markdown plan.' },
+                  tasks: { type: 'array', items: { type: 'object' } },
+                  questions: { type: 'array', items: { type: 'object' } },
+                  assumptions: { type: 'array', items: { type: 'string' } },
+                  risks: { type: 'array', items: { type: 'string' } },
+                  files: { type: 'array', items: { type: 'object' } },
+                  verification: { type: 'array', items: { type: 'string' } },
+                },
+                required: ['id', 'title', 'markdown'],
+                additionalProperties: false,
+              },
+            },
+            metadata: planToolMetadata('plan_create'),
+          },
+          run: async (args) => {
+            if (!this.store.createPlan) throw new Error('runtime store cannot create plans')
+            const planId = runtimeStringArg(args, 'id')
+            const title = runtimeStringArg(args, 'title')
+            const markdown = runtimeStringArg(args, 'markdown')
+            const createdAt = this.now()
+            const revision = normalizePlanRevision({
+              schemaVersion: AILA_PLAN_REVISION_SCHEMA_VERSION,
+              id: runtimeOptionalStringArg(args, 'revisionId') ?? this.createId(),
+              planId,
+              createdAt,
+              author: 'assistant',
+              markdown,
+              tasks: runtimeArrayArg(args, 'tasks'),
+            })
+            if (!revision) throw new Error('plan_create received an invalid revision')
+            const plan = normalizePlanArtifact(
+              {
+                schemaVersion: AILA_PLAN_ARTIFACT_SCHEMA_VERSION,
+                id: planId,
+                conversationId,
+                sourceUserMessageId,
+                latestAssistantMessageId: assistantMessageId,
+                title,
+                status: runtimePlanStatusArg(args, 'status', 'draft'),
+                markdown,
+                tasks: revision.tasks,
+                questions: runtimeArrayArg(args, 'questions'),
+                assumptions: runtimeArrayArg(args, 'assumptions'),
+                risks: runtimeArrayArg(args, 'risks'),
+                files: runtimeArrayArg(args, 'files'),
+                verification: runtimeArrayArg(args, 'verification'),
+                drift: [],
+                revisions: [revision],
+                latestRevisionId: revision.id,
+                createdAt,
+                updatedAt: createdAt,
+              },
+              conversationId,
+            )
+            if (!plan) throw new Error('plan_create received an invalid plan artifact')
+            const created = await this.store.createPlan(plan)
+            await recordPlanEvent('plan.updated', created, { summary: 'Plan created' })
+            if (created.status === 'ready') await recordPlanEvent('plan.ready', created)
+            return JSON.stringify({ ok: true, planId: created.id, status: created.status })
+          },
+        },
+        {
+          spec: {
+            type: 'function',
+            function: {
+              name: 'plan_update',
+              description: 'Append a new revision to an existing plan artifact.',
+              parameters: {
+                type: 'object',
+                properties: {
+                  planId: { type: 'string' },
+                  revisionId: { type: 'string' },
+                  title: { type: 'string' },
+                  status: { type: 'string', enum: PLAN_STATUSES },
+                  markdown: { type: 'string' },
+                  tasks: { type: 'array', items: { type: 'object' } },
+                  summary: { type: 'string' },
+                },
+                required: ['planId', 'markdown'],
+                additionalProperties: false,
+              },
+            },
+            metadata: planToolMetadata('plan_update'),
+          },
+          run: async (args) => {
+            if (!this.store.getPlan || !this.store.appendPlanRevision || !this.store.updatePlan) {
+              throw new Error('runtime store cannot update plans')
+            }
+            const planId = runtimeStringArg(args, 'planId')
+            const current = await this.store.getPlan(conversationId, planId)
+            const markdown = runtimeStringArg(args, 'markdown')
+            const createdAt = this.now()
+            const revision = normalizePlanRevision({
+              schemaVersion: AILA_PLAN_REVISION_SCHEMA_VERSION,
+              id: runtimeOptionalStringArg(args, 'revisionId') ?? this.createId(),
+              planId,
+              createdAt,
+              author: 'assistant',
+              markdown,
+              tasks:
+                runtimeArrayArg(args, 'tasks').length > 0
+                  ? runtimeArrayArg(args, 'tasks')
+                  : current.tasks,
+              summary: runtimeOptionalStringArg(args, 'summary'),
+            })
+            if (!revision) throw new Error('plan_update received an invalid revision')
+            const revised = await this.store.appendPlanRevision({
+              conversationId,
+              planId,
+              revision,
+            })
+            const updated = await this.store.updatePlan({
+              ...revised,
+              title: runtimeOptionalStringArg(args, 'title') ?? revised.title,
+              status: runtimePlanStatusArg(args, 'status', revised.status),
+              updatedAt: Math.max(revised.updatedAt + 1, this.now()),
+            })
+            await recordPlanEvent('plan.updated', updated, {
+              summary: runtimeOptionalStringArg(args, 'summary'),
+            })
+            if (updated.status === 'ready') await recordPlanEvent('plan.ready', updated)
+            return JSON.stringify({ ok: true, planId: updated.id, status: updated.status })
+          },
+        },
+        {
+          spec: {
+            type: 'function',
+            function: {
+              name: 'plan_request_input',
+              description: 'Record a clarifying question on an existing plan.',
+              parameters: {
+                type: 'object',
+                properties: {
+                  planId: { type: 'string' },
+                  questionId: { type: 'string' },
+                  prompt: { type: 'string' },
+                },
+                required: ['planId', 'prompt'],
+                additionalProperties: false,
+              },
+            },
+            metadata: planToolMetadata('plan_request_input'),
+          },
+          run: async (args) => {
+            if (!this.store.getPlan || !this.store.updatePlan) {
+              throw new Error('runtime store cannot update plan questions')
+            }
+            const planId = runtimeStringArg(args, 'planId')
+            const current = await this.store.getPlan(conversationId, planId)
+            const question: PlanQuestion = {
+              id: runtimeOptionalStringArg(args, 'questionId') ?? this.createId(),
+              prompt: runtimeStringArg(args, 'prompt'),
+              status: 'open',
+            }
+            const questions = [
+              ...current.questions.filter((candidate) => candidate.id !== question.id),
+              question,
+            ]
+            const updated = await this.store.updatePlan({
+              ...current,
+              status: 'needs_input',
+              questions,
+              updatedAt: Math.max(current.updatedAt + 1, this.now()),
+            })
+            await recordPlanEvent('plan.question.requested', updated, {
+              questionId: question.id,
+              prompt: question.prompt,
+            })
+            return JSON.stringify({ ok: true, planId: updated.id, questionId: question.id })
+          },
+        },
+        {
+          spec: {
+            type: 'function',
+            function: {
+              name: 'plan_mark_ready',
+              description: 'Mark an existing plan ready for user review and approval.',
+              parameters: {
+                type: 'object',
+                properties: {
+                  planId: { type: 'string' },
+                  summary: { type: 'string' },
+                },
+                required: ['planId'],
+                additionalProperties: false,
+              },
+            },
+            metadata: planToolMetadata('plan_mark_ready'),
+          },
+          run: async (args) => {
+            if (!this.store.getPlan || !this.store.updatePlan) {
+              throw new Error('runtime store cannot mark plans ready')
+            }
+            const planId = runtimeStringArg(args, 'planId')
+            const current = await this.store.getPlan(conversationId, planId)
+            const updated = await this.store.updatePlan({
+              ...current,
+              status: 'ready',
+              updatedAt: Math.max(current.updatedAt + 1, this.now()),
+            })
+            await recordPlanEvent('plan.ready', updated, {
+              summary: runtimeOptionalStringArg(args, 'summary'),
+            })
+            return JSON.stringify({ ok: true, planId: updated.id, status: updated.status })
+          },
+        },
+      ],
+    }
+  }
+
+  private createPlanImplementationToolPack(input: {
+    conversationId: string
+    assistantMessageId: string
+    planId: string
+  }): ToolPack {
+    const { conversationId, assistantMessageId, planId: activePlanId } = input
+    const planToolMetadata = (name: string) => ({
+      name,
+      readOnly: true,
+      destructive: false,
+      requiresApproval: false,
+      access: [],
+      scope: [],
+      planSafe: true,
+    })
+    const requireActivePlanId = (args: Record<string, unknown>): string => {
+      const planId = runtimeStringArg(args, 'planId')
+      if (planId !== activePlanId) {
+        throw new Error(`plan tool cannot update inactive plan: ${planId}`)
+      }
+      return planId
+    }
+    const loadPlan = async (args: Record<string, unknown>): Promise<PlanArtifact> => {
+      const planId = requireActivePlanId(args)
+      return this.requirePlanStore('getPlan')(conversationId, planId)
+    }
+    const savePlan = async (plan: PlanArtifact): Promise<PlanArtifact> =>
+      this.requirePlanStore('updatePlan')({
+        ...plan,
+        updatedAt: Math.max(plan.updatedAt + 1, this.now()),
+      })
+
+    return {
+      id: 'aila-plan-implementation-tools',
+      name: 'Aila Plan Implementation Tools',
+      description: 'Update task progress and drift for the approved plan being implemented.',
+      tools: [
+        {
+          spec: {
+            type: 'function',
+            function: {
+              name: 'start_plan_task',
+              description: 'Mark an approved plan task as in progress.',
+              parameters: {
+                type: 'object',
+                properties: {
+                  planId: { type: 'string' },
+                  taskId: { type: 'string' },
+                  summary: { type: 'string' },
+                },
+                required: ['planId', 'taskId'],
+                additionalProperties: false,
+              },
+            },
+            metadata: planToolMetadata('start_plan_task'),
+          },
+          run: async (args) => {
+            const taskId = runtimeStringArg(args, 'taskId')
+            const current = await loadPlan(args)
+            const updated = await savePlan(
+              updateRuntimePlanTaskStatus(current, taskId, 'in_progress'),
+            )
+            await this.recordPlanLifecycleEvent('plan.task.started', {
+              plan: updated,
+              messageId: assistantMessageId,
+              data: { taskId, summary: runtimeOptionalStringArg(args, 'summary') },
+            })
+            return JSON.stringify({ ok: true, planId: updated.id, taskId, status: 'in_progress' })
+          },
+        },
+        {
+          spec: {
+            type: 'function',
+            function: {
+              name: 'complete_plan_task',
+              description: 'Mark an approved plan task as completed.',
+              parameters: {
+                type: 'object',
+                properties: {
+                  planId: { type: 'string' },
+                  taskId: { type: 'string' },
+                  summary: { type: 'string' },
+                },
+                required: ['planId', 'taskId'],
+                additionalProperties: false,
+              },
+            },
+            metadata: planToolMetadata('complete_plan_task'),
+          },
+          run: async (args) => {
+            const taskId = runtimeStringArg(args, 'taskId')
+            const current = await loadPlan(args)
+            const updated = await savePlan(updateRuntimePlanTaskStatus(current, taskId, 'done'))
+            await this.recordPlanLifecycleEvent('plan.task.completed', {
+              plan: updated,
+              messageId: assistantMessageId,
+              data: { taskId, summary: runtimeOptionalStringArg(args, 'summary') },
+            })
+            return JSON.stringify({ ok: true, planId: updated.id, taskId, status: 'done' })
+          },
+        },
+        {
+          spec: {
+            type: 'function',
+            function: {
+              name: 'block_plan_task',
+              description: 'Mark an approved plan task as blocked.',
+              parameters: {
+                type: 'object',
+                properties: {
+                  planId: { type: 'string' },
+                  taskId: { type: 'string' },
+                  reason: { type: 'string' },
+                },
+                required: ['planId', 'taskId', 'reason'],
+                additionalProperties: false,
+              },
+            },
+            metadata: planToolMetadata('block_plan_task'),
+          },
+          run: async (args) => {
+            const taskId = runtimeStringArg(args, 'taskId')
+            const reason = runtimeStringArg(args, 'reason')
+            const current = await loadPlan(args)
+            const updated = await savePlan(updateRuntimePlanTaskStatus(current, taskId, 'blocked'))
+            await this.recordPlanLifecycleEvent('plan.task.blocked', {
+              plan: updated,
+              messageId: assistantMessageId,
+              data: { taskId, summary: reason },
+            })
+            return JSON.stringify({ ok: true, planId: updated.id, taskId, status: 'blocked' })
+          },
+        },
+        {
+          spec: {
+            type: 'function',
+            function: {
+              name: 'record_plan_drift',
+              description: 'Record material drift discovered while implementing an approved plan.',
+              parameters: {
+                type: 'object',
+                properties: {
+                  planId: { type: 'string' },
+                  driftId: { type: 'string' },
+                  severity: { type: 'string', enum: PLAN_DRIFT_SEVERITIES },
+                  summary: { type: 'string' },
+                  proposedChange: { type: 'string' },
+                },
+                required: ['planId', 'summary'],
+                additionalProperties: false,
+              },
+            },
+            metadata: planToolMetadata('record_plan_drift'),
+          },
+          run: async (args) => {
+            const current = await loadPlan(args)
+            const drift = {
+              id: runtimeOptionalStringArg(args, 'driftId') ?? this.createId(),
+              createdAt: this.now(),
+              severity: runtimePlanDriftSeverityArg(args, 'severity', 'warning'),
+              summary: runtimeStringArg(args, 'summary'),
+              ...(runtimeOptionalStringArg(args, 'proposedChange')
+                ? { proposedChange: runtimeOptionalStringArg(args, 'proposedChange') }
+                : {}),
+            }
+            const updated = await savePlan({ ...current, drift: [...current.drift, drift] })
+            await this.recordPlanLifecycleEvent('plan.drift.detected', {
+              plan: updated,
+              messageId: assistantMessageId,
+              data: { driftId: drift.id, severity: drift.severity, summary: drift.summary },
+            })
+            return JSON.stringify({ ok: true, planId: updated.id, driftId: drift.id })
+          },
+        },
+        {
+          spec: {
+            type: 'function',
+            function: {
+              name: 'complete_plan',
+              description: 'Mark the approved plan implementation as completed.',
+              parameters: {
+                type: 'object',
+                properties: {
+                  planId: { type: 'string' },
+                  summary: { type: 'string' },
+                },
+                required: ['planId'],
+                additionalProperties: false,
+              },
+            },
+            metadata: planToolMetadata('complete_plan'),
+          },
+          run: async (args) => {
+            const current = await loadPlan(args)
+            const completedAt = this.now()
+            const updated = await this.requirePlanStore('updatePlan')({
+              ...current,
+              status: 'completed',
+              completedAt,
+              updatedAt: Math.max(current.updatedAt + 1, completedAt),
+            })
+            await this.recordPlanLifecycleEvent('plan.completed', {
+              plan: updated,
+              messageId: assistantMessageId,
+              data: { summary: runtimeOptionalStringArg(args, 'summary') },
+            })
+            return JSON.stringify({ ok: true, planId: updated.id, status: updated.status })
+          },
+        },
+      ],
+    }
   }
 
   async getSkills(): Promise<LoadedSkill[]> {
@@ -998,14 +1755,15 @@ export class AgentRuntime implements AgentRuntimeApi {
   }
 
   async hydrateConversation(conversationId: string): Promise<ConversationRuntimeHydration> {
-    const [record, events] = await Promise.all([
+    const [record, events, plans] = await Promise.all([
       this.getConversation(conversationId),
       this.listAgentEvents(conversationId),
+      this.store.listPlans ? this.listPlans(conversationId) : Promise.resolve([]),
     ])
     const runtimeState = replayConversationRuntimeState(events)
     const activeTurn =
       this.listActiveStreams().find((turn) => turn.conversationId === conversationId) ?? null
-    return cloneRuntimeValue({ record, events, runtimeState, activeTurn })
+    return cloneRuntimeValue({ record, events, runtimeState, activeTurn, plans })
   }
 
   async listConversationRuntimeStates(
@@ -1046,7 +1804,164 @@ export class AgentRuntime implements AgentRuntimeApi {
     return message
   }
 
+  async listPlans(conversationId: string): Promise<PlanArtifact[]> {
+    const listPlans = this.requirePlanStore('listPlans')
+    return cloneRuntimeValue([...(await listPlans(conversationId))])
+  }
+
+  async getPlan(conversationId: string, planId: string): Promise<PlanArtifact> {
+    const getPlan = this.requirePlanStore('getPlan')
+    return cloneRuntimeValue(await getPlan(conversationId, planId))
+  }
+
+  async savePlanMarkdown(input: RuntimeSavePlanMarkdownInput): Promise<PlanArtifact> {
+    const getPlan = this.requirePlanStore('getPlan')
+    const appendPlanRevision = this.requirePlanStore('appendPlanRevision')
+    const updatePlan = this.requirePlanStore('updatePlan')
+    const current = await getPlan(input.conversationId, input.planId)
+    this.assertPlanRevisionCurrent(current, input.expectedRevisionId)
+    const createdAt = this.now()
+    const revision = normalizePlanRevision({
+      schemaVersion: AILA_PLAN_REVISION_SCHEMA_VERSION,
+      id: this.createId(),
+      planId: current.id,
+      createdAt,
+      author: 'user',
+      markdown: input.markdown,
+      tasks: current.tasks,
+      summary: 'User edited plan Markdown',
+    })
+    if (!revision) throw new Error('invalid plan markdown revision')
+    const revised = await appendPlanRevision({
+      conversationId: input.conversationId,
+      planId: input.planId,
+      revision,
+    })
+    const updated = await updatePlan({
+      ...revised,
+      title: input.title?.trim() || revised.title,
+      status: input.status ?? revised.status,
+      updatedAt: Math.max(revised.updatedAt + 1, this.now()),
+    })
+    await this.recordPlanLifecycleEvent('plan.updated', {
+      plan: updated,
+      messageId: updated.latestAssistantMessageId ?? updated.sourceUserMessageId,
+      data: { summary: 'Plan Markdown edited' },
+    })
+    return cloneRuntimeValue(updated)
+  }
+
+  async revisePlan(input: RuntimeRevisePlanInput): Promise<RuntimeSendResult> {
+    const current = await this.getPlan(input.conversationId, input.planId)
+    this.assertPlanRevisionCurrent(current, input.expectedRevisionId)
+    return this.send({
+      conversationId: input.conversationId,
+      userText: input.userText,
+      selection: input.selection,
+      mode: 'plan',
+      planId: input.planId,
+    })
+  }
+
+  async cancelPlan(input: RuntimeCancelPlanInput): Promise<PlanArtifact> {
+    const getPlan = this.requirePlanStore('getPlan')
+    const updatePlan = this.requirePlanStore('updatePlan')
+    const current = await getPlan(input.conversationId, input.planId)
+    const updated = await updatePlan({
+      ...current,
+      status: 'cancelled',
+      updatedAt: Math.max(current.updatedAt + 1, this.now()),
+    })
+    await this.recordPlanLifecycleEvent('plan.cancelled', {
+      plan: updated,
+      messageId: updated.latestAssistantMessageId ?? updated.sourceUserMessageId,
+      data: { reason: input.reason ?? 'user' },
+    })
+    return cloneRuntimeValue(updated)
+  }
+
+  async approvePlan(input: RuntimeApprovePlanInput): Promise<RuntimeSendResult> {
+    return this.withTurnStartLock(input.conversationId, async (turnStartLock) => {
+      const { conversationId, planId, selection } = input
+      this.assertCanStartTurn(conversationId)
+      const previous = this.activeStreams.get(conversationId)
+      if (previous) await this.waitForPriorStreamBeforeNextTurn(conversationId, previous)
+      this.assertCanStartTurn(conversationId)
+
+      const getPlan = this.requirePlanStore('getPlan')
+      const updatePlan = this.requirePlanStore('updatePlan')
+      const current = await getPlan(conversationId, planId)
+      this.assertPlanRevisionCurrent(current, input.expectedRevisionId)
+      if (current.status !== 'ready') {
+        throw new Error(`cannot approve plan in status "${current.status}"`)
+      }
+
+      const userMessage: PersistedMessage = {
+        schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+        id: this.createId(),
+        role: 'user',
+        blocks: [
+          {
+            type: 'text',
+            content: `Approved plan "${current.title}". Implement the approved plan.`,
+          },
+        ],
+        status: 'done',
+      }
+      if (!(await this.persistAndAnnounce(conversationId, userMessage))) {
+        this.assertConversationOpen(conversationId)
+        throw new Error('conversation was deleted')
+      }
+
+      const approvedAt = this.now()
+      const approved = await updatePlan({
+        ...current,
+        status: 'approved',
+        approvedAt,
+        approvedBy: input.approvedBy ?? 'user',
+        approvedRevisionId: current.latestRevisionId,
+        updatedAt: Math.max(current.updatedAt + 1, approvedAt),
+      })
+      await this.recordPlanLifecycleEvent('plan.approved', {
+        plan: approved,
+        messageId: userMessage.id,
+        data: {
+          approvedRevisionId: approved.approvedRevisionId,
+          approvedBy: approved.approvedBy,
+          implementationMode: input.implementationMode ?? 'new_turn',
+          ...(input.approvalMode ? { approvalMode: input.approvalMode } : {}),
+        },
+      })
+
+      const implementing = await updatePlan({
+        ...approved,
+        status: 'implementing',
+        updatedAt: Math.max(approved.updatedAt + 1, this.now()),
+      })
+      await this.recordPlanLifecycleEvent('plan.implementation.started', {
+        plan: implementing,
+        messageId: userMessage.id,
+        data: { approvedRevisionId: implementing.approvedRevisionId },
+      })
+
+      const record = await this.getConversation(conversationId)
+      this.assertCanStartTurn(conversationId)
+      return this.startAssistantTurn({
+        conversationId,
+        userMessage,
+        record,
+        selection,
+        mode: 'agent',
+        planId,
+        planOperation: 'implement',
+        source: 'plan_approval',
+        turnStartLock,
+      })
+    })
+  }
+
   async executeTool(input: RuntimeExecuteToolInput): Promise<string> {
+    const mode = normalizeAilaExecutionMode(input.mode)
     let record: ConversationRecord | undefined
     if (input.conversationId) {
       try {
@@ -1070,6 +1985,7 @@ export class AgentRuntime implements AgentRuntimeApi {
         ...(input.conversationId && { conversationId: input.conversationId }),
         ...(input.messageId && { messageId: input.messageId }),
         ...(input.toolCallId && { toolCallId: input.toolCallId }),
+        mode,
         ...(input.signal && { signal: input.signal }),
       }),
       registry,
@@ -1163,6 +2079,7 @@ export class AgentRuntime implements AgentRuntimeApi {
   async send(input: RuntimeSendInput): Promise<RuntimeSendResult> {
     return this.withTurnStartLock(input.conversationId, async (turnStartLock) => {
       const { conversationId, userText, selection, attachments, transientContext } = input
+      const mode = normalizeAilaExecutionMode(input.mode)
 
       this.assertCanStartTurn(conversationId)
 
@@ -1197,6 +2114,8 @@ export class AgentRuntime implements AgentRuntimeApi {
         userMessage,
         record,
         selection,
+        mode,
+        ...(input.planId ? { planId: input.planId } : {}),
         transientContext,
         source: 'send',
         turnStartLock,
@@ -1207,6 +2126,7 @@ export class AgentRuntime implements AgentRuntimeApi {
   async retryLastUserMessage(input: RuntimeRetryLastInput): Promise<RuntimeSendResult> {
     return this.withTurnStartLock(input.conversationId, async (turnStartLock) => {
       const { conversationId, selection, transientContext } = input
+      const mode = normalizeAilaExecutionMode(input.mode)
 
       this.assertCanStartTurn(conversationId)
       const previous = this.activeStreams.get(conversationId)
@@ -1231,6 +2151,8 @@ export class AgentRuntime implements AgentRuntimeApi {
         userMessage: retry.userMessage,
         record: retry.record,
         selection,
+        mode,
+        ...(input.planId ? { planId: input.planId } : {}),
         transientContext,
         source: 'retry',
         turnStartLock,
@@ -1289,11 +2211,24 @@ export class AgentRuntime implements AgentRuntimeApi {
     userMessage: PersistedMessage
     record: ConversationRecord
     selection: ModelSelection
+    mode: AilaExecutionMode
+    planId?: string
+    planOperation?: 'revise' | 'implement'
     transientContext?: ChatMessage[]
     source: RuntimeTransientContextInput['source']
     turnStartLock: TurnStartLockSlot
   }): Promise<RuntimeSendResult> {
-    const { conversationId, userMessage, record, transientContext, source, turnStartLock } = input
+    const {
+      conversationId,
+      userMessage,
+      record,
+      mode,
+      planId,
+      planOperation,
+      transientContext,
+      source,
+      turnStartLock,
+    } = input
     const selection = cloneRuntimeValue(input.selection)
     const assistantMessageId = this.createId()
     this.assertCanStartTurn(conversationId)
@@ -1318,13 +2253,21 @@ export class AgentRuntime implements AgentRuntimeApi {
     let contextPlan: AgentContextPlan
     let toolContext: ToolContext
     let toolRegistry: ToolRegistry
+    let activePlan: PlanArtifact | undefined
+    let activePlanOperation: 'revise' | 'implement' | undefined
     try {
       if (!this.host.streamChat) throw new Error('runtime host cannot stream chat')
+      if (planId) {
+        activePlan = await this.requirePlanStore('getPlan')(conversationId, planId)
+        activePlanOperation = planOperation ?? (mode === 'plan' ? 'revise' : undefined)
+      }
       const contextInput = {
         conversationId,
         record,
         selection,
         source,
+        mode,
+        ...(planId ? { planId } : {}),
       }
       const inputTransientContext = cloneRuntimeChatMessages(transientContext)
       const [resolvedStableInstructions, hostTransientContext] = await Promise.all([
@@ -1333,12 +2276,17 @@ export class AgentRuntime implements AgentRuntimeApi {
           ? this.resolveTransientContext(contextInput)
           : Promise.resolve(undefined),
       ])
+      const resolvedDynamicContext = inputTransientContext ?? hostTransientContext
+      const planContext =
+        activePlan && activePlanOperation
+          ? [renderRuntimePlanContext(activePlan, activePlanOperation)]
+          : []
       const context = assembleAgentContext({
         stableInstructions: resolvedStableInstructions,
         messages: cloneRuntimeValue(record.messages),
         modelInfo: await this.resolveModelInfo(selection),
         providerId: selection.providerId,
-        dynamicContext: inputTransientContext ?? hostTransientContext,
+        dynamicContext: [...planContext, ...(resolvedDynamicContext ?? [])],
         compactionCheckpoint: record.meta.context?.checkpoint,
       })
       messages = context.messages
@@ -1356,10 +2304,35 @@ export class AgentRuntime implements AgentRuntimeApi {
         selection,
         contextPlan,
       })
-      toolRegistry = await this.getToolRegistry({ conversationId, record })
+      const baseToolRegistry = await this.getToolRegistry({ conversationId, record })
+      const planToolPacks: ToolPack[] = []
+      if (mode === 'plan') {
+        planToolPacks.push(
+          this.createPlanToolPack({
+            conversationId,
+            assistantMessageId,
+            sourceUserMessageId: userMessage.id,
+          }),
+        )
+      }
+      if (activePlan && activePlanOperation === 'implement') {
+        planToolPacks.push(
+          this.createPlanImplementationToolPack({
+            conversationId,
+            assistantMessageId,
+            planId: activePlan.id,
+          }),
+        )
+      }
+      const toolRegistryWithPlanTools =
+        planToolPacks.length > 0
+          ? createToolRegistry([...baseToolRegistry.toolPacks, ...planToolPacks])
+          : baseToolRegistry
+      toolRegistry = filterRuntimeToolRegistryForMode(toolRegistryWithPlanTools, mode)
       toolContext = await this.buildToolContext({
         conversationId,
         messageId: assistantMessageId,
+        mode,
       })
       if (!this.acceptsStreamEvents(conversationId, controller)) {
         return { userMessage, assistantMessageId }
@@ -1402,6 +2375,9 @@ export class AgentRuntime implements AgentRuntimeApi {
       contextPlan,
       toolContext,
       toolRegistry,
+      mode,
+      ...(activePlan ? { plan: activePlan } : {}),
+      ...(activePlanOperation ? { planOperation: activePlanOperation } : {}),
     })
 
     return { userMessage, assistantMessageId }
@@ -1741,6 +2717,11 @@ export class AgentRuntime implements AgentRuntimeApi {
   private async buildToolContext(input: RuntimeToolContextInput): Promise<ToolContext> {
     const hostRoots = this.resolveWorkspaceRoots()
     const skillRoots = await this.resolveSkillWorkspaceRoots()
+    const mode = normalizeAilaExecutionMode(input.mode)
+    const onToolPolicy =
+      mode === 'agent' && !this.host.onToolPolicy
+        ? undefined
+        : createExecutionModeToolPolicy(mode, this.host.onToolPolicy)
     return {
       settings: await this.resolveSettingsOrDefault(),
       ...(input.conversationId && { conversationId: input.conversationId }),
@@ -1749,7 +2730,7 @@ export class AgentRuntime implements AgentRuntimeApi {
       ...(input.signal && { signal: input.signal }),
       workspaceRoots: skillRoots.length > 0 ? [...(hostRoots ?? []), ...skillRoots] : hostRoots,
       shellCwd: this.resolveShellCwd(),
-      onToolPolicy: this.host.onToolPolicy,
+      ...(onToolPolicy ? { onToolPolicy } : {}),
       onToolApproval: this.host.onToolApproval,
       webSearch: this.host.webSearch,
       generateImage: this.host.generateImage,
@@ -2244,6 +3225,9 @@ export class AgentRuntime implements AgentRuntimeApi {
     contextPlan: AgentContextPlan
     toolContext: ToolContext
     toolRegistry: ToolRegistry
+    mode: AilaExecutionMode
+    plan?: PlanArtifact
+    planOperation?: 'revise' | 'implement'
   }): Promise<void> {
     const {
       conversationId,
@@ -2255,6 +3239,9 @@ export class AgentRuntime implements AgentRuntimeApi {
       contextPlan,
       toolContext,
       toolRegistry,
+      mode,
+      plan,
+      planOperation,
     } = input
     let eventLogChain = Promise.resolve()
     let terminalAgentEventQueued = false
@@ -2287,6 +3274,9 @@ export class AgentRuntime implements AgentRuntimeApi {
           assistantMessageId,
           messages: cloneRuntimeChatMessages(messages) ?? [],
           contextPlan: cloneRuntimeValue(contextPlan),
+          mode,
+          ...(plan ? { plan: cloneRuntimeValue(plan) } : {}),
+          ...(planOperation ? { planOperation } : {}),
           selection: cloneRuntimeValue(selection),
           signal: controller.signal,
           workspaceRoots: cloneRuntimeWorkspaceRoots(toolContext.workspaceRoots),

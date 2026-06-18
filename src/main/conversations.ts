@@ -1,7 +1,13 @@
 import { randomUUID } from 'node:crypto'
 import { appendFile, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import type { AgentEvent } from '@aila/agent'
+import {
+  type AgentEvent,
+  appendPlanRevisionToPlan,
+  type PlanArtifact,
+  type PlanRevisionInput,
+  preparePlanArtifact,
+} from '@aila/agent'
 import { getNodeToolResultsConversationDir } from '@aila/agent/node'
 import {
   type AgentEventAppendResult,
@@ -31,7 +37,7 @@ import {
   replayConversationActivity,
   upsertPersistedMessage,
 } from '../../packages/agent/src/conversation-core'
-import { getConversationsDir, getDataDir } from './paths'
+import { getConversationsDir, getDataDir, getPlansDir } from './paths'
 
 export {
   type AgentEventAppendResult,
@@ -51,6 +57,7 @@ export {
   type ConversationMeta,
   type ConversationRecord,
   type ConversationRuntimePendingApproval,
+  type ConversationRuntimeReplayPlan,
   type ConversationRuntimeReplayState,
   type ConversationRuntimeReplayTurn,
   type ConversationRuntimeStatePhase,
@@ -72,6 +79,7 @@ export {
 const metaWriteChains = new Map<string, Promise<void>>()
 const messageWriteChains = new Map<string, Promise<void>>()
 const eventWriteChains = new Map<string, Promise<void>>()
+const planWriteChains = new Map<string, Promise<void>>()
 
 async function ensureDir(): Promise<string> {
   const dir = getConversationsDir()
@@ -89,6 +97,22 @@ function eventLogPath(id: string): string {
 
 function metaPath(id: string): string {
   return join(getConversationsDir(), `${id}.meta.json`)
+}
+
+function planConversationDir(conversationId: string): string {
+  return join(getPlansDir(), conversationId)
+}
+
+function planJsonPath(conversationId: string, planId: string): string {
+  return join(planConversationDir(conversationId), `${planId}.json`)
+}
+
+function planMarkdownPath(conversationId: string, planId: string): string {
+  return join(planConversationDir(conversationId), `${planId}.md`)
+}
+
+function planWriteKey(conversationId: string, planId: string): string {
+  return `${conversationId}:${planId}`
 }
 
 async function readMeta(id: string): Promise<ConversationMeta> {
@@ -157,8 +181,54 @@ async function queueEventWrite(id: string, writer: () => Promise<void>): Promise
   return run
 }
 
+async function queuePlanWrite<T>(
+  conversationId: string,
+  planId: string,
+  writer: () => Promise<T>,
+): Promise<T> {
+  const key = planWriteKey(conversationId, planId)
+  const previous = planWriteChains.get(key) ?? Promise.resolve()
+  const run = previous.catch(() => {}).then(writer)
+  const guard = run.then(
+    () => undefined,
+    () => undefined,
+  )
+  planWriteChains.set(key, guard)
+  guard.finally(() => {
+    if (planWriteChains.get(key) === guard) planWriteChains.delete(key)
+  })
+  return run
+}
+
 function nextUpdatedAt(current: ConversationMeta, timestamp = Date.now()): number {
   return Math.max(Date.now(), timestamp, current.updatedAt + 1)
+}
+
+function isErrnoCode(error: unknown, code: string): boolean {
+  return error instanceof Error && 'code' in error && (error as NodeJS.ErrnoException).code === code
+}
+
+async function readPlan(conversationId: string, planId: string): Promise<PlanArtifact> {
+  const raw = await readFile(planJsonPath(conversationId, planId), 'utf-8')
+  return preparePlanArtifact(JSON.parse(raw) as PlanArtifact)
+}
+
+async function writePlan(plan: PlanArtifact): Promise<PlanArtifact> {
+  const prepared = preparePlanArtifact(plan)
+  await mkdir(planConversationDir(prepared.conversationId), { recursive: true })
+  await Promise.all([
+    writeFile(
+      planJsonPath(prepared.conversationId, prepared.id),
+      `${JSON.stringify(prepared, null, 2)}\n`,
+      'utf-8',
+    ),
+    writeFile(
+      planMarkdownPath(prepared.conversationId, prepared.id),
+      `${prepared.markdown}\n`,
+      'utf-8',
+    ),
+  ])
+  return prepared
 }
 
 export async function listConversations(): Promise<ConversationSummary[]> {
@@ -457,14 +527,70 @@ export async function recordConversationContextTurnLedger(
   }))
 }
 
+export async function createPlan(plan: PlanArtifact): Promise<PlanArtifact> {
+  await readMeta(plan.conversationId)
+  const prepared = preparePlanArtifact(plan)
+  return queuePlanWrite(prepared.conversationId, prepared.id, async () => {
+    try {
+      await readPlan(prepared.conversationId, prepared.id)
+      throw new Error(`plan already exists: ${prepared.conversationId}/${prepared.id}`)
+    } catch (error) {
+      if (!isErrnoCode(error, 'ENOENT')) throw error
+    }
+    return structuredClone(await writePlan(prepared))
+  })
+}
+
+export async function getPlan(conversationId: string, planId: string): Promise<PlanArtifact> {
+  return structuredClone(await readPlan(conversationId, planId))
+}
+
+export async function listPlans(conversationId: string): Promise<PlanArtifact[]> {
+  await mkdir(planConversationDir(conversationId), { recursive: true })
+  const entries = await readdir(planConversationDir(conversationId))
+  const plans = await Promise.all(
+    entries
+      .filter((name) => name.endsWith('.json'))
+      .map((name) => readPlan(conversationId, name.slice(0, -'.json'.length)).catch(() => null)),
+  )
+  return plans
+    .filter((plan): plan is PlanArtifact => plan !== null)
+    .map((plan) => structuredClone(plan))
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+}
+
+export async function updatePlan(plan: PlanArtifact): Promise<PlanArtifact> {
+  await readMeta(plan.conversationId)
+  const prepared = preparePlanArtifact(plan)
+  return queuePlanWrite(prepared.conversationId, prepared.id, async () => {
+    await readPlan(prepared.conversationId, prepared.id)
+    return structuredClone(await writePlan(prepared))
+  })
+}
+
+export async function appendPlanRevision(input: PlanRevisionInput): Promise<PlanArtifact> {
+  await readMeta(input.conversationId)
+  return queuePlanWrite(input.conversationId, input.planId, async () => {
+    const current = await readPlan(input.conversationId, input.planId)
+    const updated = appendPlanRevisionToPlan(current, input.revision, Date.now())
+    return structuredClone(await writePlan(updated))
+  })
+}
+
 export async function deleteConversation(id: string): Promise<void> {
   await metaWriteChains.get(id)?.catch(() => {})
   await messageWriteChains.get(id)?.catch(() => {})
   await eventWriteChains.get(id)?.catch(() => {})
+  await Promise.all(
+    [...planWriteChains]
+      .filter(([key]) => key.startsWith(`${id}:`))
+      .map(([, chain]) => chain.catch(() => {})),
+  )
   await Promise.all([
     rm(metaPath(id), { force: true }),
     rm(logPath(id), { force: true }),
     rm(eventLogPath(id), { force: true }),
+    rm(planConversationDir(id), { recursive: true, force: true }),
     rm(getNodeToolResultsConversationDir(id, { dataDir: getDataDir() }), {
       recursive: true,
       force: true,
@@ -473,6 +599,9 @@ export async function deleteConversation(id: string): Promise<void> {
   metaWriteChains.delete(id)
   messageWriteChains.delete(id)
   eventWriteChains.delete(id)
+  for (const key of planWriteChains.keys()) {
+    if (key.startsWith(`${id}:`)) planWriteChains.delete(key)
+  }
 }
 
 export interface DocRefRewrite {

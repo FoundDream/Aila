@@ -16,6 +16,7 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef } from 'react'
 import type {
   ActiveAssistantTurn,
+  AilaExecutionMode,
   ChatAttachmentInput,
   ChatDoneEvent,
   ChatErrorEvent,
@@ -25,6 +26,7 @@ import type {
   ModelSelection,
   PersistedAgentEvent,
   PersistedMessage,
+  PlanArtifact,
   ReasoningDeltaEvent,
   RuntimeCompactConversationResult,
   TextDeltaEvent,
@@ -42,10 +44,21 @@ export type QueuedRun =
       text: string
       attachments: ChatAttachmentInput[]
       selection: ModelSelection
+      mode?: AilaExecutionMode
+      planId?: string
     }
   | {
       id: string
       kind: 'retryLast'
+      selection: ModelSelection
+      mode?: AilaExecutionMode
+      planId?: string
+    }
+  | {
+      id: string
+      kind: 'approvePlan'
+      planId: string
+      expectedRevisionId?: string
       selection: ModelSelection
     }
 
@@ -57,6 +70,7 @@ export interface ConversationStream {
   runningMessageId: string | null
   usage: UsageInfo | null
   events: PersistedAgentEvent[]
+  plans: PlanArtifact[]
 }
 
 type ConversationStreamState = Omit<ConversationStream, 'displayMessages'>
@@ -73,6 +87,7 @@ const EMPTY_STREAM: ConversationStreamState = {
   runningMessageId: null,
   usage: null,
   events: [],
+  plans: [],
 }
 
 type Action =
@@ -82,6 +97,7 @@ type Action =
       messages: Message[]
       usage: UsageInfo | null
       events: PersistedAgentEvent[]
+      plans?: PlanArtifact[]
       activeTurn?: ActiveAssistantTurn | null
       runtimeState?: ConversationRuntimeReplayState
     }
@@ -145,6 +161,7 @@ type Action =
       usage?: UsageInfo
     }
   | { type: 'CLEAR_QUEUE'; conversationId: string }
+  | { type: 'SET_PLANS'; conversationId: string; plans: PlanArtifact[] }
   | { type: 'AGENT_EVENT'; event: PersistedAgentEvent }
   | { type: 'DROP'; conversationId: string }
 
@@ -478,6 +495,7 @@ function reducer(state: State, action: Action): State {
           messages,
           usage: action.usage,
           events,
+          plans: action.plans ?? current.plans,
           runningMessageId:
             action.activeTurn?.assistantMessageId ??
             (hasTerminalMessage(messages, current.runningMessageId)
@@ -486,6 +504,12 @@ function reducer(state: State, action: Action): State {
           isHydrated: true,
         }
       })
+
+    case 'SET_PLANS':
+      return withStream(state, action.conversationId, (current) => ({
+        ...current,
+        plans: action.plans,
+      }))
 
     case 'ENQUEUE':
       return withStream(state, action.conversationId, (current) => ({
@@ -714,8 +738,20 @@ export interface ChatStreamsApi {
     text: string,
     selection: ModelSelection,
     attachments?: ChatAttachmentInput[],
+    options?: { mode?: AilaExecutionMode; planId?: string },
   ) => void
-  enqueueRetryLast: (id: string, selection: ModelSelection) => void
+  enqueueRetryLast: (
+    id: string,
+    selection: ModelSelection,
+    options?: { mode?: AilaExecutionMode; planId?: string },
+  ) => void
+  enqueueApprovePlan: (
+    id: string,
+    planId: string,
+    selection: ModelSelection,
+    expectedRevisionId?: string,
+  ) => void
+  refreshPlans: (id: string) => Promise<void>
   compact: (id: string, selection: ModelSelection) => Promise<RuntimeCompactConversationResult>
   abort: (id: string) => void
   drop: (id: string) => void
@@ -768,12 +804,25 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
               conversationId: id,
               userText: queued.text,
               selection: queued.selection,
+              ...(queued.mode ? { mode: queued.mode } : {}),
+              ...(queued.planId ? { planId: queued.planId } : {}),
               attachments: queued.attachments,
             })
-          : await window.api.runtime.retryLast({
-              conversationId: id,
-              selection: queued.selection,
-            })
+          : queued.kind === 'retryLast'
+            ? await window.api.runtime.retryLast({
+                conversationId: id,
+                selection: queued.selection,
+                ...(queued.mode ? { mode: queued.mode } : {}),
+                ...(queued.planId ? { planId: queued.planId } : {}),
+              })
+            : await window.api.runtime.approvePlan({
+                conversationId: id,
+                planId: queued.planId,
+                selection: queued.selection,
+                ...(queued.expectedRevisionId
+                  ? { expectedRevisionId: queued.expectedRevisionId }
+                  : {}),
+              })
     } catch (err) {
       const errorText = err instanceof Error ? err.message : String(err)
       // Surface as a synthetic error message in the conversation so it isn't lost.
@@ -793,6 +842,13 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
           userMessage: {
             ...queuedSendToMessage(queued, crypto.randomUUID(), 'done'),
           },
+          assistantMessage: stub,
+        })
+      } else if (queued.kind === 'retryLast') {
+        dispatch({
+          type: 'RETRY_STARTED',
+          conversationId: id,
+          queuedId: queued.id,
           assistantMessage: stub,
         })
       } else {
@@ -828,12 +884,20 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
             userMessage,
             assistantMessage,
           }
-        : {
-            type: 'RETRY_STARTED',
-            conversationId: id,
-            queuedId: queued.id,
-            assistantMessage,
-          },
+        : queued.kind === 'approvePlan'
+          ? {
+              type: 'RUN_STARTED',
+              conversationId: id,
+              queuedId: queued.id,
+              userMessage,
+              assistantMessage,
+            }
+          : {
+              type: 'RETRY_STARTED',
+              conversationId: id,
+              queuedId: queued.id,
+              assistantMessage,
+            },
     )
   }, [])
 
@@ -865,6 +929,7 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
       text: string,
       selection: ModelSelection,
       attachments: ChatAttachmentInput[] = [],
+      options: { mode?: AilaExecutionMode; planId?: string } = {},
     ): void => {
       const trimmed = text.trim()
       if (!trimmed && attachments.length === 0) return
@@ -874,18 +939,61 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
       dispatch({
         type: 'ENQUEUE',
         conversationId: id,
-        queued: { id: crypto.randomUUID(), kind: 'send', text: trimmed, attachments, selection },
+        queued: {
+          id: crypto.randomUUID(),
+          kind: 'send',
+          text: trimmed,
+          attachments,
+          selection,
+          ...(options.mode ? { mode: options.mode } : {}),
+          ...(options.planId ? { planId: options.planId } : {}),
+        },
       })
     },
     [],
   )
 
-  const enqueueRetryLast = useCallback((id: string, selection: ModelSelection): void => {
-    dispatch({
-      type: 'ENQUEUE',
-      conversationId: id,
-      queued: { id: crypto.randomUUID(), kind: 'retryLast', selection },
-    })
+  const enqueueRetryLast = useCallback(
+    (
+      id: string,
+      selection: ModelSelection,
+      options: { mode?: AilaExecutionMode; planId?: string } = {},
+    ): void => {
+      dispatch({
+        type: 'ENQUEUE',
+        conversationId: id,
+        queued: {
+          id: crypto.randomUUID(),
+          kind: 'retryLast',
+          selection,
+          ...(options.mode ? { mode: options.mode } : {}),
+          ...(options.planId ? { planId: options.planId } : {}),
+        },
+      })
+    },
+    [],
+  )
+
+  const enqueueApprovePlan = useCallback(
+    (id: string, planId: string, selection: ModelSelection, expectedRevisionId?: string): void => {
+      dispatch({
+        type: 'ENQUEUE',
+        conversationId: id,
+        queued: {
+          id: crypto.randomUUID(),
+          kind: 'approvePlan',
+          planId,
+          selection,
+          ...(expectedRevisionId ? { expectedRevisionId } : {}),
+        },
+      })
+    },
+    [],
+  )
+
+  const refreshPlans = useCallback(async (id: string): Promise<void> => {
+    const plans = await window.api.runtime.listPlans(id)
+    dispatch({ type: 'SET_PLANS', conversationId: id, plans })
   }, [])
 
   const compact = useCallback(
@@ -896,7 +1004,7 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
 
   const hydrate = useCallback(async (id: string): Promise<void> => {
     if (stateRef.current.streams.get(id)?.isHydrated) return
-    const { record, events, runtimeState, activeTurn } =
+    const { record, events, runtimeState, activeTurn, plans } =
       await window.api.runtime.hydrateConversation(id)
     if (stateRef.current.streams.get(id)?.isHydrated) return
     const messages = record.messages.map(persistedToMessage)
@@ -913,6 +1021,7 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
       messages,
       usage,
       events,
+      plans,
       runtimeState,
       activeTurn,
     })
@@ -924,7 +1033,14 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
   // with an immediate enqueueSend.
   const markHydrated = useCallback((id: string): void => {
     if (stateRef.current.streams.get(id)?.isHydrated) return
-    dispatch({ type: 'HYDRATE', conversationId: id, messages: [], usage: null, events: [] })
+    dispatch({
+      type: 'HYDRATE',
+      conversationId: id,
+      messages: [],
+      usage: null,
+      events: [],
+      plans: [],
+    })
   }, [])
 
   const abort = useCallback((id: string): void => {
@@ -1021,6 +1137,7 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
       }),
       window.api.runtime.onAgentEvent((event) => {
         dispatch({ type: 'AGENT_EVENT', event })
+        if (event.type.startsWith('plan.')) void refreshPlans(event.conversationId)
       }),
       window.api.runtime.conversations.onUpdated((summary) => {
         onConversationUpdatedRef.current?.(summary)
@@ -1029,7 +1146,7 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
     return () => {
       for (const cleanup of cleanups) cleanup()
     }
-  }, [])
+  }, [refreshPlans])
 
   const busyIds = useMemo(() => {
     const set = new Set<string>()
@@ -1051,6 +1168,8 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
     markHydrated,
     enqueueSend,
     enqueueRetryLast,
+    enqueueApprovePlan,
+    refreshPlans,
     compact,
     abort,
     drop,

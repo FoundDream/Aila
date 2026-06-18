@@ -20,6 +20,7 @@ import {
   type AgentRuntimeEvent,
   type AgentRuntimeExtensionApi,
   type AgentRuntimeHost,
+  type AgentRuntimePlanApi,
   type AgentRuntimeStore,
   type AgentRuntimeTurnApi,
   AILA_RUNTIME_EVENT_SCHEMA_VERSION,
@@ -43,6 +44,7 @@ import {
   type ConversationContextTokenPreflight,
   type ConversationContextTurnLedgerEntry,
   type ConversationRecord,
+  type ConversationRuntimeReplayPlan,
   type ConversationRuntimeReplayState,
   type ConversationSummary,
   type ConversationUsage,
@@ -59,6 +61,8 @@ import {
   type PersistedMessage,
   type PersistedToolResultRef,
   parseSkillDocument,
+  type RuntimeApprovePlanInput,
+  type RuntimeCancelPlanInput,
   type RuntimeCompactConversationInput,
   type RuntimeCompactConversationResult,
   type RuntimeContextCompactArtifactInput,
@@ -66,6 +70,8 @@ import {
   type RuntimeContextTokenCountInput,
   type RuntimeContextTokenCountResult,
   type RuntimeModelInfoResolver,
+  type RuntimeRevisePlanInput,
+  type RuntimeSavePlanMarkdownInput,
   type RuntimeStableInstructionsInput,
   type RuntimeStreamChat,
   requestToolApprovalWithActivity,
@@ -101,6 +107,7 @@ export type RuntimeCorePublicSurfaceContract = {
   chatMessage: ChatMessage
   conversationApi: AgentRuntimeConversationApi
   conversationRecord: ConversationRecord
+  conversationRuntimePlan: ConversationRuntimeReplayPlan
   conversationRuntimeState: ConversationRuntimeReplayState
   conversationSummary: ConversationSummary
   conversationUsage: ConversationUsage
@@ -128,12 +135,17 @@ export type RuntimeCorePublicSurfaceContract = {
   persistedMessage: PersistedMessage
   persistedToolResultRef: PersistedToolResultRef
   runtime: AgentRuntime
+  planApi: AgentRuntimePlanApi
+  runtimeApprovePlanInput: RuntimeApprovePlanInput
+  runtimeCancelPlanInput: RuntimeCancelPlanInput
   runtimeCompactConversationInput: RuntimeCompactConversationInput
   runtimeCompactConversationResult: RuntimeCompactConversationResult
   runtimeContextCompactArtifactInput: RuntimeContextCompactArtifactInput
   runtimeContextCompactArtifactResult: RuntimeContextCompactArtifactResult
   runtimeContextTokenCountInput: RuntimeContextTokenCountInput
   runtimeContextTokenCountResult: RuntimeContextTokenCountResult
+  runtimeRevisePlanInput: RuntimeRevisePlanInput
+  runtimeSavePlanMarkdownInput: RuntimeSavePlanMarkdownInput
   stableInstructionsInput: RuntimeStableInstructionsInput
   settings: Settings
   shellRequest: ToolShellRequest
