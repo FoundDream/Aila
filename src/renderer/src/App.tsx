@@ -67,7 +67,7 @@ const WorkspaceTerminalPanel = lazy(() =>
   })),
 )
 
-const SIDEBAR_DEFAULT_WIDTH = 260
+const SIDEBAR_DEFAULT_WIDTH = 240
 const SIDEBAR_MIN_WIDTH = 180
 const SIDEBAR_MAX_WIDTH = 320
 // Dragging the handle below this raw width snaps the sidebar closed.

@@ -1,5 +1,4 @@
 import {
-  ChevronRightIcon,
   FolderIcon,
   FolderPlusIcon,
   PencilIcon,
@@ -184,14 +183,14 @@ export function ConversationList({
   return (
     <div className="flex h-full flex-col text-[var(--text)]">
       <div className="min-h-0 flex-1 overflow-y-auto px-2">
-        <section className="mb-6">
+        <section>
           <SectionHeader
             label="Projects"
             actionLabel="New workspace chat"
             onAction={onCreateWorkspaceChat}
           />
           {projects.length > 0 && (
-            <ul className="flex flex-col gap-0.5">
+            <ul className="flex flex-col gap-px">
               {projects.map((project) => {
                 const isExpanded = expandedProjectIds.has(project.id)
                 const showAll = fullyShownProjectIds.has(project.id)
@@ -203,7 +202,7 @@ export function ConversationList({
 
                 return (
                   <li key={project.id}>
-                    <div className="group/project flex h-8 items-center rounded-xl transition-colors hover:bg-[var(--surface-hover)]">
+                    <div className="group/project flex h-7 items-center rounded-md transition-colors hover:bg-[var(--surface-hover)]">
                       <button
                         type="button"
                         onClick={() => toggleProjectExpanded(project.id)}
@@ -211,17 +210,10 @@ export function ConversationList({
                         aria-expanded={isExpanded}
                         className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 px-2 text-left"
                       >
-                        <span
-                          className={`grid size-4 shrink-0 place-items-center text-[var(--sidebar-text-dim)] transition-transform ${
-                            isExpanded ? 'rotate-90' : ''
-                          }`}
-                        >
-                          <ChevronRightIcon className="size-3.5" />
-                        </span>
                         <span className="grid size-5 shrink-0 place-items-center text-[var(--sidebar-text-soft)]">
-                          <FolderIcon className="size-4" />
+                          <FolderIcon className="size-3.5" />
                         </span>
-                        <span className="min-w-0 flex-1 truncate text-[14px] text-[var(--sidebar-text-soft)]">
+                        <span className="min-w-0 flex-1 truncate text-[13.5px] text-[var(--sidebar-text-soft)]">
                           {project.label}
                         </span>
                       </button>
@@ -232,7 +224,7 @@ export function ConversationList({
                         }}
                         aria-label={`Open Terminal in ${project.label}`}
                         title="Open Terminal"
-                        className="grid size-6 shrink-0 cursor-pointer place-items-center rounded-md text-[var(--sidebar-text-dim)] opacity-0 transition group-hover/project:opacity-100 hover:bg-[var(--surface)] hover:text-[var(--text)]"
+                        className="grid size-5 shrink-0 cursor-pointer place-items-center rounded-md text-[var(--sidebar-text-dim)] opacity-0 transition group-hover/project:opacity-100 hover:bg-[var(--surface)] hover:text-[var(--text)]"
                       >
                         <TerminalIcon className="size-3.5" />
                       </button>
@@ -241,13 +233,13 @@ export function ConversationList({
                         onClick={() => onCreate(workspace)}
                         aria-label={`New chat in ${project.label}`}
                         title={`New chat in ${project.label}`}
-                        className="mr-1 grid size-6 shrink-0 cursor-pointer place-items-center rounded-md text-[var(--sidebar-text-dim)] opacity-0 transition group-hover/project:opacity-100 hover:bg-[var(--surface)] hover:text-[var(--text)]"
+                        className="mr-1 grid size-5 shrink-0 cursor-pointer place-items-center rounded-md text-[var(--sidebar-text-dim)] opacity-0 transition group-hover/project:opacity-100 hover:bg-[var(--surface)] hover:text-[var(--text)]"
                       >
                         <PlusIcon className="size-3.5" />
                       </button>
                     </div>
                     {isExpanded && (
-                      <ul className="mt-0.5 flex flex-col gap-0.5">
+                      <ul className="mt-0.5 flex flex-col gap-px">
                         {visibleConversations.map((conversation) => (
                           <ConversationRow
                             key={conversation.id}
@@ -275,7 +267,7 @@ export function ConversationList({
                                   return next
                                 })
                               }
-                              className="ml-7 flex h-8 cursor-pointer items-center rounded-xl px-2.5 text-[14px] text-[var(--sidebar-text-dim)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--sidebar-text-soft)]"
+                              className="ml-7 flex h-7 cursor-pointer items-center rounded-md px-2 text-[13.5px] text-[var(--sidebar-text-dim)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--sidebar-text-soft)]"
                             >
                               Show more
                             </button>
@@ -288,20 +280,16 @@ export function ConversationList({
               })}
             </ul>
           )}
-        </section>
-
-        <section>
-          <SectionHeader label="Chats" />
           {chats.length === 0 ? (
             <button
               type="button"
               onClick={() => onCreate(null)}
-              className="flex h-8 w-full cursor-pointer items-center rounded-xl px-2.5 text-left text-[14px] text-[var(--sidebar-text-dim)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--sidebar-text-soft)]"
+              className="mt-2 flex h-7 w-full cursor-pointer items-center rounded-md px-2 text-left text-[13.5px] text-[var(--sidebar-text-dim)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--sidebar-text-soft)]"
             >
               New chat
             </button>
           ) : (
-            <ul className="flex flex-col gap-0.5">
+            <ul className="mt-2 flex flex-col gap-px">
               {chats.map((conversation) => (
                 <ConversationRow
                   key={conversation.id}
@@ -335,8 +323,8 @@ function SectionHeader({
   onAction?: () => void
 }): ReactElement {
   return (
-    <div className="group/section mb-2 flex h-7 items-center px-2.5">
-      <h2 className="min-w-0 flex-1 truncate text-[14px] font-normal text-[var(--sidebar-text-dim)]">
+    <div className="group/section mb-2 flex h-7 items-center">
+      <h2 className="min-w-0 flex-1 px-2 text-[11px] font-medium tracking-wide text-[var(--sidebar-text-dim)]">
         {label}
       </h2>
       {onAction && actionLabel && (
@@ -345,7 +333,7 @@ function SectionHeader({
           onClick={onAction}
           aria-label={actionLabel}
           title={actionLabel}
-          className="grid size-6 shrink-0 cursor-pointer place-items-center rounded-md text-[var(--sidebar-text-dim)] opacity-60 transition group-hover/section:opacity-100 hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
+          className="grid size-5 shrink-0 cursor-pointer place-items-center rounded-md text-[var(--sidebar-text-dim)] opacity-60 transition group-hover/section:opacity-100 hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
         >
           <FolderPlusIcon className="size-3.5" />
         </button>
@@ -390,7 +378,7 @@ function ConversationRow({
 
   return (
     <li
-      className={`group flex h-8 items-center rounded-xl transition-colors ${
+      className={`group flex h-7 items-center rounded-md transition-colors ${
         isActive ? 'bg-[var(--surface-hover)]' : 'hover:bg-[var(--surface-hover)]'
       }`}
     >
@@ -413,11 +401,11 @@ function ConversationRow({
             onClick={() => onSelect(conversation.id)}
             onDoubleClick={() => onStartRename(conversation.id)}
             className={`flex min-w-0 flex-1 cursor-pointer items-center gap-2 text-left ${
-              indented ? 'pl-10 pr-2' : 'px-2.5'
+              indented ? 'pl-7 pr-2' : 'px-2'
             }`}
           >
             <span
-              className={`min-w-0 flex-1 truncate text-[14px] ${
+              className={`min-w-0 flex-1 truncate text-[13.5px] ${
                 isActive ? 'font-medium text-[var(--text)]' : 'text-[var(--sidebar-text-soft)]'
               }`}
             >
@@ -436,16 +424,16 @@ function ConversationRow({
               </span>
             )}
           </button>
-          <span className="w-9 shrink-0 pr-2 text-right text-[13px] tabular-nums text-[var(--sidebar-text-dim)] group-hover:hidden">
+          <span className="w-9 shrink-0 pr-2 text-right text-[11px] tabular-nums text-[var(--sidebar-text-dim)] group-hover:hidden">
             {formatConversationListRelativeTime(conversation.updatedAt)}
           </span>
-          <div className="mr-1 hidden shrink-0 items-center gap-0.5 group-hover:flex">
+          <div className="mr-1 hidden shrink-0 items-center gap-px group-hover:flex">
             <button
               type="button"
               onClick={() => onStartRename(conversation.id)}
               aria-label="Rename conversation"
               title="Rename"
-              className="flex h-6 w-6 cursor-pointer items-center justify-center rounded-md text-[var(--sidebar-text-dim)] hover:bg-[var(--surface)] hover:text-[var(--text)]"
+              className="flex h-5 w-5 cursor-pointer items-center justify-center rounded-md text-[var(--sidebar-text-dim)] hover:bg-[var(--surface)] hover:text-[var(--text)]"
             >
               <PencilIcon className="size-3.5" />
             </button>
@@ -458,7 +446,7 @@ function ConversationRow({
               }}
               aria-label="Delete conversation"
               title="Delete"
-              className="flex h-6 w-6 cursor-pointer items-center justify-center rounded-md text-[var(--sidebar-text-dim)] hover:bg-[var(--surface)] hover:text-[var(--error)]"
+              className="flex h-5 w-5 cursor-pointer items-center justify-center rounded-md text-[var(--sidebar-text-dim)] hover:bg-[var(--surface)] hover:text-[var(--error)]"
             >
               <Trash2Icon className="size-3.5" />
             </button>
@@ -504,8 +492,8 @@ function ConversationRenameInput({
         }
       }}
       onBlur={() => onSubmit(value.trim())}
-      className={`h-8 min-w-0 flex-1 rounded-xl bg-transparent pr-2.5 text-[14px] text-[var(--text)] outline-none placeholder:text-[var(--sidebar-text-dim)] ${
-        indented ? 'pl-10' : 'pl-2.5'
+      className={`h-7 min-w-0 flex-1 rounded-md bg-transparent pr-2 text-[13.5px] text-[var(--text)] outline-none placeholder:text-[var(--sidebar-text-dim)] ${
+        indented ? 'pl-7' : 'pl-2'
       }`}
     />
   )
