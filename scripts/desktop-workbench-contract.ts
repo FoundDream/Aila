@@ -237,6 +237,10 @@ async function testDesktopExposesPlanRuntimeApi(): Promise<void> {
     join(process.cwd(), 'src/renderer/src/pages/chat/ChatPage.tsx'),
     'utf-8',
   )
+  const composerSource = await readFile(
+    join(process.cwd(), 'src/renderer/src/pages/chat/Composer.tsx'),
+    'utf-8',
+  )
   const streamsSource = await readFile(
     join(process.cwd(), 'src/renderer/src/pages/chat/useChatStreams.ts'),
     'utf-8',
@@ -292,13 +296,19 @@ async function testDesktopExposesPlanRuntimeApi(): Promise<void> {
     'Desktop chat streams should hydrate plans and refresh them from plan lifecycle events',
   )
   assert(
-    chatPageSource.includes('ModeSegmentedControl') &&
-      chatPageSource.includes('PlanReviewPanel') &&
+    chatPageSource.includes('PlanReviewPanel') &&
       chatPageSource.includes('streams.enqueueApprovePlan') &&
       chatPageSource.includes('window.api.runtime.savePlanMarkdown') &&
       chatPageSource.includes('window.api.runtime.cancelPlan') &&
-      chatPageSource.includes("executionMode === 'plan'"),
-    'Desktop chat page should expose mode controls and a plan review/approval panel',
+      chatPageSource.includes("executionMode === 'plan'") &&
+      chatPageSource.includes('onExecutionModeChange={setExecutionMode}') &&
+      composerSource.includes('function PlanModeToggle') &&
+      composerSource.includes('executionMode?: AilaExecutionMode') &&
+      composerSource.includes('onExecutionModeChange?: (mode: AilaExecutionMode) => void') &&
+      composerSource.includes('onChange(active ? "agent" : "plan")') &&
+      composerSource.includes('executionMode && onExecutionModeChange') &&
+      !chatPageSource.includes('ModeSegmentedControl'),
+    'Desktop chat page should keep plan review controls while Composer owns the Plan mode toggle',
   )
 }
 

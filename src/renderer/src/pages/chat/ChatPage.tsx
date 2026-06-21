@@ -1,8 +1,6 @@
 import {
-  BotIcon,
   CheckIcon,
   ListChecksIcon,
-  MessageCircleIcon,
   SaveIcon,
   XIcon,
 } from 'lucide-react'
@@ -210,6 +208,8 @@ export function ChatPage({
       recentOpenRouterModels={settings?.recentOpenRouterModels ?? []}
       approvalMode={settings?.approvalMode ?? 'safe'}
       onApprovalModeChange={handleApprovalModeChange}
+      executionMode={executionMode}
+      onExecutionModeChange={setExecutionMode}
     />
   )
 
@@ -219,12 +219,9 @@ export function ChatPage({
         <span className="min-w-0 max-w-[42%] truncate text-[13px] font-medium text-[var(--text-soft)]">
           {conversation?.meta.title ?? ''}
         </span>
-        <div className="absolute right-4 [-webkit-app-region:no-drag]">
-          <ModeSegmentedControl value={executionMode} onChange={setExecutionMode} />
-        </div>
       </header>
       <main className="flex min-h-0 flex-1 flex-col">
-        {(activePlan || executionMode === 'plan') && (
+        {activePlan && (
           <PlanReviewPanel
             plan={activePlan}
             mode={executionMode}
@@ -270,49 +267,6 @@ const ACTIVE_PLAN_STATUSES = new Set<PlanArtifact['status']>([
 
 function selectActivePlan(plans: PlanArtifact[]): PlanArtifact | null {
   return plans.find((plan) => ACTIVE_PLAN_STATUSES.has(plan.status)) ?? plans[0] ?? null
-}
-
-const MODE_OPTIONS: Array<{
-  id: AilaExecutionMode
-  label: string
-  icon: ReactElement
-}> = [
-  { id: 'agent', label: 'Agent', icon: <BotIcon className="size-3.5" /> },
-  { id: 'plan', label: 'Plan', icon: <ListChecksIcon className="size-3.5" /> },
-  { id: 'chat', label: 'Chat', icon: <MessageCircleIcon className="size-3.5" /> },
-]
-
-function ModeSegmentedControl({
-  value,
-  onChange,
-}: {
-  value: AilaExecutionMode
-  onChange: (mode: AilaExecutionMode) => void
-}): ReactElement {
-  return (
-    <div className="inline-flex h-7 items-center rounded-md border border-[var(--border)] bg-[var(--surface)] p-0.5 shadow-[0_1px_2px_rgba(0,0,0,0.04)]">
-      {MODE_OPTIONS.map((option) => {
-        const selected = value === option.id
-        return (
-          <button
-            key={option.id}
-            type="button"
-            onClick={() => onChange(option.id)}
-            aria-pressed={selected}
-            title={`${option.label} mode`}
-            className={`inline-flex h-6 items-center gap-1.5 rounded px-2 text-[11.5px] font-medium transition-colors ${
-              selected
-                ? 'bg-[var(--text)] text-[var(--surface)]'
-                : 'text-[var(--text-soft)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]'
-            }`}
-          >
-            {option.icon}
-            <span>{option.label}</span>
-          </button>
-        )
-      })}
-    </div>
-  )
 }
 
 function PlanReviewPanel({

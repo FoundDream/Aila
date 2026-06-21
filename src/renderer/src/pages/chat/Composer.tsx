@@ -5,6 +5,7 @@ import {
   ClockIcon,
   FileTextIcon,
   ImageIcon,
+  ListChecksIcon,
   NotebookTextIcon,
   PlusIcon,
   PuzzleIcon,
@@ -36,6 +37,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import type {
+  AilaExecutionMode,
   ChatAttachmentInput,
   DocSummary,
   ExtensionSkillReport,
@@ -64,6 +66,8 @@ interface ComposerProps {
   recentOpenRouterModels: string[];
   approvalMode: ApprovalMode;
   onApprovalModeChange: (mode: ApprovalMode) => Promise<void> | void;
+  executionMode?: AilaExecutionMode;
+  onExecutionModeChange?: (mode: AilaExecutionMode) => void;
 }
 
 // image-store enforces 10MB on disk; stay below it so base64 inflation and
@@ -256,6 +260,39 @@ function AttachMenuItem({
   );
 }
 
+function PlanModeToggle({
+  value,
+  onChange,
+}: {
+  value: AilaExecutionMode;
+  onChange: (mode: AilaExecutionMode) => void;
+}): ReactElement {
+  const active = value === "plan";
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          aria-label={active ? "Turn off plan mode" : "Turn on plan mode"}
+          aria-pressed={active}
+          onClick={() => onChange(active ? "agent" : "plan")}
+          className={`inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full px-2.5 text-[12px] font-medium outline-none transition-colors ${
+            active
+              ? "bg-[var(--text)] text-[var(--surface)] hover:opacity-85"
+              : "text-[var(--text-soft)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
+          }`}
+        >
+          <ListChecksIcon className="size-3.5" />
+          <span>Plan</span>
+        </button>
+      </TooltipTrigger>
+      <TooltipContent>
+        {active ? "Plan mode is active" : "Plan before editing or running tools"}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
 function SlashCommandMenu({
   commands,
   selectedIndex,
@@ -378,6 +415,8 @@ export function Composer({
   recentOpenRouterModels,
   approvalMode,
   onApprovalModeChange,
+  executionMode,
+  onExecutionModeChange,
 }: ComposerProps): ReactElement {
   const [value, setValue] = useState("");
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
@@ -999,6 +1038,12 @@ export function Composer({
                   )}
                 </PopoverContent>
               </Popover>
+              {executionMode && onExecutionModeChange && (
+                <PlanModeToggle
+                  value={executionMode}
+                  onChange={onExecutionModeChange}
+                />
+              )}
               <Popover open={modeOpen} onOpenChange={setModeOpen}>
                 <PopoverTrigger asChild>
                   <button
