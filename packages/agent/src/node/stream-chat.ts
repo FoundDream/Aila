@@ -374,7 +374,22 @@ export function createProviderStreamChat(
               }
               break
             case 'finish':
-              if (part.totalUsage) lastUsage = usageInfoFromModelUsage(part.totalUsage)
+              if (part.totalUsage) {
+                const providerTotal = usageInfoFromModelUsage(part.totalUsage)
+                lastUsage =
+                  (totalUsage.modelCallCount ?? 0) > 0
+                    ? {
+                        ...providerTotal,
+                        modelCallCount: totalUsage.modelCallCount,
+                        maxInputTokens: totalUsage.maxInputTokens,
+                        lastInputTokens: totalUsage.lastInputTokens,
+                        lastOutputTokens: totalUsage.lastOutputTokens,
+                        lastCacheReadTokens: totalUsage.lastCacheReadTokens,
+                        lastCacheWriteTokens: totalUsage.lastCacheWriteTokens,
+                        lastCacheMissTokens: totalUsage.lastCacheMissTokens,
+                      }
+                    : providerTotal
+              }
               break
             case 'abort':
               await callAsyncStreamHandler(handlers.onError, {
@@ -1002,9 +1017,18 @@ function createUsageAccumulator(): UsageInfo {
 }
 
 function addUsage(total: UsageInfo, usage: ModelStreamUsage): void {
-  total.promptTokens += usage.inputTokens ?? 0
-  total.completionTokens += usage.outputTokens ?? 0
-  total.totalTokens += usage.totalTokens ?? (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0)
+  const inputTokens = usage.inputTokens ?? 0
+  const outputTokens = usage.outputTokens ?? 0
+  total.promptTokens += inputTokens
+  total.completionTokens += outputTokens
+  total.totalTokens += usage.totalTokens ?? inputTokens + outputTokens
+  total.modelCallCount = (total.modelCallCount ?? 0) + 1
+  total.maxInputTokens = Math.max(total.maxInputTokens ?? 0, inputTokens)
+  total.lastInputTokens = inputTokens
+  total.lastOutputTokens = outputTokens
+  setLastOptionalUsage(total, 'lastCacheReadTokens', usage.cacheReadTokens)
+  setLastOptionalUsage(total, 'lastCacheWriteTokens', usage.cacheWriteTokens)
+  setLastOptionalUsage(total, 'lastCacheMissTokens', usage.cacheMissTokens)
   addOptionalUsage(total, 'cacheReadTokens', usage.cacheReadTokens)
   addOptionalUsage(total, 'cacheWriteTokens', usage.cacheWriteTokens)
   addOptionalUsage(total, 'cacheMissTokens', usage.cacheMissTokens)
@@ -1022,12 +1046,31 @@ function usageInfoFromModelUsage(usage: ModelStreamUsage): UsageInfo {
     promptTokens,
     completionTokens,
     totalTokens: usage.totalTokens ?? promptTokens + completionTokens,
+    modelCallCount: 1,
+    maxInputTokens: promptTokens,
+    lastInputTokens: promptTokens,
+    lastOutputTokens: completionTokens,
   }
+  setLastOptionalUsage(info, 'lastCacheReadTokens', usage.cacheReadTokens)
+  setLastOptionalUsage(info, 'lastCacheWriteTokens', usage.cacheWriteTokens)
+  setLastOptionalUsage(info, 'lastCacheMissTokens', usage.cacheMissTokens)
   addOptionalUsage(info, 'cacheReadTokens', usage.cacheReadTokens)
   addOptionalUsage(info, 'cacheWriteTokens', usage.cacheWriteTokens)
   addOptionalUsage(info, 'cacheMissTokens', usage.cacheMissTokens)
   addOptionalUsage(info, 'reasoningTokens', usage.reasoningTokens)
   return info
+}
+
+function setLastOptionalUsage(
+  total: UsageInfo,
+  key: 'lastCacheReadTokens' | 'lastCacheWriteTokens' | 'lastCacheMissTokens',
+  value: number | null | undefined,
+): void {
+  if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
+    total[key] = Math.round(value)
+    return
+  }
+  delete total[key]
 }
 
 function addOptionalUsage(

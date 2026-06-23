@@ -65,6 +65,20 @@ export interface UsageInfo {
   promptTokens: number
   completionTokens: number
   totalTokens: number
+  /** Number of model requests included in this usage record. */
+  modelCallCount?: number
+  /** Largest input token count among the model requests in this usage record. */
+  maxInputTokens?: number
+  /** Input token count from the last model request in this usage record. */
+  lastInputTokens?: number
+  /** Output token count from the last model request in this usage record. */
+  lastOutputTokens?: number
+  /** Cache read token count from the last model request in this usage record. */
+  lastCacheReadTokens?: number
+  /** Cache write token count from the last model request in this usage record. */
+  lastCacheWriteTokens?: number
+  /** Cache miss token count from the last model request in this usage record. */
+  lastCacheMissTokens?: number
   cacheReadTokens?: number
   cacheWriteTokens?: number
   cacheMissTokens?: number

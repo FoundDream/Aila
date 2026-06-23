@@ -1013,6 +1013,27 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
           promptTokens: record.meta.usage.promptTokens,
           completionTokens: record.meta.usage.completionTokens,
           totalTokens: record.meta.usage.totalTokens,
+          ...(record.meta.usage.modelCallCount !== undefined
+            ? { modelCallCount: record.meta.usage.modelCallCount }
+            : {}),
+          ...(record.meta.usage.maxInputTokens !== undefined
+            ? { maxInputTokens: record.meta.usage.maxInputTokens }
+            : {}),
+          ...(record.meta.usage.lastInputTokens !== undefined
+            ? { lastInputTokens: record.meta.usage.lastInputTokens }
+            : {}),
+          ...(record.meta.usage.lastOutputTokens !== undefined
+            ? { lastOutputTokens: record.meta.usage.lastOutputTokens }
+            : {}),
+          ...(record.meta.usage.lastCacheReadTokens !== undefined
+            ? { lastCacheReadTokens: record.meta.usage.lastCacheReadTokens }
+            : {}),
+          ...(record.meta.usage.lastCacheWriteTokens !== undefined
+            ? { lastCacheWriteTokens: record.meta.usage.lastCacheWriteTokens }
+            : {}),
+          ...(record.meta.usage.lastCacheMissTokens !== undefined
+            ? { lastCacheMissTokens: record.meta.usage.lastCacheMissTokens }
+            : {}),
           ...(record.meta.usage.cacheReadTokens !== undefined
             ? { cacheReadTokens: record.meta.usage.cacheReadTokens }
             : {}),

@@ -102,6 +102,13 @@ export interface ConversationUsage {
   promptTokens: number
   completionTokens: number
   totalTokens: number
+  modelCallCount?: number
+  maxInputTokens?: number
+  lastInputTokens?: number
+  lastOutputTokens?: number
+  lastCacheReadTokens?: number
+  lastCacheWriteTokens?: number
+  lastCacheMissTokens?: number
   cacheReadTokens?: number
   cacheWriteTokens?: number
   cacheMissTokens?: number
@@ -111,6 +118,7 @@ export interface ConversationUsage {
   cumulativePromptTokens?: number
   cumulativeCompletionTokens?: number
   cumulativeTotalTokens?: number
+  cumulativeModelCallCount?: number
   cumulativeCacheReadTokens?: number
   cumulativeCacheWriteTokens?: number
   cumulativeCacheMissTokens?: number
@@ -160,6 +168,13 @@ export interface ConversationContextTurnLedgerEntry {
     promptTokens: number
     completionTokens: number
     totalTokens: number
+    modelCallCount?: number
+    maxInputTokens?: number
+    lastInputTokens?: number
+    lastOutputTokens?: number
+    lastCacheReadTokens?: number
+    lastCacheWriteTokens?: number
+    lastCacheMissTokens?: number
     cacheReadTokens?: number
     cacheWriteTokens?: number
     cacheMissTokens?: number
@@ -451,6 +466,13 @@ export function createConversationUsageSnapshot(
     promptTokens: number
     completionTokens: number
     totalTokens: number
+    modelCallCount?: number
+    maxInputTokens?: number
+    lastInputTokens?: number
+    lastOutputTokens?: number
+    lastCacheReadTokens?: number
+    lastCacheWriteTokens?: number
+    lastCacheMissTokens?: number
     cacheReadTokens?: number
     cacheWriteTokens?: number
     cacheMissTokens?: number
@@ -467,6 +489,14 @@ export function createConversationUsageSnapshot(
   const previousPrompt = current?.cumulativePromptTokens ?? current?.promptTokens ?? 0
   const previousCompletion = current?.cumulativeCompletionTokens ?? current?.completionTokens ?? 0
   const previousTotal = current?.cumulativeTotalTokens ?? current?.totalTokens ?? 0
+  const previousModelCalls = current?.cumulativeModelCallCount ?? current?.modelCallCount ?? 0
+  const modelCallCount = finiteUsageToken(usage.modelCallCount)
+  const maxInputTokens = finiteUsageToken(usage.maxInputTokens)
+  const lastInputTokens = finiteUsageToken(usage.lastInputTokens)
+  const lastOutputTokens = finiteUsageToken(usage.lastOutputTokens)
+  const lastCacheReadTokens = finiteUsageToken(usage.lastCacheReadTokens)
+  const lastCacheWriteTokens = finiteUsageToken(usage.lastCacheWriteTokens)
+  const lastCacheMissTokens = finiteUsageToken(usage.lastCacheMissTokens)
   const cacheReadTokens = finiteUsageToken(usage.cacheReadTokens)
   const cacheWriteTokens = finiteUsageToken(usage.cacheWriteTokens)
   const cacheMissTokens = finiteUsageToken(usage.cacheMissTokens)
@@ -475,6 +505,13 @@ export function createConversationUsageSnapshot(
     promptTokens: usage.promptTokens,
     completionTokens: usage.completionTokens,
     totalTokens: usage.totalTokens,
+    ...(modelCallCount !== undefined ? { modelCallCount } : {}),
+    ...(maxInputTokens !== undefined ? { maxInputTokens } : {}),
+    ...(lastInputTokens !== undefined ? { lastInputTokens } : {}),
+    ...(lastOutputTokens !== undefined ? { lastOutputTokens } : {}),
+    ...(lastCacheReadTokens !== undefined ? { lastCacheReadTokens } : {}),
+    ...(lastCacheWriteTokens !== undefined ? { lastCacheWriteTokens } : {}),
+    ...(lastCacheMissTokens !== undefined ? { lastCacheMissTokens } : {}),
     ...(cacheReadTokens !== undefined ? { cacheReadTokens } : {}),
     ...(cacheWriteTokens !== undefined ? { cacheWriteTokens } : {}),
     ...(cacheMissTokens !== undefined ? { cacheMissTokens } : {}),
@@ -484,6 +521,7 @@ export function createConversationUsageSnapshot(
     cumulativePromptTokens: previousPrompt + usage.promptTokens,
     cumulativeCompletionTokens: previousCompletion + usage.completionTokens,
     cumulativeTotalTokens: previousTotal + usage.totalTokens,
+    cumulativeModelCallCount: previousModelCalls + (modelCallCount ?? 0),
     cumulativeCacheReadTokens:
       (current?.cumulativeCacheReadTokens ?? current?.cacheReadTokens ?? 0) +
       (cacheReadTokens ?? 0),
@@ -562,6 +600,27 @@ function normalizeConversationContextTurnLedgerEntry(
           promptTokens: record.usage.promptTokens,
           completionTokens: record.usage.completionTokens,
           totalTokens: record.usage.totalTokens,
+          ...(finiteUsageToken(record.usage.modelCallCount) !== undefined
+            ? { modelCallCount: finiteUsageToken(record.usage.modelCallCount) }
+            : {}),
+          ...(finiteUsageToken(record.usage.maxInputTokens) !== undefined
+            ? { maxInputTokens: finiteUsageToken(record.usage.maxInputTokens) }
+            : {}),
+          ...(finiteUsageToken(record.usage.lastInputTokens) !== undefined
+            ? { lastInputTokens: finiteUsageToken(record.usage.lastInputTokens) }
+            : {}),
+          ...(finiteUsageToken(record.usage.lastOutputTokens) !== undefined
+            ? { lastOutputTokens: finiteUsageToken(record.usage.lastOutputTokens) }
+            : {}),
+          ...(finiteUsageToken(record.usage.lastCacheReadTokens) !== undefined
+            ? { lastCacheReadTokens: finiteUsageToken(record.usage.lastCacheReadTokens) }
+            : {}),
+          ...(finiteUsageToken(record.usage.lastCacheWriteTokens) !== undefined
+            ? { lastCacheWriteTokens: finiteUsageToken(record.usage.lastCacheWriteTokens) }
+            : {}),
+          ...(finiteUsageToken(record.usage.lastCacheMissTokens) !== undefined
+            ? { lastCacheMissTokens: finiteUsageToken(record.usage.lastCacheMissTokens) }
+            : {}),
           ...(finiteUsageToken(record.usage.cacheReadTokens) !== undefined
             ? { cacheReadTokens: finiteUsageToken(record.usage.cacheReadTokens) }
             : {}),

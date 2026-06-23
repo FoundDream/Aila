@@ -444,6 +444,13 @@ export interface ConversationUsage {
   promptTokens: number
   completionTokens: number
   totalTokens: number
+  modelCallCount?: number
+  maxInputTokens?: number
+  lastInputTokens?: number
+  lastOutputTokens?: number
+  lastCacheReadTokens?: number
+  lastCacheWriteTokens?: number
+  lastCacheMissTokens?: number
   cacheReadTokens?: number
   cacheWriteTokens?: number
   cacheMissTokens?: number
@@ -453,6 +460,7 @@ export interface ConversationUsage {
   cumulativePromptTokens?: number
   cumulativeCompletionTokens?: number
   cumulativeTotalTokens?: number
+  cumulativeModelCallCount?: number
   cumulativeCacheReadTokens?: number
   cumulativeCacheWriteTokens?: number
   cumulativeCacheMissTokens?: number
@@ -532,6 +540,13 @@ export interface ConversationContextTurnLedgerEntry {
     promptTokens: number
     completionTokens: number
     totalTokens: number
+    modelCallCount?: number
+    maxInputTokens?: number
+    lastInputTokens?: number
+    lastOutputTokens?: number
+    lastCacheReadTokens?: number
+    lastCacheWriteTokens?: number
+    lastCacheMissTokens?: number
     cacheReadTokens?: number
     cacheWriteTokens?: number
     cacheMissTokens?: number
@@ -643,6 +658,13 @@ export interface UsageInfo {
   promptTokens: number
   completionTokens: number
   totalTokens: number
+  modelCallCount?: number
+  maxInputTokens?: number
+  lastInputTokens?: number
+  lastOutputTokens?: number
+  lastCacheReadTokens?: number
+  lastCacheWriteTokens?: number
+  lastCacheMissTokens?: number
   cacheReadTokens?: number
   cacheWriteTokens?: number
   cacheMissTokens?: number

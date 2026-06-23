@@ -66,7 +66,6 @@ interface ComposerProps {
   recentOpenRouterModels: string[];
   approvalMode: ApprovalMode;
   onApprovalModeChange: (mode: ApprovalMode) => Promise<void> | void;
-  showCacheDiagnostics?: boolean;
   executionMode?: AilaExecutionMode;
   onExecutionModeChange?: (mode: AilaExecutionMode) => void;
 }
@@ -195,23 +194,96 @@ function formatTokens(n: number): string {
   return `${(n / 1_000_000).toFixed(1)}M`;
 }
 
-function usageTokenPart(label: string, value: number | undefined): string | null {
-  return typeof value === "number" ? `${label} ${formatTokens(value)}` : null;
+function formatOptionalTokens(value: number | undefined): string {
+  return typeof value === "number" ? formatTokens(value) : "n/a";
 }
 
-function cacheUsageSummary(usage: UsageInfo | null | undefined): string | null {
-  if (!usage) return null;
-  const parts = [
-    usageTokenPart("read", usage.cacheReadTokens),
-    usageTokenPart("write", usage.cacheWriteTokens),
-    usageTokenPart("miss", usage.cacheMissTokens),
-  ].filter((part): part is string => Boolean(part));
-  return parts.length > 0 ? `Cache ${parts.join(" · ")}` : null;
+function usageHasSingleCall(usage: UsageInfo | null | undefined): boolean {
+  return usage?.modelCallCount === 1;
 }
 
-function reasoningUsageSummary(usage: UsageInfo | null | undefined): string | null {
-  if (!usageTokenPart("Reasoning", usage?.reasoningTokens)) return null;
-  return usageTokenPart("Reasoning", usage?.reasoningTokens);
+function lastInputTokens(usage: UsageInfo | null | undefined): number | undefined {
+  return usage?.lastInputTokens ?? (usageHasSingleCall(usage) ? usage?.promptTokens : undefined);
+}
+
+function lastOutputTokens(usage: UsageInfo | null | undefined): number | undefined {
+  return usage?.lastOutputTokens ?? (usageHasSingleCall(usage) ? usage?.completionTokens : undefined);
+}
+
+function lastCacheReadTokens(usage: UsageInfo | null | undefined): number | undefined {
+  return usage?.lastCacheReadTokens ?? (usageHasSingleCall(usage) ? usage?.cacheReadTokens : undefined);
+}
+
+function lastCacheMissTokens(usage: UsageInfo | null | undefined): number | undefined {
+  return usage?.lastCacheMissTokens ?? (usageHasSingleCall(usage) ? usage?.cacheMissTokens : undefined);
+}
+
+function lastCacheWriteTokens(usage: UsageInfo | null | undefined): number | undefined {
+  return usage?.lastCacheWriteTokens ?? (usageHasSingleCall(usage) ? usage?.cacheWriteTokens : undefined);
+}
+
+function contextWindowTokens(usage: UsageInfo | null | undefined): number | undefined {
+  const inputTokens = lastInputTokens(usage);
+  const outputTokens = lastOutputTokens(usage);
+  if (typeof inputTokens !== "number" || typeof outputTokens !== "number") {
+    return undefined;
+  }
+  return inputTokens + outputTokens;
+}
+
+function contextWindowSummary(
+  usedTokens: number | null,
+  contextLength: number | null | undefined,
+  ratio: number,
+): string {
+  if (usedTokens !== null && contextLength && contextLength > 0) {
+    return `Context window: ${formatTokens(usedTokens)} / ${formatTokens(contextLength)} (${Math.round(ratio * 100)}%)`;
+  }
+  if (usedTokens !== null) {
+    return `Context window: ${formatTokens(usedTokens)}`;
+  }
+  if (contextLength && contextLength > 0) {
+    return `Context window: n/a / ${formatTokens(contextLength)}`;
+  }
+  return "Context window: n/a";
+}
+
+function uncachedInputTokens(usage: UsageInfo | null | undefined): number | undefined {
+  const inputTokens = lastInputTokens(usage);
+  const cacheReadTokens = lastCacheReadTokens(usage);
+  if (typeof inputTokens === "number" && typeof cacheReadTokens === "number") {
+    return Math.max(inputTokens - cacheReadTokens, 0);
+  }
+  const cacheMissTokens = lastCacheMissTokens(usage);
+  const cacheWriteTokens = lastCacheWriteTokens(usage);
+  if (typeof cacheMissTokens === "number" || typeof cacheWriteTokens === "number") {
+    return (cacheMissTokens ?? 0) + (cacheWriteTokens ?? 0);
+  }
+  return undefined;
+}
+
+function usageTokenBuckets(usage: UsageInfo | null | undefined): Array<{
+  label: string;
+  value: number | undefined;
+  swatch: string;
+}> {
+  return [
+    {
+      label: "Input (cached)",
+      value: lastCacheReadTokens(usage),
+      swatch: "bg-sky-200",
+    },
+    {
+      label: "Input (uncached)",
+      value: uncachedInputTokens(usage),
+      swatch: "bg-sky-400",
+    },
+    {
+      label: "Output",
+      value: lastOutputTokens(usage),
+      swatch: "bg-blue-600",
+    },
+  ];
 }
 
 function readAsDataUrl(file: File): Promise<string> {
@@ -435,7 +507,6 @@ export function Composer({
   recentOpenRouterModels,
   approvalMode,
   onApprovalModeChange,
-  showCacheDiagnostics = false,
   executionMode,
   onExecutionModeChange,
 }: ComposerProps): ReactElement {
@@ -836,14 +907,19 @@ export function Composer({
     ],
   );
 
-  const used = usage?.totalTokens ?? 0;
+  const contextMeterTokens = contextWindowTokens(usage) ?? null;
   const ratio =
-    contextLength && contextLength > 0 ? Math.min(used / contextLength, 1) : 0;
-  const showMeter = (contextLength ?? 0) > 0 || used > 0;
-  const cacheSummary = showCacheDiagnostics ? cacheUsageSummary(usage) : null;
-  const reasoningSummary = showCacheDiagnostics
-    ? reasoningUsageSummary(usage)
-    : null;
+    contextLength && contextLength > 0 && contextMeterTokens !== null
+      ? Math.min(contextMeterTokens / contextLength, 1)
+      : 0;
+  const showMeter =
+    (contextLength ?? 0) > 0 || contextMeterTokens !== null || Boolean(usage);
+  const contextSummary = contextWindowSummary(
+    contextMeterTokens,
+    contextLength,
+    ratio,
+  );
+  const usageBuckets = usageTokenBuckets(usage);
   const meterColor =
     ratio >= 0.9
       ? "text-red-500"
@@ -1123,7 +1199,7 @@ export function Composer({
                   <TooltipTrigger asChild>
                     <span
                       role="img"
-                      aria-label="Context used"
+                      aria-label="Usage details"
                       className={`inline-flex shrink-0 ${meterColor}`}
                     >
                       <ContextRing ratio={ratio} />
@@ -1131,21 +1207,16 @@ export function Composer({
                   </TooltipTrigger>
                   <TooltipContent>
                     <div className="flex flex-col gap-0.5">
-                      <span>
-                        {contextLength
-                          ? `Context: ${formatTokens(used)} / ${formatTokens(contextLength)} (${Math.round(ratio * 100)}%)`
-                          : `Context: ${formatTokens(used)} tokens`}
-                      </span>
-                      {usage && (
-                        <span className="opacity-60">
-                          Prompt {formatTokens(usage.promptTokens)} · Completion{" "}
-                          {formatTokens(usage.completionTokens)}
+                      <span>{contextSummary}</span>
+                      {usageBuckets.map((bucket) => (
+                        <span key={bucket.label} className="flex items-center gap-2">
+                          <span className={`h-2.5 w-2.5 rounded-[3px] ${bucket.swatch}`} />
+                          <span>
+                            <span className="opacity-60">{bucket.label}: </span>
+                            {formatOptionalTokens(bucket.value)}
+                          </span>
                         </span>
-                      )}
-                      {cacheSummary && <span className="opacity-60">{cacheSummary}</span>}
-                      {reasoningSummary && (
-                        <span className="opacity-60">{reasoningSummary}</span>
-                      )}
+                      ))}
                     </div>
                   </TooltipContent>
                 </Tooltip>

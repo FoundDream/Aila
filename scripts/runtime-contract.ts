@@ -1292,11 +1292,23 @@ async function testConversationUsageAccumulatorContract(): Promise<void> {
     promptTokens: 3,
     completionTokens: 5,
     totalTokens: 8,
+    modelCallCount: 2,
+    maxInputTokens: 7,
+    lastInputTokens: 3,
+    lastOutputTokens: 2,
+    lastCacheReadTokens: 1,
+    lastCacheMissTokens: 2,
   })
   await store.recordUsage(conversation.id, {
     promptTokens: 2,
     completionTokens: 4,
     totalTokens: 6,
+    modelCallCount: 1,
+    maxInputTokens: 2,
+    lastInputTokens: 2,
+    lastOutputTokens: 4,
+    lastCacheReadTokens: 1,
+    lastCacheMissTokens: 1,
   })
   const record = await store.getConversation(conversation.id)
   assertEqual(record.meta.usage?.totalTokens, 6, 'usage snapshot should keep the latest turn total')
@@ -1310,6 +1322,37 @@ async function testConversationUsageAccumulatorContract(): Promise<void> {
     record.meta.usage?.cumulativePromptTokens,
     5,
     'usage snapshot should accumulate prompt tokens across turns',
+  )
+  assertEqual(record.meta.usage?.modelCallCount, 1, 'usage snapshot should keep latest call count')
+  assertEqual(
+    record.meta.usage?.maxInputTokens,
+    2,
+    'usage snapshot should keep latest max input tokens',
+  )
+  assertEqual(
+    record.meta.usage?.lastInputTokens,
+    2,
+    'usage snapshot should keep latest last input tokens',
+  )
+  assertEqual(
+    record.meta.usage?.lastOutputTokens,
+    4,
+    'usage snapshot should keep latest last output tokens',
+  )
+  assertEqual(
+    record.meta.usage?.lastCacheReadTokens,
+    1,
+    'usage snapshot should keep latest last cache read tokens',
+  )
+  assertEqual(
+    record.meta.usage?.lastCacheMissTokens,
+    1,
+    'usage snapshot should keep latest last cache miss tokens',
+  )
+  assertEqual(
+    record.meta.usage?.cumulativeModelCallCount,
+    3,
+    'usage snapshot should accumulate model calls across turns',
   )
 }
 
@@ -2335,7 +2378,17 @@ async function testRuntimePersistsAutoContextCheckpoint(): Promise<void> {
       await handlers.onDone({
         conversationId: req.conversationId,
         messageId: req.assistantMessageId,
-        usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+        usage: {
+          promptTokens: 10,
+          completionTokens: 5,
+          totalTokens: 15,
+          modelCallCount: 1,
+          maxInputTokens: 10,
+          lastInputTokens: 10,
+          lastOutputTokens: 5,
+          lastCacheReadTokens: 6,
+          lastCacheMissTokens: 4,
+        },
         message: {
           schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
           id: req.assistantMessageId,
@@ -2404,6 +2457,21 @@ async function testRuntimePersistsAutoContextCheckpoint(): Promise<void> {
     turnLedger.usage?.totalTokens,
     15,
     'context turn ledger should persist actual model usage for the turn',
+  )
+  assertEqual(
+    turnLedger.usage?.maxInputTokens,
+    10,
+    'context turn ledger should persist real max request input tokens',
+  )
+  assertEqual(
+    turnLedger.usage?.lastOutputTokens,
+    5,
+    'context turn ledger should persist real last output tokens',
+  )
+  assertEqual(
+    turnLedger.usage?.lastCacheReadTokens,
+    6,
+    'context turn ledger should persist real last cache read tokens',
   )
   assertEqual(
     turnLedger.compaction.recommendedCheckpointId,
@@ -8420,7 +8488,21 @@ async function testProviderStreamChatOwnsToolLoopContract(): Promise<void> {
   const toolResults: string[] = []
   const doneMessages: PersistedMessage[] = []
   let toolRunCount = 0
-  let doneUsage: { promptTokens: number; completionTokens: number; totalTokens: number } | undefined
+  let doneUsage:
+    | {
+        promptTokens: number
+        completionTokens: number
+        totalTokens: number
+        modelCallCount?: number
+        maxInputTokens?: number
+        lastInputTokens?: number
+        lastOutputTokens?: number
+        lastCacheReadTokens?: number
+        lastCacheMissTokens?: number
+        cacheReadTokens?: number
+        cacheMissTokens?: number
+      }
+    | undefined
 
   const modelStreamClient: runtimePackageNodeSdk.ModelStreamClient = {
     async *stream(input) {
@@ -8431,7 +8513,13 @@ async function testProviderStreamChatOwnsToolLoopContract(): Promise<void> {
         yield { type: 'tool-input-delta', id: 'loop_tool', delta: '{"message":"hello"}' }
         yield {
           type: 'finish-step',
-          usage: { inputTokens: 7, outputTokens: 3, totalTokens: 10 },
+          usage: {
+            inputTokens: 7,
+            outputTokens: 3,
+            totalTokens: 10,
+            cacheReadTokens: 4,
+            cacheMissTokens: 3,
+          },
         }
         yield {
           type: 'tool-call',
@@ -8452,7 +8540,16 @@ async function testProviderStreamChatOwnsToolLoopContract(): Promise<void> {
         'provider stream loop should append tool output before second model request',
       )
       yield { type: 'text-delta', text: 'done' }
-      yield { type: 'finish-step', usage: { inputTokens: 5, outputTokens: 2, totalTokens: 7 } }
+      yield {
+        type: 'finish-step',
+        usage: {
+          inputTokens: 5,
+          outputTokens: 2,
+          totalTokens: 7,
+          cacheReadTokens: 4,
+          cacheMissTokens: 1,
+        },
+      }
     },
   }
 
@@ -8528,6 +8625,22 @@ async function testProviderStreamChatOwnsToolLoopContract(): Promise<void> {
   assertEqual(toolRunCount, 1, 'provider stream loop should execute each tool once')
   assertEqual(toolResults[0], 'echo:hello', 'provider stream loop should emit the tool result')
   assertEqual(doneUsage?.totalTokens, 17, 'provider stream loop should accumulate step usage')
+  assertEqual(doneUsage?.modelCallCount, 2, 'provider stream loop should count model calls')
+  assertEqual(doneUsage?.maxInputTokens, 7, 'provider stream loop should keep max input tokens')
+  assertEqual(doneUsage?.lastInputTokens, 5, 'provider stream loop should keep last input tokens')
+  assertEqual(doneUsage?.lastOutputTokens, 2, 'provider stream loop should keep last output tokens')
+  assertEqual(
+    doneUsage?.lastCacheReadTokens,
+    4,
+    'provider stream loop should keep last cache read tokens',
+  )
+  assertEqual(
+    doneUsage?.lastCacheMissTokens,
+    1,
+    'provider stream loop should keep last cache miss tokens',
+  )
+  assertEqual(doneUsage?.cacheReadTokens, 8, 'provider stream loop should total cache read tokens')
+  assertEqual(doneUsage?.cacheMissTokens, 4, 'provider stream loop should total cache miss tokens')
   const completedMessage = doneMessages[0]
   assert(completedMessage, 'provider stream loop should produce a done message')
   assertEqual(

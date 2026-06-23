@@ -203,7 +203,6 @@ export function DocChatPanel({
               recentOpenRouterModels={settings?.recentOpenRouterModels ?? []}
               approvalMode={settings?.approvalMode ?? 'safe'}
               onApprovalModeChange={handleApprovalModeChange}
-              showCacheDiagnostics={settings?.promptCache?.showDiagnostics === true}
             />
           </>
         ) : (
