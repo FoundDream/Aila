@@ -4,8 +4,10 @@ import {
   AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
   type ChatMessage,
   type ImageSideChannelBlock,
+  type ModelDescriptor,
   type ModelInfo,
   type ModelSelection,
+  modelSupportsVision,
   type PersistedBlock,
   type PersistedImageBlock,
   type PersistedMessage,
@@ -18,6 +20,7 @@ import {
   type ToolContext,
   type ToolRegistry,
   type UsageInfo,
+  type UserContentPart,
 } from '../core'
 import { executeTool, getToolDefinitions, summarizeToolTarget } from '../internal'
 import type { Settings } from '../settings-types'
@@ -55,6 +58,11 @@ const TOOL_BUDGET_EXHAUSTED_NOTICE =
   'Do not request any more tools. Using the results you already have, give the ' +
   'user a clear final answer: what you did, the current state, and any remaining ' +
   'next steps they should take.'
+
+const VISION_BRIDGE_SYSTEM_PROMPT =
+  'You inspect image attachments for a downstream text-only model. ' +
+  'Return concise, factual Markdown. Include visible text/OCR, important objects, layout, ' +
+  'tables/charts/UI structure, and details that could matter for answering the user.'
 
 export interface ProviderStreamChatOptions extends NodeAuthInput {
   modelRegistry?: ModelRegistry
@@ -188,6 +196,22 @@ export function createProviderStreamChat(
     }
 
     try {
+      const totalUsage = createUsageAccumulator()
+      const bridged = await bridgeImagesForTextOnlyModel({
+        messages,
+        descriptor,
+        selection,
+        settings,
+        modelRegistry,
+        modelStreamClient,
+        authInput: options,
+        signal,
+      })
+      for (const usage of bridged.usage) {
+        addUsage(totalUsage, usage)
+        lastUsage = usageInfo(totalUsage)
+      }
+
       const tools = buildTools(
         {
           settings,
@@ -209,8 +233,7 @@ export function createProviderStreamChat(
         toolRegistry,
         toolTargets,
       )
-      const modelMessages = cloneAgentMessages(messages)
-      const totalUsage = createUsageAccumulator()
+      const modelMessages = cloneAgentMessages(bridged.messages)
       const startedToolCalls = new Set<string>()
 
       // Run up to maxToolSteps tool-enabled steps, plus one final tool-free step
@@ -503,6 +526,196 @@ export function createModelInfoResolver(
   modelRegistry: ModelRegistry = createModelRegistry(),
 ): (selection: ModelSelection) => ModelInfo {
   return (selection) => modelRegistry.getModelInfo(selection)
+}
+
+interface VisionBridgeInput {
+  messages: ChatMessage[]
+  descriptor: ModelDescriptor
+  selection: ModelSelection
+  settings: Settings
+  modelRegistry: ModelRegistry
+  modelStreamClient: ModelStreamClient
+  authInput: NodeAuthInput
+  signal: AbortSignal
+}
+
+interface VisionBridgeResult {
+  messages: ChatMessage[]
+  usage: ModelStreamUsage[]
+}
+
+async function bridgeImagesForTextOnlyModel(input: VisionBridgeInput): Promise<VisionBridgeResult> {
+  if (!messagesContainImages(input.messages) || modelSupportsVision(input.descriptor)) {
+    return { messages: cloneAgentMessages(input.messages), usage: [] }
+  }
+
+  const mode = input.settings.visionFallbackMode ?? 'auto'
+  if (mode === 'disabled' || mode === 'ask') {
+    return replaceImagesWithText(
+      input.messages,
+      mode === 'ask'
+        ? 'Vision fallback is set to ask before analyzing images.'
+        : 'Vision fallback is disabled.',
+    )
+  }
+
+  const visionSelection = input.settings.defaultVisionModel
+  if (!visionSelection) {
+    throw new Error(
+      `Model ${input.selection.providerId}:${input.selection.modelId} cannot inspect image attachments. Configure a Default Vision Model or choose a vision-capable chat model.`,
+    )
+  }
+
+  const visionDescriptor = input.modelRegistry.resolve(visionSelection)
+  if (!modelSupportsVision(visionDescriptor)) {
+    throw new Error(
+      `Default Vision Model ${visionSelection.providerId}:${visionSelection.modelId} is not marked as vision-capable.`,
+    )
+  }
+  const visionApiKey = requireApiKey(visionDescriptor, {
+    ...input.authInput,
+    settings: input.settings,
+  })
+
+  const usage: ModelStreamUsage[] = []
+  const messages: ChatMessage[] = []
+  for (const message of input.messages) {
+    if (message.role !== 'user' || typeof message.content === 'string') {
+      messages.push(cloneAgentValue(message))
+      continue
+    }
+    messages.push({
+      role: 'user',
+      content: await analyzeUserImageParts({
+        parts: message.content,
+        visionDescriptor,
+        visionApiKey,
+        modelStreamClient: input.modelStreamClient,
+        signal: input.signal,
+        usage,
+      }),
+    })
+  }
+
+  return { messages, usage }
+}
+
+async function analyzeUserImageParts(input: {
+  parts: UserContentPart[]
+  visionDescriptor: ModelDescriptor
+  visionApiKey: string
+  modelStreamClient: ModelStreamClient
+  signal: AbortSignal
+  usage: ModelStreamUsage[]
+}): Promise<string> {
+  const textContext = input.parts
+    .filter((part): part is Extract<UserContentPart, { type: 'text' }> => part.type === 'text')
+    .map((part) => part.text)
+    .join('\n\n')
+    .trim()
+  const sections: string[] = []
+  if (textContext) sections.push(textContext)
+
+  let imageIndex = 0
+  for (const part of input.parts) {
+    if (part.type === 'text') continue
+    imageIndex += 1
+    const analysis = await analyzeImagePart({
+      image: part,
+      imageIndex,
+      textContext,
+      visionDescriptor: input.visionDescriptor,
+      visionApiKey: input.visionApiKey,
+      modelStreamClient: input.modelStreamClient,
+      signal: input.signal,
+      usage: input.usage,
+    })
+    sections.push(
+      [
+        `<image-analysis index="${imageIndex}" source="${escapeVisionAttribute(part.url)}" mime="${escapeVisionAttribute(part.mime)}">`,
+        analysis,
+        '</image-analysis>',
+      ].join('\n'),
+    )
+  }
+
+  return sections.join('\n\n')
+}
+
+async function analyzeImagePart(input: {
+  image: Extract<UserContentPart, { type: 'image' }>
+  imageIndex: number
+  textContext: string
+  visionDescriptor: ModelDescriptor
+  visionApiKey: string
+  modelStreamClient: ModelStreamClient
+  signal: AbortSignal
+  usage: ModelStreamUsage[]
+}): Promise<string> {
+  const prompt = [
+    `Analyze image ${input.imageIndex} for a downstream text-only model.`,
+    input.textContext ? `User/request context:\n${input.textContext}` : '',
+    'Return only the image analysis. Do not answer the user directly.',
+  ]
+    .filter(Boolean)
+    .join('\n\n')
+  const chunks: string[] = []
+
+  for await (const event of input.modelStreamClient.stream({
+    descriptor: input.visionDescriptor,
+    apiKey: input.visionApiKey,
+    messages: [
+      { role: 'system', content: VISION_BRIDGE_SYSTEM_PROMPT },
+      {
+        role: 'user',
+        content: [{ type: 'text', text: prompt }, cloneAgentValue(input.image)],
+      },
+    ],
+    tools: [],
+    signal: input.signal,
+    step: -1,
+  })) {
+    if (event.type === 'text-delta') chunks.push(event.text)
+    if (event.type === 'finish-step' && event.usage) input.usage.push(event.usage)
+    if (event.type === 'finish' && event.totalUsage) input.usage.push(event.totalUsage)
+    if (event.type === 'error') {
+      const message = event.error instanceof Error ? event.error.message : String(event.error)
+      throw new Error(`Vision model failed to inspect image ${input.imageIndex}: ${message}`)
+    }
+  }
+
+  const analysis = chunks.join('').trim()
+  return analysis || '[Vision model returned no image analysis.]'
+}
+
+function replaceImagesWithText(messages: ChatMessage[], reason: string): VisionBridgeResult {
+  return {
+    messages: messages.map((message) => {
+      if (message.role !== 'user' || typeof message.content === 'string') {
+        return cloneAgentValue(message)
+      }
+      const sections = message.content.map((part) =>
+        part.type === 'text'
+          ? part.text
+          : `[Attached image omitted: ${reason} Source: ${part.url}; MIME: ${part.mime}.]`,
+      )
+      return { role: 'user', content: sections.filter(Boolean).join('\n\n') }
+    }),
+    usage: [],
+  }
+}
+
+function messagesContainImages(messages: ChatMessage[]): boolean {
+  return messages.some(
+    (message) =>
+      message.role === 'user' &&
+      Array.isArray(message.content) &&
+      message.content.some((part) => part.type === 'image'),
+  )
+}
+
+function escapeVisionAttribute(value: string): string {
+  return value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;')
 }
 
 interface ParsedModelToolCall {

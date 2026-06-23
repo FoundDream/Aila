@@ -254,6 +254,7 @@ function charsPerTokenForProvider(providerId: ProviderId | undefined, model: str
   if (provider === 'anthropic') return 3.8
   if (provider === 'google') return 4.2
   if (provider === 'openai') return 4
+  if (provider === 'deepseek') return 4
   if (provider === 'openrouter') {
     if (modelKey.includes('claude')) return 3.8
     if (modelKey.includes('gemini')) return 4.2

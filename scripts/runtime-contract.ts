@@ -7957,6 +7957,67 @@ async function testNativeOpenAiChatModelStreamContract(): Promise<void> {
   assertEqual(finishStep.usage?.totalTokens, 10, 'native OpenAI chat should report step usage')
 }
 
+async function testNativeDeepSeekProviderContract(): Promise<void> {
+  const registry = runtimePackageNodeSdk.createModelRegistry()
+  const descriptor = registry.resolve({
+    providerId: 'deepseek',
+    modelId: 'deepseek-v4-pro',
+  })
+  assertEqual(descriptor.api, 'openai-chat-completions', 'DeepSeek should use chat completions')
+  assertEqual(descriptor.baseUrl, 'https://api.deepseek.com', 'DeepSeek base URL')
+  assertEqual(
+    runtimeSdk.PROVIDER_LABELS.deepseek,
+    'DeepSeek',
+    'DeepSeek should be a known provider',
+  )
+  assert(
+    runtimePackageNodeSdk
+      .configuredProviders(
+        { apiKeys: {}, defaultModel: null },
+        { env: { DEEPSEEK_API_KEY: 'deepseek-key' } },
+      )
+      .includes('deepseek'),
+    'configuredProviders should recognize DEEPSEEK_API_KEY',
+  )
+
+  let requestUrl = ''
+  let authHeader = ''
+  let requestBody: Record<string, unknown> = {}
+  const fetchImpl: typeof fetch = async (url, init) => {
+    requestUrl = String(url)
+    const headers = init?.headers as Record<string, string> | undefined
+    authHeader = headers?.Authorization ?? ''
+    requestBody = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>
+    return new Response(textStream(sse([{ choices: [{ delta: { content: 'ok' } }] }])), {
+      status: 200,
+    })
+  }
+  const client = runtimePackageNodeSdk.createOpenAiChatModelStreamClient({ fetch: fetchImpl })
+  const events: runtimePackageNodeSdk.ModelStreamEvent[] = []
+
+  for await (const event of client.stream({
+    descriptor,
+    apiKey: 'deepseek-key',
+    messages: [{ role: 'user', content: 'hello' }],
+    signal: new AbortController().signal,
+    tools: [],
+  })) {
+    events.push(event)
+  }
+
+  assertEqual(
+    requestUrl,
+    'https://api.deepseek.com/chat/completions',
+    'DeepSeek should target native chat completions endpoint',
+  )
+  assertEqual(authHeader, 'Bearer deepseek-key', 'DeepSeek should use bearer auth')
+  assertEqual(requestBody.model, 'deepseek-v4-pro', 'DeepSeek request should keep model id')
+  assert(
+    events.some((event) => event.type === 'text-delta'),
+    'DeepSeek stream should reuse OpenAI-compatible SSE parsing',
+  )
+}
+
 async function testNativeAnthropicModelStreamContract(): Promise<void> {
   const requests: unknown[] = []
   const streamBodies = [
@@ -8245,6 +8306,345 @@ async function testProviderStreamChatOwnsToolLoopContract(): Promise<void> {
   assert(
     agentEvents.some((event) => event.type === 'tool.execution.completed'),
     'provider stream loop should emit tool execution completion',
+  )
+}
+
+function chatMessagesContainImage(messages: ChatMessage[]): boolean {
+  return messages.some(
+    (message) =>
+      message.role === 'user' &&
+      Array.isArray(message.content) &&
+      message.content.some((part) => part.type === 'image'),
+  )
+}
+
+function chatMessagesAsText(messages: ChatMessage[]): string {
+  return messages
+    .map((message) => {
+      if (typeof message.content === 'string') return message.content
+      return message.content
+        .map((part) => (part.type === 'text' ? part.text : `[image:${part.url}]`))
+        .join('\n')
+    })
+    .join('\n')
+}
+
+function createVisionBridgeContractModelRegistry(): runtimePackageNodeSdk.ModelRegistry {
+  return runtimePackageNodeSdk.createModelRegistry({
+    builtinModels: false,
+    providers: {
+      deepseek: { api: 'openai-chat-completions' },
+      openai: { api: 'openai-chat-completions' },
+    },
+    models: [
+      {
+        provider: 'deepseek',
+        modelId: 'deepseek-contract-text',
+        api: 'openai-chat-completions',
+      },
+      {
+        provider: 'openai',
+        modelId: 'gpt-contract-vision',
+        api: 'openai-chat-completions',
+        input: ['text', 'image'],
+        capabilities: { vision: true },
+      },
+    ],
+  })
+}
+
+async function testProviderStreamChatVisionFallbackContract(): Promise<void> {
+  const requests: Array<{ provider: string; messages: ChatMessage[]; step?: number }> = []
+  let doneUsage: { promptTokens: number; completionTokens: number; totalTokens: number } | undefined
+
+  const modelStreamClient: runtimePackageNodeSdk.ModelStreamClient = {
+    async *stream(input) {
+      requests.push({
+        provider: input.descriptor.provider,
+        messages: structuredClone(input.messages),
+        step: input.step,
+      })
+
+      if (input.descriptor.provider === 'openai') {
+        assertEqual(input.step, -1, 'vision fallback should call the vision model as a bridge step')
+        assert(
+          chatMessagesContainImage(input.messages),
+          'vision fallback should send original image content to the vision model',
+        )
+        yield { type: 'text-delta', text: 'Summary: chart with revenue.' }
+        yield { type: 'finish-step', usage: { inputTokens: 3, outputTokens: 4, totalTokens: 7 } }
+        return
+      }
+
+      assertEqual(
+        input.descriptor.provider,
+        'deepseek',
+        'vision fallback should send the final request to the selected text model',
+      )
+      assert(
+        !chatMessagesContainImage(input.messages),
+        'vision fallback should not send image parts to the text-only model',
+      )
+      const text = chatMessagesAsText(input.messages)
+      assert(
+        text.includes('what is in this image?') &&
+          text.includes('<image-analysis') &&
+          text.includes('Summary: chart with revenue.'),
+        'vision fallback should inject the vision model analysis into text-only model context',
+      )
+      yield { type: 'text-delta', text: 'answered' }
+      yield { type: 'finish-step', usage: { inputTokens: 5, outputTokens: 2, totalTokens: 7 } }
+    },
+  }
+
+  const streamChat = runtimePackageNodeSdk.createProviderStreamChat({
+    modelRegistry: createVisionBridgeContractModelRegistry(),
+    modelStreamClient,
+    settings: {
+      apiKeys: { deepseek: 'text-key', openai: 'vision-key' },
+      defaultModel: null,
+      defaultVisionModel: { providerId: 'openai', modelId: 'gpt-contract-vision' },
+      visionFallbackMode: 'auto',
+    },
+  })
+
+  await streamChat(
+    {
+      conversationId: 'provider-vision-fallback-conversation',
+      assistantMessageId: 'provider-vision-fallback-assistant',
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'what is in this image?' },
+            { type: 'image', url: 'aila-image://contract/chart.png', mime: 'image/png' },
+          ],
+        },
+      ],
+      selection: { providerId: 'deepseek', modelId: 'deepseek-contract-text' },
+      signal: new AbortController().signal,
+    },
+    {
+      onTextDelta() {},
+      onReasoningDelta() {},
+      onToolCallStart() {},
+      onToolCallArgsDelta() {},
+      onToolCallResult() {},
+      onImageBlock() {},
+      onDone(event) {
+        doneUsage = event.usage
+      },
+      onError(event) {
+        throw new Error(event.error)
+      },
+    },
+  )
+
+  assertEqual(requests.length, 2, 'vision fallback should make one vision and one text request')
+  assertEqual(requests[0]?.provider, 'openai', 'vision fallback should inspect images first')
+  assertEqual(requests[1]?.provider, 'deepseek', 'vision fallback should call the text model last')
+  assertEqual(
+    doneUsage?.totalTokens,
+    14,
+    'vision fallback should include bridge usage in turn usage',
+  )
+}
+
+async function testProviderStreamChatVisionPassThroughContract(): Promise<void> {
+  const requests: Array<{ provider: string; messages: ChatMessage[]; step?: number }> = []
+
+  const modelStreamClient: runtimePackageNodeSdk.ModelStreamClient = {
+    async *stream(input) {
+      requests.push({
+        provider: input.descriptor.provider,
+        messages: structuredClone(input.messages),
+        step: input.step,
+      })
+      assertEqual(
+        input.descriptor.provider,
+        'openai',
+        'native vision pass-through should use the selected vision model',
+      )
+      assert(
+        chatMessagesContainImage(input.messages),
+        'native vision pass-through should preserve image parts',
+      )
+      yield { type: 'text-delta', text: 'native answer' }
+      yield { type: 'finish-step', usage: { inputTokens: 2, outputTokens: 3, totalTokens: 5 } }
+    },
+  }
+
+  const streamChat = runtimePackageNodeSdk.createProviderStreamChat({
+    modelRegistry: createVisionBridgeContractModelRegistry(),
+    modelStreamClient,
+    settings: {
+      apiKeys: { openai: 'vision-key' },
+      defaultModel: null,
+      defaultVisionModel: { providerId: 'openai', modelId: 'gpt-contract-vision' },
+      visionFallbackMode: 'auto',
+    },
+  })
+
+  await streamChat(
+    {
+      conversationId: 'provider-vision-native-conversation',
+      assistantMessageId: 'provider-vision-native-assistant',
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'read this screenshot' },
+            { type: 'image', url: 'aila-image://contract/screenshot.png', mime: 'image/png' },
+          ],
+        },
+      ],
+      selection: { providerId: 'openai', modelId: 'gpt-contract-vision' },
+      signal: new AbortController().signal,
+    },
+    {
+      onTextDelta() {},
+      onReasoningDelta() {},
+      onToolCallStart() {},
+      onToolCallArgsDelta() {},
+      onToolCallResult() {},
+      onImageBlock() {},
+      onDone() {},
+      onError(event) {
+        throw new Error(event.error)
+      },
+    },
+  )
+
+  assertEqual(requests.length, 1, 'native vision model should not use the fallback bridge')
+  assertEqual(requests[0]?.step, 0, 'native vision model should use the normal first model step')
+}
+
+async function testProviderStreamChatVisionFallbackDisabledContract(): Promise<void> {
+  const requests: ChatMessage[][] = []
+
+  const modelStreamClient: runtimePackageNodeSdk.ModelStreamClient = {
+    async *stream(input) {
+      requests.push(structuredClone(input.messages))
+      assertEqual(
+        input.descriptor.provider,
+        'deepseek',
+        'disabled vision fallback should only call the selected text model',
+      )
+      assert(
+        !chatMessagesContainImage(input.messages),
+        'disabled vision fallback should remove image parts before provider dispatch',
+      )
+      assert(
+        chatMessagesAsText(input.messages).includes('Vision fallback is disabled.'),
+        'disabled vision fallback should explain why the image was omitted',
+      )
+      yield { type: 'text-delta', text: 'no image' }
+      yield { type: 'finish-step', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 } }
+    },
+  }
+
+  const streamChat = runtimePackageNodeSdk.createProviderStreamChat({
+    modelRegistry: createVisionBridgeContractModelRegistry(),
+    modelStreamClient,
+    settings: {
+      apiKeys: { deepseek: 'text-key', openai: 'vision-key' },
+      defaultModel: null,
+      defaultVisionModel: { providerId: 'openai', modelId: 'gpt-contract-vision' },
+      visionFallbackMode: 'disabled',
+    },
+  })
+
+  await streamChat(
+    {
+      conversationId: 'provider-vision-disabled-conversation',
+      assistantMessageId: 'provider-vision-disabled-assistant',
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'describe this' },
+            { type: 'image', url: 'aila-image://contract/disabled.png', mime: 'image/png' },
+          ],
+        },
+      ],
+      selection: { providerId: 'deepseek', modelId: 'deepseek-contract-text' },
+      signal: new AbortController().signal,
+    },
+    {
+      onTextDelta() {},
+      onReasoningDelta() {},
+      onToolCallStart() {},
+      onToolCallArgsDelta() {},
+      onToolCallResult() {},
+      onImageBlock() {},
+      onDone() {},
+      onError(event) {
+        throw new Error(event.error)
+      },
+    },
+  )
+
+  assertEqual(requests.length, 1, 'disabled vision fallback should skip the vision model')
+}
+
+async function testProviderStreamChatVisionFallbackMissingConfigContract(): Promise<void> {
+  let requestCount = 0
+  let errorMessage = ''
+
+  const modelStreamClient: runtimePackageNodeSdk.ModelStreamClient = {
+    async *stream() {
+      requestCount += 1
+      yield { type: 'text-delta', text: 'unexpected' }
+    },
+  }
+
+  const streamChat = runtimePackageNodeSdk.createProviderStreamChat({
+    modelRegistry: createVisionBridgeContractModelRegistry(),
+    modelStreamClient,
+    settings: {
+      apiKeys: { deepseek: 'text-key' },
+      defaultModel: null,
+      defaultVisionModel: null,
+      visionFallbackMode: 'auto',
+    },
+  })
+
+  await streamChat(
+    {
+      conversationId: 'provider-vision-missing-config-conversation',
+      assistantMessageId: 'provider-vision-missing-config-assistant',
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'describe this' },
+            { type: 'image', url: 'aila-image://contract/missing.png', mime: 'image/png' },
+          ],
+        },
+      ],
+      selection: { providerId: 'deepseek', modelId: 'deepseek-contract-text' },
+      signal: new AbortController().signal,
+    },
+    {
+      onTextDelta() {},
+      onReasoningDelta() {},
+      onToolCallStart() {},
+      onToolCallArgsDelta() {},
+      onToolCallResult() {},
+      onImageBlock() {},
+      onDone() {
+        throw new Error('missing vision config should not complete the turn')
+      },
+      onError(event) {
+        errorMessage = event.error
+      },
+    },
+  )
+
+  assertEqual(requestCount, 0, 'missing vision config should fail before provider dispatch')
+  assert(
+    errorMessage.includes('Configure a Default Vision Model'),
+    'missing vision config should explain how to fix the fallback',
   )
 }
 
@@ -10300,9 +10700,14 @@ async function main(): Promise<void> {
   await testNodeContextTokenCounterContract()
   await testNodeSemanticCompactGeneratorContract()
   await testNativeOpenAiChatModelStreamContract()
+  await testNativeDeepSeekProviderContract()
   await testNativeAnthropicModelStreamContract()
   await testNativeGoogleModelStreamContract()
   await testProviderStreamChatOwnsToolLoopContract()
+  await testProviderStreamChatVisionFallbackContract()
+  await testProviderStreamChatVisionPassThroughContract()
+  await testProviderStreamChatVisionFallbackDisabledContract()
+  await testProviderStreamChatVisionFallbackMissingConfigContract()
   await testProviderStreamChatPersistsLargeToolResultsContract()
   await testNodeToolResultStorePersistsAndCleansUpContract()
   testToolActivityTargetContract()

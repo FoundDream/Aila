@@ -1,6 +1,6 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import type { Settings } from '../settings-types'
+import { normalizeVisionFallbackMode, type Settings } from '../settings-types'
 
 export interface NodeSettingsOptions {
   dataDir?: string
@@ -16,7 +16,14 @@ export function getNodeSettingsPath(options: NodeSettingsOptions = {}): string {
 }
 
 export function emptySettings(): Settings {
-  return { apiKeys: {}, defaultModel: null, defaultImageModel: null, recentOpenRouterModels: [] }
+  return {
+    apiKeys: {},
+    defaultModel: null,
+    defaultImageModel: null,
+    defaultVisionModel: null,
+    visionFallbackMode: 'auto',
+    recentOpenRouterModels: [],
+  }
 }
 
 export function loadNodeSettings(options: NodeSettingsOptions = {}): Settings {
@@ -27,6 +34,8 @@ export function loadNodeSettings(options: NodeSettingsOptions = {}): Settings {
       apiKeys: parsed.apiKeys ?? {},
       defaultModel: parsed.defaultModel ?? null,
       defaultImageModel: parsed.defaultImageModel ?? null,
+      defaultVisionModel: parsed.defaultVisionModel ?? null,
+      visionFallbackMode: normalizeVisionFallbackMode(parsed.visionFallbackMode),
       webSearch: parsed.webSearch ?? {},
       recentOpenRouterModels: parsed.recentOpenRouterModels ?? [],
     }

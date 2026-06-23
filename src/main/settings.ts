@@ -7,7 +7,12 @@
 
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
-import { normalizeToolApprovalMode, type ProviderId, type Settings } from '@aila/agent'
+import {
+  normalizeToolApprovalMode,
+  normalizeVisionFallbackMode,
+  type ProviderId,
+  type Settings,
+} from '@aila/agent'
 import { getDataDir, getSettingsPath } from './paths'
 
 export type { Settings } from '@aila/agent'
@@ -16,11 +21,19 @@ const ENV_KEY_BY_PROVIDER: Record<string, string> = {
   anthropic: 'ANTHROPIC_API_KEY',
   openai: 'OPENAI_API_KEY',
   google: 'GOOGLE_GENERATIVE_AI_API_KEY',
+  deepseek: 'DEEPSEEK_API_KEY',
   openrouter: 'OPENROUTER_API_KEY',
 }
 
 function emptySettings(): Settings {
-  return { apiKeys: {}, defaultModel: null, approvalMode: 'safe' }
+  return {
+    apiKeys: {},
+    defaultModel: null,
+    defaultImageModel: null,
+    defaultVisionModel: null,
+    visionFallbackMode: 'auto',
+    approvalMode: 'safe',
+  }
 }
 
 export function loadSettings(): Settings {
@@ -31,6 +44,8 @@ export function loadSettings(): Settings {
       apiKeys: parsed.apiKeys ?? {},
       defaultModel: parsed.defaultModel ?? null,
       defaultImageModel: parsed.defaultImageModel ?? null,
+      defaultVisionModel: parsed.defaultVisionModel ?? null,
+      visionFallbackMode: normalizeVisionFallbackMode(parsed.visionFallbackMode),
       approvalMode: normalizeToolApprovalMode(parsed.approvalMode),
       webSearch: parsed.webSearch ?? {},
       recentOpenRouterModels: parsed.recentOpenRouterModels ?? [],

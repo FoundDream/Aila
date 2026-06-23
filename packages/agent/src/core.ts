@@ -114,6 +114,7 @@ export {
   type ModelPricing,
   type ModelTag,
   modelEntryToDescriptor,
+  modelSupportsVision,
   PROVIDER_DEFAULT_API,
   PROVIDER_LABELS,
   PROVIDER_ORDER,
@@ -203,7 +204,11 @@ export {
   type RuntimeToolPackLoadInput,
   type RuntimeTransientContextInput,
 } from './runtime'
-export type { Settings } from './settings-types'
+export {
+  normalizeVisionFallbackMode,
+  type Settings,
+  type VisionFallbackMode,
+} from './settings-types'
 export {
   AILA_SKILL_FILE,
   createSkillToolPack,

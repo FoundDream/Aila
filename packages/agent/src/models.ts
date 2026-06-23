@@ -6,7 +6,7 @@
  * Catalog snapshot date: 2026-05-02 (sourced from OpenRouter live /models).
  */
 
-export type KnownProviderId = 'anthropic' | 'openai' | 'google' | 'openrouter'
+export type KnownProviderId = 'anthropic' | 'openai' | 'google' | 'deepseek' | 'openrouter'
 
 export type ProviderId = KnownProviderId | (string & {})
 
@@ -153,6 +153,24 @@ export const MODEL_CATALOG: ModelEntry[] = [
     tags: ['cheap'],
   },
 
+  // DeepSeek (native; OpenAI-compatible chat completions)
+  {
+    providerId: 'deepseek',
+    modelId: 'deepseek-v4-pro',
+    displayName: 'DeepSeek V4 Pro',
+    contextLength: 1_048_576,
+    tags: ['flagship', 'reasoning', 'coding'],
+    capabilities: { tools: true, reasoning: true },
+  },
+  {
+    providerId: 'deepseek',
+    modelId: 'deepseek-v4-flash',
+    displayName: 'DeepSeek V4 Flash',
+    contextLength: 1_048_576,
+    tags: ['cheap', 'fast', 'reasoning'],
+    capabilities: { tools: true, reasoning: true },
+  },
+
   // OpenRouter (aggregator; modelId carries the provider/model prefix)
   {
     providerId: 'openrouter',
@@ -208,12 +226,19 @@ export const IMAGE_MODEL_CATALOG: ImageModelEntry[] = [
   },
 ]
 
-export const PROVIDER_ORDER: ProviderId[] = ['anthropic', 'openai', 'google', 'openrouter']
+export const PROVIDER_ORDER: ProviderId[] = [
+  'anthropic',
+  'openai',
+  'google',
+  'deepseek',
+  'openrouter',
+]
 
 export const PROVIDER_LABELS: Record<KnownProviderId, string> = {
   anthropic: 'Anthropic',
   openai: 'OpenAI',
   google: 'Google',
+  deepseek: 'DeepSeek',
   openrouter: 'OpenRouter',
 }
 
@@ -221,11 +246,23 @@ export const PROVIDER_DEFAULT_API: Record<KnownProviderId, ModelApi> = {
   anthropic: 'anthropic-messages',
   openai: 'openai-chat-completions',
   google: 'google-generative-ai',
+  deepseek: 'openai-chat-completions',
   openrouter: 'openai-chat-completions',
 }
 
 export function providerLabel(providerId: ProviderId): string {
   return providerId in PROVIDER_LABELS ? PROVIDER_LABELS[providerId as KnownProviderId] : providerId
+}
+
+export function modelSupportsVision(
+  model:
+    | Pick<ModelEntry, 'providerId' | 'modelId' | 'input' | 'capabilities'>
+    | Pick<ModelDescriptor, 'provider' | 'modelId' | 'input' | 'capabilities'>,
+): boolean {
+  if (model.capabilities?.vision === true || model.input?.includes('image')) return true
+  const providerId = 'provider' in model ? model.provider : model.providerId
+  if (providerId === 'anthropic' || providerId === 'openai' || providerId === 'google') return true
+  return false
 }
 
 export function modelEntryToDescriptor(entry: ModelEntry): ModelDescriptor {

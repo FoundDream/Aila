@@ -246,10 +246,13 @@ export interface Settings {
     anthropic?: string
     openai?: string
     google?: string
+    deepseek?: string
     openrouter?: string
   }
   defaultModel: ModelSelection | null
   defaultImageModel?: ModelSelection | null
+  defaultVisionModel?: ModelSelection | null
+  visionFallbackMode?: 'auto' | 'ask' | 'disabled'
   approvalMode?: 'safe' | 'yolo'
   webSearch?: WebSearchSettings
   recentOpenRouterModels?: string[]

@@ -1,4 +1,10 @@
-import { IMAGE_MODEL_CATALOG, MODEL_CATALOG, PROVIDER_LABELS, PROVIDER_ORDER } from '@shared/models'
+import {
+  IMAGE_MODEL_CATALOG,
+  MODEL_CATALOG,
+  modelSupportsVision,
+  PROVIDER_LABELS,
+  PROVIDER_ORDER,
+} from '@shared/models'
 import {
   BoxIcon,
   EyeIcon,
@@ -42,6 +48,7 @@ const API_KEY_PLACEHOLDERS: Record<ProviderId, string> = {
   anthropic: 'sk-ant-...',
   openai: 'sk-...',
   google: 'AIza...',
+  deepseek: 'sk-...',
   openrouter: 'sk-or-...',
 }
 
@@ -277,6 +284,14 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
     setDraft((prev) => ({ ...prev, defaultImageModel: selection }))
   }
 
+  const setDefaultVisionModel = (selection: ModelSelection | null): void => {
+    setDraft((prev) => ({ ...prev, defaultVisionModel: selection }))
+  }
+
+  const setVisionFallbackMode = (mode: NonNullable<Settings['visionFallbackMode']>): void => {
+    setDraft((prev) => ({ ...prev, visionFallbackMode: mode }))
+  }
+
   const updateWebSearchProvider = <K extends WebSearchProviderKey>(
     provider: K,
     patch: Partial<NonNullable<WebSearchProviders[K]>>,
@@ -302,6 +317,9 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
   const providerConfigured = configuredInDraft.includes(selectedProvider)
   const providerModels = MODEL_CATALOG.filter((m) => m.providerId === selectedProvider)
   const providerImageModels = IMAGE_MODEL_CATALOG.filter((m) => m.providerId === selectedProvider)
+  const visionModels = MODEL_CATALOG.filter(
+    (m) => configuredInDraft.includes(m.providerId) && modelSupportsVision(m),
+  )
   const gmailIntegration = extensionsReport?.integrations.find(
     (integration) => integration.id === 'gmail',
   )
@@ -596,6 +614,12 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
         !configuredInDraft.includes(next.defaultImageModel.providerId)
       ) {
         next = { ...next, defaultImageModel: null }
+      }
+      if (
+        next.defaultVisionModel &&
+        !configuredInDraft.includes(next.defaultVisionModel.providerId)
+      ) {
+        next = { ...next, defaultVisionModel: null }
       }
       await onSave(next)
       onOpenChange(false)
@@ -915,6 +939,76 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
                       </select>
                       <p className="mt-1 text-[11px] text-[var(--text-dim)]">
                         Used for new conversations.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-start gap-3">
+                    <label
+                      htmlFor="default-vision-model-select"
+                      className="w-24 shrink-0 pt-1.5 text-[12px] text-[var(--text)]"
+                    >
+                      Vision
+                    </label>
+                    <div className="min-w-0 flex-1">
+                      <select
+                        id="default-vision-model-select"
+                        value={
+                          draft.defaultVisionModel
+                            ? `${draft.defaultVisionModel.providerId}:${draft.defaultVisionModel.modelId}`
+                            : ''
+                        }
+                        onChange={(e) => {
+                          const v = e.target.value
+                          if (!v) return setDefaultVisionModel(null)
+                          const [providerId, ...rest] = v.split(':')
+                          setDefaultVisionModel({
+                            providerId: providerId as ProviderId,
+                            modelId: rest.join(':'),
+                          })
+                        }}
+                        className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-soft)] px-2 py-1.5 text-[12px] outline-none focus:border-[var(--border-strong)]"
+                      >
+                        <option value="">(none)</option>
+                        {visionModels.map((m) => (
+                          <option
+                            key={`${m.providerId}:${m.modelId}`}
+                            value={`${m.providerId}:${m.modelId}`}
+                          >
+                            {PROVIDER_LABELS[m.providerId]} · {m.displayName}
+                          </option>
+                        ))}
+                      </select>
+                      <p className="mt-1 text-[11px] text-[var(--text-dim)]">
+                        Used to inspect image attachments before sending them to text-only models.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-start gap-3">
+                    <label
+                      htmlFor="vision-fallback-mode-select"
+                      className="w-24 shrink-0 pt-1.5 text-[12px] text-[var(--text)]"
+                    >
+                      Vision mode
+                    </label>
+                    <div className="min-w-0 flex-1">
+                      <select
+                        id="vision-fallback-mode-select"
+                        value={draft.visionFallbackMode ?? 'auto'}
+                        onChange={(e) =>
+                          setVisionFallbackMode(
+                            e.target.value as NonNullable<Settings['visionFallbackMode']>,
+                          )
+                        }
+                        className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-soft)] px-2 py-1.5 text-[12px] outline-none focus:border-[var(--border-strong)]"
+                      >
+                        <option value="auto">Auto</option>
+                        <option value="ask">Ask</option>
+                        <option value="disabled">Disabled</option>
+                      </select>
+                      <p className="mt-1 text-[11px] text-[var(--text-dim)]">
+                        Controls image fallback when the active chat model cannot read images.
                       </p>
                     </div>
                   </div>

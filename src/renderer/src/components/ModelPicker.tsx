@@ -20,7 +20,7 @@ interface Props {
   recentOpenRouterModels: string[]
 }
 
-const NATIVE_PROVIDERS: ProviderId[] = ['anthropic', 'openai', 'google']
+const NATIVE_PROVIDERS: ProviderId[] = ['anthropic', 'openai', 'google', 'deepseek']
 
 export function ModelPicker({
   configuredProviders,

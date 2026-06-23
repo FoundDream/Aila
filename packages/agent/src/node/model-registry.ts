@@ -22,18 +22,27 @@ export interface CreateModelRegistryInput {
   models?: ModelDescriptor[]
 }
 
+const BUILTIN_PROVIDER_CONFIGS: NodeProviderConfig[] = [
+  {
+    provider: 'openrouter',
+    api: 'openai-chat-completions',
+    baseUrl: 'https://openrouter.ai/api/v1',
+  },
+  {
+    provider: 'deepseek',
+    api: 'openai-chat-completions',
+    baseUrl: 'https://api.deepseek.com',
+  },
+]
+
 export class ModelRegistry {
   private readonly providers = new Map<ProviderId, NodeProviderConfig>()
   private readonly models = new Map<string, ModelDescriptor>()
 
   constructor(input: CreateModelRegistryInput = {}) {
     if (input.builtinModels !== false) {
+      for (const provider of BUILTIN_PROVIDER_CONFIGS) this.registerProvider(provider)
       for (const entry of MODEL_CATALOG) this.registerModel(modelEntryToDescriptor(entry))
-      this.registerProvider({
-        provider: 'openrouter',
-        api: 'openai-chat-completions',
-        baseUrl: 'https://openrouter.ai/api/v1',
-      })
     }
 
     for (const [provider, config] of Object.entries(input.providers ?? {})) {
