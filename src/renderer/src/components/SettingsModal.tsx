@@ -7,6 +7,7 @@ import {
   VISION_MODEL_CATALOG,
 } from '@shared/models'
 import {
+  BarChart3Icon,
   BoxIcon,
   DatabaseIcon,
   EyeIcon,
@@ -27,7 +28,8 @@ import {
   XIcon,
 } from 'lucide-react'
 import { Dialog as DialogPrimitive } from 'radix-ui'
-import { type ReactElement, type ReactNode, useEffect, useMemo, useState } from 'react'
+import { type ReactElement, type ReactNode, useCallback, useEffect, useMemo, useState } from 'react'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import type {
   ExtensionMcpServerConfigInput,
   ExtensionMcpTestResult,
@@ -38,6 +40,8 @@ import type {
   PromptCacheTtl,
   ProviderId,
   Settings,
+  TokenUsageDay,
+  TokenUsageStats,
 } from '../types'
 import { ProviderLogo } from './ProviderLogo'
 
@@ -73,7 +77,7 @@ const DEFAULT_MCP_SERVER_JSON = JSON.stringify(
   2,
 )
 
-type SettingsTab = 'provider' | 'models' | 'cache' | 'search' | 'extensions'
+type SettingsTab = 'provider' | 'models' | 'cache' | 'usage' | 'search' | 'extensions'
 type ExtensionsBusy =
   | 'report'
   | 'reload'
@@ -91,6 +95,7 @@ const TABS: Array<{ id: SettingsTab; label: string; icon: typeof KeyRoundIcon }>
   { id: 'provider', label: 'Provider', icon: KeyRoundIcon },
   { id: 'models', label: 'Default Models', icon: BoxIcon },
   { id: 'cache', label: 'Cache', icon: DatabaseIcon },
+  { id: 'usage', label: 'Usage', icon: BarChart3Icon },
   { id: 'search', label: 'Search', icon: SearchIcon },
   { id: 'extensions', label: 'Extensions', icon: PuzzleIcon },
 ]
@@ -116,6 +121,106 @@ const FREE_SEARCH_PROVIDERS: Array<{
 function formatContext(tokens: number): string {
   if (tokens >= 1_000_000) return `${parseFloat((tokens / 1_000_000).toFixed(2))}M`
   return `${Math.round(tokens / 1000)}K`
+}
+
+function formatTokenStat(tokens: number): string {
+  if (tokens >= 1_000_000_000) return `${parseFloat((tokens / 1_000_000_000).toFixed(2))}B`
+  if (tokens >= 1_000_000) return `${parseFloat((tokens / 1_000_000).toFixed(2))}M`
+  if (tokens >= 1000) return `${parseFloat((tokens / 1000).toFixed(tokens >= 10_000 ? 1 : 2))}K`
+  return `${tokens}`
+}
+
+function formatTokenExact(tokens: number): string {
+  return tokens.toLocaleString()
+}
+
+function formatUsageDate(date: string): string {
+  const parsed = new Date(`${date}T00:00:00`)
+  return parsed.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+}
+
+function formatStreak(days: number): string {
+  return `${days} day${days === 1 ? '' : 's'}`
+}
+
+function activityColor(day: TokenUsageDay | null, peakTokens: number): string {
+  if (!day || day.totalTokens <= 0 || peakTokens <= 0) return 'bg-[var(--surface-hover)]'
+  const ratio = day.totalTokens / peakTokens
+  if (ratio >= 0.75) return 'bg-sky-500'
+  if (ratio >= 0.45) return 'bg-sky-400'
+  if (ratio >= 0.18) return 'bg-sky-300'
+  return 'bg-sky-100'
+}
+
+function TokenActivityTooltipBody({ day }: { day: TokenUsageDay }): ReactElement {
+  const rows: Array<[string, number]> = [
+    ['Total', day.totalTokens],
+    ['Input', day.inputTokens],
+    ['Output', day.outputTokens],
+    ['Cache read', day.cacheReadTokens],
+    ['Cache miss', day.cacheMissTokens],
+    ['Cache write', day.cacheWriteTokens],
+    ['Reasoning', day.reasoningTokens],
+    ['Calls', day.modelCallCount],
+    ['Turns', day.turnCount],
+  ]
+
+  return (
+    <div className="w-44 text-left">
+      <div className="mb-2 border-b border-background/15 pb-1.5">
+        <div className="text-[12px] font-medium leading-none">{formatUsageDate(day.date)}</div>
+        <div className="mt-1 text-[11px] opacity-65">{day.date}</div>
+      </div>
+      <div className="space-y-1">
+        {rows.map(([label, value]) => (
+          <div key={label} className="flex items-center justify-between gap-3 text-[11px]">
+            <span className="opacity-60">{label}</span>
+            <span className="font-mono tabular-nums">{formatTokenExact(value)}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function TokenActivityGrid({ stats }: { stats: TokenUsageStats }): ReactElement {
+  const peakTokens = Math.max(0, ...stats.days.map((day) => day.totalTokens))
+  const firstDay = stats.days[0]
+  const leadingCells = firstDay ? new Date(`${firstDay.date}T00:00:00`).getDay() : 0
+  const cells: Array<TokenUsageDay | null> = [
+    ...Array.from({ length: leadingCells }, () => null),
+    ...stats.days,
+  ]
+
+  return (
+    <div className="overflow-x-auto pb-1">
+      <div
+        className="grid w-max grid-flow-col gap-1"
+        style={{ gridTemplateRows: 'repeat(7, minmax(0, 10px))' }}
+      >
+        {cells.map((day, index) => (
+          day ? (
+            <Tooltip key={day.date}>
+              <TooltipTrigger asChild>
+                <span
+                  aria-label={`${formatUsageDate(day.date)} · ${formatTokenStat(day.totalTokens)} tokens`}
+                  className={`block size-2.5 rounded-[3px] transition-transform hover:scale-125 ${activityColor(day, peakTokens)}`}
+                />
+              </TooltipTrigger>
+              <TooltipContent side="top" sideOffset={8} className="z-[1100] px-3 py-2">
+                <TokenActivityTooltipBody day={day} />
+              </TooltipContent>
+            </Tooltip>
+          ) : (
+            <span
+              key={`empty-${index}`}
+              className={`block size-2.5 rounded-[3px] ${activityColor(day, peakTokens)}`}
+            />
+          )
+        ))}
+      </div>
+    </div>
+  )
 }
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
@@ -180,6 +285,9 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
   const [extensionsError, setExtensionsError] = useState<string | null>(null)
   const [extensionsNotice, setExtensionsNotice] = useState<string | null>(null)
   const [extensionsBusy, setExtensionsBusy] = useState<ExtensionsBusy>(null)
+  const [usageStats, setUsageStats] = useState<TokenUsageStats | null>(null)
+  const [usageStatsError, setUsageStatsError] = useState<string | null>(null)
+  const [usageStatsLoading, setUsageStatsLoading] = useState(false)
   const [mcpServerName, setMcpServerName] = useState('')
   const [mcpServerJson, setMcpServerJson] = useState(DEFAULT_MCP_SERVER_JSON)
   const [mcpTestResults, setMcpTestResults] = useState<Record<string, string>>({})
@@ -199,6 +307,9 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
       setExtensionsError(null)
       setExtensionsNotice(null)
       setExtensionsBusy(null)
+      setUsageStats(null)
+      setUsageStatsError(null)
+      setUsageStatsLoading(false)
       setMcpServerName('')
       setMcpServerJson(DEFAULT_MCP_SERVER_JSON)
       setMcpTestResults({})
@@ -254,6 +365,23 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
       cancelled = true
     }
   }, [open, tab, extensionsReport, extensionsError])
+
+  const refreshUsageStats = useCallback(async () => {
+    setUsageStatsLoading(true)
+    setUsageStatsError(null)
+    try {
+      setUsageStats(await window.api.runtime.getTokenUsageStats())
+    } catch (err) {
+      setUsageStatsError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setUsageStatsLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!open || tab !== 'usage' || usageStats || usageStatsError || usageStatsLoading) return
+    void refreshUsageStats()
+  }, [open, tab, usageStats, usageStatsError, usageStatsLoading, refreshUsageStats])
 
   const orFilteredFamilies = useMemo(() => {
     if (!orCatalog) return []
@@ -1164,6 +1292,107 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
                       </label>
                     </div>
                   </section>
+                </div>
+              </div>
+            )}
+
+            {tab === 'usage' && (
+              <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+                <div className="space-y-5">
+                  <section>
+                    <div className="mb-2 flex items-center justify-between gap-3">
+                      <SectionTitle>Token Usage</SectionTitle>
+                      <button
+                        type="button"
+                        onClick={() => void refreshUsageStats()}
+                        disabled={usageStatsLoading}
+                        className="flex items-center gap-1.5 rounded-md px-2 py-1 text-[11px] text-[var(--text-dim)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)] disabled:opacity-50"
+                      >
+                        <RefreshCwIcon
+                          className={`size-3.5 ${usageStatsLoading ? 'animate-spin' : ''}`}
+                        />
+                        Refresh
+                      </button>
+                    </div>
+
+                    {usageStatsError && (
+                      <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-[12px] text-red-700">
+                        {usageStatsError}
+                      </div>
+                    )}
+
+                    {!usageStats && !usageStatsError && (
+                      <div className="rounded-md border border-[var(--border)] px-3 py-2 text-[12px] text-[var(--text-dim)]">
+                        {usageStatsLoading ? 'Loading usage…' : 'No usage data loaded.'}
+                      </div>
+                    )}
+
+                    {usageStats && (
+                      <div className="grid grid-cols-2 overflow-hidden rounded-md border border-[var(--border)] md:grid-cols-5">
+                        {[
+                          ['Today', formatTokenStat(usageStats.today.totalTokens)],
+                          ['Lifetime', formatTokenStat(usageStats.lifetime.totalTokens)],
+                          [
+                            'Peak day',
+                            usageStats.peakDay
+                              ? formatTokenStat(usageStats.peakDay.totalTokens)
+                              : '0',
+                          ],
+                          ['Current streak', formatStreak(usageStats.currentStreakDays)],
+                          ['Longest streak', formatStreak(usageStats.longestStreakDays)],
+                        ].map(([label, value]) => (
+                          <div
+                            key={label}
+                            className="border-b border-r border-[var(--border)] px-3 py-3 last:border-r-0 md:border-b-0"
+                          >
+                            <div className="text-[18px] font-semibold leading-none tabular-nums text-[var(--text)]">
+                              {value}
+                            </div>
+                            <div className="mt-1 text-[11px] text-[var(--text-dim)]">{label}</div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </section>
+
+                  {usageStats && (
+                    <>
+                      <section>
+                        <SectionTitle>Today</SectionTitle>
+                        <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+                          {[
+                            ['Input', usageStats.today.inputTokens],
+                            ['Output', usageStats.today.outputTokens],
+                            [
+                              'Cache read',
+                              usageStats.today.cacheReadTokens,
+                            ],
+                            ['Turns', usageStats.today.turnCount],
+                          ].map(([label, value]) => (
+                            <div
+                              key={label}
+                              className="rounded-md border border-[var(--border)] px-3 py-2"
+                            >
+                              <div className="text-[14px] font-medium tabular-nums text-[var(--text)]">
+                                {typeof value === 'number' ? formatTokenStat(value) : value}
+                              </div>
+                              <div className="mt-0.5 text-[11px] text-[var(--text-dim)]">
+                                {label}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </section>
+
+                      <section>
+                        <div className="mb-2 flex items-center justify-between gap-3">
+                          <SectionTitle>Token Activity</SectionTitle>
+                          <span className="text-[11px] text-[var(--text-dim)]">Last 365 days</span>
+                        </div>
+                        <TokenActivityGrid stats={usageStats} />
+                      </section>
+                    </>
+                  )}
                 </div>
               </div>
             )}

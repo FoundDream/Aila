@@ -15,7 +15,7 @@ import {
   shell,
 } from 'electron'
 import { getModelInfo } from './agent'
-import { rewriteDocRefs as rewritePersistedDocRefs } from './conversations'
+import { getTokenUsageStats, rewriteDocRefs as rewritePersistedDocRefs } from './conversations'
 import { sweepOrphanedDocConversations } from './doc-conversation-cleanup'
 import type { DocPatch } from './docs'
 import {
@@ -266,6 +266,7 @@ function registerIpcHandlers(): void {
   }
   ipcMain.handle('settings:get', () => packSettings(loadSettings()))
   ipcMain.handle('settings:set', (_event, next: Settings) => packSettings(saveSettings(next)))
+  ipcMain.handle('runtime:token-usage-stats', () => getTokenUsageStats())
   ipcMain.handle('workspaces:pick-directory', () => pickWorkspaceDirectory())
   ipcMain.handle('openrouter:list-models', () => getOpenRouterCatalog())
   ipcMain.handle('extensions:report', () => getExtensionReport())

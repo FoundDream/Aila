@@ -77,6 +77,29 @@ export {
   replayConversationRuntimeState,
 } from '../../packages/agent/src/conversation-core'
 
+export interface TokenUsageDay {
+  date: string
+  totalTokens: number
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
+  cacheMissTokens: number
+  reasoningTokens: number
+  modelCallCount: number
+  turnCount: number
+}
+
+export interface TokenUsageStats {
+  generatedAt: number
+  today: TokenUsageDay
+  lifetime: TokenUsageDay
+  peakDay: TokenUsageDay | null
+  currentStreakDays: number
+  longestStreakDays: number
+  days: TokenUsageDay[]
+}
+
 const metaWriteChains = new Map<string, Promise<void>>()
 const messageWriteChains = new Map<string, Promise<void>>()
 const eventWriteChains = new Map<string, Promise<void>>()
@@ -481,6 +504,172 @@ export async function listAgentEvents(id: string): Promise<PersistedAgentEvent[]
     }
   }
   return orderedUniqueAgentEvents(events)
+}
+
+function localDateKey(timestamp: number): string {
+  const date = new Date(timestamp)
+  const year = date.getFullYear()
+  const month = `${date.getMonth() + 1}`.padStart(2, '0')
+  const day = `${date.getDate()}`.padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+function localMidnight(timestamp: number): Date {
+  const date = new Date(timestamp)
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate())
+}
+
+function addLocalDays(date: Date, days: number): Date {
+  const next = new Date(date)
+  next.setDate(next.getDate() + days)
+  return next
+}
+
+function emptyTokenUsageDay(date: string): TokenUsageDay {
+  return {
+    date,
+    totalTokens: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    cacheMissTokens: 0,
+    reasoningTokens: 0,
+    modelCallCount: 0,
+    turnCount: 0,
+  }
+}
+
+function finiteUsageToken(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.round(value) : 0
+}
+
+function addUsageToDay(day: TokenUsageDay, usage: unknown): void {
+  if (!usage || typeof usage !== 'object' || Array.isArray(usage)) return
+  const record = usage as Record<string, unknown>
+  const inputTokens = finiteUsageToken(record.promptTokens)
+  const outputTokens = finiteUsageToken(record.completionTokens)
+  day.inputTokens += inputTokens
+  day.outputTokens += outputTokens
+  day.totalTokens += finiteUsageToken(record.totalTokens) || inputTokens + outputTokens
+  day.cacheReadTokens += finiteUsageToken(record.cacheReadTokens)
+  day.cacheWriteTokens += finiteUsageToken(record.cacheWriteTokens)
+  day.cacheMissTokens += finiteUsageToken(record.cacheMissTokens)
+  day.reasoningTokens += finiteUsageToken(record.reasoningTokens)
+  day.modelCallCount += finiteUsageToken(record.modelCallCount)
+  day.turnCount += 1
+}
+
+function addDayInto(total: TokenUsageDay, day: TokenUsageDay): void {
+  total.totalTokens += day.totalTokens
+  total.inputTokens += day.inputTokens
+  total.outputTokens += day.outputTokens
+  total.cacheReadTokens += day.cacheReadTokens
+  total.cacheWriteTokens += day.cacheWriteTokens
+  total.cacheMissTokens += day.cacheMissTokens
+  total.reasoningTokens += day.reasoningTokens
+  total.modelCallCount += day.modelCallCount
+  total.turnCount += day.turnCount
+}
+
+export async function getTokenUsageStats(now = Date.now()): Promise<TokenUsageStats> {
+  await ensureDir()
+  const dayMap = new Map<string, TokenUsageDay>()
+  const entries = await readdir(getConversationsDir())
+
+  await Promise.all(
+    entries
+      .filter((name) => name.endsWith('.events.jsonl'))
+      .map(async (name) => {
+        const conversationId = name.slice(0, -'.events.jsonl'.length)
+        let raw = ''
+        try {
+          raw = await readFile(join(getConversationsDir(), name), 'utf-8')
+        } catch {
+          return
+        }
+
+        const events: PersistedAgentEvent[] = []
+        for (const line of raw.split('\n')) {
+          const trimmed = line.trim()
+          if (!trimmed) continue
+          try {
+            const event = normalizeAgentEvent(
+              JSON.parse(trimmed) as Partial<PersistedAgentEvent>,
+              conversationId,
+            )
+            if (event) events.push(event)
+          } catch {
+            // Keep usage stats available even if one event line is malformed.
+          }
+        }
+
+        for (const event of orderedUniqueAgentEvents(events)) {
+          if (event.type !== 'turn.completed') continue
+          const data = event.data
+          if (!data || typeof data !== 'object' || Array.isArray(data)) continue
+          const usage = (data as { usage?: unknown }).usage
+          const key = localDateKey(event.timestamp)
+          const day = dayMap.get(key) ?? emptyTokenUsageDay(key)
+          addUsageToDay(day, usage)
+          dayMap.set(key, day)
+        }
+      }),
+  )
+
+  const todayKey = localDateKey(now)
+  const todayStart = localMidnight(now)
+  const days: TokenUsageDay[] = []
+  for (let offset = 364; offset >= 0; offset -= 1) {
+    const key = localDateKey(addLocalDays(todayStart, -offset).getTime())
+    days.push(dayMap.get(key) ?? emptyTokenUsageDay(key))
+  }
+
+  const lifetime = emptyTokenUsageDay('all')
+  const sortedAllDays = [...dayMap.values()].sort((a, b) => a.date.localeCompare(b.date))
+  for (const day of sortedAllDays) addDayInto(lifetime, day)
+
+  let peakDay: TokenUsageDay | null = null
+  for (const day of sortedAllDays) {
+    if (day.totalTokens > 0 && (!peakDay || day.totalTokens > peakDay.totalTokens)) {
+      peakDay = day
+    }
+  }
+
+  let longestStreakDays = 0
+  let streak = 0
+  if (sortedAllDays.length > 0) {
+    const [year, month, dayOfMonth] = sortedAllDays[0].date.split('-').map(Number)
+    const cursor = new Date(year, (month ?? 1) - 1, dayOfMonth ?? 1)
+    while (cursor.getTime() <= todayStart.getTime()) {
+      const key = localDateKey(cursor.getTime())
+      if ((dayMap.get(key)?.totalTokens ?? 0) > 0) {
+        streak += 1
+        longestStreakDays = Math.max(longestStreakDays, streak)
+      } else {
+        streak = 0
+      }
+      cursor.setDate(cursor.getDate() + 1)
+    }
+  }
+
+  let currentStreakDays = 0
+  for (let offset = 0; ; offset += 1) {
+    const key = localDateKey(addLocalDays(todayStart, -offset).getTime())
+    const day = dayMap.get(key)
+    if (!day || day.totalTokens <= 0) break
+    currentStreakDays += 1
+  }
+
+  return {
+    generatedAt: now,
+    today: dayMap.get(todayKey) ?? emptyTokenUsageDay(todayKey),
+    lifetime,
+    peakDay,
+    currentStreakDays,
+    longestStreakDays,
+    days,
+  }
 }
 
 export async function renameConversation(id: string, title: string): Promise<ConversationSummary> {

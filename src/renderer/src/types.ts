@@ -80,6 +80,8 @@ export type {
   SendResult,
   Settings,
   SettingsState,
+  TokenUsageDay,
+  TokenUsageStats,
   TerminalCreateRequest,
   TerminalDataEvent,
   TerminalExitEvent,

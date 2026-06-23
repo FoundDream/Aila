@@ -671,6 +671,29 @@ export interface UsageInfo {
   reasoningTokens?: number
 }
 
+export interface TokenUsageDay {
+  date: string
+  totalTokens: number
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
+  cacheMissTokens: number
+  reasoningTokens: number
+  modelCallCount: number
+  turnCount: number
+}
+
+export interface TokenUsageStats {
+  generatedAt: number
+  today: TokenUsageDay
+  lifetime: TokenUsageDay
+  peakDay: TokenUsageDay | null
+  currentStreakDays: number
+  longestStreakDays: number
+  days: TokenUsageDay[]
+}
+
 export interface ChatDoneEvent extends ChatStreamEventBase {
   message: PersistedMessage
   usage?: UsageInfo
@@ -791,6 +814,8 @@ const api = {
       ipcRenderer.invoke('runtime:hydrate-conversation', conversationId),
     listRuntimeStates: (docId: string | null = null): Promise<ConversationRuntimeStateSnapshot[]> =>
       ipcRenderer.invoke('runtime:conversations:list-runtime-states', docId),
+    getTokenUsageStats: (): Promise<TokenUsageStats> =>
+      ipcRenderer.invoke('runtime:token-usage-stats'),
     listPlans: (conversationId: string): Promise<PlanArtifact[]> =>
       ipcRenderer.invoke('runtime:plans:list', conversationId),
     getPlan: (conversationId: string, planId: string): Promise<PlanArtifact> =>
