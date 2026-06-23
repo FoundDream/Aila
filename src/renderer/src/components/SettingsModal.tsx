@@ -4,6 +4,7 @@ import {
   modelSupportsVision,
   PROVIDER_LABELS,
   PROVIDER_ORDER,
+  VISION_MODEL_CATALOG,
 } from '@shared/models'
 import {
   BoxIcon,
@@ -340,7 +341,7 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
   const providerConfigured = configuredInDraft.includes(selectedProvider)
   const providerModels = MODEL_CATALOG.filter((m) => m.providerId === selectedProvider)
   const providerImageModels = IMAGE_MODEL_CATALOG.filter((m) => m.providerId === selectedProvider)
-  const visionModels = MODEL_CATALOG.filter(
+  const visionModels = [...MODEL_CATALOG, ...VISION_MODEL_CATALOG].filter(
     (m) => configuredInDraft.includes(m.providerId) && modelSupportsVision(m),
   )
   const gmailIntegration = extensionsReport?.integrations.find(

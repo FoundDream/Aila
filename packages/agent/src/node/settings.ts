@@ -5,6 +5,7 @@ import {
   normalizeVisionFallbackMode,
   type Settings,
 } from '../settings-types'
+import { ENV_KEY_BY_PROVIDER } from './auth'
 
 export interface NodeSettingsOptions {
   dataDir?: string
@@ -31,6 +32,16 @@ export function emptySettings(): Settings {
   }
 }
 
+function inferDefaultVisionModel(parsed: Partial<Settings>): Settings['defaultVisionModel'] {
+  if (parsed.defaultVisionModel !== undefined) return parsed.defaultVisionModel
+  const fromSettings = parsed.apiKeys?.openrouter
+  const fromEnv = process.env[ENV_KEY_BY_PROVIDER.openrouter]
+  if (fromSettings?.trim() || fromEnv?.trim()) {
+    return { providerId: 'openrouter', modelId: 'openrouter/free' }
+  }
+  return null
+}
+
 export function loadNodeSettings(options: NodeSettingsOptions = {}): Settings {
   try {
     const raw = readFileSync(getNodeSettingsPath(options), 'utf-8')
@@ -39,7 +50,7 @@ export function loadNodeSettings(options: NodeSettingsOptions = {}): Settings {
       apiKeys: parsed.apiKeys ?? {},
       defaultModel: parsed.defaultModel ?? null,
       defaultImageModel: parsed.defaultImageModel ?? null,
-      defaultVisionModel: parsed.defaultVisionModel ?? null,
+      defaultVisionModel: inferDefaultVisionModel(parsed),
       visionFallbackMode: normalizeVisionFallbackMode(parsed.visionFallbackMode),
       promptCache: normalizePromptCacheSettings(parsed.promptCache),
       webSearch: parsed.webSearch ?? {},

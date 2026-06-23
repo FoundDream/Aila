@@ -207,6 +207,7 @@ export function createProviderStreamChat(
         modelStreamClient,
         authInput: options,
         signal,
+        emitAgentEvent,
       })
       for (const usage of bridged.usage) {
         addUsage(totalUsage, usage)
@@ -541,6 +542,7 @@ interface VisionBridgeInput {
   modelStreamClient: ModelStreamClient
   authInput: NodeAuthInput
   signal: AbortSignal
+  emitAgentEvent: EmitAgentEvent
 }
 
 interface VisionBridgeResult {
@@ -549,7 +551,8 @@ interface VisionBridgeResult {
 }
 
 async function bridgeImagesForTextOnlyModel(input: VisionBridgeInput): Promise<VisionBridgeResult> {
-  if (!messagesContainImages(input.messages) || modelSupportsVision(input.descriptor)) {
+  const imageMessageIndex = lastUserImageMessageIndex(input.messages)
+  if (imageMessageIndex < 0 || modelSupportsVision(input.descriptor)) {
     return { messages: cloneAgentMessages(input.messages), usage: [] }
   }
 
@@ -580,26 +583,62 @@ async function bridgeImagesForTextOnlyModel(input: VisionBridgeInput): Promise<V
     ...input.authInput,
     settings: input.settings,
   })
+  const imageCount = latestImageCount(input.messages[imageMessageIndex])
+
+  input.emitAgentEvent('vision.bridge.started', {
+    providerId: visionSelection.providerId,
+    modelId: visionSelection.modelId,
+    provider: visionDescriptor.provider,
+    api: visionDescriptor.api,
+    sourceProviderId: input.selection.providerId,
+    sourceModelId: input.selection.modelId,
+    imageCount,
+  })
 
   const usage: ModelStreamUsage[] = []
   const messages: ChatMessage[] = []
-  for (const message of input.messages) {
-    if (message.role !== 'user' || typeof message.content === 'string') {
-      messages.push(cloneAgentValue(message))
-      continue
+  try {
+    for (const [index, message] of input.messages.entries()) {
+      if (message.role !== 'user' || typeof message.content === 'string') {
+        messages.push(cloneAgentValue(message))
+        continue
+      }
+      if (index !== imageMessageIndex) {
+        messages.push(replaceUserImagesWithText(message, 'Previous image is not re-analyzed.'))
+        continue
+      }
+      messages.push({
+        role: 'user',
+        content: await analyzeUserImageParts({
+          parts: message.content,
+          visionDescriptor,
+          visionApiKey,
+          modelStreamClient: input.modelStreamClient,
+          signal: input.signal,
+          usage,
+        }),
+      })
     }
-    messages.push({
-      role: 'user',
-      content: await analyzeUserImageParts({
-        parts: message.content,
-        visionDescriptor,
-        visionApiKey,
-        modelStreamClient: input.modelStreamClient,
-        signal: input.signal,
-        usage,
-      }),
+  } catch (err) {
+    input.emitAgentEvent('vision.bridge.failed', {
+      providerId: visionSelection.providerId,
+      modelId: visionSelection.modelId,
+      provider: visionDescriptor.provider,
+      api: visionDescriptor.api,
+      imageCount,
+      error: err instanceof Error ? err.message : String(err),
     })
+    throw err
   }
+
+  input.emitAgentEvent('vision.bridge.completed', {
+    providerId: visionSelection.providerId,
+    modelId: visionSelection.modelId,
+    provider: visionDescriptor.provider,
+    api: visionDescriptor.api,
+    imageCount,
+    usageCount: usage.length,
+  })
 
   return { messages, usage }
 }
@@ -678,6 +717,7 @@ async function analyzeImagePart(input: {
     tools: [],
     signal: input.signal,
     step: -1,
+    requireImages: true,
   })) {
     if (event.type === 'text-delta') chunks.push(event.text)
     if (event.type === 'finish-step' && event.usage) input.usage.push(event.usage)
@@ -698,24 +738,42 @@ function replaceImagesWithText(messages: ChatMessage[], reason: string): VisionB
       if (message.role !== 'user' || typeof message.content === 'string') {
         return cloneAgentValue(message)
       }
-      const sections = message.content.map((part) =>
-        part.type === 'text'
-          ? part.text
-          : `[Attached image omitted: ${reason} Source: ${part.url}; MIME: ${part.mime}.]`,
-      )
-      return { role: 'user', content: sections.filter(Boolean).join('\n\n') }
+      return replaceUserImagesWithText(message, reason)
     }),
     usage: [],
   }
 }
 
-function messagesContainImages(messages: ChatMessage[]): boolean {
-  return messages.some(
-    (message) =>
-      message.role === 'user' &&
-      Array.isArray(message.content) &&
-      message.content.some((part) => part.type === 'image'),
+function replaceUserImagesWithText(
+  message: Extract<ChatMessage, { role: 'user' }>,
+  reason: string,
+): ChatMessage {
+  if (typeof message.content === 'string') return cloneAgentValue(message)
+  const sections = message.content.map((part) =>
+    part.type === 'text'
+      ? part.text
+      : `[Attached image omitted: ${reason} The image was not inspected; do not describe or infer its visual contents. Source: ${part.url}; MIME: ${part.mime}.]`,
   )
+  return { role: 'user', content: sections.filter(Boolean).join('\n\n') }
+}
+
+function lastUserImageMessageIndex(messages: ChatMessage[]): number {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]
+    if (
+      message?.role === 'user' &&
+      Array.isArray(message.content) &&
+      message.content.some((part) => part.type === 'image')
+    ) {
+      return index
+    }
+  }
+  return -1
+}
+
+function latestImageCount(message: ChatMessage | undefined): number {
+  if (!message || message.role !== 'user' || typeof message.content === 'string') return 0
+  return message.content.filter((part) => part.type === 'image').length
 }
 
 function escapeVisionAttribute(value: string): string {

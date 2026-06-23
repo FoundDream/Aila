@@ -65,7 +65,7 @@ export function createGoogleModelStreamClient(
         throw new Error(`Native Google client cannot handle api "${input.descriptor.api}"`)
       }
 
-      const conversation = await toGoogleConversation(input.messages, options.imageDir)
+      const conversation = await toGoogleConversation(input.messages, options.imageDir, input)
       const toolCalls: PendingGoogleToolCall[] = []
       let stepUsage: ModelStreamUsage | undefined
 
@@ -153,6 +153,7 @@ interface GoogleConversation {
 async function toGoogleConversation(
   messages: ChatMessage[],
   imageDir?: string,
+  input?: ModelStreamRequest,
 ): Promise<GoogleConversation> {
   const system: string[] = []
   const contents: GoogleContent[] = []
@@ -169,7 +170,9 @@ async function toGoogleConversation(
         parts:
           typeof msg.content === 'string'
             ? [{ text: msg.content }]
-            : await resolveGoogleUserContent(msg.content, imageDir),
+            : await resolveGoogleUserContent(msg.content, imageDir, {
+                requireImages: input?.requireImages ?? false,
+              }),
       })
       continue
     }
@@ -202,6 +205,7 @@ async function toGoogleConversation(
 async function resolveGoogleUserContent(
   parts: UserContentPart[],
   imageDir?: string,
+  options: { requireImages?: boolean } = {},
 ): Promise<GooglePart[]> {
   const out: GooglePart[] = []
   for (const part of parts) {
@@ -219,11 +223,17 @@ async function resolveGoogleUserContent(
           data: Buffer.from(bytes).toString('base64'),
         },
       })
-    } catch {
+    } catch (err) {
+      if (options.requireImages) throw imageLoadError(part.url, err)
       out.push({ text: '[attached image is no longer available]' })
     }
   }
   return out
+}
+
+function imageLoadError(url: string, err: unknown): Error {
+  const detail = err instanceof Error ? err.message : String(err)
+  return new Error(`Unable to load attached image ${url}: ${detail}`)
 }
 
 function toGoogleFunctionDeclaration(tool: ModelStreamToolDefinition) {

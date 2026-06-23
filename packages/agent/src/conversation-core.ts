@@ -897,6 +897,27 @@ export function activityFromAgentEvent(event: PersistedAgentEvent): Conversation
         title: 'Interrupted',
         detail: dataString(data, 'reason'),
       }
+    case 'vision.bridge.started':
+      return {
+        ...base,
+        state: 'running',
+        title: 'Inspecting image',
+        detail: dataString(data, 'modelId'),
+      }
+    case 'vision.bridge.completed':
+      return {
+        ...base,
+        state: 'running',
+        title: 'Image inspected',
+        detail: dataString(data, 'modelId'),
+      }
+    case 'vision.bridge.failed':
+      return {
+        ...base,
+        state: 'failed',
+        title: 'Image inspection failed',
+        detail: joinDetail(dataString(data, 'modelId'), dataString(data, 'error')),
+      }
     case 'context:compacting':
       return {
         ...base,

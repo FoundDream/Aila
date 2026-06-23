@@ -5,6 +5,7 @@ import {
   type ModelDescriptor,
   modelEntryToDescriptor,
   type ProviderId,
+  VISION_MODEL_CATALOG,
 } from '../models'
 
 export interface NodeProviderConfig {
@@ -43,6 +44,7 @@ export class ModelRegistry {
     if (input.builtinModels !== false) {
       for (const provider of BUILTIN_PROVIDER_CONFIGS) this.registerProvider(provider)
       for (const entry of MODEL_CATALOG) this.registerModel(modelEntryToDescriptor(entry))
+      for (const entry of VISION_MODEL_CATALOG) this.registerModel(modelEntryToDescriptor(entry))
     }
 
     for (const [provider, config] of Object.entries(input.providers ?? {})) {

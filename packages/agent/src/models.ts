@@ -188,6 +188,56 @@ export const MODEL_CATALOG: ModelEntry[] = [
   },
 ]
 
+// Vision-only helper choices used by the fallback bridge. These are not shown
+// in the normal chat picker unless they also exist in MODEL_CATALOG.
+export const VISION_MODEL_CATALOG: ModelEntry[] = [
+  {
+    providerId: 'openrouter',
+    modelId: 'openrouter/free',
+    displayName: 'OpenRouter Free (auto)',
+    contextLength: 200_000,
+    tags: ['cheap'],
+    input: ['text', 'image'],
+    capabilities: { vision: true },
+  },
+  {
+    providerId: 'openrouter',
+    modelId: '~openai/gpt-mini-latest',
+    displayName: 'OpenAI GPT Mini Latest',
+    contextLength: 400_000,
+    tags: ['cheap', 'fast'],
+    input: ['text', 'image'],
+    capabilities: { vision: true },
+  },
+  {
+    providerId: 'openrouter',
+    modelId: '~google/gemini-flash-latest',
+    displayName: 'Google Gemini Flash Latest',
+    contextLength: 1_048_576,
+    tags: ['fast'],
+    input: ['text', 'image'],
+    capabilities: { vision: true },
+  },
+  {
+    providerId: 'openrouter',
+    modelId: '~anthropic/claude-sonnet-latest',
+    displayName: 'Anthropic Claude Sonnet Latest',
+    contextLength: 1_000_000,
+    tags: ['flagship'],
+    input: ['text', 'image'],
+    capabilities: { vision: true },
+  },
+  {
+    providerId: 'openrouter',
+    modelId: '~openai/gpt-latest',
+    displayName: 'OpenAI GPT Latest',
+    contextLength: 1_050_000,
+    tags: ['flagship'],
+    input: ['text', 'image'],
+    capabilities: { vision: true },
+  },
+]
+
 export interface ImageModelEntry {
   providerId: ProviderId
   modelId: string

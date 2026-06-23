@@ -38,6 +38,16 @@ function emptySettings(): Settings {
   }
 }
 
+function inferDefaultVisionModel(parsed: Partial<Settings>): Settings['defaultVisionModel'] {
+  if (parsed.defaultVisionModel !== undefined) return parsed.defaultVisionModel
+  const fromSettings = parsed.apiKeys?.openrouter
+  const fromEnv = process.env.OPENROUTER_API_KEY
+  if (fromSettings?.trim() || fromEnv?.trim()) {
+    return { providerId: 'openrouter', modelId: 'openrouter/free' }
+  }
+  return null
+}
+
 export function loadSettings(): Settings {
   try {
     const raw = readFileSync(getSettingsPath(), 'utf-8')
@@ -46,7 +56,7 @@ export function loadSettings(): Settings {
       apiKeys: parsed.apiKeys ?? {},
       defaultModel: parsed.defaultModel ?? null,
       defaultImageModel: parsed.defaultImageModel ?? null,
-      defaultVisionModel: parsed.defaultVisionModel ?? null,
+      defaultVisionModel: inferDefaultVisionModel(parsed),
       visionFallbackMode: normalizeVisionFallbackMode(parsed.visionFallbackMode),
       promptCache: normalizePromptCacheSettings(parsed.promptCache),
       approvalMode: normalizeToolApprovalMode(parsed.approvalMode),

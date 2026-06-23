@@ -120,6 +120,7 @@ export {
   PROVIDER_ORDER,
   type ProviderId,
   providerLabel,
+  VISION_MODEL_CATALOG,
 } from './models'
 export {
   type AgentRuntimePlanStore,

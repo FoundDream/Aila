@@ -170,8 +170,18 @@ async function pickSkillDirectory(): Promise<string | null> {
   return resolve(selectedPath)
 }
 
-const runtimeWorkbench = createDesktopRuntimeWorkbench({ emit: send, logger: console })
+let runtimeWorkbench: ReturnType<typeof createDesktopRuntimeWorkbench> | null = null
 let terminalManager: TerminalSessionManager | null = null
+
+function initRuntimeWorkbench(): ReturnType<typeof createDesktopRuntimeWorkbench> {
+  runtimeWorkbench ??= createDesktopRuntimeWorkbench({ emit: send, logger: console })
+  return runtimeWorkbench
+}
+
+function getRuntimeWorkbench(): ReturnType<typeof createDesktopRuntimeWorkbench> {
+  if (!runtimeWorkbench) throw new Error('Runtime workbench is not initialized')
+  return runtimeWorkbench
+}
 
 function getTerminalManager(): TerminalSessionManager {
   terminalManager ??= createTerminalSessionManager(send)
@@ -186,11 +196,12 @@ configureDocConversationRefRewriter(async (rewrites) => {
 
 async function shutdownRuntimeWorkbench(): Promise<void> {
   terminalManager?.shutdown()
-  await runtimeWorkbench.shutdown()
+  await runtimeWorkbench?.shutdown()
   await disposeMcpConnections()
 }
 
 function registerIpcHandlers(): void {
+  const runtimeWorkbench = getRuntimeWorkbench()
   registerRuntimeWorkbenchIpcHandlers(ipcMain, runtimeWorkbench)
   registerTerminalIpcHandlers(ipcMain, getTerminalManager())
 
@@ -302,6 +313,7 @@ function registerIpcHandlers(): void {
 app.whenReady().then(async () => {
   configureDataDir(is.dev ? DEV_DATA_DIR : app.getPath('userData'))
   console.log('[storage] data dir =', getDataDir())
+  const runtimeWorkbench = initRuntimeWorkbench()
   const recovered = await runtimeWorkbench
     .recoverInterruptedActivities('app restarted before this turn finished')
     .catch((error) => {

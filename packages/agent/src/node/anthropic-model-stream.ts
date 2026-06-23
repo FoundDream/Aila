@@ -81,7 +81,7 @@ export function createAnthropicModelStreamClient(
         throw new Error(`Native Anthropic client cannot handle api "${input.descriptor.api}"`)
       }
 
-      const conversation = await toAnthropicConversation(input.messages, options.imageDir)
+      const conversation = await toAnthropicConversation(input.messages, options.imageDir, input)
       const toolCalls = new Map<number, PendingAnthropicToolCall>()
       let stepUsage: ModelStreamUsage | undefined
 
@@ -209,6 +209,7 @@ interface AnthropicConversation {
 async function toAnthropicConversation(
   messages: ChatMessage[],
   imageDir?: string,
+  input?: ModelStreamRequest,
 ): Promise<AnthropicConversation> {
   const system: string[] = []
   const out: AnthropicMessage[] = []
@@ -225,7 +226,9 @@ async function toAnthropicConversation(
         content:
           typeof msg.content === 'string'
             ? msg.content
-            : await resolveAnthropicUserContent(msg.content, imageDir),
+            : await resolveAnthropicUserContent(msg.content, imageDir, {
+                requireImages: input?.requireImages ?? false,
+              }),
       })
       continue
     }
@@ -268,6 +271,7 @@ async function toAnthropicConversation(
 async function resolveAnthropicUserContent(
   parts: UserContentPart[],
   imageDir?: string,
+  options: { requireImages?: boolean } = {},
 ): Promise<AnthropicContentBlock[]> {
   const out: AnthropicContentBlock[] = []
   for (const part of parts) {
@@ -287,11 +291,17 @@ async function resolveAnthropicUserContent(
           data: Buffer.from(bytes).toString('base64'),
         },
       })
-    } catch {
+    } catch (err) {
+      if (options.requireImages) throw imageLoadError(part.url, err)
       out.push({ type: 'text', text: '[attached image is no longer available]' })
     }
   }
   return out
+}
+
+function imageLoadError(url: string, err: unknown): Error {
+  const detail = err instanceof Error ? err.message : String(err)
+  return new Error(`Unable to load attached image ${url}: ${detail}`)
 }
 
 function toAnthropicTool(tool: ModelStreamToolDefinition) {

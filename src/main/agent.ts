@@ -1,4 +1,4 @@
-import type { ModelInfo, ProviderId } from '@aila/agent'
+import type { ModelInfo, ProviderId, RuntimeStreamChat } from '@aila/agent'
 import {
   createModelInfoResolver,
   createModelRegistry,
@@ -32,14 +32,21 @@ export type {
 
 const modelRegistry = createModelRegistry()
 const resolveModelInfo = createModelInfoResolver(modelRegistry)
+let streamChatInstance: RuntimeStreamChat | null = null
 
 export function getModelInfo(providerId: ProviderId, modelId: string): ModelInfo {
   return resolveModelInfo({ providerId, modelId })
 }
 
-export const streamChat = createProviderStreamChat({
-  modelRegistry,
-  loadSettings,
-  dataDir: getDataDir(),
-  imageDir: getImagesDir(),
-})
+function getStreamChat(): RuntimeStreamChat {
+  streamChatInstance ??= createProviderStreamChat({
+    modelRegistry,
+    loadSettings,
+    dataDir: getDataDir(),
+    imageDir: getImagesDir(),
+  })
+  return streamChatInstance
+}
+
+export const streamChat: RuntimeStreamChat = (request, handlers) =>
+  getStreamChat()(request, handlers)

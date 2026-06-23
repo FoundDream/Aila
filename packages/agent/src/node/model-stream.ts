@@ -51,6 +51,7 @@ export interface ModelStreamRequest {
   tools: ModelStreamToolDefinition[]
   signal: AbortSignal
   step?: number
+  requireImages?: boolean
 }
 
 export interface ModelStreamClient {

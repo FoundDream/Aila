@@ -304,7 +304,9 @@ async function toOpenAiMessages(
         content:
           typeof msg.content === 'string'
             ? msg.content
-            : await resolveOpenAiUserContent(msg.content, imageDir),
+            : await resolveOpenAiUserContent(msg.content, imageDir, {
+                requireImages: input?.requireImages ?? false,
+              }),
       })
       continue
     }
@@ -347,6 +349,7 @@ function toOpenAiToolCall(toolCall: ToolCall): OpenAiToolCall {
 async function resolveOpenAiUserContent(
   parts: UserContentPart[],
   imageDir?: string,
+  options: { requireImages?: boolean } = {},
 ): Promise<OpenAiContentPart[]> {
   const out: OpenAiContentPart[] = []
   for (const part of parts) {
@@ -364,11 +367,17 @@ async function resolveOpenAiUserContent(
           url: `data:${part.mime};base64,${Buffer.from(bytes).toString('base64')}`,
         },
       })
-    } catch {
+    } catch (err) {
+      if (options.requireImages) throw imageLoadError(part.url, err)
       out.push({ type: 'text', text: '[attached image is no longer available]' })
     }
   }
   return out
+}
+
+function imageLoadError(url: string, err: unknown): Error {
+  const detail = err instanceof Error ? err.message : String(err)
+  return new Error(`Unable to load attached image ${url}: ${detail}`)
 }
 
 function resolveChatCompletionsEndpoint(input: ModelStreamRequest): string {

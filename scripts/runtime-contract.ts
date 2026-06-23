@@ -107,6 +107,54 @@ async function withTempDataDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
   }
 }
 
+async function testSettingsInfersOpenRouterVisionDefault(): Promise<void> {
+  await withTempDataDir(async (dir) => {
+    const settingsPath = join(dir, 'settings.json')
+    await writeFile(
+      settingsPath,
+      `${JSON.stringify({ apiKeys: { openrouter: 'contract-key' }, defaultModel: null })}\n`,
+    )
+
+    const desktopSettings = runtimeNodeSdk.loadSettings()
+    assertEqual(
+      desktopSettings.defaultVisionModel?.providerId,
+      'openrouter',
+      'desktop settings should infer OpenRouter vision provider for legacy settings',
+    )
+    assertEqual(
+      desktopSettings.defaultVisionModel?.modelId,
+      'openrouter/free',
+      'desktop settings should infer a default OpenRouter vision model for legacy settings',
+    )
+
+    const nodeSettings = runtimePackageNodeSdk.loadNodeSettings({ dataDir: dir })
+    assertEqual(
+      nodeSettings.defaultVisionModel?.modelId,
+      'openrouter/free',
+      'node settings should infer the same OpenRouter vision default',
+    )
+
+    await writeFile(
+      settingsPath,
+      `${JSON.stringify({
+        apiKeys: { openrouter: 'contract-key' },
+        defaultModel: null,
+        defaultVisionModel: null,
+      })}\n`,
+    )
+    assertEqual(
+      runtimeNodeSdk.loadSettings().defaultVisionModel,
+      null,
+      'desktop settings should preserve an explicit empty vision model',
+    )
+    assertEqual(
+      runtimePackageNodeSdk.loadNodeSettings({ dataDir: dir }).defaultVisionModel,
+      null,
+      'node settings should preserve an explicit empty vision model',
+    )
+  })
+}
+
 function createPlanRevisionFixture(
   planId: string,
   id = 'revision-1',
@@ -7990,6 +8038,61 @@ async function testNativeOpenAiChatModelStreamContract(): Promise<void> {
   )
 }
 
+async function testNativeOpenAiChatRequiredImageContract(): Promise<void> {
+  const dir = await mkdtemp(join(tmpdir(), 'aila-runtime-required-image-'))
+  let transportCalled = false
+  try {
+    const client = runtimePackageNodeSdk.createOpenAiChatModelStreamClient({
+      imageDir: dir,
+      fetch: async () => {
+        transportCalled = true
+        return new Response(textStream(sse([])), { status: 200 })
+      },
+    })
+    let failure: Error | null = null
+
+    try {
+      for await (const event of client.stream({
+        descriptor: {
+          provider: 'openrouter',
+          modelId: 'contract/vision',
+          api: 'openai-chat-completions',
+        },
+        apiKey: 'contract-key',
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: 'look' },
+              { type: 'image', url: 'aila-image://i/missing.png', mime: 'image/png' },
+            ],
+          },
+        ],
+        signal: new AbortController().signal,
+        tools: [],
+        requireImages: true,
+      })) {
+        throw new Error(`required image stream should not yield ${event.type}`)
+      }
+    } catch (err) {
+      failure = err instanceof Error ? err : new Error(String(err))
+    }
+
+    assert(failure, 'required image stream should fail when the local image is missing')
+    assert(
+      failure.message.includes('Unable to load attached image aila-image://i/missing.png'),
+      'required image failure should identify the missing attachment',
+    )
+    assertEqual(
+      transportCalled,
+      false,
+      'required image stream should not call the provider when local image loading fails',
+    )
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+}
+
 async function testNativeDeepSeekProviderContract(): Promise<void> {
   const registry = runtimePackageNodeSdk.createModelRegistry()
   const descriptor = registry.resolve({
@@ -8076,6 +8179,29 @@ async function testNativeDeepSeekProviderContract(): Promise<void> {
     finishStep.usage?.cacheMissTokens,
     3,
     'DeepSeek stream should report prompt cache misses',
+  )
+}
+
+function testOpenRouterVisionModelCatalogContract(): void {
+  const openRouterVisionModels = runtimeSdk.VISION_MODEL_CATALOG.filter(
+    (model) => model.providerId === 'openrouter',
+  )
+  assert(
+    openRouterVisionModels.some((model) => model.modelId === 'openrouter/free'),
+    'OpenRouter should expose at least one vision fallback model',
+  )
+  assert(
+    openRouterVisionModels.every((model) => runtimeSdk.modelSupportsVision(model)),
+    'OpenRouter vision fallback models should be marked vision-capable',
+  )
+
+  const descriptor = runtimePackageNodeSdk.createModelRegistry().resolve({
+    providerId: 'openrouter',
+    modelId: 'openrouter/free',
+  })
+  assert(
+    runtimeSdk.modelSupportsVision(descriptor),
+    'OpenRouter vision fallback models should remain vision-capable after registry resolution',
   )
 }
 
@@ -8441,6 +8567,17 @@ function chatMessagesAsText(messages: ChatMessage[]): string {
     .join('\n')
 }
 
+function imageUrlsInChatMessages(messages: ChatMessage[]): string[] {
+  const urls: string[] = []
+  for (const message of messages) {
+    if (message.role !== 'user' || typeof message.content === 'string') continue
+    for (const part of message.content) {
+      if (part.type === 'image') urls.push(part.url)
+    }
+  }
+  return urls
+}
+
 function createVisionBridgeContractModelRegistry(): runtimePackageNodeSdk.ModelRegistry {
   return runtimePackageNodeSdk.createModelRegistry({
     builtinModels: false,
@@ -8466,7 +8603,13 @@ function createVisionBridgeContractModelRegistry(): runtimePackageNodeSdk.ModelR
 }
 
 async function testProviderStreamChatVisionFallbackContract(): Promise<void> {
-  const requests: Array<{ provider: string; messages: ChatMessage[]; step?: number }> = []
+  const requests: Array<{
+    provider: string
+    messages: ChatMessage[]
+    step?: number
+    requireImages?: boolean
+  }> = []
+  const agentEvents: AgentEvent[] = []
   let doneUsage: { promptTokens: number; completionTokens: number; totalTokens: number } | undefined
 
   const modelStreamClient: runtimePackageNodeSdk.ModelStreamClient = {
@@ -8475,10 +8618,16 @@ async function testProviderStreamChatVisionFallbackContract(): Promise<void> {
         provider: input.descriptor.provider,
         messages: structuredClone(input.messages),
         step: input.step,
+        requireImages: input.requireImages,
       })
 
       if (input.descriptor.provider === 'openai') {
         assertEqual(input.step, -1, 'vision fallback should call the vision model as a bridge step')
+        assertEqual(
+          input.requireImages,
+          true,
+          'vision fallback should require local image loading before provider transport',
+        )
         assert(
           chatMessagesContainImage(input.messages),
           'vision fallback should send original image content to the vision model',
@@ -8535,6 +8684,9 @@ async function testProviderStreamChatVisionFallbackContract(): Promise<void> {
       ],
       selection: { providerId: 'deepseek', modelId: 'deepseek-contract-text' },
       signal: new AbortController().signal,
+      onAgentEvent(event) {
+        agentEvents.push(event)
+      },
     },
     {
       onTextDelta() {},
@@ -8554,11 +8706,138 @@ async function testProviderStreamChatVisionFallbackContract(): Promise<void> {
 
   assertEqual(requests.length, 2, 'vision fallback should make one vision and one text request')
   assertEqual(requests[0]?.provider, 'openai', 'vision fallback should inspect images first')
+  assertEqual(
+    requests[0]?.requireImages,
+    true,
+    'vision fallback bridge request should require images',
+  )
   assertEqual(requests[1]?.provider, 'deepseek', 'vision fallback should call the text model last')
+  assert(
+    agentEvents.some((event) => event.type === 'vision.bridge.started'),
+    'vision fallback should emit a bridge started event',
+  )
+  assert(
+    agentEvents.some((event) => event.type === 'vision.bridge.completed'),
+    'vision fallback should emit a bridge completed event',
+  )
   assertEqual(
     doneUsage?.totalTokens,
     14,
     'vision fallback should include bridge usage in turn usage',
+  )
+}
+
+async function testProviderStreamChatVisionFallbackUsesLatestImageContract(): Promise<void> {
+  const requests: Array<{
+    provider: string
+    messages: ChatMessage[]
+    step?: number
+    requireImages?: boolean
+  }> = []
+
+  const modelStreamClient: runtimePackageNodeSdk.ModelStreamClient = {
+    async *stream(input) {
+      requests.push({
+        provider: input.descriptor.provider,
+        messages: structuredClone(input.messages),
+        step: input.step,
+        requireImages: input.requireImages,
+      })
+
+      if (input.descriptor.provider === 'openai') {
+        assertEqual(
+          input.requireImages,
+          true,
+          'latest-image vision bridge should require local image loading',
+        )
+        const imageUrls = imageUrlsInChatMessages(input.messages)
+        assertEqual(imageUrls.length, 1, 'vision bridge should analyze one user turn image set')
+        assertEqual(
+          imageUrls[0],
+          'aila-image://contract/current-lab.png',
+          'vision bridge should analyze the latest image, not an older context image',
+        )
+        yield { type: 'text-delta', text: 'Summary: optical lab table with lenses.' }
+        yield { type: 'finish-step', usage: { inputTokens: 3, outputTokens: 4, totalTokens: 7 } }
+        return
+      }
+
+      const text = chatMessagesAsText(input.messages)
+      assert(
+        text.includes('Summary: optical lab table with lenses.'),
+        'main text model should receive the latest image analysis',
+      )
+      assert(
+        !text.includes('cute kitten loading screen'),
+        'main text model should not receive stale analysis for older images',
+      )
+      assert(
+        !chatMessagesContainImage(input.messages),
+        'main text model should not receive raw image parts after bridging',
+      )
+      yield { type: 'text-delta', text: 'answered latest image' }
+      yield { type: 'finish-step', usage: { inputTokens: 5, outputTokens: 2, totalTokens: 7 } }
+    },
+  }
+
+  const streamChat = runtimePackageNodeSdk.createProviderStreamChat({
+    modelRegistry: createVisionBridgeContractModelRegistry(),
+    modelStreamClient,
+    settings: {
+      apiKeys: { deepseek: 'text-key', openai: 'vision-key' },
+      defaultModel: null,
+      defaultVisionModel: { providerId: 'openai', modelId: 'gpt-contract-vision' },
+      visionFallbackMode: 'auto',
+    },
+  })
+
+  await streamChat(
+    {
+      conversationId: 'provider-vision-latest-image-conversation',
+      assistantMessageId: 'provider-vision-latest-image-assistant',
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'older image' },
+            { type: 'image', url: 'aila-image://contract/old-kitten.png', mime: 'image/png' },
+          ],
+        },
+        { role: 'assistant', content: 'Earlier answer acknowledged the older image.' },
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: '看看' },
+            { type: 'image', url: 'aila-image://contract/current-lab.png', mime: 'image/png' },
+          ],
+        },
+      ],
+      selection: { providerId: 'deepseek', modelId: 'deepseek-contract-text' },
+      signal: new AbortController().signal,
+    },
+    {
+      onTextDelta() {},
+      onReasoningDelta() {},
+      onToolCallStart() {},
+      onToolCallArgsDelta() {},
+      onToolCallResult() {},
+      onImageBlock() {},
+      onDone() {},
+      onError(event) {
+        throw new Error(event.error)
+      },
+    },
+  )
+
+  assertEqual(
+    requests.filter((request) => request.provider === 'openai').length,
+    1,
+    'vision bridge should not re-analyze older image messages',
+  )
+  assertEqual(
+    requests.at(-1)?.provider,
+    'deepseek',
+    'latest-image flow should finish on text model',
   )
 }
 
@@ -9575,6 +9854,26 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
   assert(
     hostSource.includes("from './web-search'") && hostSource.includes('webSearch'),
     'default runtime host should own web search provider wiring',
+  )
+  const mainSource = await readFile(join(process.cwd(), 'src/main/index.ts'), 'utf-8')
+  const configureDataDirIndex = mainSource.indexOf(
+    "configureDataDir(is.dev ? DEV_DATA_DIR : app.getPath('userData'))",
+  )
+  const initRuntimeWorkbenchIndex = mainSource.indexOf(
+    'const runtimeWorkbench = initRuntimeWorkbench()',
+  )
+  assert(
+    configureDataDirIndex >= 0 &&
+      initRuntimeWorkbenchIndex > configureDataDirIndex &&
+      !mainSource.includes('const runtimeWorkbench = createDesktopRuntimeWorkbench'),
+    'desktop main should initialize the runtime workbench only after configuring the data directory',
+  )
+  const agentSource = await readFile(join(process.cwd(), 'src/main/agent.ts'), 'utf-8')
+  assert(
+    !agentSource.includes('export const streamChat = createProviderStreamChat') &&
+      agentSource.includes('function getStreamChat()') &&
+      agentSource.includes('streamChatInstance ??= createProviderStreamChat'),
+    'desktop agent streamChat should be lazy so it does not capture the default data dir at import time',
   )
   assert(
     hostSource.includes("from '@aila/agent/node'") &&
@@ -10725,6 +11024,7 @@ async function testSkillExtensionReportContract(): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  await testSettingsInfersOpenRouterVisionDefault()
   await testRuntimeEventContract()
   await testRuntimeEmitsVersionedEvents()
   await testRuntimeWithoutStreamHostFailsAtSetupBoundary()
@@ -10812,11 +11112,14 @@ async function main(): Promise<void> {
   await testNodeContextTokenCounterContract()
   await testNodeSemanticCompactGeneratorContract()
   await testNativeOpenAiChatModelStreamContract()
+  await testNativeOpenAiChatRequiredImageContract()
   await testNativeDeepSeekProviderContract()
+  testOpenRouterVisionModelCatalogContract()
   await testNativeAnthropicModelStreamContract()
   await testNativeGoogleModelStreamContract()
   await testProviderStreamChatOwnsToolLoopContract()
   await testProviderStreamChatVisionFallbackContract()
+  await testProviderStreamChatVisionFallbackUsesLatestImageContract()
   await testProviderStreamChatVisionPassThroughContract()
   await testProviderStreamChatVisionFallbackDisabledContract()
   await testProviderStreamChatVisionFallbackMissingConfigContract()
