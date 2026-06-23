@@ -205,7 +205,13 @@ export {
   type RuntimeTransientContextInput,
 } from './runtime'
 export {
+  normalizePromptCacheMode,
+  normalizePromptCacheSettings,
+  normalizePromptCacheTtl,
   normalizeVisionFallbackMode,
+  type PromptCacheMode,
+  type PromptCacheSettings,
+  type PromptCacheTtl,
   type Settings,
   type VisionFallbackMode,
 } from './settings-types'

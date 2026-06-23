@@ -17,8 +17,19 @@ const DEFAULT_MAX_TOKENS = 4096
 
 type Fetch = typeof fetch
 
+interface AnthropicCacheControl {
+  type: 'ephemeral'
+  ttl?: '1h'
+}
+
+interface AnthropicTextBlock {
+  type: 'text'
+  text: string
+  cache_control?: AnthropicCacheControl
+}
+
 type AnthropicContentBlock =
-  | { type: 'text'; text: string }
+  | AnthropicTextBlock
   | { type: 'thinking'; thinking: string }
   | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } }
   | { type: 'tool_use'; id: string; name: string; input: unknown }
@@ -42,6 +53,8 @@ interface AnthropicStreamEvent {
 interface AnthropicUsage {
   input_tokens?: number
   output_tokens?: number
+  cache_creation_input_tokens?: number
+  cache_read_input_tokens?: number
 }
 
 interface PendingAnthropicToolCall {
@@ -171,7 +184,12 @@ async function streamAnthropic(
       model: input.descriptor.modelId,
       max_tokens: input.descriptor.maxTokens ?? DEFAULT_MAX_TOKENS,
       stream: true,
-      ...(conversation.system ? { system: conversation.system } : {}),
+      ...(anthropicCacheControl(input) && input.cache?.mode === 'auto'
+        ? { cache_control: anthropicCacheControl(input) }
+        : {}),
+      ...(conversation.system
+        ? { system: withExplicitSystemCache(conversation.system, input) }
+        : {}),
       messages: conversation.messages,
       ...(input.tools.length > 0 ? { tools: input.tools.map(toAnthropicTool) } : {}),
     }),
@@ -184,7 +202,7 @@ async function streamAnthropic(
 }
 
 interface AnthropicConversation {
-  system: string | null
+  system: string | AnthropicTextBlock[] | null
   messages: AnthropicMessage[]
 }
 
@@ -293,13 +311,69 @@ function mergeAnthropicUsage(
   previous: ModelStreamUsage | undefined,
   usage: AnthropicUsage,
 ): ModelStreamUsage {
-  const inputTokens = usage.input_tokens ?? previous?.inputTokens ?? 0
+  const uncachedInputTokens = finiteUsageToken(usage.input_tokens)
+  const cacheWriteTokens = finiteUsageToken(usage.cache_creation_input_tokens)
+  const cacheReadTokens = finiteUsageToken(usage.cache_read_input_tokens)
+  const hasPromptUsage =
+    uncachedInputTokens !== undefined ||
+    cacheWriteTokens !== undefined ||
+    cacheReadTokens !== undefined
+  const inputTokens = hasPromptUsage
+    ? (uncachedInputTokens ?? 0) + (cacheWriteTokens ?? 0) + (cacheReadTokens ?? 0)
+    : (previous?.inputTokens ?? 0)
   const outputTokens = usage.output_tokens ?? previous?.outputTokens ?? 0
   return {
     inputTokens,
     outputTokens,
     totalTokens: inputTokens + outputTokens,
+    ...(cacheReadTokens !== undefined
+      ? { cacheReadTokens }
+      : previous?.cacheReadTokens !== undefined
+        ? { cacheReadTokens: previous.cacheReadTokens }
+        : {}),
+    ...(cacheWriteTokens !== undefined
+      ? { cacheWriteTokens }
+      : previous?.cacheWriteTokens !== undefined
+        ? { cacheWriteTokens: previous.cacheWriteTokens }
+        : {}),
+    ...(uncachedInputTokens !== undefined &&
+    (cacheReadTokens !== undefined || cacheWriteTokens !== undefined)
+      ? { cacheMissTokens: uncachedInputTokens }
+      : previous?.cacheMissTokens !== undefined
+        ? { cacheMissTokens: previous.cacheMissTokens }
+        : {}),
+    rawProviderUsage: usage,
   }
+}
+
+function anthropicCacheControl(input: ModelStreamRequest): AnthropicCacheControl | null {
+  if (input.cache?.mode === 'off') return null
+  return {
+    type: 'ephemeral',
+    ...(input.cache?.ttl === '1h' ? { ttl: '1h' } : {}),
+  }
+}
+
+function withExplicitSystemCache(
+  system: AnthropicConversation['system'],
+  input: ModelStreamRequest,
+): AnthropicConversation['system'] {
+  if (input.cache?.mode !== 'explicit') return system
+  const cacheControl = anthropicCacheControl(input)
+  if (!cacheControl) return system
+  if (typeof system === 'string') {
+    return [{ type: 'text', text: system, cache_control: cacheControl }]
+  }
+  if (!system || system.length === 0) return system
+  return system.map((block, index) =>
+    index === system.length - 1 ? { ...block, cache_control: cacheControl } : block,
+  )
+}
+
+function finiteUsageToken(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0
+    ? Math.round(value)
+    : undefined
 }
 
 async function readErrorResponse(response: Response, provider: string): Promise<string> {

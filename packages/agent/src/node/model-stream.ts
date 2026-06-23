@@ -1,10 +1,17 @@
 import type { ChatMessage } from '../agent-protocol'
+import type { AgentContextPlan } from '../context'
 import type { ModelDescriptor } from '../models'
+import type { PromptCacheSettings } from '../settings-types'
 
 export interface ModelStreamUsage {
   inputTokens?: number | null
   outputTokens?: number | null
   totalTokens?: number | null
+  cacheReadTokens?: number | null
+  cacheWriteTokens?: number | null
+  cacheMissTokens?: number | null
+  reasoningTokens?: number | null
+  rawProviderUsage?: unknown
 }
 
 export type ModelStreamEvent =
@@ -37,7 +44,10 @@ export interface ModelStreamToolDefinition {
 export interface ModelStreamRequest {
   descriptor: ModelDescriptor
   apiKey: string
+  conversationId?: string
   messages: ChatMessage[]
+  contextPlan?: AgentContextPlan
+  cache?: PromptCacheSettings
   tools: ModelStreamToolDefinition[]
   signal: AbortSignal
   step?: number

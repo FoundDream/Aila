@@ -7898,7 +7898,13 @@ async function testNativeOpenAiChatModelStreamContract(): Promise<void> {
             finish_reason: 'tool_calls',
           },
         ],
-        usage: { prompt_tokens: 7, completion_tokens: 3, total_tokens: 10 },
+        usage: {
+          prompt_tokens: 7,
+          completion_tokens: 3,
+          total_tokens: 10,
+          prompt_tokens_details: { cached_tokens: 4, cache_write_tokens: 1 },
+          completion_tokens_details: { reasoning_tokens: 2 },
+        },
       },
     ]),
   ]
@@ -7918,6 +7924,8 @@ async function testNativeOpenAiChatModelStreamContract(): Promise<void> {
       api: 'openai-chat-completions',
     },
     apiKey: 'contract-key',
+    conversationId: 'native-openai-contract',
+    cache: { mode: 'auto', ttl: '5m', openRouterStickySession: true },
     messages: [{ role: 'user', content: 'hello' }],
     signal: new AbortController().signal,
     tools: [
@@ -7940,6 +7948,11 @@ async function testNativeOpenAiChatModelStreamContract(): Promise<void> {
   }
 
   assertEqual(requests.length, 1, 'native OpenAI chat should perform one transport request')
+  assertEqual(
+    (requests[0] as Record<string, unknown>).session_id,
+    'native-openai-contract',
+    'OpenRouter chat should include sticky session id when cache is enabled',
+  )
   assert(
     events.some((event) => event.type === 'tool-input-start' && event.toolName === 'contract_echo'),
     'native OpenAI chat should emit tool input start',
@@ -7955,6 +7968,26 @@ async function testNativeOpenAiChatModelStreamContract(): Promise<void> {
   const finishStep = events.find((event) => event.type === 'finish-step')
   assert(finishStep?.type === 'finish-step', 'native OpenAI chat should finish the provider step')
   assertEqual(finishStep.usage?.totalTokens, 10, 'native OpenAI chat should report step usage')
+  assertEqual(
+    finishStep.usage?.cacheReadTokens,
+    4,
+    'native OpenAI chat should report cached prompt reads',
+  )
+  assertEqual(
+    finishStep.usage?.cacheWriteTokens,
+    1,
+    'native OpenAI chat should report cached prompt writes',
+  )
+  assertEqual(
+    finishStep.usage?.cacheMissTokens,
+    2,
+    'native OpenAI chat should report prompt cache misses',
+  )
+  assertEqual(
+    finishStep.usage?.reasoningTokens,
+    2,
+    'native OpenAI chat should report reasoning tokens',
+  )
 }
 
 async function testNativeDeepSeekProviderContract(): Promise<void> {
@@ -7988,9 +8021,25 @@ async function testNativeDeepSeekProviderContract(): Promise<void> {
     const headers = init?.headers as Record<string, string> | undefined
     authHeader = headers?.Authorization ?? ''
     requestBody = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>
-    return new Response(textStream(sse([{ choices: [{ delta: { content: 'ok' } }] }])), {
-      status: 200,
-    })
+    return new Response(
+      textStream(
+        sse([
+          {
+            choices: [{ delta: { content: 'ok' } }],
+            usage: {
+              prompt_tokens: 6,
+              completion_tokens: 4,
+              total_tokens: 10,
+              prompt_cache_hit_tokens: 3,
+              prompt_cache_miss_tokens: 3,
+            },
+          },
+        ]),
+      ),
+      {
+        status: 200,
+      },
+    )
   }
   const client = runtimePackageNodeSdk.createOpenAiChatModelStreamClient({ fetch: fetchImpl })
   const events: runtimePackageNodeSdk.ModelStreamEvent[] = []
@@ -8016,6 +8065,18 @@ async function testNativeDeepSeekProviderContract(): Promise<void> {
     events.some((event) => event.type === 'text-delta'),
     'DeepSeek stream should reuse OpenAI-compatible SSE parsing',
   )
+  const finishStep = events.find((event) => event.type === 'finish-step')
+  assert(finishStep?.type === 'finish-step', 'DeepSeek stream should finish the provider step')
+  assertEqual(
+    finishStep.usage?.cacheReadTokens,
+    3,
+    'DeepSeek stream should report prompt cache hits',
+  )
+  assertEqual(
+    finishStep.usage?.cacheMissTokens,
+    3,
+    'DeepSeek stream should report prompt cache misses',
+  )
 }
 
 async function testNativeAnthropicModelStreamContract(): Promise<void> {
@@ -8024,7 +8085,14 @@ async function testNativeAnthropicModelStreamContract(): Promise<void> {
     sse([
       {
         type: 'message_start',
-        message: { usage: { input_tokens: 7, output_tokens: 1 } },
+        message: {
+          usage: {
+            input_tokens: 2,
+            cache_creation_input_tokens: 5,
+            cache_read_input_tokens: 0,
+            output_tokens: 1,
+          },
+        },
       },
       {
         type: 'content_block_start',
@@ -8069,7 +8137,11 @@ async function testNativeAnthropicModelStreamContract(): Promise<void> {
       api: 'anthropic-messages',
     },
     apiKey: 'contract-key',
-    messages: [{ role: 'user', content: 'hello' }],
+    cache: { mode: 'explicit', ttl: '1h' },
+    messages: [
+      { role: 'system', content: 'stable system prefix' },
+      { role: 'user', content: 'hello' },
+    ],
     signal: new AbortController().signal,
     tools: [
       {
@@ -8089,6 +8161,14 @@ async function testNativeAnthropicModelStreamContract(): Promise<void> {
   }
 
   assertEqual(requests.length, 1, 'native Anthropic should perform one transport request')
+  const request = requests[0] as Record<string, unknown>
+  assert(Array.isArray(request.system), 'native Anthropic explicit cache should use system blocks')
+  const [systemBlock] = request.system as Array<Record<string, unknown>>
+  assertEqual(
+    (systemBlock.cache_control as Record<string, unknown> | undefined)?.ttl,
+    '1h',
+    'native Anthropic explicit cache should include one-hour TTL when selected',
+  )
   assert(
     events.some((event) => event.type === 'tool-input-start' && event.toolName === 'contract_echo'),
     'native Anthropic should emit tool input start',
@@ -8104,6 +8184,21 @@ async function testNativeAnthropicModelStreamContract(): Promise<void> {
   const finishStep = events.find((event) => event.type === 'finish-step')
   assert(finishStep?.type === 'finish-step', 'native Anthropic should finish the provider step')
   assertEqual(finishStep.usage?.totalTokens, 10, 'native Anthropic should report step usage')
+  assertEqual(
+    finishStep.usage?.cacheWriteTokens,
+    5,
+    'native Anthropic should report cache creation tokens',
+  )
+  assertEqual(
+    finishStep.usage?.cacheReadTokens,
+    0,
+    'native Anthropic should report cache read tokens',
+  )
+  assertEqual(
+    finishStep.usage?.cacheMissTokens,
+    2,
+    'native Anthropic should report uncached prompt tokens',
+  )
 }
 
 async function testNativeGoogleModelStreamContract(): Promise<void> {
@@ -8119,7 +8214,13 @@ async function testNativeGoogleModelStreamContract(): Promise<void> {
             finishReason: 'STOP',
           },
         ],
-        usageMetadata: { promptTokenCount: 7, candidatesTokenCount: 3, totalTokenCount: 10 },
+        usageMetadata: {
+          promptTokenCount: 7,
+          candidatesTokenCount: 3,
+          totalTokenCount: 10,
+          cachedContentTokenCount: 4,
+          thoughtsTokenCount: 2,
+        },
       },
     ]),
   ]
@@ -8174,6 +8275,17 @@ async function testNativeGoogleModelStreamContract(): Promise<void> {
   const finishStep = events.find((event) => event.type === 'finish-step')
   assert(finishStep?.type === 'finish-step', 'native Google should finish the provider step')
   assertEqual(finishStep.usage?.totalTokens, 10, 'native Google should report step usage')
+  assertEqual(
+    finishStep.usage?.cacheReadTokens,
+    4,
+    'native Google should report cached content tokens',
+  )
+  assertEqual(
+    finishStep.usage?.cacheMissTokens,
+    3,
+    'native Google should report uncached prompt tokens',
+  )
+  assertEqual(finishStep.usage?.reasoningTokens, 2, 'native Google should report thinking tokens')
 }
 
 async function testProviderStreamChatOwnsToolLoopContract(): Promise<void> {

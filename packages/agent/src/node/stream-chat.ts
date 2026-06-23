@@ -114,6 +114,7 @@ export function createProviderStreamChat(
       conversationId,
       assistantMessageId,
       messages: requestMessages,
+      contextPlan,
       selection: requestSelection,
       signal,
       onAgentEvent,
@@ -252,7 +253,10 @@ export function createProviderStreamChat(
         const result = modelStreamClient.stream({
           descriptor,
           apiKey,
+          conversationId,
           messages: cloneAgentMessages(modelMessages),
+          ...(contextPlan ? { contextPlan } : {}),
+          ...(settings.promptCache ? { cache: settings.promptCache } : {}),
           tools: toolsWithdrawn ? [] : tools,
           signal,
           step,
@@ -943,6 +947,10 @@ function addUsage(total: UsageInfo, usage: ModelStreamUsage): void {
   total.promptTokens += usage.inputTokens ?? 0
   total.completionTokens += usage.outputTokens ?? 0
   total.totalTokens += usage.totalTokens ?? (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0)
+  addOptionalUsage(total, 'cacheReadTokens', usage.cacheReadTokens)
+  addOptionalUsage(total, 'cacheWriteTokens', usage.cacheWriteTokens)
+  addOptionalUsage(total, 'cacheMissTokens', usage.cacheMissTokens)
+  addOptionalUsage(total, 'reasoningTokens', usage.reasoningTokens)
 }
 
 function usageInfo(usage: UsageInfo): UsageInfo {
@@ -952,11 +960,25 @@ function usageInfo(usage: UsageInfo): UsageInfo {
 function usageInfoFromModelUsage(usage: ModelStreamUsage): UsageInfo {
   const promptTokens = usage.inputTokens ?? 0
   const completionTokens = usage.outputTokens ?? 0
-  return {
+  const info: UsageInfo = {
     promptTokens,
     completionTokens,
     totalTokens: usage.totalTokens ?? promptTokens + completionTokens,
   }
+  addOptionalUsage(info, 'cacheReadTokens', usage.cacheReadTokens)
+  addOptionalUsage(info, 'cacheWriteTokens', usage.cacheWriteTokens)
+  addOptionalUsage(info, 'cacheMissTokens', usage.cacheMissTokens)
+  addOptionalUsage(info, 'reasoningTokens', usage.reasoningTokens)
+  return info
+}
+
+function addOptionalUsage(
+  total: UsageInfo,
+  key: 'cacheReadTokens' | 'cacheWriteTokens' | 'cacheMissTokens' | 'reasoningTokens',
+  value: number | null | undefined,
+): void {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return
+  total[key] = (total[key] ?? 0) + Math.round(value)
 }
 
 function stringifyToolOutput(output: unknown): string {

@@ -208,6 +208,7 @@ export function ChatPage({
       recentOpenRouterModels={settings?.recentOpenRouterModels ?? []}
       approvalMode={settings?.approvalMode ?? 'safe'}
       onApprovalModeChange={handleApprovalModeChange}
+      showCacheDiagnostics={settings?.promptCache?.showDiagnostics === true}
       executionMode={executionMode}
       onExecutionModeChange={setExecutionMode}
     />

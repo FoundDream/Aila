@@ -5,6 +5,7 @@ import type {
   ModelSelection,
   RuntimeModelInfoResolver,
   RuntimeStreamChat,
+  UsageInfo,
 } from './agent-protocol'
 import {
   type AgentContextPlan,
@@ -467,10 +468,7 @@ export interface AgentRuntimeStore {
   listAgentEvents?: (conversationId: string) => Promise<readonly PersistedAgentEvent[]>
   recoverInterruptedActivities?: (reason?: string) => Promise<readonly AgentEventAppendResult[]>
   renameConversation?: (conversationId: string, title: string) => Promise<ConversationSummary>
-  recordUsage: (
-    conversationId: string,
-    usage: { promptTokens: number; completionTokens: number; totalTokens: number },
-  ) => Promise<ConversationSummary>
+  recordUsage: (conversationId: string, usage: UsageInfo) => Promise<ConversationSummary>
   saveContextCheckpoint?: (
     conversationId: string,
     checkpoint: ConversationContextCheckpoint,
@@ -3161,7 +3159,7 @@ export class AgentRuntime implements AgentRuntimeApi {
     assistantMessageId: string
     selection: ModelSelection
     contextPlan: AgentContextPlan
-    usage?: { promptTokens: number; completionTokens: number; totalTokens: number }
+    usage?: UsageInfo
   }): ConversationContextTurnLedgerEntry {
     const { assistantMessageId, selection, contextPlan, usage } = input
     return {
@@ -3199,7 +3197,7 @@ export class AgentRuntime implements AgentRuntimeApi {
     assistantMessageId: string
     selection: ModelSelection
     contextPlan: AgentContextPlan
-    usage?: { promptTokens: number; completionTokens: number; totalTokens: number }
+    usage?: UsageInfo
   }): Promise<void> {
     if (!this.store.recordContextTurnLedger) return
     try {

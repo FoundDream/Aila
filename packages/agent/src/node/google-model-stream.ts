@@ -37,6 +37,8 @@ interface GoogleStreamChunk {
     promptTokenCount?: number
     candidatesTokenCount?: number
     totalTokenCount?: number
+    cachedContentTokenCount?: number
+    thoughtsTokenCount?: number
   }
   error?: { message?: string }
 }
@@ -262,11 +264,25 @@ function normalizeGoogleUsage(
 ): ModelStreamUsage {
   const inputTokens = usage.promptTokenCount ?? 0
   const outputTokens = usage.candidatesTokenCount ?? 0
+  const cacheReadTokens = finiteUsageToken(usage.cachedContentTokenCount)
+  const reasoningTokens = finiteUsageToken(usage.thoughtsTokenCount)
   return {
     inputTokens,
     outputTokens,
     totalTokens: usage.totalTokenCount ?? inputTokens + outputTokens,
+    ...(cacheReadTokens !== undefined ? { cacheReadTokens } : {}),
+    ...(cacheReadTokens !== undefined
+      ? { cacheMissTokens: Math.max(inputTokens - cacheReadTokens, 0) }
+      : {}),
+    ...(reasoningTokens !== undefined ? { reasoningTokens } : {}),
+    rawProviderUsage: usage,
   }
+}
+
+function finiteUsageToken(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0
+    ? Math.round(value)
+    : undefined
 }
 
 async function readErrorResponse(response: Response, provider: string): Promise<string> {

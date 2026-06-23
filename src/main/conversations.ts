@@ -7,6 +7,7 @@ import {
   type PlanArtifact,
   type PlanRevisionInput,
   preparePlanArtifact,
+  type UsageInfo,
 } from '@aila/agent'
 import { getNodeToolResultsConversationDir } from '@aila/agent/node'
 import {
@@ -492,7 +493,7 @@ export async function renameConversation(id: string, title: string): Promise<Con
 
 export async function setConversationUsage(
   id: string,
-  usage: { promptTokens: number; completionTokens: number; totalTokens: number },
+  usage: UsageInfo,
 ): Promise<ConversationSummary> {
   const timestamp = Date.now()
   return updateMeta(id, (current) => ({

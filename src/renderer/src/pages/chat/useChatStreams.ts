@@ -1013,6 +1013,18 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
           promptTokens: record.meta.usage.promptTokens,
           completionTokens: record.meta.usage.completionTokens,
           totalTokens: record.meta.usage.totalTokens,
+          ...(record.meta.usage.cacheReadTokens !== undefined
+            ? { cacheReadTokens: record.meta.usage.cacheReadTokens }
+            : {}),
+          ...(record.meta.usage.cacheWriteTokens !== undefined
+            ? { cacheWriteTokens: record.meta.usage.cacheWriteTokens }
+            : {}),
+          ...(record.meta.usage.cacheMissTokens !== undefined
+            ? { cacheMissTokens: record.meta.usage.cacheMissTokens }
+            : {}),
+          ...(record.meta.usage.reasoningTokens !== undefined
+            ? { reasoningTokens: record.meta.usage.reasoningTokens }
+            : {}),
         }
       : null
     dispatch({

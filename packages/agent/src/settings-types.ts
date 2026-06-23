@@ -2,9 +2,39 @@ import type { ProviderId } from './models'
 import type { ToolApprovalMode } from './tool-policy'
 
 export type VisionFallbackMode = 'auto' | 'ask' | 'disabled'
+export type PromptCacheMode = 'off' | 'auto' | 'explicit'
+export type PromptCacheTtl = '5m' | '1h'
 
 export function normalizeVisionFallbackMode(value: unknown): VisionFallbackMode {
   return value === 'ask' || value === 'disabled' ? value : 'auto'
+}
+
+export function normalizePromptCacheMode(value: unknown): PromptCacheMode {
+  return value === 'off' || value === 'explicit' ? value : 'auto'
+}
+
+export function normalizePromptCacheTtl(value: unknown): PromptCacheTtl {
+  return value === '1h' ? '1h' : '5m'
+}
+
+export interface PromptCacheSettings {
+  mode?: PromptCacheMode
+  ttl?: PromptCacheTtl
+  openRouterStickySession?: boolean
+  showDiagnostics?: boolean
+}
+
+export function normalizePromptCacheSettings(value: unknown): PromptCacheSettings {
+  const record =
+    value && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Partial<PromptCacheSettings>)
+      : {}
+  return {
+    mode: normalizePromptCacheMode(record.mode),
+    ttl: normalizePromptCacheTtl(record.ttl),
+    openRouterStickySession: record.openRouterStickySession !== false,
+    showDiagnostics: record.showDiagnostics === true,
+  }
 }
 
 export interface Settings {
@@ -13,6 +43,7 @@ export interface Settings {
   defaultImageModel?: { providerId: ProviderId; modelId: string } | null
   defaultVisionModel?: { providerId: ProviderId; modelId: string } | null
   visionFallbackMode?: VisionFallbackMode
+  promptCache?: PromptCacheSettings
   approvalMode?: ToolApprovalMode
   webSearch?: WebSearchSettings
   /** MRU list of recently chosen OpenRouter model ids (max 5). */

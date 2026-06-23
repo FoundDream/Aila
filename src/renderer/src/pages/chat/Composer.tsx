@@ -66,6 +66,7 @@ interface ComposerProps {
   recentOpenRouterModels: string[];
   approvalMode: ApprovalMode;
   onApprovalModeChange: (mode: ApprovalMode) => Promise<void> | void;
+  showCacheDiagnostics?: boolean;
   executionMode?: AilaExecutionMode;
   onExecutionModeChange?: (mode: AilaExecutionMode) => void;
 }
@@ -192,6 +193,25 @@ function formatTokens(n: number): string {
   if (n < 10_000) return `${(n / 1000).toFixed(2)}k`;
   if (n < 1_000_000) return `${(n / 1000).toFixed(1)}k`;
   return `${(n / 1_000_000).toFixed(1)}M`;
+}
+
+function usageTokenPart(label: string, value: number | undefined): string | null {
+  return typeof value === "number" ? `${label} ${formatTokens(value)}` : null;
+}
+
+function cacheUsageSummary(usage: UsageInfo | null | undefined): string | null {
+  if (!usage) return null;
+  const parts = [
+    usageTokenPart("read", usage.cacheReadTokens),
+    usageTokenPart("write", usage.cacheWriteTokens),
+    usageTokenPart("miss", usage.cacheMissTokens),
+  ].filter((part): part is string => Boolean(part));
+  return parts.length > 0 ? `Cache ${parts.join(" · ")}` : null;
+}
+
+function reasoningUsageSummary(usage: UsageInfo | null | undefined): string | null {
+  if (!usageTokenPart("Reasoning", usage?.reasoningTokens)) return null;
+  return usageTokenPart("Reasoning", usage?.reasoningTokens);
 }
 
 function readAsDataUrl(file: File): Promise<string> {
@@ -415,6 +435,7 @@ export function Composer({
   recentOpenRouterModels,
   approvalMode,
   onApprovalModeChange,
+  showCacheDiagnostics = false,
   executionMode,
   onExecutionModeChange,
 }: ComposerProps): ReactElement {
@@ -819,6 +840,10 @@ export function Composer({
   const ratio =
     contextLength && contextLength > 0 ? Math.min(used / contextLength, 1) : 0;
   const showMeter = (contextLength ?? 0) > 0 || used > 0;
+  const cacheSummary = showCacheDiagnostics ? cacheUsageSummary(usage) : null;
+  const reasoningSummary = showCacheDiagnostics
+    ? reasoningUsageSummary(usage)
+    : null;
   const meterColor =
     ratio >= 0.9
       ? "text-red-500"
@@ -1116,6 +1141,10 @@ export function Composer({
                           Prompt {formatTokens(usage.promptTokens)} · Completion{" "}
                           {formatTokens(usage.completionTokens)}
                         </span>
+                      )}
+                      {cacheSummary && <span className="opacity-60">{cacheSummary}</span>}
+                      {reasoningSummary && (
+                        <span className="opacity-60">{reasoningSummary}</span>
                       )}
                     </div>
                   </TooltipContent>

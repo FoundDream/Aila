@@ -1,6 +1,10 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { normalizeVisionFallbackMode, type Settings } from '../settings-types'
+import {
+  normalizePromptCacheSettings,
+  normalizeVisionFallbackMode,
+  type Settings,
+} from '../settings-types'
 
 export interface NodeSettingsOptions {
   dataDir?: string
@@ -22,6 +26,7 @@ export function emptySettings(): Settings {
     defaultImageModel: null,
     defaultVisionModel: null,
     visionFallbackMode: 'auto',
+    promptCache: normalizePromptCacheSettings(undefined),
     recentOpenRouterModels: [],
   }
 }
@@ -36,6 +41,7 @@ export function loadNodeSettings(options: NodeSettingsOptions = {}): Settings {
       defaultImageModel: parsed.defaultImageModel ?? null,
       defaultVisionModel: parsed.defaultVisionModel ?? null,
       visionFallbackMode: normalizeVisionFallbackMode(parsed.visionFallbackMode),
+      promptCache: normalizePromptCacheSettings(parsed.promptCache),
       webSearch: parsed.webSearch ?? {},
       recentOpenRouterModels: parsed.recentOpenRouterModels ?? [],
     }

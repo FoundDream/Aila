@@ -102,11 +102,19 @@ export interface ConversationUsage {
   promptTokens: number
   completionTokens: number
   totalTokens: number
+  cacheReadTokens?: number
+  cacheWriteTokens?: number
+  cacheMissTokens?: number
+  reasoningTokens?: number
   updatedAt: number
   turnCount?: number
   cumulativePromptTokens?: number
   cumulativeCompletionTokens?: number
   cumulativeTotalTokens?: number
+  cumulativeCacheReadTokens?: number
+  cumulativeCacheWriteTokens?: number
+  cumulativeCacheMissTokens?: number
+  cumulativeReasoningTokens?: number
 }
 
 export interface ConversationContextCheckpoint {
@@ -152,6 +160,10 @@ export interface ConversationContextTurnLedgerEntry {
     promptTokens: number
     completionTokens: number
     totalTokens: number
+    cacheReadTokens?: number
+    cacheWriteTokens?: number
+    cacheMissTokens?: number
+    reasoningTokens?: number
   }
   compaction: {
     activeCheckpointId: string | null
@@ -435,7 +447,15 @@ export function normalizeConversationCompactArtifact(
 
 export function createConversationUsageSnapshot(
   current: ConversationUsage | undefined,
-  usage: { promptTokens: number; completionTokens: number; totalTokens: number },
+  usage: {
+    promptTokens: number
+    completionTokens: number
+    totalTokens: number
+    cacheReadTokens?: number
+    cacheWriteTokens?: number
+    cacheMissTokens?: number
+    reasoningTokens?: number
+  },
   updatedAt: number,
 ): ConversationUsage {
   const previousTurnCount =
@@ -447,14 +467,42 @@ export function createConversationUsageSnapshot(
   const previousPrompt = current?.cumulativePromptTokens ?? current?.promptTokens ?? 0
   const previousCompletion = current?.cumulativeCompletionTokens ?? current?.completionTokens ?? 0
   const previousTotal = current?.cumulativeTotalTokens ?? current?.totalTokens ?? 0
+  const cacheReadTokens = finiteUsageToken(usage.cacheReadTokens)
+  const cacheWriteTokens = finiteUsageToken(usage.cacheWriteTokens)
+  const cacheMissTokens = finiteUsageToken(usage.cacheMissTokens)
+  const reasoningTokens = finiteUsageToken(usage.reasoningTokens)
   return {
-    ...usage,
+    promptTokens: usage.promptTokens,
+    completionTokens: usage.completionTokens,
+    totalTokens: usage.totalTokens,
+    ...(cacheReadTokens !== undefined ? { cacheReadTokens } : {}),
+    ...(cacheWriteTokens !== undefined ? { cacheWriteTokens } : {}),
+    ...(cacheMissTokens !== undefined ? { cacheMissTokens } : {}),
+    ...(reasoningTokens !== undefined ? { reasoningTokens } : {}),
     updatedAt,
     turnCount: previousTurnCount + 1,
     cumulativePromptTokens: previousPrompt + usage.promptTokens,
     cumulativeCompletionTokens: previousCompletion + usage.completionTokens,
     cumulativeTotalTokens: previousTotal + usage.totalTokens,
+    cumulativeCacheReadTokens:
+      (current?.cumulativeCacheReadTokens ?? current?.cacheReadTokens ?? 0) +
+      (cacheReadTokens ?? 0),
+    cumulativeCacheWriteTokens:
+      (current?.cumulativeCacheWriteTokens ?? current?.cacheWriteTokens ?? 0) +
+      (cacheWriteTokens ?? 0),
+    cumulativeCacheMissTokens:
+      (current?.cumulativeCacheMissTokens ?? current?.cacheMissTokens ?? 0) +
+      (cacheMissTokens ?? 0),
+    cumulativeReasoningTokens:
+      (current?.cumulativeReasoningTokens ?? current?.reasoningTokens ?? 0) +
+      (reasoningTokens ?? 0),
   }
+}
+
+function finiteUsageToken(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0
+    ? Math.round(value)
+    : undefined
 }
 
 function normalizeConversationContextLedgerSection(
@@ -514,6 +562,18 @@ function normalizeConversationContextTurnLedgerEntry(
           promptTokens: record.usage.promptTokens,
           completionTokens: record.usage.completionTokens,
           totalTokens: record.usage.totalTokens,
+          ...(finiteUsageToken(record.usage.cacheReadTokens) !== undefined
+            ? { cacheReadTokens: finiteUsageToken(record.usage.cacheReadTokens) }
+            : {}),
+          ...(finiteUsageToken(record.usage.cacheWriteTokens) !== undefined
+            ? { cacheWriteTokens: finiteUsageToken(record.usage.cacheWriteTokens) }
+            : {}),
+          ...(finiteUsageToken(record.usage.cacheMissTokens) !== undefined
+            ? { cacheMissTokens: finiteUsageToken(record.usage.cacheMissTokens) }
+            : {}),
+          ...(finiteUsageToken(record.usage.reasoningTokens) !== undefined
+            ? { reasoningTokens: finiteUsageToken(record.usage.reasoningTokens) }
+            : {}),
         }
       : undefined
   return {

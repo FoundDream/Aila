@@ -65,6 +65,10 @@ export interface UsageInfo {
   promptTokens: number
   completionTokens: number
   totalTokens: number
+  cacheReadTokens?: number
+  cacheWriteTokens?: number
+  cacheMissTokens?: number
+  reasoningTokens?: number
 }
 
 export interface DoneEvent {

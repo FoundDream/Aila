@@ -7,6 +7,7 @@ import {
 } from '@shared/models'
 import {
   BoxIcon,
+  DatabaseIcon,
   EyeIcon,
   EyeOffIcon,
   KeyRoundIcon,
@@ -32,6 +33,8 @@ import type {
   ExtensionReport,
   ModelSelection,
   OrCatalog,
+  PromptCacheMode,
+  PromptCacheTtl,
   ProviderId,
   Settings,
 } from '../types'
@@ -69,7 +72,7 @@ const DEFAULT_MCP_SERVER_JSON = JSON.stringify(
   2,
 )
 
-type SettingsTab = 'provider' | 'models' | 'search' | 'extensions'
+type SettingsTab = 'provider' | 'models' | 'cache' | 'search' | 'extensions'
 type ExtensionsBusy =
   | 'report'
   | 'reload'
@@ -86,6 +89,7 @@ type ExtensionsBusy =
 const TABS: Array<{ id: SettingsTab; label: string; icon: typeof KeyRoundIcon }> = [
   { id: 'provider', label: 'Provider', icon: KeyRoundIcon },
   { id: 'models', label: 'Default Models', icon: BoxIcon },
+  { id: 'cache', label: 'Cache', icon: DatabaseIcon },
   { id: 'search', label: 'Search', icon: SearchIcon },
   { id: 'extensions', label: 'Extensions', icon: PuzzleIcon },
 ]
@@ -292,6 +296,19 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
     setDraft((prev) => ({ ...prev, visionFallbackMode: mode }))
   }
 
+  const updatePromptCache = (patch: Partial<NonNullable<Settings['promptCache']>>): void => {
+    setDraft((prev) => ({
+      ...prev,
+      promptCache: {
+        mode: prev.promptCache?.mode ?? 'auto',
+        ttl: prev.promptCache?.ttl ?? '5m',
+        openRouterStickySession: prev.promptCache?.openRouterStickySession !== false,
+        showDiagnostics: prev.promptCache?.showDiagnostics === true,
+        ...patch,
+      },
+    }))
+  }
+
   const updateWebSearchProvider = <K extends WebSearchProviderKey>(
     provider: K,
     patch: Partial<NonNullable<WebSearchProviders[K]>>,
@@ -312,6 +329,12 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
   }
 
   const searchProviders = draft.webSearch?.providers ?? {}
+  const promptCache = {
+    mode: draft.promptCache?.mode ?? 'auto',
+    ttl: draft.promptCache?.ttl ?? '5m',
+    openRouterStickySession: draft.promptCache?.openRouterStickySession !== false,
+    showDiagnostics: draft.promptCache?.showDiagnostics === true,
+  }
 
   const configuredInDraft = PROVIDER_ORDER.filter((p) => Boolean(draft.apiKeys[p]?.trim()))
   const providerConfigured = configuredInDraft.includes(selectedProvider)
@@ -1057,6 +1080,89 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
                       </p>
                     </div>
                   </div>
+                </div>
+              </div>
+            )}
+
+            {tab === 'cache' && (
+              <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+                <div className="space-y-5">
+                  <section>
+                    <SectionTitle>Prompt Cache</SectionTitle>
+                    <div className="space-y-3">
+                      <label className="grid grid-cols-[132px_1fr] items-center gap-3 text-[12px]">
+                        <span className="text-[var(--text)]">Mode</span>
+                        <select
+                          value={promptCache.mode}
+                          onChange={(event) =>
+                            updatePromptCache({ mode: event.target.value as PromptCacheMode })
+                          }
+                          className="min-w-0 rounded-md border border-[var(--border)] bg-[var(--bg-soft)] px-2 py-1.5 outline-none focus:border-[var(--border-strong)]"
+                        >
+                          <option value="auto">Auto</option>
+                          <option value="explicit">Explicit breakpoint</option>
+                          <option value="off">Off</option>
+                        </select>
+                      </label>
+
+                      <label className="grid grid-cols-[132px_1fr] items-center gap-3 text-[12px]">
+                        <span className="text-[var(--text)]">Claude TTL</span>
+                        <select
+                          value={promptCache.ttl}
+                          disabled={promptCache.mode === 'off'}
+                          onChange={(event) =>
+                            updatePromptCache({ ttl: event.target.value as PromptCacheTtl })
+                          }
+                          className="min-w-0 rounded-md border border-[var(--border)] bg-[var(--bg-soft)] px-2 py-1.5 outline-none focus:border-[var(--border-strong)] disabled:opacity-50"
+                        >
+                          <option value="5m">5 minutes</option>
+                          <option value="1h">1 hour</option>
+                        </select>
+                      </label>
+                    </div>
+                  </section>
+
+                  <section>
+                    <SectionTitle>Provider Behavior</SectionTitle>
+                    <div className="divide-y divide-[var(--border)] rounded-md border border-[var(--border)]">
+                      <label className="flex items-center gap-3 px-3 py-2 text-[12px]">
+                        <input
+                          type="checkbox"
+                          checked={promptCache.openRouterStickySession}
+                          disabled={promptCache.mode === 'off'}
+                          onChange={(event) =>
+                            updatePromptCache({ openRouterStickySession: event.target.checked })
+                          }
+                          className="size-3.5"
+                        />
+                        <span className="min-w-0 flex-1">
+                          <span className="block text-[var(--text)]">
+                            OpenRouter session stickiness
+                          </span>
+                          <span className="block text-[11px] text-[var(--text-dim)]">
+                            Send the conversation id as the cache session id.
+                          </span>
+                        </span>
+                      </label>
+
+                      <label className="flex items-center gap-3 px-3 py-2 text-[12px]">
+                        <input
+                          type="checkbox"
+                          checked={promptCache.showDiagnostics}
+                          onChange={(event) =>
+                            updatePromptCache({ showDiagnostics: event.target.checked })
+                          }
+                          className="size-3.5"
+                        />
+                        <span className="min-w-0 flex-1">
+                          <span className="block text-[var(--text)]">Show cache diagnostics</span>
+                          <span className="block text-[11px] text-[var(--text-dim)]">
+                            Include cache read, write, miss, and reasoning tokens in usage.
+                          </span>
+                        </span>
+                      </label>
+                    </div>
+                  </section>
                 </div>
               </div>
             )}

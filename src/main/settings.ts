@@ -8,6 +8,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import {
+  normalizePromptCacheSettings,
   normalizeToolApprovalMode,
   normalizeVisionFallbackMode,
   type ProviderId,
@@ -32,6 +33,7 @@ function emptySettings(): Settings {
     defaultImageModel: null,
     defaultVisionModel: null,
     visionFallbackMode: 'auto',
+    promptCache: normalizePromptCacheSettings(undefined),
     approvalMode: 'safe',
   }
 }
@@ -46,6 +48,7 @@ export function loadSettings(): Settings {
       defaultImageModel: parsed.defaultImageModel ?? null,
       defaultVisionModel: parsed.defaultVisionModel ?? null,
       visionFallbackMode: normalizeVisionFallbackMode(parsed.visionFallbackMode),
+      promptCache: normalizePromptCacheSettings(parsed.promptCache),
       approvalMode: normalizeToolApprovalMode(parsed.approvalMode),
       webSearch: parsed.webSearch ?? {},
       recentOpenRouterModels: parsed.recentOpenRouterModels ?? [],

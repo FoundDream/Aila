@@ -16,9 +16,15 @@ const OPENROUTER_CHAT_COMPLETIONS_ENDPOINT = 'https://openrouter.ai/api/v1/chat/
 
 type Fetch = typeof fetch
 
+interface OpenAiCacheControl {
+  type: 'ephemeral'
+  ttl?: '1h'
+}
+
 interface OpenAiContentTextPart {
   type: 'text'
   text: string
+  cache_control?: OpenAiCacheControl
 }
 
 interface OpenAiContentImagePart {
@@ -31,7 +37,7 @@ interface OpenAiContentImagePart {
 type OpenAiContentPart = OpenAiContentTextPart | OpenAiContentImagePart
 
 type OpenAiChatMessage =
-  | { role: 'system'; content: string }
+  | { role: 'system'; content: string | OpenAiContentPart[] }
   | { role: 'user'; content: string | OpenAiContentPart[] }
   | {
       role: 'assistant'
@@ -64,6 +70,22 @@ interface OpenAiUsage {
   total_tokens?: number
   input_tokens?: number
   output_tokens?: number
+  prompt_tokens_details?: OpenAiTokenDetails | null
+  completion_tokens_details?: OpenAiTokenDetails | null
+  input_tokens_details?: OpenAiTokenDetails | null
+  output_tokens_details?: OpenAiTokenDetails | null
+  prompt_cache_hit_tokens?: number
+  prompt_cache_miss_tokens?: number
+  cache_read_input_tokens?: number
+  cache_creation_input_tokens?: number
+}
+
+interface OpenAiTokenDetails {
+  cached_tokens?: number
+  cache_read_tokens?: number
+  cache_write_tokens?: number
+  cache_creation_tokens?: number
+  reasoning_tokens?: number
 }
 
 interface PendingToolCall {
@@ -91,7 +113,7 @@ export function createOpenAiChatModelStreamClient(
         throw new Error(`Native OpenAI chat client cannot handle api "${input.descriptor.api}"`)
       }
 
-      const messages = await toOpenAiMessages(input.messages, options.imageDir)
+      const messages = await toOpenAiMessages(input.messages, options.imageDir, input)
       const assistant = createAssistantAccumulator()
       let stepUsage: ModelStreamUsage | undefined
 
@@ -145,6 +167,8 @@ async function streamOpenAiChat(
   messages: OpenAiChatMessage[],
   fetchImpl: Fetch,
 ): Promise<AsyncIterable<OpenAiChatChunk>> {
+  const openRouterSession = openRouterSessionId(input)
+  const openRouterCacheControl = openRouterAutoCacheControl(input)
   const response = await fetchImpl(resolveChatCompletionsEndpoint(input), {
     method: 'POST',
     headers: {
@@ -158,6 +182,8 @@ async function streamOpenAiChat(
       messages,
       stream: true,
       stream_options: { include_usage: true },
+      ...(openRouterSession ? { session_id: openRouterSession } : {}),
+      ...(openRouterCacheControl ? { cache_control: openRouterCacheControl } : {}),
       ...(input.tools.length > 0
         ? { tools: input.tools.map(toOpenAiToolDefinition), tool_choice: 'auto' }
         : {}),
@@ -255,12 +281,21 @@ function toOpenAiToolDefinition(tool: ModelStreamToolDefinition) {
 async function toOpenAiMessages(
   messages: ChatMessage[],
   imageDir?: string,
+  input?: ModelStreamRequest,
 ): Promise<OpenAiChatMessage[]> {
   const out: OpenAiChatMessage[] = []
+  const explicitCacheControl = input ? openRouterExplicitCacheControl(input) : null
+  const explicitSystemIndex = explicitCacheControl ? lastSystemMessageIndex(messages) : -1
 
-  for (const msg of messages) {
+  for (const [index, msg] of messages.entries()) {
     if (msg.role === 'system') {
-      out.push({ role: 'system', content: msg.content })
+      out.push({
+        role: 'system',
+        content:
+          index === explicitSystemIndex && explicitCacheControl
+            ? [{ type: 'text', text: msg.content, cache_control: explicitCacheControl }]
+            : msg.content,
+      })
       continue
     }
     if (msg.role === 'user') {
@@ -289,6 +324,13 @@ async function toOpenAiMessages(
   }
 
   return out
+}
+
+function lastSystemMessageIndex(messages: ChatMessage[]): number {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.role === 'system') return index
+  }
+  return -1
 }
 
 function toOpenAiToolCall(toolCall: ToolCall): OpenAiToolCall {
@@ -340,10 +382,44 @@ function resolveChatCompletionsEndpoint(input: ModelStreamRequest): string {
 
 function openRouterHeaders(input: ModelStreamRequest): Record<string, string> {
   if (input.descriptor.provider !== 'openrouter') return {}
+  const sessionId = openRouterSessionId(input)
   return {
     'HTTP-Referer': 'https://aila.local',
     'X-Title': (input.descriptor.compat?.openrouterAppName as string | undefined) ?? 'Aila',
+    ...(sessionId ? { 'x-session-id': sessionId } : {}),
   }
+}
+
+function openRouterSessionId(input: ModelStreamRequest): string | null {
+  if (input.descriptor.provider !== 'openrouter') return null
+  if (input.cache?.mode === 'off' || input.cache?.openRouterStickySession === false) return null
+  const conversationId = input.conversationId?.trim()
+  return conversationId ? conversationId.slice(0, 256) : null
+}
+
+function openRouterAutoCacheControl(input: ModelStreamRequest): OpenAiCacheControl | null {
+  if (input.cache?.mode !== 'auto') return null
+  if (!isOpenRouterAnthropicModel(input)) return null
+  return promptCacheControl(input)
+}
+
+function openRouterExplicitCacheControl(input: ModelStreamRequest): OpenAiCacheControl | null {
+  if (input.cache?.mode !== 'explicit') return null
+  if (!isOpenRouterAnthropicModel(input)) return null
+  return promptCacheControl(input)
+}
+
+function promptCacheControl(input: ModelStreamRequest): OpenAiCacheControl {
+  return {
+    type: 'ephemeral',
+    ...(input.cache?.ttl === '1h' ? { ttl: '1h' } : {}),
+  }
+}
+
+function isOpenRouterAnthropicModel(input: ModelStreamRequest): boolean {
+  if (input.descriptor.provider !== 'openrouter') return false
+  const modelId = input.descriptor.modelId.toLowerCase()
+  return modelId.includes('anthropic/') || modelId.includes('claude')
 }
 
 async function readErrorResponse(response: Response): Promise<string> {
@@ -369,11 +445,44 @@ async function readErrorResponse(response: Response): Promise<string> {
 function normalizeOpenAiUsage(usage: OpenAiUsage): ModelStreamUsage {
   const inputTokens = usage.prompt_tokens ?? usage.input_tokens ?? 0
   const outputTokens = usage.completion_tokens ?? usage.output_tokens ?? 0
+  const promptDetails = usage.prompt_tokens_details ?? usage.input_tokens_details ?? undefined
+  const outputDetails = usage.completion_tokens_details ?? usage.output_tokens_details ?? undefined
+  const cacheReadTokens = firstFiniteToken(
+    usage.prompt_cache_hit_tokens,
+    usage.cache_read_input_tokens,
+    promptDetails?.cached_tokens,
+    promptDetails?.cache_read_tokens,
+  )
+  const cacheWriteTokens = firstFiniteToken(
+    usage.cache_creation_input_tokens,
+    promptDetails?.cache_write_tokens,
+    promptDetails?.cache_creation_tokens,
+  )
+  const cacheMissTokens = firstFiniteToken(
+    usage.prompt_cache_miss_tokens,
+    cacheReadTokens !== undefined || cacheWriteTokens !== undefined
+      ? Math.max(inputTokens - (cacheReadTokens ?? 0) - (cacheWriteTokens ?? 0), 0)
+      : undefined,
+  )
   return {
     inputTokens,
     outputTokens,
     totalTokens: usage.total_tokens ?? inputTokens + outputTokens,
+    ...(cacheReadTokens !== undefined ? { cacheReadTokens } : {}),
+    ...(cacheWriteTokens !== undefined ? { cacheWriteTokens } : {}),
+    ...(cacheMissTokens !== undefined ? { cacheMissTokens } : {}),
+    ...(firstFiniteToken(outputDetails?.reasoning_tokens) !== undefined
+      ? { reasoningTokens: firstFiniteToken(outputDetails?.reasoning_tokens) }
+      : {}),
+    rawProviderUsage: usage,
   }
+}
+
+function firstFiniteToken(...values: Array<number | undefined>): number | undefined {
+  for (const value of values) {
+    if (typeof value === 'number' && Number.isFinite(value) && value >= 0) return Math.round(value)
+  }
+  return undefined
 }
 
 function parseToolArguments(args: string): Record<string, unknown> {

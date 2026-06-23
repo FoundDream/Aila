@@ -231,6 +231,16 @@ export interface ModelSelection {
   modelId: string
 }
 
+export type PromptCacheMode = 'off' | 'auto' | 'explicit'
+export type PromptCacheTtl = '5m' | '1h'
+
+export interface PromptCacheSettings {
+  mode?: PromptCacheMode
+  ttl?: PromptCacheTtl
+  openRouterStickySession?: boolean
+  showDiagnostics?: boolean
+}
+
 export interface PersistedMessage {
   schemaVersion: typeof AILA_PERSISTED_MESSAGE_SCHEMA_VERSION
   id: string
@@ -253,6 +263,7 @@ export interface Settings {
   defaultImageModel?: ModelSelection | null
   defaultVisionModel?: ModelSelection | null
   visionFallbackMode?: 'auto' | 'ask' | 'disabled'
+  promptCache?: PromptCacheSettings
   approvalMode?: 'safe' | 'yolo'
   webSearch?: WebSearchSettings
   recentOpenRouterModels?: string[]
@@ -433,11 +444,19 @@ export interface ConversationUsage {
   promptTokens: number
   completionTokens: number
   totalTokens: number
+  cacheReadTokens?: number
+  cacheWriteTokens?: number
+  cacheMissTokens?: number
+  reasoningTokens?: number
   updatedAt: number
   turnCount?: number
   cumulativePromptTokens?: number
   cumulativeCompletionTokens?: number
   cumulativeTotalTokens?: number
+  cumulativeCacheReadTokens?: number
+  cumulativeCacheWriteTokens?: number
+  cumulativeCacheMissTokens?: number
+  cumulativeReasoningTokens?: number
 }
 
 export interface ConversationCompactFileArtifact {
@@ -513,6 +532,10 @@ export interface ConversationContextTurnLedgerEntry {
     promptTokens: number
     completionTokens: number
     totalTokens: number
+    cacheReadTokens?: number
+    cacheWriteTokens?: number
+    cacheMissTokens?: number
+    reasoningTokens?: number
   }
   compaction: {
     activeCheckpointId: string | null
@@ -620,6 +643,10 @@ export interface UsageInfo {
   promptTokens: number
   completionTokens: number
   totalTokens: number
+  cacheReadTokens?: number
+  cacheWriteTokens?: number
+  cacheMissTokens?: number
+  reasoningTokens?: number
 }
 
 export interface ChatDoneEvent extends ChatStreamEventBase {
