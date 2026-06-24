@@ -1,3 +1,6 @@
+import { createHash } from 'node:crypto'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import {
   type AgentEvent,
   type AgentEventType,
@@ -26,6 +29,7 @@ import { executeTool, getToolDefinitions, summarizeToolTarget } from '../interna
 import type { Settings } from '../settings-types'
 import { MissingApiKeyError, type NodeAuthInput, requireApiKey } from './auth'
 import { createDefaultModelStreamClient } from './default-model-stream'
+import { imageNameFromUrl } from './image-store'
 import {
   type CreateModelRegistryInput,
   createModelRegistry,
@@ -63,6 +67,8 @@ const VISION_BRIDGE_SYSTEM_PROMPT =
   'You inspect image attachments for a downstream text-only model. ' +
   'Return concise, factual Markdown. Include visible text/OCR, important objects, layout, ' +
   'tables/charts/UI structure, and details that could matter for answering the user.'
+const VISION_BRIDGE_PROMPT_VERSION = 1
+const VISION_ANALYSIS_CACHE_SCHEMA_VERSION = 1
 
 export interface ProviderStreamChatOptions extends NodeAuthInput {
   modelRegistry?: ModelRegistry
@@ -208,6 +214,8 @@ export function createProviderStreamChat(
         authInput: options,
         signal,
         emitAgentEvent,
+        dataDir: options.dataDir,
+        imageDir: options.imageDir,
       })
       for (const usage of bridged.usage) {
         addUsage(totalUsage, usage)
@@ -558,6 +566,8 @@ interface VisionBridgeInput {
   authInput: NodeAuthInput
   signal: AbortSignal
   emitAgentEvent: EmitAgentEvent
+  dataDir?: string
+  imageDir?: string
 }
 
 interface VisionBridgeResult {
@@ -611,6 +621,8 @@ async function bridgeImagesForTextOnlyModel(input: VisionBridgeInput): Promise<V
   })
 
   const usage: ModelStreamUsage[] = []
+  let cacheHitCount = 0
+  let analyzedImageCount = 0
   const messages: ChatMessage[] = []
   try {
     for (const [index, message] of input.messages.entries()) {
@@ -631,6 +643,14 @@ async function bridgeImagesForTextOnlyModel(input: VisionBridgeInput): Promise<V
           modelStreamClient: input.modelStreamClient,
           signal: input.signal,
           usage,
+          dataDir: input.dataDir,
+          imageDir: input.imageDir,
+          onCacheHit: () => {
+            cacheHitCount += 1
+          },
+          onAnalyzed: () => {
+            analyzedImageCount += 1
+          },
         }),
       })
     }
@@ -653,6 +673,8 @@ async function bridgeImagesForTextOnlyModel(input: VisionBridgeInput): Promise<V
     api: visionDescriptor.api,
     imageCount,
     usageCount: usage.length,
+    cacheHitCount,
+    analyzedImageCount,
   })
 
   return { messages, usage }
@@ -665,6 +687,10 @@ async function analyzeUserImageParts(input: {
   modelStreamClient: ModelStreamClient
   signal: AbortSignal
   usage: ModelStreamUsage[]
+  dataDir?: string
+  imageDir?: string
+  onCacheHit?: () => void
+  onAnalyzed?: () => void
 }): Promise<string> {
   const textContext = input.parts
     .filter((part): part is Extract<UserContentPart, { type: 'text' }> => part.type === 'text')
@@ -687,11 +713,15 @@ async function analyzeUserImageParts(input: {
       modelStreamClient: input.modelStreamClient,
       signal: input.signal,
       usage: input.usage,
+      dataDir: input.dataDir,
+      imageDir: input.imageDir,
     })
+    if (analysis.cacheHit) input.onCacheHit?.()
+    else input.onAnalyzed?.()
     sections.push(
       [
         `<image-analysis index="${imageIndex}" source="${escapeVisionAttribute(part.url)}" mime="${escapeVisionAttribute(part.mime)}">`,
-        analysis,
+        analysis.text,
         '</image-analysis>',
       ].join('\n'),
     )
@@ -709,7 +739,18 @@ async function analyzeImagePart(input: {
   modelStreamClient: ModelStreamClient
   signal: AbortSignal
   usage: ModelStreamUsage[]
-}): Promise<string> {
+  dataDir?: string
+  imageDir?: string
+}): Promise<{ text: string; cacheHit: boolean }> {
+  const cache = await prepareVisionAnalysisCache({
+    dataDir: input.dataDir,
+    imageDir: input.imageDir,
+    image: input.image,
+    textContext: input.textContext,
+    visionDescriptor: input.visionDescriptor,
+  })
+  if (cache?.cached) return { text: cache.cached.analysis, cacheHit: true }
+
   const prompt = [
     `Analyze image ${input.imageIndex} for a downstream text-only model.`,
     input.textContext ? `User/request context:\n${input.textContext}` : '',
@@ -744,7 +785,101 @@ async function analyzeImagePart(input: {
   }
 
   const analysis = chunks.join('').trim()
-  return analysis || '[Vision model returned no image analysis.]'
+  const text = analysis || '[Vision model returned no image analysis.]'
+  await cache?.write(text)
+  return { text, cacheHit: false }
+}
+
+interface VisionAnalysisCacheFile {
+  schemaVersion: typeof VISION_ANALYSIS_CACHE_SCHEMA_VERSION
+  createdAt: number
+  imageHash: string
+  imageMime: string
+  promptVersion: typeof VISION_BRIDGE_PROMPT_VERSION
+  textContextHash: string
+  visionProvider: string
+  visionModelId: string
+  analysis: string
+}
+
+async function prepareVisionAnalysisCache(input: {
+  dataDir?: string
+  imageDir?: string
+  image: Extract<UserContentPart, { type: 'image' }>
+  textContext: string
+  visionDescriptor: ModelDescriptor
+}): Promise<{
+  cached?: VisionAnalysisCacheFile
+  write: (analysis: string) => Promise<void>
+} | null> {
+  if (!input.dataDir || !input.imageDir) return null
+  const imageHash = await hashImageFile(input.image, input.imageDir)
+  const textContextHash = sha256(input.textContext)
+  const key = sha256(
+    JSON.stringify({
+      imageHash,
+      imageMime: input.image.mime,
+      promptVersion: VISION_BRIDGE_PROMPT_VERSION,
+      textContextHash,
+      visionProvider: input.visionDescriptor.provider,
+      visionModelId: input.visionDescriptor.modelId,
+    }),
+  )
+  const cacheDir = join(input.dataDir, 'vision-analysis')
+  const cachePath = join(cacheDir, `${key}.json`)
+  const cached = await readVisionAnalysisCache(cachePath)
+  return {
+    ...(cached ? { cached } : {}),
+    write: async (analysis: string) => {
+      await mkdir(cacheDir, { recursive: true })
+      const record: VisionAnalysisCacheFile = {
+        schemaVersion: VISION_ANALYSIS_CACHE_SCHEMA_VERSION,
+        createdAt: Date.now(),
+        imageHash,
+        imageMime: input.image.mime,
+        promptVersion: VISION_BRIDGE_PROMPT_VERSION,
+        textContextHash,
+        visionProvider: input.visionDescriptor.provider,
+        visionModelId: input.visionDescriptor.modelId,
+        analysis,
+      }
+      await writeFile(cachePath, `${JSON.stringify(record, null, 2)}\n`, 'utf-8')
+    },
+  }
+}
+
+async function hashImageFile(
+  image: Extract<UserContentPart, { type: 'image' }>,
+  imageDir: string,
+): Promise<string> {
+  const name = imageNameFromUrl(image.url)
+  if (!name) throw new Error(`Unable to load attached image ${image.url}: unrecognized image url`)
+  try {
+    return sha256(await readFile(join(imageDir, name)))
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err)
+    throw new Error(`Unable to load attached image ${image.url}: ${detail}`)
+  }
+}
+
+async function readVisionAnalysisCache(path: string): Promise<VisionAnalysisCacheFile | null> {
+  try {
+    const parsed = JSON.parse(await readFile(path, 'utf-8')) as Partial<VisionAnalysisCacheFile>
+    if (
+      parsed.schemaVersion !== VISION_ANALYSIS_CACHE_SCHEMA_VERSION ||
+      typeof parsed.analysis !== 'string' ||
+      !parsed.analysis.trim()
+    ) {
+      return null
+    }
+    return parsed as VisionAnalysisCacheFile
+  } catch {
+    return null
+  }
+}
+
+function sha256(input: string | Uint8Array): string {
+  return createHash('sha256').update(input).digest('hex')
 }
 
 function replaceImagesWithText(messages: ChatMessage[], reason: string): VisionBridgeResult {

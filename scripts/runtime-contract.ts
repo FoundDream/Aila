@@ -8954,6 +8954,101 @@ async function testProviderStreamChatVisionFallbackUsesLatestImageContract(): Pr
   )
 }
 
+async function testProviderStreamChatVisionFallbackCachesAnalysisContract(): Promise<void> {
+  await withTempDataDir(async (dir) => {
+    const imageDir = join(dir, 'images')
+    await mkdir(imageDir, { recursive: true })
+    await writeFile(join(imageDir, 'cache-lab.png'), 'contract image bytes')
+
+    let visionCalls = 0
+    const finalPrompts: string[] = []
+    const agentEvents: AgentEvent[] = []
+    const modelStreamClient: runtimePackageNodeSdk.ModelStreamClient = {
+      async *stream(input) {
+        if (input.descriptor.provider === 'openai') {
+          visionCalls += 1
+          yield { type: 'text-delta', text: 'Cached summary: optical table with lenses.' }
+          yield { type: 'finish-step', usage: { inputTokens: 3, outputTokens: 4, totalTokens: 7 } }
+          return
+        }
+
+        finalPrompts.push(chatMessagesAsText(input.messages))
+        yield { type: 'text-delta', text: 'answered from cached analysis' }
+        yield { type: 'finish-step', usage: { inputTokens: 5, outputTokens: 2, totalTokens: 7 } }
+      },
+    }
+
+    const streamChat = runtimePackageNodeSdk.createProviderStreamChat({
+      modelRegistry: createVisionBridgeContractModelRegistry(),
+      modelStreamClient,
+      dataDir: dir,
+      imageDir,
+      settings: {
+        apiKeys: { deepseek: 'text-key', openai: 'vision-key' },
+        defaultModel: null,
+        defaultVisionModel: { providerId: 'openai', modelId: 'gpt-contract-vision' },
+        visionFallbackMode: 'auto',
+      },
+    })
+    const imageMessage: ChatMessage = {
+      role: 'user',
+      content: [
+        { type: 'text', text: '看看' },
+        { type: 'image', url: 'aila-image://i/cache-lab.png', mime: 'image/png' },
+      ],
+    }
+
+    for (const [index, messages] of [
+      [imageMessage],
+      [
+        imageMessage,
+        { role: 'assistant' as const, content: 'First answer.' },
+        { role: 'user' as const, content: '继续解释一下' },
+      ],
+    ].entries()) {
+      await streamChat(
+        {
+          conversationId: `provider-vision-cache-conversation-${index}`,
+          assistantMessageId: `provider-vision-cache-assistant-${index}`,
+          messages,
+          selection: { providerId: 'deepseek', modelId: 'deepseek-contract-text' },
+          signal: new AbortController().signal,
+          onAgentEvent(event) {
+            agentEvents.push(event)
+          },
+        },
+        {
+          onTextDelta() {},
+          onReasoningDelta() {},
+          onToolCallStart() {},
+          onToolCallArgsDelta() {},
+          onToolCallResult() {},
+          onImageBlock() {},
+          onDone() {},
+          onError(event) {
+            throw new Error(event.error)
+          },
+        },
+      )
+    }
+
+    assertEqual(visionCalls, 1, 'cached image analysis should avoid repeated vision calls')
+    assertEqual(finalPrompts.length, 2, 'both turns should reach the text model')
+    assert(
+      finalPrompts.every((prompt) => prompt.includes('Cached summary: optical table with lenses.')),
+      'text model prompts should include the cached image analysis on follow-up turns',
+    )
+    assert(
+      agentEvents.some(
+        (event) => event.type === 'vision.bridge.completed' && event.data?.cacheHitCount === 1,
+      ),
+      'follow-up bridge completion should report a cache hit',
+    )
+    const cacheFiles = await readdir(join(dir, 'vision-analysis'))
+    assertEqual(cacheFiles.length, 1, 'vision analysis should be persisted once per cache key')
+  })
+}
+
 async function testProviderStreamChatVisionPassThroughContract(): Promise<void> {
   const requests: Array<{ provider: string; messages: ChatMessage[]; step?: number }> = []
 
@@ -11233,6 +11328,7 @@ async function main(): Promise<void> {
   await testProviderStreamChatOwnsToolLoopContract()
   await testProviderStreamChatVisionFallbackContract()
   await testProviderStreamChatVisionFallbackUsesLatestImageContract()
+  await testProviderStreamChatVisionFallbackCachesAnalysisContract()
   await testProviderStreamChatVisionPassThroughContract()
   await testProviderStreamChatVisionFallbackDisabledContract()
   await testProviderStreamChatVisionFallbackMissingConfigContract()
