@@ -1,13 +1,24 @@
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { Settings } from '@aila/agent'
 import {
   type AgentEvent,
   type AgentEventType,
+  type AgentLoopSnapshot,
+  type AgentLoopTransition,
+  type AgentRunArtifact,
+  type AgentRunCheckpoint,
+  type AgentRunIdentity,
+  AILA_AGENT_RUN_ARTIFACT_SCHEMA_VERSION,
+  AILA_AGENT_RUN_CHECKPOINT_SCHEMA_VERSION,
   AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+  agentRunRecoveryForLoop,
   type ChatMessage,
+  createAgentLoopSnapshot,
   type ImageSideChannelBlock,
+  type ModelCallExecutor,
+  type ModelCallToolCall,
   type ModelDescriptor,
   type ModelInfo,
   type ModelSelection,
@@ -18,6 +29,8 @@ import {
   type PersistedToolCallBlock,
   type PersistedToolResultRef,
   type RuntimeStreamChat,
+  reduceAgentLoopTransition,
+  runAgentLoop,
   type StreamHandlers,
   type ToolActivityTarget,
   type ToolCall,
@@ -30,6 +43,7 @@ import { executeTool, getToolDefinitions, summarizeToolTarget } from '@aila/agen
 import { MissingApiKeyError, type NodeAuthInput, requireApiKey } from './auth'
 import { createDefaultModelStreamClient } from './default-model-stream'
 import { imageNameFromUrl } from './image-store'
+import { createProviderModelCallExecutor } from './model-call-executor'
 import {
   type CreateModelRegistryInput,
   createModelRegistry,
@@ -86,6 +100,8 @@ export interface ProviderStreamChatOptions extends NodeAuthInput {
   toolResultPreviewChars?: number
   /** Backstop on tool-using model steps per turn. Defaults to DEFAULT_MAX_TOOL_STEPS. */
   maxSteps?: number
+  createStepId?: () => string
+  createEventId?: () => string
 }
 
 export function createProviderStreamChat(
@@ -102,6 +118,7 @@ export function createProviderStreamChat(
       protocolRegistry,
       imageDir: options.imageDir,
     })
+  const modelCallExecutor = createProviderModelCallExecutor({ modelStreamClient })
   const toolResultStore =
     options.toolResultStore === null
       ? null
@@ -119,11 +136,16 @@ export function createProviderStreamChat(
     const {
       conversationId,
       assistantMessageId,
+      run: requestRun,
+      loopMode = 'continuous',
+      runCheckpoint,
       messages: requestMessages,
-      contextPlan,
+      contextPlan: requestContextPlan,
       selection: requestSelection,
       signal,
       onAgentEvent,
+      saveRunCheckpoint,
+      saveRunArtifact,
       workspaceRoots: requestWorkspaceRoots,
       shellCwd,
       onToolPolicy,
@@ -137,22 +159,117 @@ export function createProviderStreamChat(
       toolRegistry,
     } = req
 
-    const messages = cloneAgentMessages(requestMessages)
+    const messages = cloneAgentMessages(runCheckpoint?.messages ?? requestMessages)
     const selection = cloneAgentValue(requestSelection)
+    const contextPlan = cloneAgentValue(runCheckpoint?.contextPlan ?? requestContextPlan)
     const workspaceRoots = cloneAgentWorkspaceRoots(requestWorkspaceRoots)
-    const builder = new AssistantBuilder()
-    let lastUsage: UsageInfo | null = null
+    const builder = new AssistantBuilder(runCheckpoint?.assistantMessage.blocks)
+    let lastUsage: UsageInfo | null = runCheckpoint?.usage
+      ? cloneAgentValue(runCheckpoint.usage)
+      : null
     const toolTargets = new Map<string, ToolActivityTarget>()
+    const run: AgentRunIdentity = cloneAgentValue(
+      runCheckpoint?.identity ??
+        requestRun ?? {
+          conversationId,
+          turnId: assistantMessageId,
+          runId: assistantMessageId,
+        },
+    )
+    let activeStepId: string | undefined
 
-    const emitAgentEvent = (type: AgentEventType, data?: Record<string, unknown>): void => {
+    const createAgentEvent = (
+      type: AgentEventType,
+      data?: Record<string, unknown>,
+      stepId = activeStepId,
+    ): AgentEvent => {
       const event: AgentEvent = {
         timestamp: Date.now(),
         conversationId,
         messageId: assistantMessageId,
         type,
+        turnId: run.turnId,
+        runId: run.runId,
+        ...(stepId ? { stepId } : {}),
+        eventId: (options.createEventId ?? randomUUID)(),
         ...(data && { data: cloneAgentValue(data) }),
       }
-      onAgentEvent?.(cloneAgentValue(event))
+      return event
+    }
+    const emitAgentEvent = (
+      type: AgentEventType,
+      data?: Record<string, unknown>,
+      stepId?: string,
+    ): void => {
+      const pending = onAgentEvent?.(
+        cloneAgentValue(createAgentEvent(type, data, stepId)),
+      ) as unknown
+      if (pending && typeof (pending as PromiseLike<void>).then === 'function') {
+        void Promise.resolve(pending).catch(() => {})
+      }
+    }
+    const emitDurableAgentEvent = async (
+      type: AgentEventType,
+      data?: Record<string, unknown>,
+      stepId?: string,
+    ): Promise<void> => {
+      await onAgentEvent?.(cloneAgentValue(createAgentEvent(type, data, stepId)))
+    }
+    let runBoundaryPersisted = false
+    const persistPreLoopFailure = async (message: string): Promise<void> => {
+      if (runBoundaryPersisted) return
+      runBoundaryPersisted = true
+      const timestamp = Date.now()
+      const loop = cloneAgentValue(
+        runCheckpoint?.loop ?? createAgentLoopSnapshot<ModelCallToolCall>(run, loopMode),
+      )
+      if (!runCheckpoint) {
+        const started: AgentLoopTransition = {
+          type: 'run.started',
+          timestamp,
+          identity: cloneAgentValue(run),
+          mode: loopMode,
+        }
+        loop.state = reduceAgentLoopTransition(loop.state, started)
+        await emitDurableAgentEvent(started.type, agentLoopTransitionData(started))
+      }
+      const failed: AgentLoopTransition = {
+        type: 'run.failed',
+        timestamp,
+        identity: cloneAgentValue(run),
+        error: message,
+      }
+      loop.state = reduceAgentLoopTransition(loop.state, failed)
+      await emitDurableAgentEvent(failed.type, agentLoopTransitionData(failed))
+      if (!saveRunCheckpoint) return
+      await saveRunCheckpoint({
+        schemaVersion: AILA_AGENT_RUN_CHECKPOINT_SCHEMA_VERSION,
+        identity: cloneAgentValue(run),
+        assistantMessageId,
+        selection: cloneAgentValue(selection),
+        executionMode: runCheckpoint?.executionMode ?? req.mode ?? 'agent',
+        maxToolSteps: runCheckpoint?.maxToolSteps ?? maxToolSteps,
+        loop,
+        messages: cloneAgentMessages(messages),
+        modelStepOutputs: cloneAgentValue(runCheckpoint?.modelStepOutputs ?? {}),
+        ...(contextPlan ? { contextPlan: cloneAgentValue(contextPlan) } : {}),
+        assistantMessage: builder.build(assistantMessageId, 'error', selection, message),
+        ...(lastUsage ? { usage: cloneAgentValue(lastUsage) } : {}),
+        ...(runCheckpoint?.plan
+          ? { plan: cloneAgentValue(runCheckpoint.plan) }
+          : req.plan
+            ? {
+                plan: {
+                  id: req.plan.id,
+                  ...(req.planOperation ? { operation: req.planOperation } : {}),
+                },
+              }
+            : {}),
+        recovery: agentRunRecoveryForLoop(loop),
+        revision: (runCheckpoint?.revision ?? 0) + 1,
+        createdAt: runCheckpoint?.createdAt ?? timestamp,
+        updatedAt: timestamp,
+      })
     }
 
     const settings = cloneAgentSettings(
@@ -161,13 +278,15 @@ export function createProviderStreamChat(
         options.loadSettings?.() ?? { apiKeys: {}, defaultModel: null },
     )
     const descriptor = modelRegistry.resolve(selection)
-    emitAgentEvent('turn.started', {
-      providerId: selection.providerId,
-      modelId: selection.modelId,
-      provider: descriptor.provider,
-      api: descriptor.api,
-      inputMessageCount: messages.length,
-    })
+    if (!runCheckpoint) {
+      emitAgentEvent('turn.started', {
+        providerId: selection.providerId,
+        modelId: selection.modelId,
+        provider: descriptor.provider,
+        api: descriptor.api,
+        inputMessageCount: messages.length,
+      })
+    }
 
     const onImageFromTool = (block: ImageSideChannelBlock): void => {
       const imageBlock = cloneAgentValue(block)
@@ -192,6 +311,7 @@ export function createProviderStreamChat(
           : err instanceof Error
             ? err.message
             : String(err)
+      await persistPreLoopFailure(message)
       await callAsyncStreamHandler(handlers.onError, {
         conversationId,
         messageId: assistantMessageId,
@@ -203,149 +323,394 @@ export function createProviderStreamChat(
     }
 
     try {
-      const totalUsage = createUsageAccumulator()
-      const bridged = await bridgeImagesForTextOnlyModel({
-        messages,
-        descriptor,
-        selection,
-        settings,
-        modelRegistry,
-        modelStreamClient,
-        authInput: options,
-        signal,
-        emitAgentEvent,
-        dataDir: options.dataDir,
-        imageDir: options.imageDir,
-      })
+      const totalUsage = runCheckpoint?.usage
+        ? cloneAgentValue(runCheckpoint.usage)
+        : createUsageAccumulator()
+      const bridged = runCheckpoint
+        ? { messages, usage: [] }
+        : await bridgeImagesForTextOnlyModel({
+            messages,
+            descriptor,
+            selection,
+            settings,
+            modelRegistry,
+            modelCallExecutor,
+            authInput: options,
+            signal,
+            emitAgentEvent,
+            dataDir: options.dataDir,
+            imageDir: options.imageDir,
+          })
       for (const usage of bridged.usage) {
         addUsage(totalUsage, usage)
         lastUsage = usageInfo(totalUsage)
       }
 
-      const tools = buildTools(
-        {
-          settings,
-          conversationId,
-          messageId: assistantMessageId,
-          workspaceRoots,
-          shellCwd,
-          signal,
-          onToolPolicy,
-          onToolApproval,
-          webSearch,
-          generateImage,
-          saveImage,
-          runShell,
-          fileSystem,
-          onImage: onImageFromTool,
-        },
-        emitAgentEvent,
-        toolRegistry,
-        toolTargets,
-      )
+      const toolContext: Parameters<typeof executeTool>[2] = {
+        settings,
+        conversationId,
+        messageId: assistantMessageId,
+        workspaceRoots,
+        shellCwd,
+        signal,
+        onToolPolicy,
+        onToolApproval,
+        webSearch,
+        generateImage,
+        saveImage,
+        runShell,
+        fileSystem,
+        onImage: onImageFromTool,
+      }
+      const tools = buildToolSchemas(toolRegistry)
       const modelMessages = cloneAgentMessages(bridged.messages)
       const startedToolCalls = new Set<string>()
 
-      // Run up to maxToolSteps tool-enabled steps, plus one final tool-free step
-      // (step === maxToolSteps) that lets the model wrap up gracefully if it has
-      // exhausted the budget but still wants to keep going.
       let toolBudgetNoticeSent = false
-      for (let step = 0; step <= maxToolSteps; step += 1) {
-        const toolsWithdrawn = step >= maxToolSteps
-        if (toolsWithdrawn && !toolBudgetNoticeSent) {
-          toolBudgetNoticeSent = true
-          modelMessages.push({ role: 'system', content: TOOL_BUDGET_EXHAUSTED_NOTICE })
-        }
-        const assistantText: string[] = []
-        const stepToolCalls: ParsedModelToolCall[] = []
-        const externallyResolvedToolCalls = new Set<string>()
-        const result = modelStreamClient.stream({
-          descriptor,
-          apiKey,
-          conversationId,
+      const assistantTextByModelStep = new Map<number, string>(
+        Object.entries(runCheckpoint?.modelStepOutputs ?? {}).map(([index, text]) => [
+          Number(index),
+          text,
+        ]),
+      )
+      let checkpointRevision = runCheckpoint?.revision ?? 0
+      const checkpointCreatedAt = runCheckpoint?.createdAt ?? Date.now()
+      let latestLoopSnapshot: AgentLoopSnapshot<ModelCallToolCall> | undefined
+      const persistRunCheckpoint = async (
+        loop: AgentLoopSnapshot<ModelCallToolCall>,
+        messageStatus: 'streaming' | 'done' | 'error' = 'streaming',
+        messageError?: string,
+      ): Promise<void> => {
+        latestLoopSnapshot = cloneAgentValue(loop)
+        if (!saveRunCheckpoint) return
+        const timestamp = Date.now()
+        const checkpoint: AgentRunCheckpoint = {
+          schemaVersion: AILA_AGENT_RUN_CHECKPOINT_SCHEMA_VERSION,
+          identity: cloneAgentValue(run),
+          assistantMessageId,
+          selection: cloneAgentValue(selection),
+          executionMode: req.mode ?? 'agent',
+          maxToolSteps,
+          loop: cloneAgentValue(loop),
           messages: cloneAgentMessages(modelMessages),
-          ...(contextPlan ? { contextPlan } : {}),
-          ...(settings.promptCache ? { cache: settings.promptCache } : {}),
-          tools: toolsWithdrawn ? [] : tools,
-          signal,
-          step,
-        })
+          modelStepOutputs: Object.fromEntries(assistantTextByModelStep),
+          ...(contextPlan ? { contextPlan: cloneAgentValue(contextPlan) } : {}),
+          assistantMessage: builder.build(
+            assistantMessageId,
+            messageStatus,
+            selection,
+            messageError,
+          ),
+          ...(lastUsage ? { usage: cloneAgentValue(lastUsage) } : {}),
+          ...(req.plan
+            ? {
+                plan: {
+                  id: req.plan.id,
+                  ...(req.planOperation ? { operation: req.planOperation } : {}),
+                },
+              }
+            : {}),
+          recovery: agentRunRecoveryForLoop(loop),
+          revision: checkpointRevision + 1,
+          createdAt: checkpointCreatedAt,
+          updatedAt: timestamp,
+        }
+        const saved = await saveRunCheckpoint(cloneAgentValue(checkpoint))
+        checkpointRevision = saved.revision
+      }
+      const persistRunArtifact = async (artifact: AgentRunArtifact): Promise<void> => {
+        if (!saveRunArtifact) return
+        await saveRunArtifact(cloneAgentValue(artifact))
+      }
+      const initialSnapshot = runCheckpoint?.loop ? cloneAgentValue(runCheckpoint.loop) : undefined
+      if (initialSnapshot) initialSnapshot.state.mode = loopMode
+      const loopResult = await runAgentLoop<ParsedModelToolCall>({
+        identity: run,
+        signal,
+        maxToolSteps,
+        ...(initialSnapshot ? { initialSnapshot } : {}),
+        ...(options.createStepId
+          ? {
+              createStepId: () => options.createStepId?.() ?? randomUUID(),
+            }
+          : {}),
+        policy: { mode: loopMode },
+        onSnapshot: (snapshot) => persistRunCheckpoint(snapshot),
+        onTransition: async (transition) => {
+          if (transition.type === 'run.started' || transition.type === 'run.resumed') {
+            runBoundaryPersisted = true
+          }
+          if (transition.type === 'step.started') activeStepId = transition.step.stepId
+          await emitDurableAgentEvent(
+            transition.type,
+            agentLoopTransitionData(transition),
+            'step' in transition ? transition.step.stepId : undefined,
+          )
+          if (
+            transition.type === 'step.completed' ||
+            transition.type === 'step.failed' ||
+            transition.type === 'step.cancelled'
+          ) {
+            activeStepId = undefined
+          }
+        },
+        executeModelStep: async ({ step, modelStepIndex, toolsEnabled }) => {
+          activeStepId = step.stepId
+          if (!toolsEnabled && !toolBudgetNoticeSent) {
+            toolBudgetNoticeSent = true
+            modelMessages.push({ role: 'system', content: TOOL_BUDGET_EXHAUSTED_NOTICE })
+          }
 
-        for await (const part of result) {
-          switch (part.type) {
-            case 'text-delta':
-              assistantText.push(part.text)
-              builder.appendText('text', part.text)
-              callStreamHandler(handlers.onTextDelta, {
-                conversationId,
-                messageId: assistantMessageId,
-                delta: part.text,
-              })
-              break
-            case 'reasoning-delta':
-              builder.appendText('reasoning', part.text)
-              callStreamHandler(handlers.onReasoningDelta, {
-                conversationId,
-                messageId: assistantMessageId,
-                delta: part.text,
-              })
-              break
-            case 'tool-input-start':
-              recordToolInputStart({
-                id: part.id,
-                name: part.toolName,
-                args: '',
+          const result = await modelCallExecutor.execute(
+            {
+              descriptor,
+              apiKey,
+              conversationId,
+              messages: cloneAgentMessages(modelMessages),
+              ...(contextPlan ? { contextPlan } : {}),
+              ...(settings.promptCache ? { cache: settings.promptCache } : {}),
+              tools: toolsEnabled ? tools : [],
+              signal,
+              stepIndex: modelStepIndex,
+            },
+            async (part) => {
+              switch (part.type) {
+                case 'text-delta':
+                  builder.appendText('text', part.text)
+                  callStreamHandler(handlers.onTextDelta, {
+                    conversationId,
+                    messageId: assistantMessageId,
+                    delta: part.text,
+                  })
+                  break
+                case 'reasoning-delta':
+                  builder.appendText('reasoning', part.text)
+                  callStreamHandler(handlers.onReasoningDelta, {
+                    conversationId,
+                    messageId: assistantMessageId,
+                    delta: part.text,
+                  })
+                  break
+                case 'tool-input-start':
+                  recordToolInputStart({
+                    id: part.id,
+                    name: part.toolName,
+                    args: '',
+                    builder,
+                    startedToolCalls,
+                    emitAgentEvent,
+                    handlers,
+                    conversationId,
+                    assistantMessageId,
+                  })
+                  break
+                case 'tool-input-delta':
+                  builder.appendToolCallArgs(part.id, part.delta)
+                  emitAgentEvent('tool.input.delta', {
+                    toolCallId: part.id,
+                    deltaSize: part.delta.length,
+                  })
+                  callStreamHandler(handlers.onToolCallArgsDelta, {
+                    conversationId,
+                    messageId: assistantMessageId,
+                    toolCallId: part.id,
+                    delta: part.delta,
+                  })
+                  break
+                case 'tool-call':
+                  recordToolInputCompleted({
+                    call: parseModelToolCall(part.toolCallId, part.toolName, part.input),
+                    builder,
+                    startedToolCalls,
+                    toolTargets,
+                    emitAgentEvent,
+                    handlers,
+                    conversationId,
+                    assistantMessageId,
+                  })
+                  break
+                case 'tool-result': {
+                  const toolResult = await prepareToolResultForModel({
+                    store: toolResultStore,
+                    content: stringifyToolOutput(part.output),
+                    conversationId,
+                    messageId: assistantMessageId,
+                    toolCallId: part.toolCallId,
+                    toolName: part.toolName,
+                    maxInlineChars: maxInlineToolResultChars,
+                    previewChars: toolResultPreviewChars,
+                  })
+                  recordToolResult({
+                    toolCallId: part.toolCallId,
+                    toolName: part.toolName,
+                    result: toolResult.content,
+                    ...(toolResult.resultRef && { resultRef: toolResult.resultRef }),
+                    isError: false,
+                    builder,
+                    toolTargets,
+                    emitAgentEvent,
+                    handlers,
+                    conversationId,
+                    assistantMessageId,
+                  })
+                  break
+                }
+                case 'tool-error':
+                  recordToolResult({
+                    toolCallId: part.toolCallId,
+                    toolName: part.toolName,
+                    result: part.error instanceof Error ? part.error.message : String(part.error),
+                    isError: true,
+                    builder,
+                    toolTargets,
+                    emitAgentEvent,
+                    handlers,
+                    conversationId,
+                    assistantMessageId,
+                  })
+                  break
+                case 'finish-step':
+                case 'finish':
+                case 'abort':
+                case 'error':
+                  break
+              }
+            },
+          )
+
+          for (const usage of result.stepUsage) {
+            addUsage(totalUsage, usage)
+            lastUsage = usageInfo(totalUsage)
+          }
+          if (result.totalUsage) {
+            const providerTotal = usageInfoFromModelUsage(result.totalUsage)
+            lastUsage =
+              (totalUsage.modelCallCount ?? 0) > 0
+                ? {
+                    ...providerTotal,
+                    modelCallCount: totalUsage.modelCallCount,
+                    maxInputTokens: totalUsage.maxInputTokens,
+                    lastInputTokens: totalUsage.lastInputTokens,
+                    lastOutputTokens: totalUsage.lastOutputTokens,
+                    lastCacheReadTokens: totalUsage.lastCacheReadTokens,
+                    lastCacheWriteTokens: totalUsage.lastCacheWriteTokens,
+                    lastCacheMissTokens: totalUsage.lastCacheMissTokens,
+                  }
+                : providerTotal
+          }
+
+          assistantTextByModelStep.set(modelStepIndex, result.text)
+          await persistRunArtifact({
+            schemaVersion: AILA_AGENT_RUN_ARTIFACT_SCHEMA_VERSION,
+            artifactId: `${run.runId}:${step.stepId}:model_call`,
+            conversationId,
+            turnId: run.turnId,
+            runId: run.runId,
+            stepId: step.stepId,
+            kind: 'model_call',
+            createdAt: Date.now(),
+            contentType: 'application/json',
+            data: {
+              outcome: result.outcome,
+              text: result.text,
+              reasoning: result.reasoning,
+              toolCalls: cloneAgentValue(result.toolCalls),
+              resolvedToolResults: cloneAgentValue(result.resolvedToolResults),
+              stepUsage: cloneAgentValue(result.stepUsage),
+              ...(result.totalUsage ? { totalUsage: cloneAgentValue(result.totalUsage) } : {}),
+              ...(result.error ? { error: result.error } : {}),
+            },
+          })
+          return {
+            outcome: result.outcome,
+            toolCalls:
+              result.outcome === 'completed'
+                ? result.toolCalls.filter(
+                    (toolCall) =>
+                      !result.resolvedToolResults.some(
+                        (resolved) => resolved.toolCallId === toolCall.id,
+                      ),
+                  )
+                : [],
+            ...(result.error ? { error: result.error } : {}),
+          }
+        },
+        executeToolBatch: async ({ step, toolCalls }) => {
+          activeStepId = step.stepId
+          const modelStepIndex = Math.max(0, Math.floor(step.index / 2))
+          const toolResults: Array<{
+            toolCallId: string
+            toolName: string
+            result: string
+            isError: boolean
+          }> = []
+          modelMessages.push({
+            role: 'assistant',
+            content: assistantTextByModelStep.get(modelStepIndex) ?? '',
+            tool_calls: toolCalls.map(toChatToolCall),
+          })
+
+          for (const toolCall of toolCalls) {
+            if (!tools.some((definition) => definition.name === toolCall.name)) {
+              const message = `Unknown tool "${toolCall.name}"`
+              recordToolResult({
+                toolCallId: toolCall.id,
+                toolName: toolCall.name,
+                result: message,
+                isError: true,
                 builder,
-                startedToolCalls,
-                emitAgentEvent,
-                handlers,
-                conversationId,
-                assistantMessageId,
-              })
-              break
-            case 'tool-input-delta':
-              builder.appendToolCallArgs(part.id, part.delta)
-              emitAgentEvent('tool.input.delta', {
-                toolCallId: part.id,
-                deltaSize: part.delta.length,
-              })
-              callStreamHandler(handlers.onToolCallArgsDelta, {
-                conversationId,
-                messageId: assistantMessageId,
-                toolCallId: part.id,
-                delta: part.delta,
-              })
-              break
-            case 'tool-call': {
-              const parsed = parseModelToolCall(part.toolCallId, part.toolName, part.input)
-              stepToolCalls.push(parsed)
-              recordToolInputCompleted({
-                call: parsed,
-                builder,
-                startedToolCalls,
                 toolTargets,
                 emitAgentEvent,
                 handlers,
                 conversationId,
                 assistantMessageId,
               })
-              break
+              modelMessages.push({ role: 'tool', tool_call_id: toolCall.id, content: message })
+              toolResults.push({
+                toolCallId: toolCall.id,
+                toolName: toolCall.name,
+                result: message,
+                isError: true,
+              })
+              continue
             }
-            case 'tool-result': {
-              externallyResolvedToolCalls.add(part.toolCallId)
+
+            const target = summarizeToolTarget(toolCall.name, toolCall.args)
+            if (target) toolTargets.set(toolCall.id, target)
+            emitAgentEvent('tool.execution.started', {
+              toolCallId: toolCall.id,
+              toolName: toolCall.name,
+              input: previewEventValue(toolCall.args),
+              ...(target && { target }),
+            })
+            try {
+              const output = await executeTool(
+                toolCall.name,
+                cloneAgentToolArgs(toolCall.args),
+                { ...toolContext, toolCallId: toolCall.id },
+                toolRegistry,
+              )
+              emitAgentEvent('tool.execution.completed', {
+                toolCallId: toolCall.id,
+                toolName: toolCall.name,
+                result: previewEventValue(output),
+                ...(toolTargets.get(toolCall.id) && {
+                  target: toolTargets.get(toolCall.id),
+                }),
+              })
               const toolResult = await prepareToolResultForModel({
                 store: toolResultStore,
-                content: stringifyToolOutput(part.output),
+                content: stringifyToolOutput(output),
                 conversationId,
                 messageId: assistantMessageId,
-                toolCallId: part.toolCallId,
-                toolName: part.toolName,
+                toolCallId: toolCall.id,
+                toolName: toolCall.name,
                 maxInlineChars: maxInlineToolResultChars,
                 previewChars: toolResultPreviewChars,
               })
               recordToolResult({
-                toolCallId: part.toolCallId,
-                toolName: part.toolName,
+                toolCallId: toolCall.id,
+                toolName: toolCall.name,
                 result: toolResult.content,
                 ...(toolResult.resultRef && { resultRef: toolResult.resultRef }),
                 isError: false,
@@ -356,14 +721,30 @@ export function createProviderStreamChat(
                 conversationId,
                 assistantMessageId,
               })
-              break
-            }
-            case 'tool-error': {
-              externallyResolvedToolCalls.add(part.toolCallId)
-              const message = part.error instanceof Error ? part.error.message : String(part.error)
+              modelMessages.push({
+                role: 'tool',
+                tool_call_id: toolCall.id,
+                content: toolResult.content,
+              })
+              toolResults.push({
+                toolCallId: toolCall.id,
+                toolName: toolCall.name,
+                result: toolResult.content,
+                isError: false,
+              })
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error)
+              emitAgentEvent('tool.execution.failed', {
+                toolCallId: toolCall.id,
+                toolName: toolCall.name,
+                error: message,
+                ...(toolTargets.get(toolCall.id) && {
+                  target: toolTargets.get(toolCall.id),
+                }),
+              })
               recordToolResult({
-                toolCallId: part.toolCallId,
-                toolName: part.toolName,
+                toolCallId: toolCall.id,
+                toolName: toolCall.name,
                 result: message,
                 isError: true,
                 builder,
@@ -373,65 +754,39 @@ export function createProviderStreamChat(
                 conversationId,
                 assistantMessageId,
               })
-              break
-            }
-            case 'finish-step':
-              if (part.usage) {
-                addUsage(totalUsage, part.usage)
-                lastUsage = usageInfo(totalUsage)
-              }
-              break
-            case 'finish':
-              if (part.totalUsage) {
-                const providerTotal = usageInfoFromModelUsage(part.totalUsage)
-                lastUsage =
-                  (totalUsage.modelCallCount ?? 0) > 0
-                    ? {
-                        ...providerTotal,
-                        modelCallCount: totalUsage.modelCallCount,
-                        maxInputTokens: totalUsage.maxInputTokens,
-                        lastInputTokens: totalUsage.lastInputTokens,
-                        lastOutputTokens: totalUsage.lastOutputTokens,
-                        lastCacheReadTokens: totalUsage.lastCacheReadTokens,
-                        lastCacheWriteTokens: totalUsage.lastCacheWriteTokens,
-                        lastCacheMissTokens: totalUsage.lastCacheMissTokens,
-                      }
-                    : providerTotal
-              }
-              break
-            case 'abort':
-              await callAsyncStreamHandler(handlers.onError, {
-                conversationId,
-                messageId: assistantMessageId,
-                error: 'Aborted',
-                message: builder.build(assistantMessageId, 'error', selection, 'Aborted'),
+              modelMessages.push({ role: 'tool', tool_call_id: toolCall.id, content: message })
+              toolResults.push({
+                toolCallId: toolCall.id,
+                toolName: toolCall.name,
+                result: message,
+                isError: true,
               })
-              emitAgentEvent('turn.cancelled', { phase: 'completed', reason: 'abort_signal' })
-              return
-            case 'error': {
-              const message = part.error instanceof Error ? part.error.message : String(part.error)
-              await callAsyncStreamHandler(handlers.onError, {
-                conversationId,
-                messageId: assistantMessageId,
-                error: message,
-                message: builder.build(assistantMessageId, 'error', selection, message),
-              })
-              emitAgentEvent('turn.failed', { error: message })
-              return
             }
           }
-        }
 
-        const unresolvedToolCalls = stepToolCalls.filter(
-          (toolCall) => !externallyResolvedToolCalls.has(toolCall.id),
-        )
-        if (unresolvedToolCalls.length === 0) break
-
-        if (toolsWithdrawn) {
-          // Budget already withdrawn, but the model still emitted tool calls. Close
-          // them out as errors so the persisted message has no dangling "running"
-          // calls, then finish the turn normally instead of throwing.
-          for (const toolCall of unresolvedToolCalls) {
+          await persistRunArtifact({
+            schemaVersion: AILA_AGENT_RUN_ARTIFACT_SCHEMA_VERSION,
+            artifactId: `${run.runId}:${step.stepId}:tool_batch`,
+            conversationId,
+            turnId: run.turnId,
+            runId: run.runId,
+            stepId: step.stepId,
+            kind: 'tool_batch',
+            createdAt: Date.now(),
+            contentType: 'application/json',
+            data: {
+              toolCalls: cloneAgentValue(toolCalls),
+              results: toolResults,
+              aborted: signal.aborted,
+            },
+          })
+          return signal.aborted
+            ? { outcome: 'cancelled', error: 'abort_signal' }
+            : { outcome: 'completed' }
+        },
+        handleToolBudgetExhausted: ({ step, toolCalls }) => {
+          activeStepId = step.stepId
+          for (const toolCall of toolCalls) {
             recordToolResult({
               toolCallId: toolCall.id,
               toolName: toolCall.name,
@@ -445,84 +800,30 @@ export function createProviderStreamChat(
               assistantMessageId,
             })
           }
-          break
-        }
+        },
+      })
 
-        modelMessages.push({
-          role: 'assistant',
-          content: assistantText.join(''),
-          tool_calls: unresolvedToolCalls.map(toChatToolCall),
+      if (loopResult.state.status === 'cancelled' || loopResult.state.status === 'failed') {
+        const cancelled = loopResult.state.status === 'cancelled'
+        const message = cancelled ? 'Aborted' : (loopResult.state.error ?? 'Agent run failed')
+        if (latestLoopSnapshot) {
+          await persistRunCheckpoint(latestLoopSnapshot, 'error', message)
+        }
+        await callAsyncStreamHandler(handlers.onError, {
+          conversationId,
+          messageId: assistantMessageId,
+          error: message,
+          message: builder.build(assistantMessageId, 'error', selection, message),
         })
-
-        for (const toolCall of unresolvedToolCalls) {
-          const tool = tools.find((td) => td.name === toolCall.name)
-          if (!tool) {
-            const message = `Unknown tool "${toolCall.name}"`
-            recordToolResult({
-              toolCallId: toolCall.id,
-              toolName: toolCall.name,
-              result: message,
-              isError: true,
-              builder,
-              toolTargets,
-              emitAgentEvent,
-              handlers,
-              conversationId,
-              assistantMessageId,
-            })
-            modelMessages.push({ role: 'tool', tool_call_id: toolCall.id, content: message })
-            continue
-          }
-
-          try {
-            const output = await tool.execute(toolCall.args, { toolCallId: toolCall.id })
-            const toolResult = await prepareToolResultForModel({
-              store: toolResultStore,
-              content: stringifyToolOutput(output),
-              conversationId,
-              messageId: assistantMessageId,
-              toolCallId: toolCall.id,
-              toolName: toolCall.name,
-              maxInlineChars: maxInlineToolResultChars,
-              previewChars: toolResultPreviewChars,
-            })
-            recordToolResult({
-              toolCallId: toolCall.id,
-              toolName: toolCall.name,
-              result: toolResult.content,
-              ...(toolResult.resultRef && { resultRef: toolResult.resultRef }),
-              isError: false,
-              builder,
-              toolTargets,
-              emitAgentEvent,
-              handlers,
-              conversationId,
-              assistantMessageId,
-            })
-            modelMessages.push({
-              role: 'tool',
-              tool_call_id: toolCall.id,
-              content: toolResult.content,
-            })
-          } catch (error) {
-            const message = error instanceof Error ? error.message : String(error)
-            recordToolResult({
-              toolCallId: toolCall.id,
-              toolName: toolCall.name,
-              result: message,
-              isError: true,
-              builder,
-              toolTargets,
-              emitAgentEvent,
-              handlers,
-              conversationId,
-              assistantMessageId,
-            })
-            modelMessages.push({ role: 'tool', tool_call_id: toolCall.id, content: message })
-          }
-        }
+        emitAgentEvent(
+          cancelled ? 'turn.cancelled' : 'turn.failed',
+          cancelled ? { phase: 'completed', reason: 'abort_signal' } : { error: message },
+        )
+        return
       }
+      if (loopResult.state.status === 'paused') return
 
+      if (latestLoopSnapshot) await persistRunCheckpoint(latestLoopSnapshot, 'done')
       emitAgentEvent('turn.completed', {
         usage: lastUsage ?? undefined,
         outputBlockCount: builder.blocks.length,
@@ -536,6 +837,7 @@ export function createProviderStreamChat(
     } catch (error) {
       const isAbort = signal.aborted
       const message = isAbort ? 'Aborted' : error instanceof Error ? error.message : String(error)
+      if (!runBoundaryPersisted) await persistPreLoopFailure(message)
       await callAsyncStreamHandler(handlers.onError, {
         conversationId,
         messageId: assistantMessageId,
@@ -562,7 +864,7 @@ interface VisionBridgeInput {
   selection: ModelSelection
   settings: Settings
   modelRegistry: ModelRegistry
-  modelStreamClient: ModelStreamClient
+  modelCallExecutor: ModelCallExecutor
   authInput: NodeAuthInput
   signal: AbortSignal
   emitAgentEvent: EmitAgentEvent
@@ -640,7 +942,7 @@ async function bridgeImagesForTextOnlyModel(input: VisionBridgeInput): Promise<V
           parts: message.content,
           visionDescriptor,
           visionApiKey,
-          modelStreamClient: input.modelStreamClient,
+          modelCallExecutor: input.modelCallExecutor,
           signal: input.signal,
           usage,
           dataDir: input.dataDir,
@@ -684,7 +986,7 @@ async function analyzeUserImageParts(input: {
   parts: UserContentPart[]
   visionDescriptor: ModelDescriptor
   visionApiKey: string
-  modelStreamClient: ModelStreamClient
+  modelCallExecutor: ModelCallExecutor
   signal: AbortSignal
   usage: ModelStreamUsage[]
   dataDir?: string
@@ -710,7 +1012,7 @@ async function analyzeUserImageParts(input: {
       textContext,
       visionDescriptor: input.visionDescriptor,
       visionApiKey: input.visionApiKey,
-      modelStreamClient: input.modelStreamClient,
+      modelCallExecutor: input.modelCallExecutor,
       signal: input.signal,
       usage: input.usage,
       dataDir: input.dataDir,
@@ -736,7 +1038,7 @@ async function analyzeImagePart(input: {
   textContext: string
   visionDescriptor: ModelDescriptor
   visionApiKey: string
-  modelStreamClient: ModelStreamClient
+  modelCallExecutor: ModelCallExecutor
   signal: AbortSignal
   usage: ModelStreamUsage[]
   dataDir?: string
@@ -758,9 +1060,7 @@ async function analyzeImagePart(input: {
   ]
     .filter(Boolean)
     .join('\n\n')
-  const chunks: string[] = []
-
-  for await (const event of input.modelStreamClient.stream({
+  const result = await input.modelCallExecutor.execute({
     descriptor: input.visionDescriptor,
     apiKey: input.visionApiKey,
     messages: [
@@ -772,19 +1072,18 @@ async function analyzeImagePart(input: {
     ],
     tools: [],
     signal: input.signal,
-    step: -1,
+    stepIndex: -1,
     requireImages: true,
-  })) {
-    if (event.type === 'text-delta') chunks.push(event.text)
-    if (event.type === 'finish-step' && event.usage) input.usage.push(event.usage)
-    if (event.type === 'finish' && event.totalUsage) input.usage.push(event.totalUsage)
-    if (event.type === 'error') {
-      const message = event.error instanceof Error ? event.error.message : String(event.error)
-      throw new Error(`Vision model failed to inspect image ${input.imageIndex}: ${message}`)
-    }
+  })
+  input.usage.push(...result.stepUsage)
+  if (result.totalUsage) input.usage.push(result.totalUsage)
+  if (result.outcome !== 'completed') {
+    throw new Error(
+      `Vision model failed to inspect image ${input.imageIndex}: ${result.error ?? result.outcome}`,
+    )
   }
 
-  const analysis = chunks.join('').trim()
+  const analysis = result.text.trim()
   const text = analysis || '[Vision model returned no image analysis.]'
   await cache?.write(text)
   return { text, cacheHit: false }
@@ -930,11 +1229,58 @@ function escapeVisionAttribute(value: string): string {
   return value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;')
 }
 
-interface ParsedModelToolCall {
-  id: string
-  name: string
-  args: Record<string, unknown>
-  argsJson: string
+type ParsedModelToolCall = ModelCallToolCall
+
+function agentLoopTransitionData(
+  transition: AgentLoopTransition,
+): Record<string, unknown> | undefined {
+  const identity = {
+    ...(transition.identity.parentRunId && {
+      parentRunId: transition.identity.parentRunId,
+    }),
+    ...(transition.identity.originStepId && {
+      originStepId: transition.identity.originStepId,
+    }),
+  }
+
+  switch (transition.type) {
+    case 'run.started':
+      return { ...identity, mode: transition.mode }
+    case 'run.resumed':
+    case 'run.paused':
+      return { ...identity, nextAction: transition.nextAction }
+    case 'run.completed':
+      return Object.keys(identity).length > 0 ? identity : undefined
+    case 'run.failed':
+      return { ...identity, error: transition.error }
+    case 'run.cancelled':
+      return { ...identity, reason: transition.reason }
+    case 'step.started':
+    case 'step.completed':
+      return {
+        ...identity,
+        kind: transition.step.kind,
+        index: transition.step.index,
+        attempt: transition.step.attempt,
+        nextAction: transition.nextAction,
+      }
+    case 'step.failed':
+      return {
+        ...identity,
+        kind: transition.step.kind,
+        index: transition.step.index,
+        attempt: transition.step.attempt,
+        error: transition.error,
+      }
+    case 'step.cancelled':
+      return {
+        ...identity,
+        kind: transition.step.kind,
+        index: transition.step.index,
+        attempt: transition.step.attempt,
+        reason: transition.reason,
+      }
+  }
 }
 
 type EmitAgentEvent = (type: AgentEventType, data?: Record<string, unknown>) => void
@@ -1268,53 +1614,24 @@ async function callAsyncStreamHandler<TEvent>(
   await handler(cloneAgentValue(event))
 }
 
-function buildTools(
-  ctx: Parameters<typeof executeTool>[2],
-  emitAgentEvent: (type: AgentEventType, data?: Record<string, unknown>) => void,
-  toolRegistry?: ToolRegistry,
-  toolTargets = new Map<string, ToolActivityTarget>(),
-): ModelStreamToolDefinition[] {
+function buildToolSchemas(toolRegistry?: ToolRegistry): ModelStreamToolDefinition[] {
   return getToolDefinitions(toolRegistry).map((td) => ({
     name: td.function.name,
     description: td.function.description,
     parameters: td.function.parameters,
-    execute: async (args, options) => {
-      const toolCallId = options.toolCallId
-      const toolName = td.function.name
-      const input = cloneAgentToolArgs(args)
-      const target = summarizeToolTarget(toolName, input)
-      if (target) toolTargets.set(toolCallId, target)
-      emitAgentEvent('tool.execution.started', {
-        toolCallId,
-        toolName,
-        input: previewEventValue(input),
-        ...(target && { target }),
-      })
-      try {
-        const result = await executeTool(toolName, input, { ...ctx, toolCallId }, toolRegistry)
-        emitAgentEvent('tool.execution.completed', {
-          toolCallId,
-          toolName,
-          result: previewEventValue(result),
-          ...(toolTargets.get(toolCallId) && { target: toolTargets.get(toolCallId) }),
-        })
-        return result
-      } catch (error) {
-        emitAgentEvent('tool.execution.failed', {
-          toolCallId,
-          toolName,
-          error: error instanceof Error ? error.message : String(error),
-          ...(toolTargets.get(toolCallId) && { target: toolTargets.get(toolCallId) }),
-        })
-        throw error
-      }
-    },
   }))
 }
 
 class AssistantBuilder {
-  blocks: PersistedBlock[] = []
+  blocks: PersistedBlock[]
   private toolBlockIndex = new Map<string, number>()
+
+  constructor(blocks: readonly PersistedBlock[] = []) {
+    this.blocks = [...cloneAgentValue(blocks)]
+    this.blocks.forEach((block, index) => {
+      if (block.type === 'tool_call') this.toolBlockIndex.set(block.id, index)
+    })
+  }
 
   appendText(kind: 'text' | 'reasoning', delta: string): void {
     if (!delta) return

@@ -90,6 +90,7 @@ export function buildConversationSidebarSections(
 
 function statusClassName(tone: ConversationStatusTone): string {
   if (tone === 'approval') return 'bg-amber-50 text-amber-600'
+  if (tone === 'paused') return 'bg-amber-50 text-amber-600'
   if (tone === 'failed') return 'bg-red-50 text-red-600'
   if (tone === 'cancelled') return 'bg-zinc-100 text-zinc-500'
   if (tone === 'interrupted') return 'bg-amber-50 text-amber-600'

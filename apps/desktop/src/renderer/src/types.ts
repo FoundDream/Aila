@@ -3,6 +3,7 @@
 export type {
   ActiveAssistantTurn,
   AgentEventType,
+  AgentRunCheckpoint,
   AilaExecutionMode,
   ChatAttachmentInput,
   ChatDoneEvent,
@@ -75,6 +76,8 @@ export type {
   RuntimeConversationHydration,
   RuntimeRetryLastRequest,
   RuntimeRevisePlanInput,
+  RuntimeRunControlInput,
+  RuntimeRunInspection,
   RuntimeSavePlanMarkdownInput,
   RuntimeSendRequest,
   SendResult,

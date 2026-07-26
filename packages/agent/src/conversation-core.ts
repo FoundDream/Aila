@@ -3,7 +3,7 @@ import type { ProviderId } from './models'
 
 export const AILA_CONVERSATION_META_SCHEMA_VERSION = 1
 export const AILA_PERSISTED_MESSAGE_SCHEMA_VERSION = 1
-export const AILA_AGENT_EVENT_SCHEMA_VERSION = 1
+export const AILA_AGENT_EVENT_SCHEMA_VERSION = 2
 export const AILA_CONTEXT_CHECKPOINT_SCHEMA_VERSION = 1
 export const AILA_CONTEXT_ARTIFACT_SCHEMA_VERSION = 1
 export const AILA_CONTEXT_TURN_LEDGER_SCHEMA_VERSION = 1
@@ -198,6 +198,7 @@ export type ConversationActivityState =
   | 'plan_ready'
   | 'implementing_plan'
   | 'running'
+  | 'paused'
   | 'approval'
   | 'completed'
   | 'failed'
@@ -220,6 +221,7 @@ export type ConversationRuntimeStatePhase =
   | 'plan_ready'
   | 'implementing_plan'
   | 'running'
+  | 'paused'
   | 'approval'
   | 'cancelling'
   | 'completed'
@@ -313,6 +315,7 @@ const CONVERSATION_ACTIVITY_STATES = new Set<ConversationActivityState>([
   'plan_ready',
   'implementing_plan',
   'running',
+  'paused',
   'approval',
   'completed',
   'failed',
@@ -819,14 +822,64 @@ export function prepareAgentEvent(event: AgentEvent): PersistedAgentEvent {
   }
 }
 
-function agentEventReplayKey(event: PersistedAgentEvent): string {
+export interface PreparedAgentEventAppend {
+  event: PersistedAgentEvent
+  duplicate: boolean
+}
+
+/**
+ * Allocates durable journal identity. Producers may provide eventId for
+ * idempotency, but the journal is the sole owner of seq.
+ */
+export function prepareAgentEventAppend(
+  existing: readonly PersistedAgentEvent[],
+  event: AgentEvent,
+  createEventId: () => string,
+): PreparedAgentEventAppend {
+  if (event.eventId) {
+    const duplicate = existing.find((candidate) => candidate.eventId === event.eventId)
+    if (duplicate) return { event: structuredClone(duplicate), duplicate: true }
+  } else {
+    // Legacy v1 producers did not allocate an eventId. Preserve their exact-event
+    // idempotency while all v2 producers migrate to explicit identities.
+    const contentKey = agentEventContentKey(event)
+    const duplicate = existing.find((candidate) => agentEventContentKey(candidate) === contentKey)
+    if (duplicate) return { event: structuredClone(duplicate), duplicate: true }
+  }
+  const maximumSequence = existing.reduce(
+    (maximum, candidate) =>
+      candidate.seq !== undefined ? Math.max(maximum, candidate.seq) : maximum,
+    0,
+  )
+  // A v1 journal has no seq values, but its array order is still durable append
+  // order. Start v2 allocation after those legacy entries instead of at 1.
+  const seq = Math.max(existing.length, maximumSequence) + 1
+  return {
+    event: prepareAgentEvent({
+      ...event,
+      eventId: event.eventId ?? createEventId(),
+      seq,
+    }),
+    duplicate: false,
+  }
+}
+
+function agentEventContentKey(event: AgentEvent): string {
   return [
     event.timestamp,
     event.conversationId,
     event.messageId,
+    event.turnId ?? '',
+    event.runId ?? '',
+    event.stepId ?? '',
     event.type,
     JSON.stringify(event.data ?? {}),
   ].join(':')
+}
+
+function agentEventReplayKey(event: PersistedAgentEvent): string {
+  if (event.eventId) return event.eventId
+  return agentEventContentKey(event)
 }
 
 export function orderedUniqueAgentEvents(
@@ -835,7 +888,13 @@ export function orderedUniqueAgentEvents(
   const seen = new Set<string>()
   const ordered: PersistedAgentEvent[] = []
   const indexed = events.map((event, index) => ({ event, index }))
+  const hasDurableSequence = indexed.some(({ event }) => event.seq !== undefined)
   indexed.sort((left, right) => {
+    if (hasDurableSequence) {
+      const sequenceOrder =
+        (left.event.seq ?? left.index + 1) - (right.event.seq ?? right.index + 1)
+      if (sequenceOrder !== 0) return sequenceOrder
+    }
     const timestampOrder = left.event.timestamp - right.event.timestamp
     return timestampOrder === 0 ? left.index - right.index : timestampOrder
   })
@@ -866,6 +925,14 @@ export function normalizeAgentEvent(
     conversationId,
     messageId: value.messageId,
     type: value.type as AgentEvent['type'],
+    ...(typeof value.turnId === 'string' && value.turnId.length > 0 && { turnId: value.turnId }),
+    ...(typeof value.runId === 'string' && value.runId.length > 0 && { runId: value.runId }),
+    ...(typeof value.stepId === 'string' && value.stepId.length > 0 && { stepId: value.stepId }),
+    ...(typeof value.seq === 'number' && Number.isSafeInteger(value.seq) && value.seq > 0
+      ? { seq: value.seq }
+      : {}),
+    ...(typeof value.eventId === 'string' &&
+      value.eventId.length > 0 && { eventId: value.eventId }),
     ...(value.data &&
       typeof value.data === 'object' && {
         data: value.data as Record<string, unknown>,
@@ -926,6 +993,47 @@ export function activityFromAgentEvent(event: PersistedAgentEvent): Conversation
   }
 
   switch (event.type) {
+    case 'run.started':
+    case 'run.resumed':
+      return {
+        ...base,
+        state: 'running',
+        title: event.type === 'run.started' ? 'Agent run started' : 'Agent run resumed',
+        ...(event.runId ? { detail: event.runId } : {}),
+      }
+    case 'run.paused':
+      return {
+        ...base,
+        state: 'paused',
+        title: 'Agent run paused',
+        ...(event.runId ? { detail: event.runId } : {}),
+      }
+    case 'run.completed':
+      return {
+        ...base,
+        state: 'completed',
+        title: 'Agent run completed',
+        ...(event.runId ? { detail: event.runId } : {}),
+      }
+    case 'run.failed':
+      return {
+        ...base,
+        state: 'failed',
+        title: 'Agent run failed',
+        detail: dataString(event.data, 'error') ?? event.runId,
+      }
+    case 'run.cancelled':
+      return {
+        ...base,
+        state: 'cancelled',
+        title: 'Agent run cancelled',
+        detail: dataString(event.data, 'reason') ?? event.runId,
+      }
+    case 'step.started':
+    case 'step.completed':
+    case 'step.failed':
+    case 'step.cancelled':
+      return null
     case 'turn.started':
       return {
         ...base,
@@ -1312,6 +1420,42 @@ export function replayConversationRuntimeState(
           state.plan,
         )
         break
+      case 'run.started':
+      case 'run.resumed':
+        state = runtimeReplayState(
+          'running',
+          runtimeTurnFromEvent(state, event, { clearPendingApproval: true }),
+          state.plan,
+        )
+        break
+      case 'run.paused':
+        state = runtimeReplayState(
+          'paused',
+          runtimeTurnFromEvent(state, event, { clearPendingApproval: true }),
+          state.plan,
+        )
+        break
+      case 'run.completed':
+        state = runtimeReplayState(
+          'completed',
+          runtimeTurnFromEvent(state, event, { clearPendingApproval: true }),
+          state.plan,
+        )
+        break
+      case 'run.failed':
+        state = runtimeReplayState(
+          'failed',
+          runtimeTurnFromEvent(state, event, { clearPendingApproval: true }),
+          state.plan,
+        )
+        break
+      case 'run.cancelled':
+        state = runtimeReplayState(
+          'cancelled',
+          runtimeTurnFromEvent(state, event, { clearPendingApproval: true }),
+          state.plan,
+        )
+        break
       case 'tool.approval.requested':
         state = runtimeReplayState(
           'approval',
@@ -1410,11 +1554,16 @@ export function createInterruptedConversationRecoveryEvent(
       ? options.activity
       : undefined
   const selection = runtimeState.turn.selection
+  const identityEvent = orderedUniqueAgentEvents(events)
+    .reverse()
+    .find((event) => event.messageId === runtimeState.turn?.assistantMessageId)
 
   return {
     timestamp: options.timestamp ?? Date.now(),
     conversationId: runtimeState.turn.conversationId,
     messageId: runtimeState.turn.assistantMessageId,
+    ...(identityEvent?.turnId ? { turnId: identityEvent.turnId } : {}),
+    ...(identityEvent?.runId ? { runId: identityEvent.runId } : {}),
     type: 'turn.interrupted',
     data: {
       reason: options.reason ?? 'runtime restarted before this turn finished',

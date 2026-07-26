@@ -1,9 +1,4 @@
-import {
-  CheckIcon,
-  ListChecksIcon,
-  SaveIcon,
-  XIcon,
-} from 'lucide-react'
+import { BugIcon, CheckIcon, ListChecksIcon, SaveIcon, XIcon } from 'lucide-react'
 import { type ReactElement, useCallback, useEffect, useMemo, useState } from 'react'
 import type {
   AilaExecutionMode,
@@ -16,6 +11,7 @@ import type {
   Settings,
 } from '../../types'
 import { Composer } from './Composer'
+import { RunInspector } from './RunInspector'
 import { Transcript } from './Transcript'
 import type { ChatStreamsApi } from './useChatStreams'
 import { useModelSelection } from './useModelSelection'
@@ -48,6 +44,8 @@ export function ChatPage({
   )
   const [submitScrollKey, setSubmitScrollKey] = useState(0)
   const [executionMode, setExecutionMode] = useState<AilaExecutionMode>('agent')
+  const [stepMode, setStepMode] = useState(false)
+  const [showRunInspector, setShowRunInspector] = useState(false)
 
   const conversationId = conversation?.meta.id ?? null
 
@@ -97,6 +95,7 @@ export function ChatPage({
 
       streams.enqueueSend(id, trimmed, currentSelection, attachments, {
         mode: executionMode,
+        loopMode: stepMode ? 'step' : 'continuous',
         ...(executionMode === 'plan' && activePlan ? { planId: activePlan.id } : {}),
       })
       setSubmitScrollKey((key) => key + 1)
@@ -109,6 +108,7 @@ export function ChatPage({
       streams,
       onOpenSettings,
       selectionRef,
+      stepMode,
     ],
   )
 
@@ -219,8 +219,42 @@ export function ChatPage({
         <span className="min-w-0 max-w-[42%] truncate text-[13px] font-medium text-[var(--text-soft)]">
           {conversation?.meta.title ?? ''}
         </span>
+        {conversationId && (
+          <div className="absolute right-5 flex items-center gap-1.5 [-webkit-app-region:no-drag]">
+            <button
+              type="button"
+              onClick={() => setStepMode((enabled) => !enabled)}
+              className={`h-6 rounded-sm border px-2 font-mono text-[9px] uppercase tracking-wide transition-colors ${
+                stepMode
+                  ? 'border-amber-400/50 bg-amber-400/10 text-amber-600'
+                  : 'border-[var(--border)] text-[var(--text-dim)] hover:bg-[var(--surface-hover)]'
+              }`}
+              title="Pause after each model or tool action"
+            >
+              {stepMode ? 'Step armed' : 'Continuous'}
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowRunInspector((visible) => !visible)}
+              className={`inline-flex h-6 items-center gap-1.5 rounded-sm border px-2 font-mono text-[9px] uppercase tracking-wide transition-colors ${
+                showRunInspector
+                  ? 'border-emerald-500/50 bg-emerald-500/10 text-emerald-600'
+                  : 'border-[var(--border)] text-[var(--text-dim)] hover:bg-[var(--surface-hover)]'
+              }`}
+            >
+              <BugIcon className="size-3" />
+              Runs
+            </button>
+          </div>
+        )}
       </header>
       <main className="flex min-h-0 flex-1 flex-col">
+        {showRunInspector && conversationId && (
+          <RunInspector
+            conversationId={conversationId}
+            onClose={() => setShowRunInspector(false)}
+          />
+        )}
         {activePlan && (
           <PlanReviewPanel
             plan={activePlan}

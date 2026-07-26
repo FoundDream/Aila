@@ -1,11 +1,15 @@
 import type {
+  AgentRunCheckpoint,
   AilaExecutionMode,
   ConversationWorkspaceRef,
   PlanArtifact,
   ProviderId,
   RuntimeApprovePlanInput,
   RuntimeCancelPlanInput,
+  RuntimeForkRunInput,
   RuntimeRevisePlanInput,
+  RuntimeRunControlInput,
+  RuntimeRunInspection,
   RuntimeSavePlanMarkdownInput,
 } from '@aila/agent'
 import { contextBridge, ipcRenderer } from 'electron'
@@ -13,13 +17,17 @@ import type { OrCatalog } from '../shared/openrouter'
 
 export type { OrCatalog, OrFamily, OrModel } from '../shared/openrouter'
 export type {
+  AgentRunCheckpoint,
   AilaExecutionMode,
   ConversationWorkspaceRef,
   PlanArtifact,
   ProviderId,
   RuntimeApprovePlanInput,
   RuntimeCancelPlanInput,
+  RuntimeForkRunInput,
   RuntimeRevisePlanInput,
+  RuntimeRunControlInput,
+  RuntimeRunInspection,
   RuntimeSavePlanMarkdownInput,
 }
 
@@ -100,6 +108,16 @@ export interface ToolApprovalResolvedEvent {
 }
 
 export type AgentEventType =
+  | 'run.started'
+  | 'run.resumed'
+  | 'run.paused'
+  | 'run.completed'
+  | 'run.failed'
+  | 'run.cancelled'
+  | 'step.started'
+  | 'step.completed'
+  | 'step.failed'
+  | 'step.cancelled'
   | 'turn.started'
   | 'turn.completed'
   | 'turn.failed'
@@ -138,6 +156,11 @@ export interface PersistedAgentEvent {
   conversationId: string
   messageId: string
   type: AgentEventType
+  turnId?: string
+  runId?: string
+  stepId?: string
+  seq?: number
+  eventId?: string
   data?: Record<string, unknown>
 }
 
@@ -570,6 +593,7 @@ export type ConversationActivityState =
   | 'plan_ready'
   | 'implementing_plan'
   | 'running'
+  | 'paused'
   | 'approval'
   | 'completed'
   | 'failed'
@@ -592,6 +616,7 @@ export type ConversationRuntimeStatePhase =
   | 'plan_ready'
   | 'implementing_plan'
   | 'running'
+  | 'paused'
   | 'approval'
   | 'cancelling'
   | 'completed'
@@ -707,6 +732,8 @@ export interface ChatErrorEvent extends ChatStreamEventBase {
 export interface SendResult {
   userMessage: PersistedMessage
   assistantMessageId: string
+  turnId: string
+  runId: string
 }
 
 export interface RuntimeSendRequest {
@@ -714,6 +741,7 @@ export interface RuntimeSendRequest {
   userText: string
   selection: ModelSelection
   mode?: AilaExecutionMode
+  loopMode?: 'continuous' | 'step'
   planId?: string
   attachments?: ChatAttachmentInput[]
 }
@@ -745,6 +773,8 @@ export interface RuntimeCreateConversationRequest {
 export interface ActiveAssistantTurn {
   conversationId: string
   assistantMessageId: string
+  turnId: string
+  runId: string
   selection: ModelSelection
 }
 
@@ -812,6 +842,20 @@ const api = {
       ipcRenderer.invoke('runtime:list-active-turns'),
     hydrateConversation: (conversationId: string): Promise<RuntimeConversationHydration> =>
       ipcRenderer.invoke('runtime:hydrate-conversation', conversationId),
+    listRuns: (conversationId: string): Promise<AgentRunCheckpoint[]> =>
+      ipcRenderer.invoke('runtime:runs:list', conversationId),
+    inspectRun: (request: RuntimeRunControlInput): Promise<RuntimeRunInspection> =>
+      ipcRenderer.invoke('runtime:runs:inspect', request),
+    stepRun: (request: RuntimeRunControlInput): Promise<SendResult> =>
+      ipcRenderer.invoke('runtime:runs:step', request),
+    continueRun: (request: RuntimeRunControlInput): Promise<SendResult> =>
+      ipcRenderer.invoke('runtime:runs:continue', request),
+    resumeRun: (request: RuntimeRunControlInput): Promise<SendResult> =>
+      ipcRenderer.invoke('runtime:runs:resume', request),
+    abortRun: (request: RuntimeRunControlInput): Promise<AgentRunCheckpoint> =>
+      ipcRenderer.invoke('runtime:runs:abort', request),
+    forkRun: (request: RuntimeForkRunInput): Promise<AgentRunCheckpoint> =>
+      ipcRenderer.invoke('runtime:runs:fork', request),
     listRuntimeStates: (docId: string | null = null): Promise<ConversationRuntimeStateSnapshot[]> =>
       ipcRenderer.invoke('runtime:conversations:list-runtime-states', docId),
     getTokenUsageStats: (): Promise<TokenUsageStats> =>

@@ -1,7 +1,9 @@
+import type { AgentRunIdentity } from './agent-loop'
 import type { AgentContextPlan } from './context'
 import type { PersistedImageBlock, PersistedMessage } from './conversation-core'
 import type { ModelDescriptor, ProviderId } from './models'
 import type { PlanArtifact } from './plan-core'
+import type { AgentRunArtifact, AgentRunCheckpoint } from './run-persistence'
 import type { Settings } from './settings-types'
 import type { AilaExecutionMode } from './tool-policy'
 import type { ToolContext, ToolRegistry } from './tools'
@@ -100,6 +102,16 @@ export interface ErrorEvent {
 }
 
 export type AgentEventType =
+  | 'run.started'
+  | 'run.resumed'
+  | 'run.paused'
+  | 'run.completed'
+  | 'run.failed'
+  | 'run.cancelled'
+  | 'step.started'
+  | 'step.completed'
+  | 'step.failed'
+  | 'step.cancelled'
   | 'turn.started'
   | 'turn.completed'
   | 'turn.failed'
@@ -140,9 +152,21 @@ export interface AgentEvent {
   conversationId: string
   messageId: string
   type: AgentEventType
+  /** Stable execution identity. Optional only for legacy events. */
+  turnId?: string
+  runId?: string
+  stepId?: string
+  /** Monotonic within the durable conversation journal; assigned on append. */
+  seq?: number
+  /** Stable idempotency identity generated before append. */
+  eventId?: string
   data?: Record<string, unknown>
 }
 
+/**
+ * Async implementations are supported at runtime. The `void` surface preserves
+ * compatibility with callbacks whose expression happens to return a value.
+ */
 export type AgentEventSink = (event: AgentEvent) => void
 
 export interface StreamHandlers {
@@ -170,6 +194,9 @@ export interface ModelSelection {
 export interface StreamRequest {
   conversationId: string
   assistantMessageId: string
+  run?: AgentRunIdentity
+  loopMode?: 'continuous' | 'step'
+  runCheckpoint?: AgentRunCheckpoint
   messages: ChatMessage[]
   contextPlan?: AgentContextPlan
   mode?: AilaExecutionMode
@@ -178,6 +205,8 @@ export interface StreamRequest {
   selection: ModelSelection
   signal: AbortSignal
   onAgentEvent?: AgentEventSink
+  saveRunCheckpoint?: (checkpoint: AgentRunCheckpoint) => MaybePromise<AgentRunCheckpoint>
+  saveRunArtifact?: (artifact: AgentRunArtifact) => MaybePromise<AgentRunArtifact>
   workspaceRoots?: ToolContext['workspaceRoots']
   shellCwd?: ToolContext['shellCwd']
   onToolPolicy?: ToolContext['onToolPolicy']

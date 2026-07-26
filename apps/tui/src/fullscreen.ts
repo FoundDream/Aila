@@ -52,6 +52,7 @@ import {
   readShellToken,
   resolveSelection,
   splitShellWords,
+  waitForManagedRun,
   workspacePath,
 } from './line-mode'
 import { createEditorTheme } from './theme'
@@ -457,6 +458,17 @@ class AilaFullScreenApp {
           if (this.activeConversationId) this.runtime.abort(this.activeConversationId)
           this.setState({ status: 'aborting active response' })
           return 'handled'
+        case 'runs':
+          await this.showRuns()
+          return 'handled'
+        case 'inspect-run':
+        case 'step-run':
+        case 'continue-run':
+        case 'resume-run':
+        case 'abort-run':
+        case 'fork-run':
+          await this.manageRun(name, rest)
+          return 'handled'
         case 'extensions':
           await this.handleExtensions(rest)
           return 'handled'
@@ -509,6 +521,62 @@ class AilaFullScreenApp {
         error instanceof Error ? error.message : String(error),
       )
       return 'handled'
+    }
+  }
+
+  private async showRuns(): Promise<void> {
+    const runs = await this.runtime.listRunCheckpoints(this.conversationId)
+    const body =
+      runs.length === 0
+        ? 'No persisted agent runs.'
+        : runs
+            .map(
+              (run) =>
+                `${run.identity.runId}  ${run.loop.state.status}  next=${run.loop.state.nextAction?.type ?? 'none'}  r${run.revision}`,
+            )
+            .join('\n')
+    this.addEntry('system', 'agent runs', body)
+    showPanelOverlay(this.ui, 'Agent runs', body)
+  }
+
+  private async manageRun(name: string, rest: string): Promise<void> {
+    const [runId] = splitShellWords(rest)
+    if (!runId) throw new Error(`usage: /${name} <id>`)
+    const target = { conversationId: this.conversationId, runId }
+    this.setState({ active: true, status: `${name}: ${runId}` })
+    this.terminal.setProgress(true)
+    try {
+      if (name === 'step-run') {
+        await this.runtime.stepRun(target)
+        await waitForManagedRun(this.runtime, runId)
+      } else if (name === 'continue-run') {
+        await this.runtime.continueRun(target)
+        await waitForManagedRun(this.runtime, runId)
+      } else if (name === 'resume-run') {
+        await this.runtime.resumeRun(target)
+        await waitForManagedRun(this.runtime, runId)
+      } else if (name === 'abort-run') {
+        await this.runtime.abortRun(target)
+      } else if (name === 'fork-run') {
+        const forked = await this.runtime.forkRun(target)
+        this.addEntry('system', 'run forked', forked.identity.runId)
+        return
+      }
+      const inspection = await this.runtime.inspectRun(target)
+      const checkpoint = inspection.checkpoint
+      const body = [
+        `status: ${checkpoint.loop.state.status}`,
+        `next: ${checkpoint.loop.state.nextAction?.type ?? 'none'}`,
+        `steps: ${checkpoint.loop.state.steps.length}`,
+        `events: ${inspection.events.length}`,
+        `artifacts: ${inspection.artifacts.length}`,
+        `recovery: ${checkpoint.recovery.strategy}`,
+      ].join('\n')
+      this.addEntry('system', `run ${runId}`, body)
+      showPanelOverlay(this.ui, `Run ${runId}`, body)
+    } finally {
+      this.terminal.setProgress(false)
+      this.setState({ active: false, status: 'ready' })
     }
   }
 
@@ -824,7 +892,16 @@ class AilaFullScreenApp {
         this.completions.get(event.data.messageId)?.()
         break
       case 'agent:event':
-        if (event.data.type === 'turn.interrupted') {
+        if (event.data.type === 'run.paused') {
+          const nextAction = event.data.data?.nextAction
+          const nextType =
+            nextAction && typeof nextAction === 'object' && 'type' in nextAction
+              ? String(nextAction.type)
+              : 'unknown'
+          this.addEntry('system', 'run paused', `next=${nextType}`)
+          this.setState({ active: false, status: `paused: ${nextType}` })
+          this.completions.get(event.data.messageId)?.()
+        } else if (event.data.type === 'turn.interrupted') {
           const reason =
             typeof event.data.data?.reason === 'string' && event.data.data.reason.length > 0
               ? event.data.data.reason

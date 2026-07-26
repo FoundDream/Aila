@@ -45,6 +45,7 @@ export type QueuedRun =
       attachments: ChatAttachmentInput[]
       selection: ModelSelection
       mode?: AilaExecutionMode
+      loopMode?: 'continuous' | 'step'
       planId?: string
     }
   | {
@@ -437,6 +438,7 @@ function shouldClearRunningFromAgentEvent(event: PersistedAgentEvent): boolean {
   return (
     event.type === 'turn.failed' ||
     event.type === 'turn.interrupted' ||
+    event.type === 'run.paused' ||
     (event.type === 'turn.cancelled' && event.data?.phase === 'completed')
   )
 }
@@ -738,7 +740,7 @@ export interface ChatStreamsApi {
     text: string,
     selection: ModelSelection,
     attachments?: ChatAttachmentInput[],
-    options?: { mode?: AilaExecutionMode; planId?: string },
+    options?: { mode?: AilaExecutionMode; loopMode?: 'continuous' | 'step'; planId?: string },
   ) => void
   enqueueRetryLast: (
     id: string,
@@ -805,6 +807,7 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
               userText: queued.text,
               selection: queued.selection,
               ...(queued.mode ? { mode: queued.mode } : {}),
+              ...(queued.loopMode ? { loopMode: queued.loopMode } : {}),
               ...(queued.planId ? { planId: queued.planId } : {}),
               attachments: queued.attachments,
             })
@@ -929,7 +932,11 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
       text: string,
       selection: ModelSelection,
       attachments: ChatAttachmentInput[] = [],
-      options: { mode?: AilaExecutionMode; planId?: string } = {},
+      options: {
+        mode?: AilaExecutionMode
+        loopMode?: 'continuous' | 'step'
+        planId?: string
+      } = {},
     ): void => {
       const trimmed = text.trim()
       if (!trimmed && attachments.length === 0) return
@@ -946,6 +953,7 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
           attachments,
           selection,
           ...(options.mode ? { mode: options.mode } : {}),
+          ...(options.loopMode ? { loopMode: options.loopMode } : {}),
           ...(options.planId ? { planId: options.planId } : {}),
         },
       })

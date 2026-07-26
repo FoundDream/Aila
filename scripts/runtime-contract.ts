@@ -6,6 +6,7 @@ import * as runtimeCoreSdk from '@aila/agent'
 import {
   type AgentContextPlan,
   type AgentEvent,
+  type AgentLoopTransition,
   AgentRuntime,
   type AgentRuntimeEvent,
   type AgentRuntimeHost,
@@ -16,6 +17,7 @@ import {
   AILA_RUNTIME_EVENT_SCHEMA_VERSION,
   AILA_RUNTIME_EVENT_TYPES,
   AILA_SKILL_FILE,
+  advanceAgentLoop,
   type ChatMessage,
   createExecutionModeToolPolicy,
   createInMemoryRuntimeStore,
@@ -31,9 +33,11 @@ import {
   type RuntimeAttachmentBlock,
   type RuntimePersistAttachmentInput,
   type RuntimeRecordAgentEventInput,
+  replayAgentLoopState,
   replayConversationActivity,
   replayConversationRuntimeState,
   requestToolApprovalWithActivity,
+  runAgentLoop,
   type Settings,
   SKILL_TOOL_NAME,
   type ToolApprovalRequest,
@@ -103,6 +107,657 @@ async function withTempDataDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
+}
+
+async function testAgentLoopStepModePausesBeforeToolBatch(): Promise<void> {
+  const transitions: AgentLoopTransition[] = []
+  let modelStepCount = 0
+  let toolBatchCount = 0
+
+  const result = await runAgentLoop<{ id: string }>({
+    identity: {
+      conversationId: 'loop-step-conversation',
+      turnId: 'loop-step-turn',
+      runId: 'loop-step-run',
+    },
+    signal: new AbortController().signal,
+    maxToolSteps: 2,
+    policy: { mode: 'step' },
+    executeModelStep: async () => {
+      modelStepCount += 1
+      return { outcome: 'completed', toolCalls: [{ id: 'pending-tool' }] }
+    },
+    executeToolBatch: async () => {
+      toolBatchCount += 1
+      return { outcome: 'completed' }
+    },
+    onTransition: (transition) => {
+      transitions.push(transition)
+    },
+  })
+
+  assertEqual(result.state.status, 'paused', 'step mode should pause after one model step')
+  assertEqual(modelStepCount, 1, 'step mode should execute exactly one model step')
+  assertEqual(toolBatchCount, 0, 'step mode should pause before executing the tool batch')
+  assertEqual(result.state.steps.length, 1, 'step mode should record the completed model step')
+  assertEqual(result.state.steps[0]?.kind, 'model', 'step mode should identify the model step')
+  assertEqual(
+    result.pendingToolCallIds?.[0],
+    'pending-tool',
+    'step mode should expose the pending tool call',
+  )
+  assertEqual(
+    transitions.map((transition) => transition.type).join(','),
+    'run.started,step.started,step.completed,run.paused',
+    'step mode should emit replayable run and step boundaries',
+  )
+}
+
+async function testAgentLoopSnapshotResumesOneActionAtATime(): Promise<void> {
+  const identity = {
+    conversationId: 'loop-resume-conversation',
+    turnId: 'loop-resume-turn',
+    runId: 'loop-resume-run',
+  }
+  const transitions: AgentLoopTransition[] = []
+  let modelCalls = 0
+  let toolBatches = 0
+  const executeModelStep = async () => {
+    modelCalls += 1
+    return modelCalls === 1
+      ? { outcome: 'completed' as const, toolCalls: [{ id: 'resume-tool' }] }
+      : { outcome: 'completed' as const, toolCalls: [] }
+  }
+  const executeToolBatch = async () => {
+    toolBatches += 1
+    return { outcome: 'completed' as const }
+  }
+  const common = {
+    identity,
+    signal: new AbortController().signal,
+    maxToolSteps: 2,
+    policy: { mode: 'step' as const },
+    executeModelStep,
+    executeToolBatch,
+    onTransition: (transition: AgentLoopTransition) => {
+      transitions.push(transition)
+    },
+  }
+
+  const first = await advanceAgentLoop(common)
+  assertEqual(first.state.status, 'paused', 'first action should pause after the model')
+  assertEqual(modelCalls, 1, 'first advance should execute one model action')
+  assertEqual(toolBatches, 0, 'first advance should not execute pending tools')
+
+  const second = await advanceAgentLoop({ ...common, snapshot: first.snapshot })
+  assertEqual(second.state.status, 'paused', 'second action should pause after tools')
+  assertEqual(modelCalls, 1, 'second advance should not call the model')
+  assertEqual(toolBatches, 1, 'second advance should execute one tool batch')
+
+  const third = await advanceAgentLoop({ ...common, snapshot: second.snapshot })
+  assertEqual(third.state.status, 'completed', 'third action should complete the run')
+  assertEqual(modelCalls, 2, 'third advance should execute the final model action')
+  assertEqual(toolBatches, 1, 'third advance should not replay tools')
+  assertEqual(
+    third.snapshot.state.steps.map((step) => step.kind).join(','),
+    'model,tool_batch,model',
+    'resumed snapshot should preserve the full step history',
+  )
+  assertEqual(
+    transitions.filter((transition) => transition.type === 'run.resumed').length,
+    2,
+    'each resumed action should emit a replayable run.resumed boundary',
+  )
+}
+
+async function testRunCheckpointAndArtifactStoreContract(): Promise<void> {
+  const store = createInMemoryRuntimeStore({
+    createId: () => 'run-store-conversation',
+  })
+  const conversation = await store.createConversation?.()
+  assert(conversation, 'run persistence store should create a conversation')
+  const identity = {
+    conversationId: conversation.id,
+    turnId: 'run-store-turn',
+    runId: 'run-store-run',
+  }
+  const checkpoint: runtimeSdk.AgentRunCheckpoint = {
+    schemaVersion: runtimeSdk.AILA_AGENT_RUN_CHECKPOINT_SCHEMA_VERSION,
+    identity,
+    assistantMessageId: 'run-store-assistant',
+    selection: { providerId: 'openrouter', modelId: 'contract/mock' },
+    executionMode: 'agent',
+    maxToolSteps: 2,
+    loop: runtimeSdk.createAgentLoopSnapshot(identity, 'step'),
+    messages: [{ role: 'user', content: 'persist this run' }],
+    modelStepOutputs: {},
+    assistantMessage: {
+      schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+      id: 'run-store-assistant',
+      role: 'assistant',
+      blocks: [],
+      status: 'streaming',
+      model: { providerId: 'openrouter', modelId: 'contract/mock' },
+    },
+    recovery: { strategy: 'automatic' },
+    revision: 1,
+    createdAt: 10,
+    updatedAt: 10,
+  }
+  assert(store.saveRunCheckpoint, 'run persistence store should save checkpoints')
+  assert(store.getRunCheckpoint, 'run persistence store should load checkpoints')
+  assert(store.listRunCheckpoints, 'run persistence store should list checkpoints')
+  assert(store.saveRunArtifact, 'run persistence store should save artifacts')
+  assert(store.listRunArtifacts, 'run persistence store should list artifacts')
+
+  const first = await store.saveRunCheckpoint(checkpoint)
+  const second = await store.saveRunCheckpoint({ ...first, updatedAt: 20 })
+  assertEqual(first.revision, 1, 'first checkpoint revision')
+  assertEqual(second.revision, 2, 'checkpoint revisions should increase monotonically')
+  const loaded = await store.getRunCheckpoint(conversation.id, identity.runId)
+  assertEqual(loaded?.updatedAt, 20, 'checkpoint should load the latest cursor')
+
+  const artifact: runtimeSdk.AgentRunArtifact = {
+    schemaVersion: runtimeSdk.AILA_AGENT_RUN_ARTIFACT_SCHEMA_VERSION,
+    artifactId: 'run-store-artifact',
+    conversationId: conversation.id,
+    turnId: identity.turnId,
+    runId: identity.runId,
+    stepId: 'run-store-step',
+    kind: 'debug',
+    createdAt: 30,
+    contentType: 'application/json',
+    data: { value: 1 },
+  }
+  await store.saveRunArtifact(artifact)
+  await store.saveRunArtifact(artifact)
+  assertEqual(
+    (await store.listRunArtifacts(conversation.id, identity.runId)).length,
+    1,
+    'identical artifact writes should be idempotent',
+  )
+  let immutableError = ''
+  try {
+    await store.saveRunArtifact({ ...artifact, data: { value: 2 } })
+  } catch (error) {
+    immutableError = error instanceof Error ? error.message : String(error)
+  }
+  assert(
+    immutableError.includes('immutable'),
+    'artifact ids should reject conflicting payload overwrites',
+  )
+}
+
+async function testRuntimeRunInspectionForkAndAbortContract(): Promise<void> {
+  const store = createInMemoryRuntimeStore({
+    createId: () => 'run-control-conversation',
+  })
+  let generatedId = 0
+  let timestamp = 100
+  const runtime = new AgentRuntime({
+    store,
+    createId: () => (generatedId++ === 0 ? 'run-control-turn' : 'run-control-fork-assistant'),
+    createRunId: () => 'run-control-fork',
+    createEventId: () => `run-control-event-${generatedId++}`,
+    now: () => timestamp++,
+    logger: { warn() {}, error() {} },
+  })
+  const conversation = await runtime.createConversation()
+  const userMessage = await runtime.appendUserMessage({
+    conversationId: conversation.id,
+    text: 'inspect and fork this run',
+  })
+  const source = createRunCheckpointFixture(conversation.id, 'run-control-source')
+  source.identity.turnId = userMessage.id
+  source.loop.state.identity.turnId = userMessage.id
+  source.loop.state.status = 'paused'
+  source.loop.state.nextAction = { type: 'model', reason: 'resume' }
+  source.assistantMessageId = 'run-control-source-assistant'
+  source.assistantMessage.id = source.assistantMessageId
+  assert(store.saveRunCheckpoint, 'run control contract requires checkpoint persistence')
+  assert(store.saveRunArtifact, 'run control contract requires artifact persistence')
+  await store.saveRunCheckpoint(source)
+  await store.saveRunArtifact({
+    schemaVersion: runtimeSdk.AILA_AGENT_RUN_ARTIFACT_SCHEMA_VERSION,
+    artifactId: 'run-control-source-artifact',
+    conversationId: conversation.id,
+    turnId: userMessage.id,
+    runId: source.identity.runId,
+    stepId: 'run-control-source-step',
+    kind: 'debug',
+    createdAt: timestamp++,
+    contentType: 'application/json',
+    data: { inspected: true },
+  })
+  await runtime.recordAgentEvent({
+    timestamp: timestamp++,
+    conversationId: conversation.id,
+    messageId: source.assistantMessageId,
+    turnId: userMessage.id,
+    runId: source.identity.runId,
+    type: 'run.paused',
+    data: { nextAction: source.loop.state.nextAction },
+  })
+
+  const inspection = await runtime.inspectRun({
+    conversationId: conversation.id,
+    runId: source.identity.runId,
+  })
+  assertEqual(inspection.active, false, 'persisted run inspection should report inactive state')
+  assertEqual(inspection.events.length, 1, 'run inspection should filter events by run id')
+  assertEqual(inspection.artifacts.length, 1, 'run inspection should include immutable artifacts')
+
+  const forked = await runtime.forkRun({
+    conversationId: conversation.id,
+    runId: source.identity.runId,
+    originStepId: 'run-control-source-step',
+  })
+  assertEqual(forked.identity.runId, 'run-control-fork', 'fork should allocate a new run id')
+  assertEqual(
+    forked.identity.parentRunId,
+    source.identity.runId,
+    'fork should preserve parent run identity',
+  )
+  assertEqual(
+    forked.identity.originStepId,
+    'run-control-source-step',
+    'fork should preserve the selected origin step',
+  )
+  assertEqual(forked.identity.turnId, userMessage.id, 'fork should preserve the logical turn')
+
+  const aborted = await runtime.abortRun({
+    conversationId: conversation.id,
+    runId: forked.identity.runId,
+  })
+  assertEqual(aborted.loop.state.status, 'cancelled', 'abort should terminalize a paused run')
+  const forkInspection = await runtime.inspectRun({
+    conversationId: conversation.id,
+    runId: forked.identity.runId,
+  })
+  assertEqual(
+    forkInspection.events.map((event) => event.type).join(','),
+    'run.started,run.paused,run.cancelled',
+    'fork and abort boundaries should remain replayable',
+  )
+}
+
+function testRunCheckpointRecoverySafetyContract(): void {
+  const toolCheckpoint = createRunCheckpointFixture('recovery-conversation', 'recovery-tool-run')
+  const toolStep = {
+    stepId: 'recovery-tool-step',
+    index: 1,
+    attempt: 1,
+    kind: 'tool_batch' as const,
+    status: 'running' as const,
+    startedAt: 20,
+  }
+  toolCheckpoint.loop.state.status = 'running'
+  toolCheckpoint.loop.state.currentStep = toolStep
+  toolCheckpoint.loop.state.steps = [toolStep]
+  toolCheckpoint.loop.state.nextAction = { type: 'tools', toolCallIds: ['unsafe-call'] }
+  const preparedTool = runtimeSdk.prepareAgentRunCheckpoint(toolCheckpoint)
+  assertEqual(
+    preparedTool.recovery.strategy,
+    'manual_review',
+    'interrupted tool batches should never be marked for automatic replay',
+  )
+  let manualReviewError = ''
+  try {
+    runtimeSdk.prepareAgentRunCheckpointForResume(preparedTool, 30)
+  } catch (error) {
+    manualReviewError = error instanceof Error ? error.message : String(error)
+  }
+  assert(
+    manualReviewError.includes('side effects may have occurred'),
+    'automatic resume should refuse an interrupted tool batch',
+  )
+
+  const modelCheckpoint = createRunCheckpointFixture('recovery-conversation', 'recovery-model-run')
+  const modelStep = {
+    stepId: 'recovery-model-step',
+    index: 0,
+    attempt: 1,
+    kind: 'model' as const,
+    status: 'running' as const,
+    startedAt: 20,
+  }
+  modelCheckpoint.loop.state.status = 'running'
+  modelCheckpoint.loop.state.currentStep = modelStep
+  modelCheckpoint.loop.state.steps = [modelStep]
+  modelCheckpoint.loop.state.nextAction = { type: 'model', reason: 'user' }
+  const resumed = runtimeSdk.prepareAgentRunCheckpointForResume(modelCheckpoint, 30)
+  assertEqual(
+    resumed.loop.state.status,
+    'paused',
+    'interrupted model calls should become resumable',
+  )
+  assertEqual(
+    resumed.loop.state.nextAction?.type,
+    'model',
+    'interrupted model calls should retry only the model action',
+  )
+  assertEqual(
+    resumed.loop.state.steps[0]?.status,
+    'cancelled',
+    'recovery should close the interrupted model step before retry',
+  )
+}
+
+async function testProviderModelCallExecutesExactlyOneRequest(): Promise<void> {
+  let streamCount = 0
+  const streamedEvents: string[] = []
+  const executor = runtimePackageNodeSdk.createProviderModelCallExecutor({
+    modelStreamClient: {
+      async *stream() {
+        streamCount += 1
+        yield { type: 'text-delta', text: 'inspect ' }
+        yield {
+          type: 'tool-call',
+          toolCallId: 'model-call-tool',
+          toolName: 'read',
+          input: { path: '/workspace/file.ts' },
+        }
+        yield {
+          type: 'finish-step',
+          usage: { inputTokens: 4, outputTokens: 2, totalTokens: 6 },
+        }
+      },
+    },
+  })
+
+  const result = await executor.execute(
+    {
+      descriptor: {
+        provider: 'openrouter',
+        modelId: 'contract/model-call',
+        api: 'openai-chat-completions',
+      },
+      apiKey: 'contract-key',
+      conversationId: 'model-call-conversation',
+      messages: [{ role: 'user', content: 'inspect' }],
+      tools: [
+        {
+          name: 'read',
+          description: 'Read a file.',
+          parameters: { type: 'object', properties: { path: { type: 'string' } } },
+        },
+      ],
+      signal: new AbortController().signal,
+    },
+    (event) => {
+      streamedEvents.push(event.type)
+    },
+  )
+
+  assertEqual(
+    streamCount,
+    1,
+    'one ModelCallExecutor invocation should perform one provider request',
+  )
+  assertEqual(result.outcome, 'completed', 'one model call should complete')
+  assertEqual(result.text, 'inspect ', 'one model call should aggregate text')
+  assertEqual(
+    result.toolCalls.length,
+    1,
+    'one model call should return tool calls without running them',
+  )
+  assertEqual(result.stepUsage[0]?.totalTokens, 6, 'one model call should return provider usage')
+  assertEqual(
+    streamedEvents.join(','),
+    'text-delta,tool-call,finish-step',
+    'one model call should preserve provider stream order',
+  )
+}
+
+async function testProviderStreamStepCheckpointResumeContract(): Promise<void> {
+  let modelRequestCount = 0
+  let toolRunCount = 0
+  let checkpoint: runtimeSdk.AgentRunCheckpoint | undefined
+  const artifacts = new Map<string, runtimeSdk.AgentRunArtifact>()
+  const events: AgentEvent[] = []
+  const doneMessages: PersistedMessage[] = []
+  const modelStreamClient: runtimePackageNodeSdk.ModelStreamClient = {
+    async *stream(input) {
+      modelRequestCount += 1
+      if (modelRequestCount === 1) {
+        yield { type: 'text-delta', text: 'first' }
+        yield {
+          type: 'tool-call',
+          toolCallId: 'step-resume-tool',
+          toolName: 'step_resume_echo',
+          input: { value: 'ok' },
+        }
+        yield {
+          type: 'finish-step',
+          usage: { inputTokens: 2, outputTokens: 1, totalTokens: 3 },
+        }
+        return
+      }
+      assert(
+        input.messages.some(
+          (message) =>
+            message.role === 'tool' &&
+            message.tool_call_id === 'step-resume-tool' &&
+            message.content === 'echo:ok',
+        ),
+        'resumed provider stream should restore and forward persisted tool results',
+      )
+      yield { type: 'text-delta', text: 'final' }
+      yield {
+        type: 'finish-step',
+        usage: { inputTokens: 3, outputTokens: 1, totalTokens: 4 },
+      }
+    },
+  }
+  const toolPack: ToolPack = {
+    id: 'step-resume-pack',
+    name: 'Step Resume Pack',
+    tools: [
+      {
+        spec: {
+          type: 'function',
+          function: {
+            name: 'step_resume_echo',
+            description: 'Echo a value.',
+            parameters: {
+              type: 'object',
+              properties: { value: { type: 'string' } },
+              required: ['value'],
+              additionalProperties: false,
+            },
+          },
+          metadata: {
+            name: 'step_resume_echo',
+            readOnly: true,
+            destructive: false,
+            requiresApproval: false,
+            access: ['read'],
+            scope: ['workspace'],
+          },
+        },
+        run(args) {
+          toolRunCount += 1
+          return `echo:${String(args.value ?? '')}`
+        },
+      },
+    ],
+  }
+  const streamChat = runtimePackageNodeSdk.createProviderStreamChat({
+    modelStreamClient,
+    settings: { apiKeys: { openrouter: 'contract-key' }, defaultModel: null },
+  })
+  const saveRunCheckpoint = (input: runtimeSdk.AgentRunCheckpoint) => {
+    checkpoint = runtimeSdk.prepareAgentRunCheckpoint(input, checkpoint)
+    return structuredClone(checkpoint)
+  }
+  const saveRunArtifact = (artifact: runtimeSdk.AgentRunArtifact) => {
+    const existing = artifacts.get(artifact.artifactId)
+    if (existing && JSON.stringify(existing) !== JSON.stringify(artifact)) {
+      throw new Error(`artifact overwrite: ${artifact.artifactId}`)
+    }
+    artifacts.set(artifact.artifactId, structuredClone(artifact))
+    return structuredClone(artifact)
+  }
+  const handlers = {
+    onTextDelta() {},
+    onReasoningDelta() {},
+    onToolCallStart() {},
+    onToolCallArgsDelta() {},
+    onToolCallResult() {},
+    onImageBlock() {},
+    onDone(event: { message: PersistedMessage }) {
+      doneMessages.push(event.message)
+    },
+    onError(event: { error: string }) {
+      throw new Error(event.error)
+    },
+  }
+  const baseRequest = {
+    conversationId: 'step-resume-conversation',
+    assistantMessageId: 'step-resume-assistant',
+    run: {
+      conversationId: 'step-resume-conversation',
+      turnId: 'step-resume-turn',
+      runId: 'step-resume-run',
+    },
+    messages: [{ role: 'user' as const, content: 'start' }],
+    selection: { providerId: 'openrouter' as const, modelId: 'contract/mock' },
+    signal: new AbortController().signal,
+    onAgentEvent: (event: AgentEvent) => events.push(event),
+    saveRunCheckpoint,
+    saveRunArtifact,
+    toolRegistry: createDefaultToolRegistry([toolPack]),
+  }
+
+  await streamChat({ ...baseRequest, loopMode: 'step' }, handlers)
+  assert(checkpoint, 'step stream should persist a checkpoint')
+  assertEqual(checkpoint.loop.state.status, 'paused', 'step stream should pause after one action')
+  assertEqual(
+    checkpoint.loop.state.nextAction?.type,
+    'tools',
+    'step checkpoint should persist pending tools',
+  )
+  assertEqual(toolRunCount, 0, 'paused model action should not execute tools')
+  assertEqual(doneMessages.length, 0, 'paused stream should not finalize the assistant message')
+  const pausedEvents = events.map(
+    (event): PersistedAgentEvent => ({
+      ...event,
+      schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+    }),
+  )
+  const pausedReplay = replayConversationRuntimeState(pausedEvents)
+  assertEqual(pausedReplay.phase, 'paused', 'run.paused should survive runtime replay')
+  assertEqual(pausedReplay.active, false, 'paused runs should not replay as active work')
+  assertEqual(
+    replayConversationActivity(pausedEvents)?.state,
+    'paused',
+    'run.paused should replace stale running activity',
+  )
+  assertEqual(
+    createInterruptedConversationRecoveryEvent(pausedEvents),
+    null,
+    'paused runs should not be mistaken for interrupted work after restart',
+  )
+
+  await streamChat(
+    {
+      ...baseRequest,
+      loopMode: 'continuous',
+      runCheckpoint: structuredClone(checkpoint),
+      messages: structuredClone(checkpoint.messages),
+    },
+    handlers,
+  )
+  assertEqual(toolRunCount, 1, 'resumed stream should execute the pending tool exactly once')
+  assertEqual(modelRequestCount, 2, 'resumed stream should make only the remaining model request')
+  assertEqual(doneMessages.length, 1, 'continued stream should finalize once')
+  assertEqual(checkpoint.loop.state.status, 'completed', 'continued checkpoint should be terminal')
+  assertEqual(checkpoint.assistantMessage.status, 'done', 'terminal checkpoint message status')
+  assertEqual(artifacts.size, 3, 'run should persist two model artifacts and one tool artifact')
+  assert(
+    events.some((event) => event.type === 'run.resumed'),
+    'continued stream should emit run.resumed',
+  )
+}
+
+async function testProviderStreamPreflightFailureCheckpointContract(): Promise<void> {
+  let modelRequestCount = 0
+  let checkpoint: runtimeSdk.AgentRunCheckpoint | undefined
+  const events: AgentEvent[] = []
+  const errors: string[] = []
+  const streamChat = runtimePackageNodeSdk.createProviderStreamChat({
+    settings: { apiKeys: {}, defaultModel: null },
+    modelStreamClient: {
+      async *stream() {
+        modelRequestCount += 1
+        yield { type: 'text-delta' as const, text: 'unexpected' }
+      },
+    },
+  })
+
+  await streamChat(
+    {
+      conversationId: 'preflight-failure-conversation',
+      assistantMessageId: 'preflight-failure-assistant',
+      run: {
+        conversationId: 'preflight-failure-conversation',
+        turnId: 'preflight-failure-turn',
+        runId: 'preflight-failure-run',
+      },
+      messages: [{ role: 'user', content: 'start' }],
+      selection: { providerId: 'openrouter', modelId: 'contract/mock' },
+      signal: new AbortController().signal,
+      onAgentEvent: (event) => events.push(event),
+      saveRunCheckpoint(input) {
+        checkpoint = runtimeSdk.prepareAgentRunCheckpoint(input, checkpoint)
+        return structuredClone(checkpoint)
+      },
+    },
+    {
+      onTextDelta() {},
+      onReasoningDelta() {},
+      onToolCallStart() {},
+      onToolCallArgsDelta() {},
+      onToolCallResult() {},
+      onImageBlock() {},
+      onDone() {
+        throw new Error('preflight failure must not complete')
+      },
+      onError(event) {
+        errors.push(event.error)
+      },
+    },
+  )
+
+  assertEqual(modelRequestCount, 0, 'missing credentials must fail before the provider request')
+  assert(checkpoint, 'preflight failure should persist a run checkpoint')
+  assertEqual(checkpoint.loop.state.status, 'failed', 'preflight checkpoint should be terminal')
+  assertEqual(
+    checkpoint.identity.runId,
+    'preflight-failure-run',
+    'preflight checkpoint should preserve run identity',
+  )
+  assertEqual(
+    checkpoint.assistantMessage.status,
+    'error',
+    'preflight checkpoint should preserve the assistant error snapshot',
+  )
+  assert(
+    errors[0]?.includes('No API key for openrouter'),
+    'preflight failure should explain the missing provider credential',
+  )
+  assertEqual(
+    events
+      .filter((event) => event.type.startsWith('run.'))
+      .map((event) => event.type)
+      .join(','),
+    'run.started,run.failed',
+    'preflight failure should preserve replayable run boundaries',
+  )
+  assert(
+    events.every((event) => event.eventId && event.turnId && event.runId),
+    'preflight events should carry durable event and run identities',
+  )
 }
 
 async function testSettingsInfersOpenRouterVisionDefault(): Promise<void> {
@@ -1579,6 +2234,131 @@ async function testPersistedRuntimeStorePlanContract(): Promise<void> {
     const afterDelete = await reopened.listPlans?.(conversation.id)
     assert(afterDelete, 'persisted runtime store should list after delete')
     assertEqual(afterDelete.length, 0, 'conversation delete should remove persisted plans')
+  })
+}
+
+function createRunCheckpointFixture(
+  conversationId: string,
+  runId: string,
+): runtimeSdk.AgentRunCheckpoint {
+  const identity = {
+    conversationId,
+    turnId: `${runId}-turn`,
+    runId,
+  }
+  return {
+    schemaVersion: runtimeSdk.AILA_AGENT_RUN_CHECKPOINT_SCHEMA_VERSION,
+    identity,
+    assistantMessageId: `${runId}-assistant`,
+    selection: { providerId: 'openrouter', modelId: 'contract/mock' },
+    executionMode: 'agent',
+    maxToolSteps: 3,
+    loop: runtimeSdk.createAgentLoopSnapshot(identity, 'step'),
+    messages: [{ role: 'user', content: 'restart-safe run' }],
+    modelStepOutputs: {},
+    assistantMessage: {
+      schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+      id: `${runId}-assistant`,
+      role: 'assistant',
+      blocks: [],
+      status: 'streaming',
+      model: { providerId: 'openrouter', modelId: 'contract/mock' },
+    },
+    recovery: { strategy: 'automatic' },
+    revision: 1,
+    createdAt: 10,
+    updatedAt: 10,
+  }
+}
+
+async function testFileRunPersistenceSurvivesRestart(): Promise<void> {
+  await withTempDataDir(async (dir) => {
+    const store = runtimePackageNodeSdk.createFileRuntimeStore({
+      dataDir: dir,
+      createId: () => 'run-file-conversation',
+    })
+    const conversation = await store.createConversation?.()
+    assert(conversation, 'file run store should create a conversation')
+    assert(store.saveRunCheckpoint, 'file run store should save checkpoints')
+    assert(store.saveRunArtifact, 'file run store should save artifacts')
+    const checkpoint = createRunCheckpointFixture(conversation.id, 'run-file-id')
+    await store.saveRunCheckpoint(checkpoint)
+    await store.saveRunArtifact({
+      schemaVersion: runtimeSdk.AILA_AGENT_RUN_ARTIFACT_SCHEMA_VERSION,
+      artifactId: 'run-file-artifact',
+      conversationId: conversation.id,
+      turnId: checkpoint.identity.turnId,
+      runId: checkpoint.identity.runId,
+      stepId: 'run-file-step',
+      kind: 'debug',
+      createdAt: 11,
+      contentType: 'application/json',
+      data: { persisted: true },
+    })
+
+    const reopened = runtimePackageNodeSdk.createFileRuntimeStore({ dataDir: dir })
+    const loaded = await reopened.getRunCheckpoint?.(conversation.id, checkpoint.identity.runId)
+    assert(loaded, 'reopened file run store should load its checkpoint')
+    assertEqual(loaded.revision, 1, 'reopened checkpoint revision')
+    assertEqual(
+      (await reopened.listRunArtifacts?.(conversation.id, checkpoint.identity.runId))?.length,
+      1,
+      'reopened file run store should load immutable artifacts',
+    )
+    assert(reopened.saveRunCheckpoint, 'reopened file run store should save checkpoints')
+    const concurrent = await Promise.all([
+      reopened.saveRunCheckpoint({ ...loaded, updatedAt: 20 }),
+      reopened.saveRunCheckpoint({ ...loaded, updatedAt: 21 }),
+    ])
+    assertEqual(
+      concurrent.map((entry) => entry.revision).join(','),
+      '2,3',
+      'concurrent file checkpoint writes should serialize monotonic revisions',
+    )
+    await reopened.deleteConversation(conversation.id)
+    assertEqual(
+      (await reopened.listRunCheckpoints?.(conversation.id))?.length,
+      0,
+      'conversation deletion should remove file-backed runs',
+    )
+  })
+}
+
+async function testDesktopRunPersistenceSurvivesRestart(): Promise<void> {
+  await withTempDataDir(async () => {
+    const store = createPersistedRuntimeStore()
+    const conversation = await store.createConversation?.()
+    assert(conversation, 'desktop run store should create a conversation')
+    assert(store.saveRunCheckpoint, 'desktop run store should save checkpoints')
+    assert(store.saveRunArtifact, 'desktop run store should save artifacts')
+    const checkpoint = createRunCheckpointFixture(conversation.id, 'run-desktop-id')
+    await store.saveRunCheckpoint(checkpoint)
+    await store.saveRunArtifact({
+      schemaVersion: runtimeSdk.AILA_AGENT_RUN_ARTIFACT_SCHEMA_VERSION,
+      artifactId: 'run-desktop-artifact',
+      conversationId: conversation.id,
+      turnId: checkpoint.identity.turnId,
+      runId: checkpoint.identity.runId,
+      stepId: 'run-desktop-step',
+      kind: 'debug',
+      createdAt: 11,
+      contentType: 'application/json',
+      data: { persisted: true },
+    })
+
+    const reopened = createPersistedRuntimeStore()
+    assertEqual(
+      (await reopened.getRunCheckpoint?.(conversation.id, checkpoint.identity.runId))?.identity
+        .runId,
+      checkpoint.identity.runId,
+      'desktop run checkpoint should survive a store restart',
+    )
+    assertEqual(
+      (await reopened.listRunArtifacts?.(conversation.id, checkpoint.identity.runId))?.length,
+      1,
+      'desktop run artifacts should survive a store restart',
+    )
+    await reopened.deleteConversation(conversation.id)
   })
 }
 
@@ -3239,13 +4019,15 @@ async function testInMemoryRuntimeStoreEventListContract(): Promise<void> {
 
   const listed = [...((await store.listAgentEvents?.(summary.id)) ?? [])]
   assertEqual(listed.length, 2, 'in-memory event list should deduplicate replay events')
-  assertEqual(listed[0]?.timestamp, 10, 'in-memory event list should be replay ordered')
-  assertEqual(listed[1]?.timestamp, 20, 'in-memory event list should keep later events')
+  assertEqual(listed[0]?.timestamp, 20, 'durable journal order should follow allocated sequence')
+  assertEqual(listed[0]?.seq, 1, 'first append should own the first journal sequence')
+  assertEqual(listed[1]?.timestamp, 10, 'timestamps should not reorder durable journal entries')
+  assertEqual(listed[1]?.seq, 2, 'second append should own the next journal sequence')
 
-  if (listed[0]?.data) listed[0].data.modelId = 'mutated'
+  if (listed[1]?.data) listed[1].data.modelId = 'mutated'
   const relisted = [...((await store.listAgentEvents?.(summary.id)) ?? [])]
   assertEqual(
-    relisted[0]?.data?.modelId,
+    relisted[1]?.data?.modelId,
     'contract/mock',
     'in-memory event list should return snapshots',
   )
@@ -6015,6 +6797,11 @@ async function testAgentEventReplayDeduplicatesExactDuplicates(): Promise<void> 
     assertEqual(events.length, 1, 'duplicate agent events should collapse during replay')
     assertEqual(events[0]?.type, 'tool.execution.started', 'deduped event type')
     assertEqual(events[0]?.data?.toolName, 'read_file', 'deduped event data')
+    assertEqual(events[0]?.seq, 1, 'journal should allocate the first durable sequence')
+    assert(
+      typeof events[0]?.eventId === 'string' && events[0].eventId.length > 0,
+      'journal should allocate an event id for legacy producers',
+    )
 
     const rawEvents = (
       await readFile(join(getConversationsDir(), `${conversation.id}.events.jsonl`), 'utf-8')
@@ -6022,7 +6809,7 @@ async function testAgentEventReplayDeduplicatesExactDuplicates(): Promise<void> 
       .trim()
       .split('\n')
       .filter(Boolean)
-    assertEqual(rawEvents.length, 2, 'event log should remain append-only on disk')
+    assertEqual(rawEvents.length, 1, 'idempotent append should not duplicate durable event lines')
   })
 }
 
@@ -6110,6 +6897,45 @@ async function testAgentEventReplayPreservesAppendOrderForSameTimestamp(): Promi
       'same-timestamp completed replay should not append interrupted recovery',
     )
   })
+}
+
+function testAgentEventSequenceMigratesLegacyJournalOrder(): void {
+  const legacy: PersistedAgentEvent[] = [
+    {
+      schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+      timestamp: 100,
+      conversationId: 'legacy-sequence-conversation',
+      messageId: 'legacy-sequence-assistant',
+      type: 'turn.started',
+    },
+    {
+      schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+      timestamp: 200,
+      conversationId: 'legacy-sequence-conversation',
+      messageId: 'legacy-sequence-assistant',
+      type: 'tool.execution.started',
+    },
+  ]
+  const appended = runtimeSdk.prepareAgentEventAppend(
+    legacy,
+    {
+      timestamp: 50,
+      conversationId: 'legacy-sequence-conversation',
+      messageId: 'legacy-sequence-assistant',
+      type: 'turn.completed',
+    },
+    () => 'legacy-sequence-event',
+  )
+
+  assertEqual(appended.event.seq, 3, 'v2 sequence should continue after legacy journal entries')
+  assertEqual(
+    runtimeSdk
+      .orderedUniqueAgentEvents([...legacy, appended.event])
+      .map((event) => event.type)
+      .join(','),
+    'turn.started,tool.execution.started,turn.completed',
+    'mixed v1/v2 replay should preserve durable journal order instead of wall-clock order',
+  )
 }
 
 function testAgentEventReplayDerivesLatestActivity(): void {
@@ -8594,6 +9420,11 @@ async function testProviderStreamChatOwnsToolLoopContract(): Promise<void> {
     {
       conversationId: 'provider-loop-conversation',
       assistantMessageId: 'provider-loop-assistant',
+      run: {
+        conversationId: 'provider-loop-conversation',
+        turnId: 'provider-loop-turn',
+        runId: 'provider-loop-run',
+      },
       messages: [{ role: 'user', content: 'hello' }],
       selection: { providerId: 'openrouter', modelId: 'contract/mock' },
       signal: new AbortController().signal,
@@ -8656,6 +9487,39 @@ async function testProviderStreamChatOwnsToolLoopContract(): Promise<void> {
     agentEvents.some((event) => event.type === 'tool.execution.completed'),
     'provider stream loop should emit tool execution completion',
   )
+  assert(
+    agentEvents.every(
+      (event) =>
+        event.turnId === 'provider-loop-turn' &&
+        event.runId === 'provider-loop-run' &&
+        typeof event.eventId === 'string' &&
+        event.seq === undefined,
+    ) && new Set(agentEvents.map((event) => event.eventId)).size === agentEvents.length,
+    'provider stream loop should attach stable run identity and idempotency event IDs',
+  )
+  assert(
+    agentEvents.some((event) => event.type === 'run.started') &&
+      agentEvents.some((event) => event.type === 'run.completed'),
+    'provider stream loop should emit run lifecycle boundaries',
+  )
+  const completedToolEvent = agentEvents.find((event) => event.type === 'tool.execution.completed')
+  const toolStepEvent = agentEvents.find(
+    (event) => event.type === 'step.started' && event.data?.kind === 'tool_batch',
+  )
+  assert(
+    completedToolEvent?.stepId !== undefined && completedToolEvent.stepId === toolStepEvent?.stepId,
+    'tool execution events should belong to the tool batch step',
+  )
+  const replayed = replayAgentLoopState(agentEvents, 'provider-loop-run')
+  assertEqual(replayed?.status, 'completed', 'run state should replay from emitted events')
+  assertEqual(
+    replayed?.steps.length,
+    3,
+    'replayed run should contain model, tools, and final model',
+  )
+  assertEqual(replayed?.steps[0]?.kind, 'model', 'replayed first step should be the model')
+  assertEqual(replayed?.steps[1]?.kind, 'tool_batch', 'replayed second step should be tools')
+  assertEqual(replayed?.steps[2]?.kind, 'model', 'replayed final step should be the model')
 }
 
 function chatMessagesContainImage(messages: ChatMessage[]): boolean {
@@ -10718,6 +11582,14 @@ async function testSkillExtensionReportContract(): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  await testAgentLoopStepModePausesBeforeToolBatch()
+  await testAgentLoopSnapshotResumesOneActionAtATime()
+  await testRunCheckpointAndArtifactStoreContract()
+  await testRuntimeRunInspectionForkAndAbortContract()
+  testRunCheckpointRecoverySafetyContract()
+  await testProviderModelCallExecutesExactlyOneRequest()
+  await testProviderStreamStepCheckpointResumeContract()
+  await testProviderStreamPreflightFailureCheckpointContract()
   await testSettingsInfersOpenRouterVisionDefault()
   await testRuntimeEventContract()
   await testRuntimeEmitsVersionedEvents()
@@ -10737,6 +11609,8 @@ async function main(): Promise<void> {
   await testInMemoryRuntimeStorePlanContract()
   await testFileRuntimeStorePlanContract()
   await testPersistedRuntimeStorePlanContract()
+  await testFileRunPersistenceSurvivesRestart()
+  await testDesktopRunPersistenceSurvivesRestart()
   await testRuntimePlanApprovalStaleRevisionContract()
   await testRuntimeApprovedPlanExecutionContract()
   await testRuntimeHostTransientContextUsesInjectedRecord()
@@ -10782,6 +11656,7 @@ async function main(): Promise<void> {
   await testMessageUpsertPreventsDuplicatePersistedMessages()
   await testAgentEventReplayDeduplicatesExactDuplicates()
   await testAgentEventReplayPreservesAppendOrderForSameTimestamp()
+  testAgentEventSequenceMigratesLegacyJournalOrder()
   testAgentEventReplayDerivesLatestActivity()
   testAgentEventReplayDerivesRuntimeState()
   testPlanEventReplayDerivesActivityAndRuntimeState()

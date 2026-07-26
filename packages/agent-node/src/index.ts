@@ -43,6 +43,10 @@ export {
   mimeForImageName,
 } from './node/image-store'
 export {
+  createProviderModelCallExecutor,
+  type ProviderModelCallExecutorOptions,
+} from './node/model-call-executor'
+export {
   type CreateModelRegistryInput,
   createModelRegistry,
   ModelRegistry,
@@ -53,7 +57,6 @@ export type {
   ModelStreamEvent,
   ModelStreamRequest,
   ModelStreamToolDefinition,
-  ModelStreamToolExecuteOptions,
   ModelStreamUsage,
 } from './node/model-stream'
 export {

@@ -1,3 +1,4 @@
+import type { AgentLoopNextAction, AgentRunIdentity } from './agent-loop'
 import type {
   AgentEvent,
   ChatMessage,
@@ -17,7 +18,6 @@ import {
 } from './context'
 import {
   type AgentEventAppendResult,
-  AILA_AGENT_EVENT_SCHEMA_VERSION,
   AILA_CONTEXT_CHECKPOINT_SCHEMA_VERSION,
   AILA_CONTEXT_TURN_LEDGER_SCHEMA_VERSION,
   AILA_CONVERSATION_META_SCHEMA_VERSION,
@@ -38,6 +38,7 @@ import {
   type PersistedBlock,
   type PersistedMessage,
   type PersistedTextBlock,
+  prepareAgentEventAppend,
   replayConversationActivity,
   replayConversationRuntimeState,
 } from './conversation-core'
@@ -58,6 +59,13 @@ import {
   type PlanTaskStatus,
   preparePlanArtifact,
 } from './plan-core'
+import {
+  type AgentRunArtifact,
+  type AgentRunCheckpoint,
+  prepareAgentRunArtifact,
+  prepareAgentRunCheckpoint,
+  prepareAgentRunCheckpointForResume,
+} from './run-persistence'
 import { type AgentRuntimeEvent, createRuntimeEvent } from './runtime-events'
 import type { Settings } from './settings-types'
 import { createSkillToolPack, type LoadedSkill } from './skills'
@@ -82,6 +90,7 @@ interface StreamSlot {
   controller: AbortController
   cleanup: Promise<void>
   assistantMessageId: string
+  run: AgentRunIdentity
   selection: ModelSelection
   abortRecorded: boolean
   cleanupInterruptedRecorded: boolean
@@ -123,6 +132,8 @@ interface RuntimeSemanticCompactArtifact {
 
 export interface AgentRuntimeEnvironment {
   createId?: () => string
+  createRunId?: () => string
+  createEventId?: () => string
   now?: () => number
 }
 
@@ -240,6 +251,7 @@ export interface RuntimeSendInput {
   userText: string
   selection: ModelSelection
   mode?: AilaExecutionMode
+  loopMode?: 'continuous' | 'step'
   planId?: string
   attachments?: ChatAttachmentInput[]
   transientContext?: ChatMessage[]
@@ -249,6 +261,7 @@ export interface RuntimeRetryLastInput {
   conversationId: string
   selection: ModelSelection
   mode?: AilaExecutionMode
+  loopMode?: 'continuous' | 'step'
   planId?: string
   transientContext?: ChatMessage[]
 }
@@ -307,6 +320,28 @@ export interface RuntimeContextCompactArtifactResult {
 export interface RuntimeSendResult {
   userMessage: PersistedMessage
   assistantMessageId: string
+  turnId: string
+  runId: string
+}
+
+export interface RuntimeRunControlInput {
+  conversationId: string
+  runId: string
+}
+
+export interface RuntimeResumeRunInput extends RuntimeRunControlInput {
+  loopMode?: 'continuous' | 'step'
+}
+
+export interface RuntimeForkRunInput extends RuntimeRunControlInput {
+  originStepId?: string
+}
+
+export interface RuntimeRunInspection {
+  checkpoint: AgentRunCheckpoint
+  events: PersistedAgentEvent[]
+  artifacts: AgentRunArtifact[]
+  active: boolean
 }
 
 export interface RuntimeSavePlanMarkdownInput {
@@ -345,6 +380,8 @@ export interface RuntimeCancelPlanInput {
 export interface ActiveAssistantTurn {
   conversationId: string
   assistantMessageId: string
+  turnId: string
+  runId: string
   selection: ModelSelection
 }
 
@@ -409,6 +446,8 @@ export {
 
 export interface AgentRuntimeHost {
   createId?: () => string
+  createRunId?: () => string
+  createEventId?: () => string
   now?: () => number
   onEvent?: (event: AgentRuntimeEvent) => void
   onToolPolicy?: ToolContext['onToolPolicy']
@@ -478,6 +517,11 @@ export interface AgentRuntimeStore {
     conversationId: string,
     entry: ConversationContextTurnLedgerEntry,
   ) => Promise<ConversationSummary>
+  saveRunCheckpoint?: (checkpoint: AgentRunCheckpoint) => Promise<AgentRunCheckpoint>
+  getRunCheckpoint?: (conversationId: string, runId: string) => Promise<AgentRunCheckpoint | null>
+  listRunCheckpoints?: (conversationId: string) => Promise<readonly AgentRunCheckpoint[]>
+  saveRunArtifact?: (artifact: AgentRunArtifact) => Promise<AgentRunArtifact>
+  listRunArtifacts?: (conversationId: string, runId: string) => Promise<readonly AgentRunArtifact[]>
   createPlan?: AgentRuntimePlanStore['createPlan']
   getPlan?: AgentRuntimePlanStore['getPlan']
   listPlans?: AgentRuntimePlanStore['listPlans']
@@ -502,6 +546,9 @@ export interface AgentRuntimeConversationApi {
     input?: RuntimeListConversationsInput,
   ): Promise<ConversationRuntimeStateSnapshot[]>
   listAgentEvents(conversationId: string): Promise<PersistedAgentEvent[]>
+  getRunCheckpoint(conversationId: string, runId: string): Promise<AgentRunCheckpoint | null>
+  listRunCheckpoints(conversationId: string): Promise<AgentRunCheckpoint[]>
+  inspectRun(input: RuntimeRunControlInput): Promise<RuntimeRunInspection>
   appendUserMessage(input: RuntimeAppendUserMessageInput): Promise<PersistedMessage>
   recordAgentEvent(event: RuntimeRecordAgentEventInput): Promise<boolean>
   renameConversation(conversationId: string, title: string): Promise<ConversationSummary>
@@ -511,6 +558,11 @@ export interface AgentRuntimeConversationApi {
 export interface AgentRuntimeTurnApi {
   send(input: RuntimeSendInput): Promise<RuntimeSendResult>
   retryLastUserMessage(input: RuntimeRetryLastInput): Promise<RuntimeSendResult>
+  resumeRun(input: RuntimeResumeRunInput): Promise<RuntimeSendResult>
+  stepRun(input: RuntimeRunControlInput): Promise<RuntimeSendResult>
+  continueRun(input: RuntimeRunControlInput): Promise<RuntimeSendResult>
+  abortRun(input: RuntimeRunControlInput): Promise<AgentRunCheckpoint>
+  forkRun(input: RuntimeForkRunInput): Promise<AgentRunCheckpoint>
   abort(conversationId: string): Promise<void>
   abortAll(reason?: ConversationAbortReason): Promise<void>
   shutdown(reason?: ConversationAbortReason): Promise<void>
@@ -575,10 +627,13 @@ export function createInMemoryRuntimeStore(
   input: CreateInMemoryRuntimeStoreInput = {},
 ): AgentRuntimeStore {
   const createId = input.createId ?? defaultCreateRuntimeId
+  const createEventId = input.createEventId ?? defaultCreateRuntimeId
   const now = input.now ?? defaultRuntimeNow
   const records = new Map<string, ConversationRecord>()
   const agentEvents = new Map<string, PersistedAgentEvent[]>()
   const plans = new Map<string, PlanArtifact>()
+  const runCheckpoints = new Map<string, AgentRunCheckpoint>()
+  const runArtifacts = new Map<string, AgentRunArtifact>()
 
   function requireRecord(conversationId: string): ConversationRecord {
     const record = records.get(conversationId)
@@ -594,6 +649,10 @@ export function createInMemoryRuntimeStore(
     const plan = plans.get(planKey(conversationId, planId))
     if (!plan) throw new Error(`plan not found: ${conversationId}/${planId}`)
     return plan
+  }
+
+  function runKey(conversationId: string, runId: string): string {
+    return `${conversationId}:${runId}`
   }
 
   function summary(record: ConversationRecord): ConversationSummary {
@@ -616,11 +675,9 @@ export function createInMemoryRuntimeStore(
     const record = requireRecord(conversationId)
     const events = agentEvents.get(conversationId) ?? []
     const previousActivity = replayConversationActivity(events)
-    const persisted: PersistedAgentEvent = {
-      ...cloneRuntimeValue(event),
-      schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
-    }
-    events.push(persisted)
+    const prepared = prepareAgentEventAppend(events, cloneRuntimeValue(event), createEventId)
+    const persisted = prepared.event
+    if (!prepared.duplicate) events.push(persisted)
     agentEvents.set(conversationId, events)
 
     const activity = replayConversationActivity(events)
@@ -752,6 +809,44 @@ export function createInMemoryRuntimeStore(
         context: appendConversationContextTurnLedgerEntry(current.context, entry),
       }))
     },
+    async saveRunCheckpoint(checkpoint): Promise<AgentRunCheckpoint> {
+      requireRecord(checkpoint.identity.conversationId)
+      const key = runKey(checkpoint.identity.conversationId, checkpoint.identity.runId)
+      const prepared = prepareAgentRunCheckpoint(checkpoint, runCheckpoints.get(key))
+      runCheckpoints.set(key, cloneRuntimeValue(prepared))
+      return cloneRuntimeValue(prepared)
+    },
+    async getRunCheckpoint(conversationId, runId): Promise<AgentRunCheckpoint | null> {
+      const checkpoint = runCheckpoints.get(runKey(conversationId, runId))
+      return checkpoint ? cloneRuntimeValue(checkpoint) : null
+    },
+    async listRunCheckpoints(conversationId): Promise<readonly AgentRunCheckpoint[]> {
+      return [...runCheckpoints.values()]
+        .filter((checkpoint) => checkpoint.identity.conversationId === conversationId)
+        .map((checkpoint) => cloneRuntimeValue(checkpoint))
+        .sort((left, right) => right.updatedAt - left.updatedAt)
+    },
+    async saveRunArtifact(artifact): Promise<AgentRunArtifact> {
+      requireRecord(artifact.conversationId)
+      const prepared = prepareAgentRunArtifact(artifact)
+      const existing = runArtifacts.get(prepared.artifactId)
+      if (existing) {
+        if (JSON.stringify(existing) !== JSON.stringify(prepared)) {
+          throw new Error(`run artifact is immutable: ${prepared.artifactId}`)
+        }
+        return cloneRuntimeValue(existing)
+      }
+      runArtifacts.set(prepared.artifactId, cloneRuntimeValue(prepared))
+      return cloneRuntimeValue(prepared)
+    },
+    async listRunArtifacts(conversationId, runId): Promise<readonly AgentRunArtifact[]> {
+      return [...runArtifacts.values()]
+        .filter(
+          (artifact) => artifact.conversationId === conversationId && artifact.runId === runId,
+        )
+        .map((artifact) => cloneRuntimeValue(artifact))
+        .sort((left, right) => left.createdAt - right.createdAt)
+    },
     async createPlan(plan): Promise<PlanArtifact> {
       requireRecord(plan.conversationId)
       const prepared = preparePlanArtifact(plan)
@@ -788,6 +883,12 @@ export function createInMemoryRuntimeStore(
     async deleteConversation(conversationId): Promise<void> {
       records.delete(conversationId)
       agentEvents.delete(conversationId)
+      for (const key of runCheckpoints.keys()) {
+        if (key.startsWith(`${conversationId}:`)) runCheckpoints.delete(key)
+      }
+      for (const [artifactId, artifact] of runArtifacts) {
+        if (artifact.conversationId === conversationId) runArtifacts.delete(artifactId)
+      }
       for (const key of plans.keys()) {
         if (key.startsWith(`${conversationId}:`)) plans.delete(key)
       }
@@ -798,6 +899,8 @@ export function createInMemoryRuntimeStore(
 function normalizeRuntimeHost(options: AgentRuntimeOptions): AgentRuntimeHost {
   const host: AgentRuntimeHost = {}
   if (options.createId) host.createId = options.createId
+  if (options.createRunId) host.createRunId = options.createRunId
+  if (options.createEventId) host.createEventId = options.createEventId
   if (options.now) host.now = options.now
   if (options.onEvent) host.onEvent = options.onEvent
   if (options.onToolPolicy) host.onToolPolicy = options.onToolPolicy
@@ -832,6 +935,8 @@ function normalizeRuntimeHost(options: AgentRuntimeOptions): AgentRuntimeHost {
 
   if (!options.host) return host
   if (options.host.createId) host.createId = options.host.createId
+  if (options.host.createRunId) host.createRunId = options.host.createRunId
+  if (options.host.createEventId) host.createEventId = options.host.createEventId
   if (options.host.now) host.now = options.host.now
   if (options.host.onEvent) host.onEvent = options.host.onEvent
   if (options.host.onToolPolicy) host.onToolPolicy = options.host.onToolPolicy
@@ -1118,6 +1223,8 @@ export class AgentRuntime implements AgentRuntimeApi {
   private readonly store: AgentRuntimeStore
   private readonly logger: Pick<Console, 'error' | 'warn'>
   private readonly createId: () => string
+  private readonly createRunId: () => string
+  private readonly createEventId: () => string
   private readonly now: () => number
   private readonly staticToolPacks: readonly ToolPack[]
   private readonly staticSkills: readonly LoadedSkill[]
@@ -1130,9 +1237,16 @@ export class AgentRuntime implements AgentRuntimeApi {
   constructor(private readonly options: AgentRuntimeOptions = {}) {
     this.host = normalizeRuntimeHost(options)
     this.createId = this.host.createId ?? defaultCreateRuntimeId
+    this.createRunId = this.host.createRunId ?? defaultCreateRuntimeId
+    this.createEventId = this.host.createEventId ?? defaultCreateRuntimeId
     this.now = this.host.now ?? defaultRuntimeNow
     this.store =
-      options.store ?? createInMemoryRuntimeStore({ createId: this.createId, now: this.now })
+      options.store ??
+      createInMemoryRuntimeStore({
+        createId: this.createId,
+        createEventId: this.createEventId,
+        now: this.now,
+      })
     this.logger = this.host.logger ?? console
     this.staticToolPacks = resolveStaticToolPacks(options)
     this.staticSkills = resolveStaticSkills(options)
@@ -1748,6 +1862,41 @@ export class AgentRuntime implements AgentRuntimeApi {
     return cloneRuntimePersistedAgentEvents(await this.store.listAgentEvents(conversationId))
   }
 
+  async getRunCheckpoint(
+    conversationId: string,
+    runId: string,
+  ): Promise<AgentRunCheckpoint | null> {
+    if (!this.store.getRunCheckpoint) throw new Error('runtime store cannot load run checkpoints')
+    const checkpoint = await this.store.getRunCheckpoint(conversationId, runId)
+    return checkpoint ? cloneRuntimeValue(checkpoint) : null
+  }
+
+  async listRunCheckpoints(conversationId: string): Promise<AgentRunCheckpoint[]> {
+    if (!this.store.listRunCheckpoints) {
+      throw new Error('runtime store cannot list run checkpoints')
+    }
+    return cloneRuntimeValue([...(await this.store.listRunCheckpoints(conversationId))])
+  }
+
+  async inspectRun(input: RuntimeRunControlInput): Promise<RuntimeRunInspection> {
+    const checkpoint = await this.getRunCheckpoint(input.conversationId, input.runId)
+    if (!checkpoint) {
+      throw new Error(`agent run checkpoint not found: ${input.conversationId}/${input.runId}`)
+    }
+    const [events, artifacts] = await Promise.all([
+      this.listAgentEvents(input.conversationId),
+      this.store.listRunArtifacts
+        ? this.store.listRunArtifacts(input.conversationId, input.runId)
+        : Promise.resolve([]),
+    ])
+    return cloneRuntimeValue({
+      checkpoint,
+      events: events.filter((event) => event.runId === input.runId),
+      artifacts: [...artifacts],
+      active: this.listActiveStreams().some((turn) => turn.runId === input.runId),
+    })
+  }
+
   async getConversationRuntimeState(
     conversationId: string,
   ): Promise<ConversationRuntimeReplayState> {
@@ -2116,6 +2265,7 @@ export class AgentRuntime implements AgentRuntimeApi {
         record,
         selection,
         mode,
+        loopMode: input.loopMode ?? 'continuous',
         ...(input.planId ? { planId: input.planId } : {}),
         transientContext,
         source: 'send',
@@ -2153,11 +2303,307 @@ export class AgentRuntime implements AgentRuntimeApi {
         record: retry.record,
         selection,
         mode,
+        loopMode: input.loopMode ?? 'continuous',
         ...(input.planId ? { planId: input.planId } : {}),
         transientContext,
         source: 'retry',
         turnStartLock,
       })
+    })
+  }
+
+  async stepRun(input: RuntimeRunControlInput): Promise<RuntimeSendResult> {
+    return this.resumeRun({ ...input, loopMode: 'step' })
+  }
+
+  async continueRun(input: RuntimeRunControlInput): Promise<RuntimeSendResult> {
+    return this.resumeRun({ ...input, loopMode: 'continuous' })
+  }
+
+  async abortRun(input: RuntimeRunControlInput): Promise<AgentRunCheckpoint> {
+    const active = this.activeStreams.get(input.conversationId)
+    if (active) {
+      if (active.run.runId !== input.runId) {
+        throw new Error(`another run is active: ${active.run.runId}`)
+      }
+      await this.abort(input.conversationId)
+    }
+    if (!this.store.getRunCheckpoint || !this.store.saveRunCheckpoint) {
+      throw new Error('runtime store cannot abort persisted agent runs')
+    }
+    const loaded = await this.store.getRunCheckpoint(input.conversationId, input.runId)
+    if (!loaded) {
+      throw new Error(`agent run checkpoint not found: ${input.conversationId}/${input.runId}`)
+    }
+    if (
+      loaded.loop.state.status === 'completed' ||
+      loaded.loop.state.status === 'failed' ||
+      loaded.loop.state.status === 'cancelled'
+    ) {
+      return cloneRuntimeValue(loaded)
+    }
+
+    const timestamp = this.now()
+    const checkpoint = cloneRuntimeValue(loaded)
+    checkpoint.loop.state.status = 'cancelled'
+    checkpoint.loop.state.completedAt = timestamp
+    checkpoint.loop.state.currentStep = undefined
+    checkpoint.loop.state.error = 'user'
+    checkpoint.assistantMessage = {
+      ...checkpoint.assistantMessage,
+      status: 'error',
+      error: 'Aborted',
+    }
+    checkpoint.recovery = { strategy: 'automatic' }
+    checkpoint.updatedAt = timestamp
+    await this.recordAgentEvent({
+      timestamp,
+      conversationId: input.conversationId,
+      messageId: checkpoint.assistantMessageId,
+      turnId: checkpoint.identity.turnId,
+      runId: checkpoint.identity.runId,
+      type: 'run.cancelled',
+      data: { reason: 'user' },
+    })
+    const saved = cloneRuntimeValue(await this.store.saveRunCheckpoint(checkpoint))
+    await this.persistAndAnnounce(input.conversationId, saved.assistantMessage)
+    return saved
+  }
+
+  async forkRun(input: RuntimeForkRunInput): Promise<AgentRunCheckpoint> {
+    if (!this.store.getRunCheckpoint || !this.store.saveRunCheckpoint) {
+      throw new Error('runtime store cannot fork persisted agent runs')
+    }
+    this.assertCanStartTurn(input.conversationId)
+    const source = await this.store.getRunCheckpoint(input.conversationId, input.runId)
+    if (!source) {
+      throw new Error(`agent run checkpoint not found: ${input.conversationId}/${input.runId}`)
+    }
+    if (source.loop.state.currentStep?.status === 'running') {
+      throw new Error('cannot fork while a step is running')
+    }
+    const timestamp = this.now()
+    const runId = this.createRunId()
+    const assistantMessageId = this.createId()
+    const originStepId =
+      input.originStepId ?? source.loop.state.steps[source.loop.state.steps.length - 1]?.stepId
+    const identity: AgentRunIdentity = {
+      conversationId: input.conversationId,
+      turnId: source.identity.turnId,
+      runId,
+      parentRunId: source.identity.runId,
+      ...(originStepId ? { originStepId } : {}),
+    }
+    const nextAction: AgentLoopNextAction = cloneRuntimeValue(
+      source.loop.state.nextAction ?? { type: 'model', reason: 'resume' as const },
+    )
+    const pendingModelOutput =
+      nextAction.type === 'tools'
+        ? source.modelStepOutputs[String(Math.max(0, source.loop.modelStepIndex - 1))]
+        : undefined
+    const checkpoint: AgentRunCheckpoint = {
+      ...cloneRuntimeValue(source),
+      identity,
+      assistantMessageId,
+      loop: {
+        state: {
+          identity: cloneRuntimeValue(identity),
+          mode: source.loop.state.mode,
+          status: 'paused',
+          startedAt: timestamp,
+          steps: [],
+          nextAction,
+        },
+        nextStepIndex: 0,
+        modelStepIndex: nextAction.type === 'tools' ? 1 : 0,
+        completedToolBatches: source.loop.completedToolBatches,
+        pendingToolCalls: cloneRuntimeValue(source.loop.pendingToolCalls),
+      },
+      modelStepOutputs: pendingModelOutput === undefined ? {} : { '0': pendingModelOutput },
+      assistantMessage: {
+        ...cloneRuntimeValue(source.assistantMessage),
+        id: assistantMessageId,
+        status: 'streaming',
+        error: undefined,
+      },
+      recovery: { strategy: 'automatic' },
+      revision: 1,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      lastEventSeq: undefined,
+    }
+    const saved = cloneRuntimeValue(await this.store.saveRunCheckpoint(checkpoint))
+    const identityData = {
+      parentRunId: source.identity.runId,
+      ...(originStepId ? { originStepId } : {}),
+    }
+    await this.recordAgentEvent({
+      timestamp,
+      conversationId: input.conversationId,
+      messageId: assistantMessageId,
+      turnId: identity.turnId,
+      runId,
+      type: 'run.started',
+      data: { ...identityData, mode: source.loop.state.mode },
+    })
+    await this.recordAgentEvent({
+      timestamp,
+      conversationId: input.conversationId,
+      messageId: assistantMessageId,
+      turnId: identity.turnId,
+      runId,
+      type: 'run.paused',
+      data: { ...identityData, nextAction },
+    })
+    return saved
+  }
+
+  async resumeRun(input: RuntimeResumeRunInput): Promise<RuntimeSendResult> {
+    return this.withTurnStartLock(input.conversationId, async (turnStartLock) => {
+      this.assertCanStartTurn(input.conversationId)
+      const previous = this.activeStreams.get(input.conversationId)
+      if (previous) {
+        await this.waitForPriorStreamBeforeNextTurn(input.conversationId, previous)
+      }
+      this.assertCanStartTurn(input.conversationId)
+      if (!this.store.saveRunCheckpoint || !this.store.getRunCheckpoint) {
+        throw new Error('runtime store cannot resume agent runs')
+      }
+
+      const loaded = await this.store.getRunCheckpoint(input.conversationId, input.runId)
+      if (!loaded) {
+        throw new Error(`agent run checkpoint not found: ${input.conversationId}/${input.runId}`)
+      }
+      const checkpoint = cloneRuntimeValue(loaded)
+      const interruptedStep = checkpoint.loop.state.currentStep
+      const recoveryTimestamp = Math.max(
+        checkpoint.updatedAt + 1,
+        (interruptedStep?.startedAt ?? checkpoint.updatedAt) + 1,
+      )
+      const resumed = prepareAgentRunCheckpointForResume(checkpoint, recoveryTimestamp)
+      if (interruptedStep?.status === 'running') {
+        await this.recordAgentEvent({
+          timestamp: recoveryTimestamp,
+          conversationId: input.conversationId,
+          messageId: checkpoint.assistantMessageId,
+          turnId: checkpoint.identity.turnId,
+          runId: checkpoint.identity.runId,
+          stepId: interruptedStep.stepId,
+          type: 'step.cancelled',
+          data: {
+            kind: interruptedStep.kind,
+            index: interruptedStep.index,
+            attempt: interruptedStep.attempt,
+            reason: 'interrupted_before_resume',
+          },
+        })
+        await this.recordAgentEvent({
+          timestamp: recoveryTimestamp,
+          conversationId: input.conversationId,
+          messageId: checkpoint.assistantMessageId,
+          turnId: checkpoint.identity.turnId,
+          runId: checkpoint.identity.runId,
+          type: 'run.paused',
+          data: { nextAction: cloneRuntimeValue(resumed.loop.state.nextAction) },
+        })
+      }
+      const savedCheckpoint = cloneRuntimeValue(await this.store.saveRunCheckpoint(resumed))
+      const record = await this.getConversation(input.conversationId)
+      const userMessage = record.messages.find(
+        (message) => message.id === savedCheckpoint.identity.turnId,
+      )
+      if (!userMessage || userMessage.role !== 'user') {
+        throw new Error(`run user message not found: ${savedCheckpoint.identity.turnId}`)
+      }
+      if (!savedCheckpoint.contextPlan) {
+        throw new Error('run checkpoint is missing its context plan')
+      }
+
+      const mode = savedCheckpoint.executionMode
+      const assistantMessageId = savedCheckpoint.assistantMessageId
+      const baseToolRegistry = await this.getToolRegistry({
+        conversationId: input.conversationId,
+        record,
+      })
+      let activePlan: PlanArtifact | undefined
+      const planToolPacks: ToolPack[] = []
+      if (savedCheckpoint.plan) {
+        activePlan = await this.requirePlanStore('getPlan')(
+          input.conversationId,
+          savedCheckpoint.plan.id,
+        )
+      }
+      if (mode === 'plan') {
+        planToolPacks.push(
+          this.createPlanToolPack({
+            conversationId: input.conversationId,
+            assistantMessageId,
+            sourceUserMessageId: savedCheckpoint.identity.turnId,
+          }),
+        )
+      }
+      if (activePlan && savedCheckpoint.plan?.operation === 'implement') {
+        planToolPacks.push(
+          this.createPlanImplementationToolPack({
+            conversationId: input.conversationId,
+            assistantMessageId,
+            planId: activePlan.id,
+          }),
+        )
+      }
+      const registry =
+        planToolPacks.length > 0
+          ? createToolRegistry([...baseToolRegistry.toolPacks, ...planToolPacks])
+          : baseToolRegistry
+      const toolRegistry = filterRuntimeToolRegistryForMode(registry, mode)
+      const toolContext = await this.buildToolContext({
+        conversationId: input.conversationId,
+        messageId: assistantMessageId,
+        mode,
+      })
+
+      const controller = new AbortController()
+      let resolveCleanup: () => void = () => {}
+      const cleanup = new Promise<void>((resolve) => {
+        resolveCleanup = resolve
+      })
+      this.activeStreams.set(input.conversationId, {
+        controller,
+        cleanup,
+        assistantMessageId,
+        run: cloneRuntimeValue(savedCheckpoint.identity),
+        selection: cloneRuntimeValue(savedCheckpoint.selection),
+        abortRecorded: false,
+        cleanupInterruptedRecorded: false,
+        turnStartLock,
+      })
+
+      void this.runStream({
+        conversationId: input.conversationId,
+        assistantMessageId,
+        run: cloneRuntimeValue(savedCheckpoint.identity),
+        selection: cloneRuntimeValue(savedCheckpoint.selection),
+        controller,
+        resolveCleanup,
+        messages: cloneRuntimeChatMessages(savedCheckpoint.messages) ?? [],
+        contextPlan: cloneRuntimeValue(savedCheckpoint.contextPlan),
+        toolContext,
+        toolRegistry,
+        mode,
+        loopMode: input.loopMode ?? 'continuous',
+        runCheckpoint: savedCheckpoint,
+        ...(activePlan ? { plan: activePlan } : {}),
+        ...(savedCheckpoint.plan?.operation
+          ? { planOperation: savedCheckpoint.plan.operation }
+          : {}),
+      })
+
+      return {
+        userMessage: cloneRuntimeValue(userMessage),
+        assistantMessageId,
+        turnId: savedCheckpoint.identity.turnId,
+        runId: savedCheckpoint.identity.runId,
+      }
     })
   }
 
@@ -2213,6 +2659,7 @@ export class AgentRuntime implements AgentRuntimeApi {
     record: ConversationRecord
     selection: ModelSelection
     mode: AilaExecutionMode
+    loopMode?: 'continuous' | 'step'
     planId?: string
     planOperation?: 'revise' | 'implement'
     transientContext?: ChatMessage[]
@@ -2224,6 +2671,7 @@ export class AgentRuntime implements AgentRuntimeApi {
       userMessage,
       record,
       mode,
+      loopMode = 'continuous',
       planId,
       planOperation,
       transientContext,
@@ -2232,6 +2680,11 @@ export class AgentRuntime implements AgentRuntimeApi {
     } = input
     const selection = cloneRuntimeValue(input.selection)
     const assistantMessageId = this.createId()
+    const run: AgentRunIdentity = {
+      conversationId,
+      turnId: userMessage.id,
+      runId: this.createRunId(),
+    }
     this.assertCanStartTurn(conversationId)
 
     const controller = new AbortController()
@@ -2243,6 +2696,7 @@ export class AgentRuntime implements AgentRuntimeApi {
       controller,
       cleanup,
       assistantMessageId,
+      run,
       selection,
       abortRecorded: false,
       cleanupInterruptedRecorded: false,
@@ -2336,27 +2790,28 @@ export class AgentRuntime implements AgentRuntimeApi {
         mode,
       })
       if (!this.acceptsStreamEvents(conversationId, controller)) {
-        return { userMessage, assistantMessageId }
+        return { userMessage, assistantMessageId, turnId: run.turnId, runId: run.runId }
       }
       if (controller.signal.aborted) {
-        await this.persistSetupCancellation(conversationId, assistantMessageId, selection)
-        return { userMessage, assistantMessageId }
+        await this.persistSetupCancellation(conversationId, assistantMessageId, run, selection)
+        return { userMessage, assistantMessageId, turnId: run.turnId, runId: run.runId }
       }
       this.assertCanStartTurn(conversationId)
       streamStarted = true
     } catch (error) {
       if (controller.signal.aborted) {
-        await this.persistSetupCancellation(conversationId, assistantMessageId, selection)
+        await this.persistSetupCancellation(conversationId, assistantMessageId, run, selection)
       } else {
         await this.persistSetupFailure(
           conversationId,
           assistantMessageId,
+          run,
           selection,
           errorMessage(error),
         )
       }
       this.assertConversationOpen(conversationId)
-      return { userMessage, assistantMessageId }
+      return { userMessage, assistantMessageId, turnId: run.turnId, runId: run.runId }
     } finally {
       if (!streamStarted) {
         if (this.activeStreams.get(conversationId)?.controller === controller) {
@@ -2369,6 +2824,7 @@ export class AgentRuntime implements AgentRuntimeApi {
     void this.runStream({
       conversationId,
       assistantMessageId,
+      run,
       selection,
       controller,
       resolveCleanup,
@@ -2377,11 +2833,12 @@ export class AgentRuntime implements AgentRuntimeApi {
       toolContext,
       toolRegistry,
       mode,
+      loopMode,
       ...(activePlan ? { plan: activePlan } : {}),
       ...(activePlanOperation ? { planOperation: activePlanOperation } : {}),
     })
 
-    return { userMessage, assistantMessageId }
+    return { userMessage, assistantMessageId, turnId: run.turnId, runId: run.runId }
   }
 
   async abort(conversationId: string): Promise<void> {
@@ -2406,6 +2863,8 @@ export class AgentRuntime implements AgentRuntimeApi {
     return Array.from(this.activeStreams.entries()).map(([conversationId, slot]) => ({
       conversationId,
       assistantMessageId: slot.assistantMessageId,
+      turnId: slot.run.turnId,
+      runId: slot.run.runId,
       selection: cloneRuntimeValue(slot.selection),
     }))
   }
@@ -2565,6 +3024,7 @@ export class AgentRuntime implements AgentRuntimeApi {
   private async persistSetupFailure(
     conversationId: string,
     assistantMessageId: string,
+    run: AgentRunIdentity,
     selection: ModelSelection,
     message: string,
   ): Promise<void> {
@@ -2586,6 +3046,9 @@ export class AgentRuntime implements AgentRuntimeApi {
             timestamp: this.now(),
             conversationId,
             messageId: assistantMessageId,
+            turnId: run.turnId,
+            runId: run.runId,
+            eventId: this.createEventId(),
             type: 'turn.failed',
             data: { phase: 'setup', error: message },
           },
@@ -2609,6 +3072,7 @@ export class AgentRuntime implements AgentRuntimeApi {
   private async persistSetupCancellation(
     conversationId: string,
     assistantMessageId: string,
+    run: AgentRunIdentity,
     selection: ModelSelection,
   ): Promise<void> {
     const errored: PersistedMessage = {
@@ -2629,6 +3093,9 @@ export class AgentRuntime implements AgentRuntimeApi {
             timestamp: this.now(),
             conversationId,
             messageId: assistantMessageId,
+            turnId: run.turnId,
+            runId: run.runId,
+            eventId: this.createEventId(),
             type: 'turn.cancelled',
             data: { phase: 'completed', reason: 'abort_signal' },
           },
@@ -2663,14 +3130,21 @@ export class AgentRuntime implements AgentRuntimeApi {
   }
 
   async recordAgentEvent(event: RuntimeRecordAgentEventInput): Promise<boolean> {
-    if (this.deletedConversations.has(event.conversationId)) return false
-    const { event: persisted, summary } = cloneRuntimeAgentEventAppendResult(
+    return (await this.recordAgentEventWithResult(event)) !== null
+  }
+
+  private async recordAgentEventWithResult(
+    event: RuntimeRecordAgentEventInput,
+  ): Promise<AgentEventAppendResult | null> {
+    if (this.deletedConversations.has(event.conversationId)) return null
+    const result = cloneRuntimeAgentEventAppendResult(
       await this.store.recordAgentEvent(event.conversationId, cloneRuntimeValue(event)),
     )
-    if (this.deletedConversations.has(event.conversationId)) return false
+    if (this.deletedConversations.has(event.conversationId)) return null
+    const { event: persisted, summary } = result
     this.emit(createRuntimeEvent('agent:event', persisted))
     if (summary) this.emit(createRuntimeEvent('conversations:updated', summary))
-    return true
+    return result
   }
 
   private resolveWorkspaceRoots(): ToolContext['workspaceRoots'] {
@@ -2826,6 +3300,9 @@ export class AgentRuntime implements AgentRuntimeApi {
             timestamp: this.now(),
             conversationId,
             messageId: slot.assistantMessageId,
+            turnId: slot.run.turnId,
+            runId: slot.run.runId,
+            eventId: this.createEventId(),
             type: 'turn.cancelled',
             data: { phase: 'requested', reason },
           },
@@ -2850,6 +3327,9 @@ export class AgentRuntime implements AgentRuntimeApi {
           timestamp: this.now(),
           conversationId,
           messageId: slot.assistantMessageId,
+          turnId: slot.run.turnId,
+          runId: slot.run.runId,
+          eventId: this.createEventId(),
           type: 'turn.interrupted',
           data: {
             reason,
@@ -3220,6 +3700,7 @@ export class AgentRuntime implements AgentRuntimeApi {
   private async runStream(input: {
     conversationId: string
     assistantMessageId: string
+    run: AgentRunIdentity
     selection: ModelSelection
     controller: AbortController
     resolveCleanup: () => void
@@ -3228,12 +3709,15 @@ export class AgentRuntime implements AgentRuntimeApi {
     toolContext: ToolContext
     toolRegistry: ToolRegistry
     mode: AilaExecutionMode
+    loopMode: 'continuous' | 'step'
+    runCheckpoint?: AgentRunCheckpoint
     plan?: PlanArtifact
-    planOperation?: 'revise' | 'implement'
+    planOperation?: 'create' | 'revise' | 'implement'
   }): Promise<void> {
     const {
       conversationId,
       assistantMessageId,
+      run,
       selection,
       controller,
       resolveCleanup,
@@ -3242,13 +3726,24 @@ export class AgentRuntime implements AgentRuntimeApi {
       toolContext,
       toolRegistry,
       mode,
+      loopMode,
+      runCheckpoint,
       plan,
       planOperation,
     } = input
     let eventLogChain = Promise.resolve()
+    let lastEventSeq = runCheckpoint?.lastEventSeq
     let terminalAgentEventQueued = false
-    const queueAgentEvent = (event: AgentEventInput): void => {
-      const eventWithSelection = withTurnSelection(cloneRuntimeValue(event), selection)
+    const queueAgentEvent = (event: AgentEventInput): Promise<void> => {
+      const eventWithSelection = withTurnSelection(
+        {
+          ...cloneRuntimeValue(event),
+          turnId: event.turnId ?? run.turnId,
+          runId: event.runId ?? run.runId,
+          eventId: event.eventId ?? this.createEventId(),
+        },
+        selection,
+      )
       if (
         eventWithSelection.type === 'turn.completed' ||
         eventWithSelection.type === 'turn.failed' ||
@@ -3257,14 +3752,16 @@ export class AgentRuntime implements AgentRuntimeApi {
       ) {
         terminalAgentEventQueued = true
       }
-      if (!this.acceptsStreamEvents(conversationId, controller)) return
+      if (!this.acceptsStreamEvents(conversationId, controller)) return Promise.resolve()
       eventLogChain = eventLogChain
         .then(async () => {
-          await this.recordAgentEvent(eventWithSelection)
+          const result = await this.recordAgentEventWithResult(eventWithSelection)
+          if (result?.event.seq !== undefined) lastEventSeq = result.event.seq
         })
         .catch((err) => {
           this.logger.warn('[runtime] agent-event append failed:', err)
         })
+      return eventLogChain
     }
 
     try {
@@ -3274,6 +3771,9 @@ export class AgentRuntime implements AgentRuntimeApi {
         {
           conversationId,
           assistantMessageId,
+          run: cloneRuntimeValue(run),
+          loopMode,
+          ...(runCheckpoint ? { runCheckpoint: cloneRuntimeValue(runCheckpoint) } : {}),
           messages: cloneRuntimeChatMessages(messages) ?? [],
           contextPlan: cloneRuntimeValue(contextPlan),
           mode,
@@ -3292,6 +3792,24 @@ export class AgentRuntime implements AgentRuntimeApi {
           onToolPolicy: toolContext.onToolPolicy,
           onToolApproval: toolContext.onToolApproval,
           onAgentEvent: queueAgentEvent,
+          ...(this.store.saveRunCheckpoint
+            ? {
+                saveRunCheckpoint: (checkpoint: AgentRunCheckpoint) =>
+                  this.store.saveRunCheckpoint?.(
+                    cloneRuntimeValue({
+                      ...checkpoint,
+                      ...(lastEventSeq !== undefined ? { lastEventSeq } : {}),
+                    }),
+                  ) ?? Promise.resolve(cloneRuntimeValue(checkpoint)),
+              }
+            : {}),
+          ...(this.store.saveRunArtifact
+            ? {
+                saveRunArtifact: (artifact: AgentRunArtifact) =>
+                  this.store.saveRunArtifact?.(cloneRuntimeValue(artifact)) ??
+                  Promise.resolve(cloneRuntimeValue(artifact)),
+              }
+            : {}),
           toolRegistry: cloneRuntimeToolRegistry(toolRegistry),
         },
         {

@@ -14,6 +14,11 @@ import {
   type AgentContextTokenLedgerEntry,
   type AgentContextTokenPreflight,
   type AgentEvent,
+  type AgentLoopNextAction,
+  type AgentLoopPolicy,
+  type AgentLoopState,
+  type AgentLoopTransition,
+  type AgentRunIdentity,
   AgentRuntime,
   type AgentRuntimeApi,
   type AgentRuntimeConversationApi,
@@ -48,6 +53,7 @@ import {
   type ConversationRuntimeReplayState,
   type ConversationSummary,
   type ConversationUsage,
+  createAgentLoopState,
   createInMemoryRuntimeStore,
   createRuntimeEvent,
   createSkillToolPack,
@@ -74,7 +80,10 @@ import {
   type RuntimeSavePlanMarkdownInput,
   type RuntimeStableInstructionsInput,
   type RuntimeStreamChat,
+  reduceAgentLoopTransition,
+  replayAgentLoopState,
   requestToolApprovalWithActivity,
+  runAgentLoop,
   type Settings,
   type ToolApprovalMode,
   type ToolApprovalRequest,
@@ -89,6 +98,11 @@ import {
 
 export type RuntimeCorePublicSurfaceContract = {
   agentEvent: AgentEvent
+  agentLoopNextAction: AgentLoopNextAction
+  agentLoopPolicy: AgentLoopPolicy<{ id: string }>
+  agentLoopState: AgentLoopState
+  agentLoopTransition: AgentLoopTransition
+  agentRunIdentity: AgentRunIdentity
   agentContextPlan: AgentContextPlan
   agentContextPlanSection: AgentContextPlanSection
   agentContextAutoCompactReason: AgentContextAutoCompactReason
@@ -174,8 +188,12 @@ export const runtimeCorePublicValueSurfaceContract = {
   sdkVersion: AILA_RUNTIME_SDK_VERSION,
   toolApprovalStore: ToolApprovalStore,
   createToolPolicy,
+  createAgentLoopState,
   createInMemoryRuntimeStore,
   createSkillToolPack,
   parseSkillDocument,
   requestToolApprovalWithActivity,
+  reduceAgentLoopTransition,
+  replayAgentLoopState,
+  runAgentLoop,
 } satisfies Record<string, unknown>

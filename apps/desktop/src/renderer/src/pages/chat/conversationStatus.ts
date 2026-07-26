@@ -1,6 +1,12 @@
 import type { ConversationSummary } from '../../types'
 
-export type ConversationStatusTone = 'approval' | 'running' | 'failed' | 'cancelled' | 'interrupted'
+export type ConversationStatusTone =
+  | 'approval'
+  | 'running'
+  | 'paused'
+  | 'failed'
+  | 'cancelled'
+  | 'interrupted'
 
 export interface ConversationStatus {
   tone: ConversationStatusTone
@@ -30,6 +36,15 @@ export function getConversationStatus(
       label: 'run',
       ariaLabel: input.isBusy ? 'Streaming' : 'Recent activity still running',
       title: activity?.title ?? 'Streaming',
+    }
+  }
+
+  if (activity?.state === 'paused') {
+    return {
+      tone: 'paused',
+      label: 'step',
+      ariaLabel: 'Agent run paused',
+      title: activity.title,
     }
   }
 

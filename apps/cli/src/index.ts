@@ -56,6 +56,8 @@ interface CliOptions {
   prompt?: string
   retryLast: boolean
   resumeLatest: boolean
+  runAction?: 'inspect' | 'step' | 'continue' | 'resume' | 'abort' | 'fork'
+  runId?: string
 }
 
 interface CompletionState {
@@ -91,6 +93,12 @@ function usage(): string {
     '  --expected-revision <id> Guard plan edit/approval against stale revisions',
     '  --resume                Continue the most recently updated conversation',
     '  --retry-last            Retry the last failed or dangling user turn without duplicating it',
+    '  --inspect-run <id>      Print a persisted run, its events, and artifacts',
+    '  --step-run <id>         Execute exactly one pending run action',
+    '  --continue-run <id>     Continue a paused run until it stops',
+    '  --resume-run <id>       Resume an interrupted or paused run',
+    '  --abort-run <id>        Cancel a persisted run',
+    '  --fork-run <id>         Fork a persisted run at its latest checkpoint',
     '  --json                  Print a final JSON result instead of streaming text',
     '  --events                Print runtime events as NDJSON instead of streaming text',
     '  --approval-mode <mode>  Tool execution mode: safe or yolo (default: safe)',
@@ -183,6 +191,24 @@ function parseArgs(argv: string[]): CliOptions {
       case '--retry-last':
         options.retryLast = true
         break
+      case '--inspect-run':
+        setRunAction(options, 'inspect', requireValue(argv, ++i, arg))
+        break
+      case '--step-run':
+        setRunAction(options, 'step', requireValue(argv, ++i, arg))
+        break
+      case '--continue-run':
+        setRunAction(options, 'continue', requireValue(argv, ++i, arg))
+        break
+      case '--resume-run':
+        setRunAction(options, 'resume', requireValue(argv, ++i, arg))
+        break
+      case '--abort-run':
+        setRunAction(options, 'abort', requireValue(argv, ++i, arg))
+        break
+      case '--fork-run':
+        setRunAction(options, 'fork', requireValue(argv, ++i, arg))
+        break
       case '--safe':
         options.approvalMode = 'safe'
         break
@@ -225,6 +251,12 @@ function parseArgs(argv: string[]): CliOptions {
   if (options.retryLast && options.prompt !== undefined) {
     throw new Error('--retry-last cannot be combined with a prompt')
   }
+  if (options.runAction && options.prompt !== undefined) {
+    throw new Error('run management options cannot be combined with a prompt')
+  }
+  if (options.runAction && !options.conversationId && !options.resumeLatest) {
+    throw new Error('run management options require --conversation or --resume')
+  }
   const planActions = [
     options.listPlans ? '--list-plans' : '',
     options.approvePlanId ? '--approve-plan' : '',
@@ -248,6 +280,16 @@ function parseArgs(argv: string[]): CliOptions {
   }
 
   return options
+}
+
+function setRunAction(
+  options: CliOptions,
+  action: NonNullable<CliOptions['runAction']>,
+  runId: string,
+): void {
+  if (options.runAction) throw new Error('run management options cannot be combined')
+  options.runAction = action
+  options.runId = runId
 }
 
 function requireValue(argv: string[], index: number, flag: string): string {
@@ -592,6 +634,38 @@ async function main(): Promise<void> {
     return
   }
 
+  if (options.runAction && options.runId) {
+    const runtime = createRuntime({
+      approvalMode: options.approvalMode,
+      events: options.events,
+      json: options.json,
+    })
+    const { conversationId } = await runtime.resolveConversation({
+      conversationId: options.conversationId,
+      resumeLatest: options.resumeLatest,
+    })
+    const target = { conversationId, runId: options.runId }
+    if (options.runAction === 'step') {
+      await runtime.stepRun(target)
+      await waitForRunIdle(runtime, options.runId)
+    } else if (options.runAction === 'continue') {
+      await runtime.continueRun(target)
+      await waitForRunIdle(runtime, options.runId)
+    } else if (options.runAction === 'resume') {
+      await runtime.resumeRun(target)
+      await waitForRunIdle(runtime, options.runId)
+    } else if (options.runAction === 'abort') {
+      await runtime.abortRun(target)
+    } else if (options.runAction === 'fork') {
+      const forked = await runtime.forkRun(target)
+      if (!options.events) output.write(`${JSON.stringify(forked, null, 2)}\n`)
+      return
+    }
+    const inspection = await runtime.inspectRun(target)
+    if (!options.events) output.write(`${JSON.stringify(inspection, null, 2)}\n`)
+    return
+  }
+
   if (options.listPlans || options.cancelPlanId) {
     const runtime = createRuntime({
       approvalMode: options.approvalMode,
@@ -721,6 +795,12 @@ async function main(): Promise<void> {
   }
 
   if (completed.status === 'error') process.exitCode = 1
+}
+
+async function waitForRunIdle(runtime: AgentRuntimeApi, runId: string): Promise<void> {
+  while (runtime.listActiveTurns().some((turn) => turn.runId === runId)) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 10))
+  }
 }
 
 if (import.meta.main) {

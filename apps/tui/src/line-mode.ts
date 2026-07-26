@@ -117,6 +117,12 @@ export function usage(): string {
     '  /help                   Show TUI commands',
     '  /exit                   Quit',
     '  /abort                  Abort the active response',
+    '  /runs                   List persisted agent runs',
+    '  /inspect-run <id>       Inspect checkpoint, events, and artifacts',
+    '  /step-run <id>          Execute one pending run action',
+    '  /continue-run <id>      Continue a paused run',
+    '  /abort-run <id>         Cancel a persisted run',
+    '  /fork-run <id>          Fork a run at its latest checkpoint',
     '  /retry                  Retry the last failed or dangling user turn',
     '  /sessions               List saved conversations',
     '  /extensions [reload]    List extension manifests, optionally refresh runtime caches',
@@ -400,6 +406,12 @@ export function commandHelp(): string {
     '  /help                   Show this command list',
     '  /exit                   Quit',
     '  /abort                  Abort the active response',
+    '  /runs                   List persisted agent runs',
+    '  /inspect-run <id>       Inspect checkpoint, events, and artifacts',
+    '  /step-run <id>          Execute one pending run action',
+    '  /continue-run <id>      Continue a paused run',
+    '  /abort-run <id>         Cancel a persisted run',
+    '  /fork-run <id>          Fork a run at its latest checkpoint',
     '  /retry                  Retry a dangling last user turn',
     '  /sessions               List saved conversations',
     '  /extensions [reload]    List extension manifests, optionally refresh runtime caches',
@@ -570,6 +582,50 @@ export async function handleSlashCommand(input: {
       case 'abort':
         runtime.abort(conversationId)
         return 'handled'
+      case 'runs': {
+        const runs = await runtime.listRunCheckpoints(conversationId)
+        if (runs.length === 0) {
+          writeLine('[runs] none')
+        } else {
+          for (const run of runs) {
+            writeLine(
+              `[run] ${run.identity.runId} ${run.loop.state.status} next=${run.loop.state.nextAction?.type ?? 'none'} revision=${run.revision}`,
+            )
+          }
+        }
+        return 'handled'
+      }
+      case 'inspect-run':
+      case 'step-run':
+      case 'continue-run':
+      case 'resume-run':
+      case 'abort-run':
+      case 'fork-run': {
+        const [runId] = splitShellWords(rest)
+        if (!runId) throw new Error(`usage: /${name} <id>`)
+        const target = { conversationId, runId }
+        if (name === 'step-run') {
+          await runtime.stepRun(target)
+          await waitForManagedRun(runtime, runId)
+        } else if (name === 'continue-run') {
+          await runtime.continueRun(target)
+          await waitForManagedRun(runtime, runId)
+        } else if (name === 'resume-run') {
+          await runtime.resumeRun(target)
+          await waitForManagedRun(runtime, runId)
+        } else if (name === 'abort-run') {
+          await runtime.abortRun(target)
+        } else if (name === 'fork-run') {
+          const forked = await runtime.forkRun(target)
+          writeLine(`[run:forked] ${forked.identity.runId}`)
+          return 'handled'
+        }
+        const inspection = await runtime.inspectRun(target)
+        writeLine(
+          `[run] ${runId} ${inspection.checkpoint.loop.state.status} next=${inspection.checkpoint.loop.state.nextAction?.type ?? 'none'} steps=${inspection.checkpoint.loop.state.steps.length} events=${inspection.events.length} artifacts=${inspection.artifacts.length}`,
+        )
+        return 'handled'
+      }
       case 'extensions': {
         const [action] = splitShellWords(rest)
         if (action && !['reload', 'refresh'].includes(action.toLowerCase())) {
@@ -737,6 +793,12 @@ export async function printRecentHistory(
   const last = record.messages[record.messages.length - 1]
   if (last?.role === 'user') {
     writeLine('[resume] Last user message has no persisted assistant response yet.')
+  }
+}
+
+export async function waitForManagedRun(runtime: AgentRuntimeApi, runId: string): Promise<void> {
+  while (runtime.listActiveTurns().some((turn) => turn.runId === runId)) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 10))
   }
 }
 
@@ -990,7 +1052,15 @@ export function handleRuntimeEvent(
       state.completions.get(event.data.messageId)?.()
       break
     case 'agent:event':
-      if (event.data.type === 'turn.interrupted') {
+      if (event.data.type === 'run.paused') {
+        const nextAction = event.data.data?.nextAction
+        const nextType =
+          nextAction && typeof nextAction === 'object' && 'type' in nextAction
+            ? String(nextAction.type)
+            : 'unknown'
+        writeLine(`\n[paused] next=${nextType}`)
+        state.completions.get(event.data.messageId)?.()
+      } else if (event.data.type === 'turn.interrupted') {
         const reason =
           typeof event.data.data?.reason === 'string' && event.data.data.reason.length > 0
             ? event.data.data.reason

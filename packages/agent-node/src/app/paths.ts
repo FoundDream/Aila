@@ -26,6 +26,10 @@ export function getPlansDir(): string {
   return join(getDataDir(), 'plans')
 }
 
+export function getRunsDir(): string {
+  return join(getDataDir(), 'runs')
+}
+
 export function getSettingsPath(): string {
   return join(getDataDir(), 'settings.json')
 }

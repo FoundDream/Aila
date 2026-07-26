@@ -1,5 +1,6 @@
 import {
   type ActiveAssistantTurn,
+  type AgentRunCheckpoint,
   type AgentRuntimeApi,
   type AilaExecutionMode,
   type ChatAttachmentInput,
@@ -13,8 +14,11 @@ import {
   type RuntimeApprovePlanInput,
   type RuntimeCancelPlanInput,
   type RuntimeCompactConversationResult,
+  type RuntimeForkRunInput,
   type RuntimeListConversationsInput,
   type RuntimeRevisePlanInput,
+  type RuntimeRunControlInput,
+  type RuntimeRunInspection,
   type RuntimeSavePlanMarkdownInput,
   type RuntimeSendResult,
   type ToolApprovalRequest,
@@ -37,6 +41,7 @@ export interface RuntimeWorkbenchSendInput {
   userText: string
   selection: ModelSelection
   mode?: AilaExecutionMode
+  loopMode?: 'continuous' | 'step'
   planId?: string
   attachments?: ChatAttachmentInput[]
 }
@@ -79,6 +84,13 @@ export interface DesktopRuntimeWorkbench {
   listConversations(input?: RuntimeListConversationsInput): Promise<ConversationSummary[]>
   getConversation(conversationId: string): Promise<ConversationRecord>
   hydrateConversation(conversationId: string): Promise<ConversationRuntimeHydration>
+  listRunCheckpoints(conversationId: string): Promise<AgentRunCheckpoint[]>
+  inspectRun(input: RuntimeRunControlInput): Promise<RuntimeRunInspection>
+  stepRun(input: RuntimeRunControlInput): Promise<RuntimeSendResult>
+  continueRun(input: RuntimeRunControlInput): Promise<RuntimeSendResult>
+  resumeRun(input: RuntimeRunControlInput): Promise<RuntimeSendResult>
+  abortRun(input: RuntimeRunControlInput): Promise<AgentRunCheckpoint>
+  forkRun(input: RuntimeForkRunInput): Promise<AgentRunCheckpoint>
   listConversationRuntimeStates(
     input?: RuntimeListConversationsInput,
   ): Promise<ConversationRuntimeStateSnapshot[]>
@@ -146,6 +158,7 @@ export function createDesktopRuntimeWorkbench(
         userText: input.userText,
         selection: input.selection,
         ...(input.mode ? { mode: input.mode } : {}),
+        ...(input.loopMode ? { loopMode: input.loopMode } : {}),
         ...(input.planId ? { planId: input.planId } : {}),
         ...(input.attachments && input.attachments.length > 0
           ? { attachments: input.attachments }
@@ -193,6 +206,27 @@ export function createDesktopRuntimeWorkbench(
     },
     hydrateConversation(conversationId) {
       return runtime.hydrateConversation(conversationId)
+    },
+    listRunCheckpoints(conversationId) {
+      return runtime.listRunCheckpoints(conversationId)
+    },
+    inspectRun(input) {
+      return runtime.inspectRun(input)
+    },
+    stepRun(input) {
+      return runtime.stepRun(input)
+    },
+    continueRun(input) {
+      return runtime.continueRun(input)
+    },
+    resumeRun(input) {
+      return runtime.resumeRun(input)
+    },
+    abortRun(input) {
+      return runtime.abortRun(input)
+    },
+    forkRun(input) {
+      return runtime.forkRun(input)
     },
     listConversationRuntimeStates(input = {}) {
       return runtime.listConversationRuntimeStates(input)
@@ -249,6 +283,27 @@ export function registerRuntimeWorkbenchIpcHandlers(
   ipc.handle('runtime:list-active-turns', () => workbench.listActiveTurns())
   ipc.handle('runtime:hydrate-conversation', (_event, conversationId: string) =>
     workbench.hydrateConversation(conversationId),
+  )
+  ipc.handle('runtime:runs:list', (_event, conversationId: string) =>
+    workbench.listRunCheckpoints(conversationId),
+  )
+  ipc.handle('runtime:runs:inspect', (_event, request: RuntimeRunControlInput) =>
+    workbench.inspectRun(request),
+  )
+  ipc.handle('runtime:runs:step', (_event, request: RuntimeRunControlInput) =>
+    workbench.stepRun(request),
+  )
+  ipc.handle('runtime:runs:continue', (_event, request: RuntimeRunControlInput) =>
+    workbench.continueRun(request),
+  )
+  ipc.handle('runtime:runs:resume', (_event, request: RuntimeRunControlInput) =>
+    workbench.resumeRun(request),
+  )
+  ipc.handle('runtime:runs:abort', (_event, request: RuntimeRunControlInput) =>
+    workbench.abortRun(request),
+  )
+  ipc.handle('runtime:runs:fork', (_event, request: RuntimeForkRunInput) =>
+    workbench.forkRun(request),
   )
   ipc.handle('runtime:conversations:list', (_event, docId: string | null) =>
     workbench.listConversations({ docId }),

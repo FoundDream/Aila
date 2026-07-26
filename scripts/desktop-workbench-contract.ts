@@ -2,6 +2,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
+  AILA_AGENT_EVENT_SCHEMA_VERSION,
   type ToolApprovalRequestPayload,
   type ToolApprovalResolvedPayload,
   ToolApprovalStore,
@@ -228,6 +229,50 @@ async function testDesktopExposesRuntimeStateApi(): Promise<void> {
       preloadSource.includes('listActiveTurns:') &&
       preloadSource.includes("'runtime:list-active-turns'"),
     'Desktop preload should expose a runtime namespace to renderer',
+  )
+}
+
+async function testDesktopExposesRunInspectorApi(): Promise<void> {
+  const workbenchSource = await readFile(
+    join(process.cwd(), 'apps/desktop/src/main/runtime-workbench.ts'),
+    'utf-8',
+  )
+  const preloadSource = await readFile(
+    join(process.cwd(), 'apps/desktop/src/preload/index.ts'),
+    'utf-8',
+  )
+  const chatPageSource = await readFile(
+    join(process.cwd(), 'apps/desktop/src/renderer/src/pages/chat/ChatPage.tsx'),
+    'utf-8',
+  )
+  const inspectorSource = await readFile(
+    join(process.cwd(), 'apps/desktop/src/renderer/src/pages/chat/RunInspector.tsx'),
+    'utf-8',
+  )
+  for (const action of ['list', 'inspect', 'step', 'continue', 'resume', 'abort', 'fork']) {
+    assert(
+      workbenchSource.includes(`'runtime:runs:${action}'`),
+      `Desktop workbench should register runtime:runs:${action}`,
+    )
+  }
+  assert(
+    preloadSource.includes('listRuns:') &&
+      preloadSource.includes('inspectRun:') &&
+      preloadSource.includes('stepRun:') &&
+      preloadSource.includes('continueRun:') &&
+      preloadSource.includes('abortRun:') &&
+      preloadSource.includes('forkRun:'),
+    'Desktop preload should expose run inspection and control methods',
+  )
+  assert(
+    chatPageSource.includes('loopMode: stepMode') &&
+      chatPageSource.includes('<RunInspector') &&
+      inspectorSource.includes('Step ledger') &&
+      inspectorSource.includes("control('step')") &&
+      inspectorSource.includes("control('continue')") &&
+      inspectorSource.includes("control('fork')") &&
+      inspectorSource.includes("control('abort')"),
+    'Desktop should expose step-armed sends and a functional Run Inspector',
   )
 }
 
@@ -653,7 +698,11 @@ async function testActivityUpdatesConversationSummary(): Promise<void> {
       data: { toolName: 'read', target: { kind: 'file', preview: '/workspace/app.ts', size: 17 } },
     })
 
-    assertEqual(event.schemaVersion, 1, 'activity event should be versioned')
+    assertEqual(
+      event.schemaVersion,
+      AILA_AGENT_EVENT_SCHEMA_VERSION,
+      'activity event should be versioned',
+    )
     assert(summary, 'activity append should return refreshed summary')
     assert(
       summary.updatedAt > before.meta.updatedAt,
@@ -694,7 +743,11 @@ async function testActivityDeltaDoesNotTouchConversationSummary(): Promise<void>
       data: { deltaSize: 64, toolCallId: 'tool-call' },
     })
 
-    assertEqual(event.schemaVersion, 1, 'delta event should be versioned')
+    assertEqual(
+      event.schemaVersion,
+      AILA_AGENT_EVENT_SCHEMA_VERSION,
+      'delta event should be versioned',
+    )
     assertEqual(summary, undefined, 'input deltas should not refresh conversation summaries')
     assertEqual(
       (await listAgentEvents(conversation.id))[0]?.type,
@@ -737,9 +790,11 @@ async function testStaleActivityDoesNotOverwriteNewerSummary(): Promise<void> {
     assertEqual(events.length, 2, 'stale activity should still persist in the event log')
     assertEqual(
       events[0]?.type,
-      'tool.execution.started',
-      'event log should remain timestamp sorted',
+      'turn.completed',
+      'event log should preserve durable append sequence despite stale timestamps',
     )
+    assertEqual(events[0]?.seq, 1, 'first durable event sequence')
+    assertEqual(events[1]?.seq, 2, 'second durable event sequence')
   })
 }
 
@@ -2326,6 +2381,7 @@ async function main(): Promise<void> {
   await testDesktopWorkspaceRoots()
   await testDesktopUsesSharedRuntimeFactory()
   await testDesktopExposesRuntimeStateApi()
+  await testDesktopExposesRunInspectorApi()
   await testDesktopExposesPlanRuntimeApi()
   await testDesktopExposesEmbeddedTerminalApi()
   await testRendererUsesRuntimeHydrationApi()

@@ -1,9 +1,11 @@
 import { randomUUID } from 'node:crypto'
-import { appendFile, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { appendFile, mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import {
   type AgentEvent,
   type AgentEventAppendResult,
+  type AgentRunArtifact,
+  type AgentRunCheckpoint,
   AILA_CONVERSATION_META_SCHEMA_VERSION,
   activityFromAgentEvent,
   appendConversationContextTurnLedgerEntry,
@@ -28,7 +30,9 @@ import {
   type PersistedMessage,
   type PlanArtifact,
   type PlanRevisionInput,
-  prepareAgentEvent,
+  prepareAgentEventAppend,
+  prepareAgentRunArtifact,
+  prepareAgentRunCheckpoint,
   preparePersistedMessage,
   preparePlanArtifact,
   replayConversationActivity,
@@ -36,7 +40,7 @@ import {
   upsertPersistedMessage,
 } from '@aila/agent'
 import { getNodeToolResultsConversationDir } from '../node/tool-result-store'
-import { getConversationsDir, getDataDir, getPlansDir } from './paths'
+import { getConversationsDir, getDataDir, getPlansDir, getRunsDir } from './paths'
 
 export {
   type AgentEventAppendResult,
@@ -102,6 +106,7 @@ const metaWriteChains = new Map<string, Promise<void>>()
 const messageWriteChains = new Map<string, Promise<void>>()
 const eventWriteChains = new Map<string, Promise<void>>()
 const planWriteChains = new Map<string, Promise<void>>()
+const runWriteChains = new Map<string, Promise<void>>()
 
 async function ensureDir(): Promise<string> {
   const dir = getConversationsDir()
@@ -135,6 +140,26 @@ function planMarkdownPath(conversationId: string, planId: string): string {
 
 function planWriteKey(conversationId: string, planId: string): string {
   return `${conversationId}:${planId}`
+}
+
+function runConversationDir(conversationId: string): string {
+  return join(getRunsDir(), encodeURIComponent(conversationId))
+}
+
+function runDir(conversationId: string, runId: string): string {
+  return join(runConversationDir(conversationId), encodeURIComponent(runId))
+}
+
+function runCheckpointPath(conversationId: string, runId: string): string {
+  return join(runDir(conversationId, runId), 'checkpoint.json')
+}
+
+function runArtifactsDir(conversationId: string, runId: string): string {
+  return join(runDir(conversationId, runId), 'artifacts')
+}
+
+function runWriteKey(conversationId: string, runId: string): string {
+  return `${conversationId}:${runId}`
 }
 
 async function readMeta(id: string): Promise<ConversationMeta> {
@@ -189,7 +214,7 @@ async function queueMessageWrite(id: string, writer: () => Promise<void>): Promi
   return run
 }
 
-async function queueEventWrite(id: string, writer: () => Promise<void>): Promise<void> {
+async function queueEventWrite<T>(id: string, writer: () => Promise<T>): Promise<T> {
   const previous = eventWriteChains.get(id) ?? Promise.resolve()
   const run = previous.catch(() => {}).then(writer)
   const guard = run.then(
@@ -220,6 +245,36 @@ async function queuePlanWrite<T>(
     if (planWriteChains.get(key) === guard) planWriteChains.delete(key)
   })
   return run
+}
+
+async function queueRunWrite<T>(
+  conversationId: string,
+  runId: string,
+  writer: () => Promise<T>,
+): Promise<T> {
+  const key = runWriteKey(conversationId, runId)
+  const previous = runWriteChains.get(key) ?? Promise.resolve()
+  const run = previous.catch(() => {}).then(writer)
+  const guard = run.then(
+    () => undefined,
+    () => undefined,
+  )
+  runWriteChains.set(key, guard)
+  guard.finally(() => {
+    if (runWriteChains.get(key) === guard) runWriteChains.delete(key)
+  })
+  return run
+}
+
+async function writeJsonAtomic(path: string, value: unknown): Promise<void> {
+  const temporaryPath = `${path}.${randomUUID()}.tmp`
+  try {
+    await writeFile(temporaryPath, `${JSON.stringify(value, null, 2)}\n`, 'utf-8')
+    await rename(temporaryPath, path)
+  } catch (error) {
+    await rm(temporaryPath, { force: true }).catch(() => {})
+    throw error
+  }
 }
 
 function nextUpdatedAt(current: ConversationMeta, timestamp = Date.now()): number {
@@ -453,11 +508,14 @@ export async function appendAgentEvent(
   event: AgentEvent,
 ): Promise<PersistedAgentEvent> {
   await ensureDir()
-  const prepared = prepareAgentEvent(event)
-  await queueEventWrite(id, () =>
-    appendFile(eventLogPath(id), `${JSON.stringify(prepared)}\n`, 'utf-8'),
-  )
-  return prepared
+  return queueEventWrite(id, async () => {
+    const existing = await listAgentEvents(id)
+    const prepared = prepareAgentEventAppend(existing, event, randomUUID)
+    if (!prepared.duplicate) {
+      await appendFile(eventLogPath(id), `${JSON.stringify(prepared.event)}\n`, 'utf-8')
+    }
+    return prepared.event
+  })
 }
 
 export async function appendAgentEventAndTouchConversation(
@@ -715,6 +773,105 @@ export async function recordConversationContextTurnLedger(
   }))
 }
 
+export async function getAgentRunCheckpoint(
+  conversationId: string,
+  runId: string,
+): Promise<AgentRunCheckpoint | null> {
+  try {
+    const raw = await readFile(runCheckpointPath(conversationId, runId), 'utf-8')
+    return structuredClone(JSON.parse(raw) as AgentRunCheckpoint)
+  } catch (error) {
+    if (isErrnoCode(error, 'ENOENT')) return null
+    throw error
+  }
+}
+
+export async function saveAgentRunCheckpoint(
+  checkpoint: AgentRunCheckpoint,
+): Promise<AgentRunCheckpoint> {
+  await readMeta(checkpoint.identity.conversationId)
+  return queueRunWrite(checkpoint.identity.conversationId, checkpoint.identity.runId, async () => {
+    const previous = await getAgentRunCheckpoint(
+      checkpoint.identity.conversationId,
+      checkpoint.identity.runId,
+    )
+    const prepared = prepareAgentRunCheckpoint(checkpoint, previous ?? undefined)
+    const dir = runDir(prepared.identity.conversationId, prepared.identity.runId)
+    await mkdir(dir, { recursive: true })
+    await writeJsonAtomic(
+      runCheckpointPath(prepared.identity.conversationId, prepared.identity.runId),
+      prepared,
+    )
+    return structuredClone(prepared)
+  })
+}
+
+export async function listAgentRunCheckpoints(
+  conversationId: string,
+): Promise<AgentRunCheckpoint[]> {
+  const dir = runConversationDir(conversationId)
+  await mkdir(dir, { recursive: true })
+  const entries = await readdir(dir, { withFileTypes: true })
+  const checkpoints = await Promise.all(
+    entries
+      .filter((entry) => entry.isDirectory())
+      .map((entry) =>
+        getAgentRunCheckpoint(conversationId, decodeURIComponent(entry.name)).catch(() => null),
+      ),
+  )
+  return checkpoints
+    .filter((checkpoint): checkpoint is AgentRunCheckpoint => checkpoint !== null)
+    .sort((left, right) => right.updatedAt - left.updatedAt)
+}
+
+export async function saveAgentRunArtifact(artifact: AgentRunArtifact): Promise<AgentRunArtifact> {
+  await readMeta(artifact.conversationId)
+  return queueRunWrite(artifact.conversationId, artifact.runId, async () => {
+    const prepared = prepareAgentRunArtifact(artifact)
+    const dir = runArtifactsDir(prepared.conversationId, prepared.runId)
+    const path = join(dir, `${encodeURIComponent(prepared.artifactId)}.json`)
+    await mkdir(dir, { recursive: true })
+    try {
+      const existing = prepareAgentRunArtifact(
+        JSON.parse(await readFile(path, 'utf-8')) as AgentRunArtifact,
+      )
+      if (JSON.stringify(existing) !== JSON.stringify(prepared)) {
+        throw new Error(`run artifact is immutable: ${prepared.artifactId}`)
+      }
+      return structuredClone(existing)
+    } catch (error) {
+      if (!isErrnoCode(error, 'ENOENT')) throw error
+    }
+    await writeJsonAtomic(path, prepared)
+    return structuredClone(prepared)
+  })
+}
+
+export async function listAgentRunArtifacts(
+  conversationId: string,
+  runId: string,
+): Promise<AgentRunArtifact[]> {
+  const dir = runArtifactsDir(conversationId, runId)
+  await mkdir(dir, { recursive: true })
+  const files = await readdir(dir)
+  const artifacts = await Promise.all(
+    files
+      .filter((file) => file.endsWith('.json'))
+      .map(async (file) => {
+        try {
+          return prepareAgentRunArtifact(
+            JSON.parse(await readFile(join(dir, file), 'utf-8')) as AgentRunArtifact,
+          )
+        } catch {
+          return null
+        }
+      }),
+  )
+  return artifacts
+    .filter((artifact): artifact is AgentRunArtifact => artifact !== null)
+    .sort((left, right) => left.createdAt - right.createdAt)
+}
+
 export async function createPlan(plan: PlanArtifact): Promise<PlanArtifact> {
   await readMeta(plan.conversationId)
   const prepared = preparePlanArtifact(plan)
@@ -774,11 +931,17 @@ export async function deleteConversation(id: string): Promise<void> {
       .filter(([key]) => key.startsWith(`${id}:`))
       .map(([, chain]) => chain.catch(() => {})),
   )
+  await Promise.all(
+    [...runWriteChains]
+      .filter(([key]) => key.startsWith(`${id}:`))
+      .map(([, chain]) => chain.catch(() => {})),
+  )
   await Promise.all([
     rm(metaPath(id), { force: true }),
     rm(logPath(id), { force: true }),
     rm(eventLogPath(id), { force: true }),
     rm(planConversationDir(id), { recursive: true, force: true }),
+    rm(runConversationDir(id), { recursive: true, force: true }),
     rm(getNodeToolResultsConversationDir(id, { dataDir: getDataDir() }), {
       recursive: true,
       force: true,
@@ -789,6 +952,9 @@ export async function deleteConversation(id: string): Promise<void> {
   eventWriteChains.delete(id)
   for (const key of planWriteChains.keys()) {
     if (key.startsWith(`${id}:`)) planWriteChains.delete(key)
+  }
+  for (const key of runWriteChains.keys()) {
+    if (key.startsWith(`${id}:`)) runWriteChains.delete(key)
   }
 }
 
