@@ -134,6 +134,31 @@ async function testDesktopWorkspaceRoots(): Promise<void> {
   })
 }
 
+async function testDesktopMainUsesEsmSafeRuntimePaths(): Promise<void> {
+  const mainSource = await readFile(join(process.cwd(), 'apps/desktop/src/main/index.ts'), 'utf-8')
+  const configSource = await readFile(
+    join(process.cwd(), 'apps/desktop/electron.vite.config.ts'),
+    'utf-8',
+  )
+  assert(
+    mainSource.includes('dirname(fileURLToPath(import.meta.url))'),
+    'Desktop main should resolve bundled paths from import.meta.url',
+  )
+  assert(!mainSource.includes('__dirname'), 'Desktop ESM main must not depend on __dirname')
+  assert(
+    mainSource.includes('[startup] fatal initialization failure:'),
+    'Desktop startup should handle initialization promise failures',
+  )
+  assert(
+    configSource.includes('dirname(fileURLToPath(import.meta.url))'),
+    'electron-vite config should resolve aliases from import.meta.url',
+  )
+  assert(
+    !configSource.includes('__dirname'),
+    'electron-vite ESM config must not depend on __dirname',
+  )
+}
+
 async function testDesktopUsesSharedRuntimeFactory(): Promise<void> {
   const source = await readFile(join(process.cwd(), 'apps/desktop/src/main/index.ts'), 'utf-8')
   const workbenchSource = await readFile(
@@ -2379,6 +2404,7 @@ function testRendererApprovalHydrationSortsPendingRequests(): void {
 async function main(): Promise<void> {
   await testDocConversationWorkspaceContext()
   await testDesktopWorkspaceRoots()
+  await testDesktopMainUsesEsmSafeRuntimePaths()
   await testDesktopUsesSharedRuntimeFactory()
   await testDesktopExposesRuntimeStateApi()
   await testDesktopExposesRunInspectorApi()

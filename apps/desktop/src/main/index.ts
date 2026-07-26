@@ -1,5 +1,6 @@
 import { mkdirSync } from 'node:fs'
-import { basename, join, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import type { ConversationWorkspaceRef, ProviderId } from '@aila/agent'
 import {
   configureDataDir,
@@ -73,6 +74,7 @@ import { handleWidgetProtocol, registerWidgetProtocolScheme } from './widget-pro
 dotenv.config()
 
 const APP_NAME = 'Aila'
+const MAIN_DIR = dirname(fileURLToPath(import.meta.url))
 const DEV_DATA_DIR = join(process.cwd(), '.dev-data')
 const DEV_ELECTRON_USER_DATA_DIR = join(process.cwd(), '.dev-electron-user-data')
 
@@ -126,7 +128,7 @@ function createWindow(): void {
     ...(appIcon ? { icon: appIcon } : {}),
     trafficLightPosition: { x: 6, y: 10 },
     webPreferences: {
-      preload: join(__dirname, '../preload/index.mjs'),
+      preload: join(MAIN_DIR, '../preload/index.mjs'),
       sandbox: false,
     },
   })
@@ -136,7 +138,7 @@ function createWindow(): void {
   if (is.dev) {
     mainWindow.loadURL(DEV_RENDERER_URL)
   } else {
-    mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
+    mainWindow.loadFile(join(MAIN_DIR, '../renderer/index.html'))
   }
 }
 
@@ -317,36 +319,42 @@ function registerIpcHandlers(): void {
   })
 }
 
-app.whenReady().then(async () => {
-  configureDataDir(is.dev ? DEV_DATA_DIR : app.getPath('userData'))
-  console.log('[storage] data dir =', getDataDir())
-  const runtimeWorkbench = initRuntimeWorkbench()
-  const recovered = await runtimeWorkbench
-    .recoverInterruptedActivities('app restarted before this turn finished')
-    .catch((error) => {
-      console.warn('[startup] interrupted activity recovery failed:', error)
-      return []
+void app
+  .whenReady()
+  .then(async () => {
+    configureDataDir(is.dev ? DEV_DATA_DIR : app.getPath('userData'))
+    console.log('[storage] data dir =', getDataDir())
+    const runtimeWorkbench = initRuntimeWorkbench()
+    const recovered = await runtimeWorkbench
+      .recoverInterruptedActivities('app restarted before this turn finished')
+      .catch((error) => {
+        console.warn('[startup] interrupted activity recovery failed:', error)
+        return []
+      })
+    if (recovered.length > 0) {
+      console.log(`[startup] recovered ${recovered.length} interrupted conversation activities`)
+    }
+    handleImageProtocol()
+    handleWidgetProtocol()
+    createWindow()
+    registerIpcHandlers()
+
+    // Warm MCP connections in the background so the first turn of a new session
+    // doesn't pay the cold spawn + handshake cost inline. syncMcpConnections is
+    // idempotent and skips already-connected servers, so the first send reuses
+    // these instead of blocking on connect()/listTools().
+    void loadMcpToolPack().catch((error) => {
+      console.warn('[startup] MCP connection warm-up failed:', error)
     })
-  if (recovered.length > 0) {
-    console.log(`[startup] recovered ${recovered.length} interrupted conversation activities`)
-  }
-  handleImageProtocol()
-  handleWidgetProtocol()
-  createWindow()
-  registerIpcHandlers()
 
-  // Warm MCP connections in the background so the first turn of a new session
-  // doesn't pay the cold spawn + handshake cost inline. syncMcpConnections is
-  // idempotent and skips already-connected servers, so the first send reuses
-  // these instead of blocking on connect()/listTools().
-  void loadMcpToolPack().catch((error) => {
-    console.warn('[startup] MCP connection warm-up failed:', error)
+    app.on('activate', () => {
+      if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    })
   })
-
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
+  .catch((error) => {
+    console.error('[startup] fatal initialization failure:', error)
+    app.quit()
   })
-})
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()

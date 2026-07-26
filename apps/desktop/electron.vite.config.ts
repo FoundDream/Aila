@@ -1,23 +1,26 @@
-import { resolve } from 'node:path'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
 import { defineConfig } from 'electron-vite'
 
+const CONFIG_DIR = dirname(fileURLToPath(import.meta.url))
+
 const sharedAlias = [
   {
     find: '@aila/agent/host',
-    replacement: resolve(__dirname, '../../packages/agent/src/host.ts'),
+    replacement: resolve(CONFIG_DIR, '../../packages/agent/src/host.ts'),
   },
   {
     find: '@aila/agent-node/app',
-    replacement: resolve(__dirname, '../../packages/agent-node/src/app/index.ts'),
+    replacement: resolve(CONFIG_DIR, '../../packages/agent-node/src/app/index.ts'),
   },
   {
     find: '@aila/agent-node',
-    replacement: resolve(__dirname, '../../packages/agent-node/src/index.ts'),
+    replacement: resolve(CONFIG_DIR, '../../packages/agent-node/src/index.ts'),
   },
-  { find: '@aila/agent', replacement: resolve(__dirname, '../../packages/agent/src/index.ts') },
-  { find: '@shared', replacement: resolve(__dirname, 'src/shared') },
+  { find: '@aila/agent', replacement: resolve(CONFIG_DIR, '../../packages/agent/src/index.ts') },
+  { find: '@shared', replacement: resolve(CONFIG_DIR, 'src/shared') },
 ]
 
 export default defineConfig({
@@ -36,9 +39,9 @@ export default defineConfig({
     resolve: { alias: sharedAlias },
   },
   renderer: {
-    root: resolve(__dirname, 'src/renderer'),
+    root: resolve(CONFIG_DIR, 'src/renderer'),
     resolve: {
-      alias: [{ find: '@', replacement: resolve(__dirname, 'src/renderer/src') }, ...sharedAlias],
+      alias: [{ find: '@', replacement: resolve(CONFIG_DIR, 'src/renderer/src') }, ...sharedAlias],
       // CodeMirror 6 packages share a singleton @codemirror/state. Two copies
       // would silently break view.dispatch with cryptic state-mismatch errors.
       dedupe: [
