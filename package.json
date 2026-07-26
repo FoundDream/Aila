@@ -29,11 +29,12 @@
     "lint:fix": "biome check --fix .",
     "format": "biome format --write .",
     "test:architecture": "bun scripts/package-boundaries-contract.ts",
+    "test:agent": "bun scripts/agent-contract.ts",
     "test:runtime": "bun scripts/runtime-contract.ts",
     "test:desktop": "bun scripts/desktop-workbench-contract.ts",
     "test:cli": "bun scripts/cli-contract.ts",
     "test:tui": "bun scripts/tui-contract.ts",
-    "test": "bun run build:packages && bun run test:architecture && bun run test:runtime && bun run test:desktop && bun run test:cli && bun run test:tui"
+    "test": "bun run build:packages && bun run test:architecture && bun run test:agent && bun run test:runtime && bun run test:desktop && bun run test:cli && bun run test:tui"
   },
   "devDependencies": {
     "@aila/agent": "workspace:*",

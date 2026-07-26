@@ -1,15 +1,19 @@
 import type {
-  AgentRunCheckpoint,
   AilaExecutionMode,
   ConversationWorkspaceRef,
   PlanArtifact,
   ProviderId,
+  RunArtifact,
+  RunCheckpoint,
   RuntimeApprovePlanInput,
   RuntimeCancelPlanInput,
   RuntimeForkRunInput,
   RuntimeRevisePlanInput,
+  RuntimeRunArtifactDescriptor,
+  RuntimeRunArtifactInput,
   RuntimeRunControlInput,
   RuntimeRunInspection,
+  RuntimeRunSummary,
   RuntimeSavePlanMarkdownInput,
 } from '@aila/agent'
 import { contextBridge, ipcRenderer } from 'electron'
@@ -17,17 +21,21 @@ import type { OrCatalog } from '../shared/openrouter'
 
 export type { OrCatalog, OrFamily, OrModel } from '../shared/openrouter'
 export type {
-  AgentRunCheckpoint,
   AilaExecutionMode,
   ConversationWorkspaceRef,
   PlanArtifact,
   ProviderId,
+  RunArtifact,
+  RunCheckpoint,
   RuntimeApprovePlanInput,
   RuntimeCancelPlanInput,
   RuntimeForkRunInput,
   RuntimeRevisePlanInput,
+  RuntimeRunArtifactDescriptor,
+  RuntimeRunArtifactInput,
   RuntimeRunControlInput,
   RuntimeRunInspection,
+  RuntimeRunSummary,
   RuntimeSavePlanMarkdownInput,
 }
 
@@ -107,7 +115,7 @@ export interface ToolApprovalResolvedEvent {
   reason: 'user' | 'timeout' | 'shutdown' | 'cancelled'
 }
 
-export type AgentEventType =
+export type RunEventType =
   | 'run.started'
   | 'run.resumed'
   | 'run.paused'
@@ -150,12 +158,12 @@ export type AgentEventType =
   | 'plan.drift.detected'
   | 'plan.completed'
 
-export interface PersistedAgentEvent {
+export interface PersistedRunEvent {
   schemaVersion: number
   timestamp: number
   conversationId: string
   messageId: string
-  type: AgentEventType
+  type: RunEventType
   turnId?: string
   runId?: string
   stepId?: string
@@ -163,35 +171,6 @@ export interface PersistedAgentEvent {
   eventId?: string
   data?: Record<string, unknown>
 }
-
-export interface DocRecord {
-  // Vault-relative posix path WITHOUT .md extension (e.g. "notes/Foo"). Filename
-  // is the doc's identity — title is derived from the basename.
-  path: string
-  folderPath: string | null
-  title: string
-  content: string
-  createdAt: number
-  updatedAt: number
-}
-
-export type DocSummary = Pick<
-  DocRecord,
-  'path' | 'folderPath' | 'title' | 'createdAt' | 'updatedAt'
->
-
-export interface FolderSummary {
-  path: string
-  name: string
-  parentPath: string | null
-}
-
-export interface DocsListResult {
-  folders: FolderSummary[]
-  docs: DocSummary[]
-}
-
-export type DocPatch = Partial<Pick<DocRecord, 'folderPath' | 'title' | 'content'>>
 
 export interface PersistedTextBlock {
   type: 'text' | 'reasoning'
@@ -604,7 +583,7 @@ export interface ConversationActivity {
   state: ConversationActivityState
   title: string
   updatedAt: number
-  eventType: AgentEventType
+  eventType: RunEventType
   messageId: string
   detail?: string
   toolName?: string
@@ -635,7 +614,7 @@ export interface ConversationRuntimeReplayTurn {
   conversationId: string
   assistantMessageId: string
   updatedAt: number
-  eventType: AgentEventType
+  eventType: RunEventType
   startedAt?: number
   selection?: ModelSelection
   pendingApproval?: ConversationRuntimePendingApproval
@@ -671,9 +650,6 @@ export interface ConversationSummary {
   updatedAt: number
   usage?: ConversationUsage
   activity?: ConversationActivity
-  // Set when Desktop owns this conversation as the AI sidebar of a specific
-  // doc. Runtime treats it as ordinary conversation metadata.
-  docId?: string | null
   // Optional chat session workspace affinity used by Desktop grouping.
   workspace?: ConversationWorkspaceRef | null
   context?: ConversationContextState
@@ -766,7 +742,6 @@ export interface RuntimeCompactConversationResult {
 }
 
 export interface RuntimeCreateConversationRequest {
-  docId?: string | null
   workspace?: ConversationWorkspaceRef | null
 }
 
@@ -790,7 +765,7 @@ export interface ConversationRecord {
 
 export interface RuntimeConversationHydration {
   record: ConversationRecord
-  events: PersistedAgentEvent[]
+  events: PersistedRunEvent[]
   runtimeState: ConversationRuntimeReplayState
   activeTurn: ActiveAssistantTurn | null
   plans: PlanArtifact[]
@@ -842,22 +817,26 @@ const api = {
       ipcRenderer.invoke('runtime:list-active-turns'),
     hydrateConversation: (conversationId: string): Promise<RuntimeConversationHydration> =>
       ipcRenderer.invoke('runtime:hydrate-conversation', conversationId),
-    listRuns: (conversationId: string): Promise<AgentRunCheckpoint[]> =>
+    listRuns: (conversationId: string): Promise<RunCheckpoint[]> =>
       ipcRenderer.invoke('runtime:runs:list', conversationId),
+    listRunSummaries: (conversationId: string): Promise<RuntimeRunSummary[]> =>
+      ipcRenderer.invoke('runtime:runs:list-summaries', conversationId),
     inspectRun: (request: RuntimeRunControlInput): Promise<RuntimeRunInspection> =>
       ipcRenderer.invoke('runtime:runs:inspect', request),
+    getRunArtifact: (request: RuntimeRunArtifactInput): Promise<RunArtifact> =>
+      ipcRenderer.invoke('runtime:runs:get-artifact', request),
     stepRun: (request: RuntimeRunControlInput): Promise<SendResult> =>
       ipcRenderer.invoke('runtime:runs:step', request),
     continueRun: (request: RuntimeRunControlInput): Promise<SendResult> =>
       ipcRenderer.invoke('runtime:runs:continue', request),
     resumeRun: (request: RuntimeRunControlInput): Promise<SendResult> =>
       ipcRenderer.invoke('runtime:runs:resume', request),
-    abortRun: (request: RuntimeRunControlInput): Promise<AgentRunCheckpoint> =>
+    abortRun: (request: RuntimeRunControlInput): Promise<RunCheckpoint> =>
       ipcRenderer.invoke('runtime:runs:abort', request),
-    forkRun: (request: RuntimeForkRunInput): Promise<AgentRunCheckpoint> =>
+    forkRun: (request: RuntimeForkRunInput): Promise<RunCheckpoint> =>
       ipcRenderer.invoke('runtime:runs:fork', request),
-    listRuntimeStates: (docId: string | null = null): Promise<ConversationRuntimeStateSnapshot[]> =>
-      ipcRenderer.invoke('runtime:conversations:list-runtime-states', docId),
+    listRuntimeStates: (): Promise<ConversationRuntimeStateSnapshot[]> =>
+      ipcRenderer.invoke('runtime:conversations:list-runtime-states'),
     getTokenUsageStats: (): Promise<TokenUsageStats> =>
       ipcRenderer.invoke('runtime:token-usage-stats'),
     listPlans: (conversationId: string): Promise<PlanArtifact[]> =>
@@ -885,19 +864,15 @@ const api = {
       on<ImageBlockEvent>('chat:image-block', cb),
     onDone: (cb: (event: ChatDoneEvent) => void) => on<ChatDoneEvent>('chat:done', cb),
     onError: (cb: (event: ChatErrorEvent) => void) => on<ChatErrorEvent>('chat:error', cb),
-    onAgentEvent: (cb: (event: PersistedAgentEvent) => void) =>
-      on<PersistedAgentEvent>('agent:event', cb),
+    onRunEvent: (cb: (event: PersistedRunEvent) => void) => on<PersistedRunEvent>('run:event', cb),
     conversations: {
-      list: (): Promise<ConversationSummary[]> =>
-        ipcRenderer.invoke('runtime:conversations:list', null),
+      list: (): Promise<ConversationSummary[]> => ipcRenderer.invoke('runtime:conversations:list'),
       get: (id: string): Promise<ConversationRecord> =>
         ipcRenderer.invoke('runtime:conversations:get', id),
-      create: (docPath?: string): Promise<ConversationSummary> =>
-        ipcRenderer.invoke('runtime:conversations:create', { docId: docPath ?? null }),
+      create: (): Promise<ConversationSummary> =>
+        ipcRenderer.invoke('runtime:conversations:create', {}),
       createForWorkspace: (workspace: ConversationWorkspaceRef): Promise<ConversationSummary> =>
         ipcRenderer.invoke('runtime:conversations:create', { workspace }),
-      listForDoc: (docPath: string): Promise<ConversationSummary[]> =>
-        ipcRenderer.invoke('runtime:conversations:list', docPath),
       rename: (id: string, title: string): Promise<ConversationSummary> =>
         ipcRenderer.invoke('runtime:conversations:rename', id, title),
       delete: (id: string): Promise<void> => ipcRenderer.invoke('runtime:conversations:delete', id),
@@ -965,24 +940,6 @@ const api = {
     sendApprovalResponse: (response: ToolApprovalResponse): void => {
       ipcRenderer.send('tools:approval-response', response)
     },
-  },
-  docs: {
-    list: (): Promise<DocsListResult> => ipcRenderer.invoke('docs:list'),
-    get: (docPath: string): Promise<DocRecord> => ipcRenderer.invoke('docs:get', docPath),
-    create: (folderPath?: string | null): Promise<DocRecord> =>
-      ipcRenderer.invoke('docs:create', folderPath ?? null),
-    update: (docPath: string, patch: DocPatch): Promise<DocRecord> =>
-      ipcRenderer.invoke('docs:update', docPath, patch),
-    delete: (docPath: string): Promise<void> => ipcRenderer.invoke('docs:delete', docPath),
-  },
-  folders: {
-    create: (parentPath: string | null, name: string): Promise<FolderSummary> =>
-      ipcRenderer.invoke('folders:create', parentPath, name),
-    rename: (path: string, newName: string): Promise<FolderSummary> =>
-      ipcRenderer.invoke('folders:rename', path, newName),
-    move: (path: string, newParentPath: string | null): Promise<FolderSummary> =>
-      ipcRenderer.invoke('folders:move', path, newParentPath),
-    delete: (path: string): Promise<void> => ipcRenderer.invoke('folders:delete', path),
   },
   images: {
     save: (bytes: ArrayBuffer, filename: string): Promise<{ url: string }> =>

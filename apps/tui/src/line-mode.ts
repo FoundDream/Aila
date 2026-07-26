@@ -6,8 +6,6 @@ import { join, resolve } from 'node:path'
 import { stdin as input, stdout as output } from 'node:process'
 import { createInterface } from 'node:readline/promises'
 import {
-  type AgentRuntimeApi,
-  type AgentRuntimeEvent,
   type AilaExecutionMode,
   type ConversationSummary,
   createToolPolicy,
@@ -23,11 +21,13 @@ import {
   requestToolApprovalWithActivity,
   type ToolApprovalMode,
   type ToolApprovalRequest,
+  type Workbench,
+  type WorkbenchEvent,
 } from '@aila/agent'
 import {
   configureDataDir,
   configuredProviders,
-  createPersistedAgentRuntime,
+  createPersistedWorkbench,
   type ExtensionReport,
   getDataDir,
   getExtensionReport,
@@ -65,13 +65,13 @@ export interface TuiSessionState {
 
 export interface TuiRuntimeInput {
   approvalMode?: ToolApprovalMode
-  onEvent?: (event: AgentRuntimeEvent) => void
+  onEvent?: (event: WorkbenchEvent) => void
   onToolApproval?: (request: ToolApprovalRequest) => Promise<boolean>
 }
 
-export function createTuiRuntime(input: TuiRuntimeInput = {}): AgentRuntimeApi {
-  let runtime: AgentRuntimeApi
-  runtime = createPersistedAgentRuntime({
+export function createTuiRuntime(input: TuiRuntimeInput = {}): Workbench {
+  let runtime: Workbench
+  runtime = createPersistedWorkbench({
     host: {
       onToolPolicy: createToolPolicy(input.approvalMode ?? 'safe'),
       ...(input.onEvent ? { onEvent: input.onEvent } : {}),
@@ -81,8 +81,8 @@ export function createTuiRuntime(input: TuiRuntimeInput = {}): AgentRuntimeApi {
               requestToolApprovalWithActivity({
                 request,
                 approve: input.onToolApproval ?? (() => false),
-                recordAgentEvent: async (_conversationId, event) => {
-                  await runtime.recordAgentEvent(event)
+                recordRunEvent: async (_conversationId, event) => {
+                  await runtime.recordRunEvent(event)
                 },
                 logger: console,
               }),
@@ -335,12 +335,12 @@ export function formatDate(timestamp: number): string {
   return new Date(timestamp).toLocaleString()
 }
 
-export function conversationScope(summary: ConversationSummary): string {
-  return summary.docId ? `doc:${summary.docId}` : 'chat'
+export function conversationScope(_summary: ConversationSummary): string {
+  return 'thread'
 }
 
 export async function printConversationList(
-  runtime: AgentRuntimeApi,
+  runtime: Workbench,
   input: { limit: number },
 ): Promise<void> {
   const conversations = await runtime.listConversations()
@@ -364,10 +364,7 @@ export async function printConversationList(
   }
 }
 
-export async function printPlanList(
-  runtime: AgentRuntimeApi,
-  conversationId: string,
-): Promise<void> {
+export async function printPlanList(runtime: Workbench, conversationId: string): Promise<void> {
   const plans = await runtime.listPlans(conversationId)
   writeLine('Aila plans')
   writeLine(`Conversation: ${conversationId}`)
@@ -505,7 +502,7 @@ export function formatToolResultForDisplay(toolName: string, result: string): st
 }
 
 export async function appendLocalContext(input: {
-  runtime: AgentRuntimeApi
+  runtime: Workbench
   conversationId: string
   command: string
   result: string
@@ -517,7 +514,7 @@ export async function appendLocalContext(input: {
 }
 
 export async function runLocalTool(input: {
-  runtime: AgentRuntimeApi
+  runtime: Workbench
   toolName: 'read' | 'bash' | 'write' | 'edit'
   args: Record<string, unknown>
 }): Promise<string> {
@@ -560,7 +557,7 @@ export function writeExtensionReport(report: ExtensionReport): void {
 export async function handleSlashCommand(input: {
   text: string
   conversationId: string
-  runtime: AgentRuntimeApi
+  runtime: Workbench
   session: TuiSessionState
 }): Promise<'handled' | 'exit' | 'agent'> {
   const { text, conversationId, runtime, session } = input
@@ -776,7 +773,7 @@ export async function handleSlashCommand(input: {
 }
 
 export async function printRecentHistory(
-  runtime: AgentRuntimeApi,
+  runtime: Workbench,
   conversationId: string,
   maxMessages = 6,
 ): Promise<void> {
@@ -796,7 +793,7 @@ export async function printRecentHistory(
   }
 }
 
-export async function waitForManagedRun(runtime: AgentRuntimeApi, runId: string): Promise<void> {
+export async function waitForManagedRun(runtime: Workbench, runId: string): Promise<void> {
   while (runtime.listActiveTurns().some((turn) => turn.runId === runId)) {
     await new Promise<void>((resolve) => setTimeout(resolve, 10))
   }
@@ -1007,7 +1004,7 @@ export async function askToolApproval(
 }
 
 export function handleRuntimeEvent(
-  event: AgentRuntimeEvent,
+  event: WorkbenchEvent,
   state: {
     completions: Map<string, () => void>
     toolNames: Map<string, string>
@@ -1051,7 +1048,7 @@ export function handleRuntimeEvent(
       writeLine(`\n[error] ${event.data.error}`)
       state.completions.get(event.data.messageId)?.()
       break
-    case 'agent:event':
+    case 'run:event':
       if (event.data.type === 'run.paused') {
         const nextAction = event.data.data?.nextAction
         const nextType =

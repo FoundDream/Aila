@@ -107,14 +107,6 @@ export interface PlanRevisionInput {
   revision: PlanRevision
 }
 
-export interface AgentRuntimePlanStore {
-  createPlan(plan: PlanArtifact): Promise<PlanArtifact>
-  getPlan(conversationId: string, planId: string): Promise<PlanArtifact>
-  listPlans(conversationId: string): Promise<readonly PlanArtifact[]>
-  updatePlan(plan: PlanArtifact): Promise<PlanArtifact>
-  appendPlanRevision(input: PlanRevisionInput): Promise<PlanArtifact>
-}
-
 type UnknownRecord = Record<string, unknown>
 
 const PLAN_STATUS_SET = new Set<string>(PLAN_STATUSES)

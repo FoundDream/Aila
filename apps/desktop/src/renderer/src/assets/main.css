@@ -7,31 +7,29 @@
 @source "../../../../node_modules/streamdown/dist/*.js";
 
 @theme {
-  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", "Inter", system-ui, sans-serif;
-  --font-serif: "Newsreader", "Iowan Old Style", "Apple Garamond", Garamond, "Times New Roman", serif;
-  --font-doc: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
-  --font-doc-title: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
-  --font-mono: "SF Mono", "JetBrains Mono", Menlo, Monaco, "Courier New", monospace;
+  --font-sans: "Avenir Next", Avenir, "Helvetica Neue", system-ui, sans-serif;
+  --font-serif: "Iowan Old Style", "Palatino Linotype", Palatino, serif;
+  --font-mono: "Berkeley Mono", "SF Mono", "JetBrains Mono", Menlo, monospace;
 }
 
 :root {
-  --bg: #ffffff;
-  --bg-soft: #f7f7f7;
-  --surface: #ffffff;
-  /* Translucent so hover/active states blend with the sidebar vibrancy;
-     composites to ~#ededed on white surfaces. */
-  --surface-hover: rgba(0, 0, 0, 0.07);
-  --text: #0d0d0d;
-  --text-soft: #5d5d5d;
-  --text-dim: #8f8f8f;
-  --sidebar-text-soft: #4f4f4f;
-  --sidebar-text-dim: #7d7d7d;
-  --border: #e8e8e8;
-  --border-strong: #d9d9d9;
-  --brand-ink: #0d0d0d;
+  --bg: #fbfaf6;
+  --bg-soft: #f3f0e8;
+  --surface: #fffefa;
+  --surface-hover: rgba(41, 37, 31, 0.065);
+  --text: #211f1b;
+  --text-soft: #625e55;
+  --text-dim: #969086;
+  --sidebar-text-soft: #514d45;
+  --sidebar-text-dim: #8b857b;
+  --border: #e7e1d6;
+  --border-strong: #d7cfc2;
+  --brand-ink: #25231f;
   --brand-ink-fg: #ffffff;
-  --blue: #0285ff;
-  --error: #c4442a;
+  --signal: #e85d2a;
+  --signal-glow: rgba(232, 93, 42, 0.22);
+  --blue: #2567b2;
+  --error: #b8402e;
 
   /* shadcn tokens (consumed by streamdown). */
   --background: var(--bg);
@@ -185,41 +183,14 @@ body {
 .aila-md > * + * {
   margin-top: 0.6em;
 }
-.aila-md-read > * + * {
-  margin-top: 0.95em;
-}
-.aila-md-document {
-  color: #1b1b1b;
-  font-family: var(--font-doc);
-  font-size: 16.5px;
-  font-weight: 430;
-  line-height: 1.74;
-  letter-spacing: 0;
-}
-.aila-md-preview {
-  color: #1f1f1f;
-  font-family: var(--font-doc);
-  font-size: 15.5px;
-  font-weight: 420;
-  line-height: 1.7;
-}
 .aila-md-reasoning > * + * {
   margin-top: 0.45em;
-}
-.aila-md-read p + p {
-  margin-top: 1.1em;
 }
 .aila-md h1, .aila-md h2, .aila-md h3, .aila-md h4, .aila-md h5, .aila-md h6 {
   font-weight: 600;
   line-height: 1.3;
   margin-top: 1em;
   margin-bottom: 0.4em;
-}
-.aila-md-read h1, .aila-md-read h2, .aila-md-read h3, .aila-md-read h4, .aila-md-read h5, .aila-md-read h6 {
-  font-family: var(--font-doc-title);
-  font-weight: 620;
-  margin-top: 1.35em;
-  margin-bottom: 0.55em;
 }
 .aila-md h1 { font-size: 1.4em; }
 .aila-md h2 { font-size: 1.25em; }
@@ -241,32 +212,11 @@ body {
   margin: 0;
   color: var(--text);
 }
-.aila-md-document p,
-.aila-md-document li,
-.aila-md-document td,
-.aila-md-document dd {
-  color: #1b1b1b;
-}
-.aila-md-document > p,
-.aila-md-document > ul,
-.aila-md-document > ol,
-.aila-md-document > blockquote,
-.aila-md-document > table,
-.aila-md-document > div[data-streamdown="table-wrapper"] {
-  max-width: 72ch;
-}
 .aila-md ul, .aila-md ol { padding-left: 1.5em; }
 .aila-md li {
   color: var(--text);
 }
 .aila-md li + li { margin-top: 0.25em; }
-.aila-md-document li + li {
-  margin-top: 0.36em;
-}
-.aila-md-document li::marker {
-  color: #626262;
-  font-size: 0.86em;
-}
 .aila-md ul { list-style: disc; }
 .aila-md ol { list-style: decimal; }
 .aila-md .contains-task-list {
@@ -298,20 +248,6 @@ body {
   word-break: break-word;
 }
 .aila-md a:hover { text-decoration-color: var(--text-soft); }
-.aila-md-document a {
-  color: #0f5f99;
-  font-weight: 500;
-  text-decoration-thickness: 0.06em;
-  text-decoration-color: color-mix(in srgb, #0f5f99 34%, transparent);
-  text-underline-offset: 0.17em;
-}
-.aila-md-document a:hover {
-  color: #084f83;
-  text-decoration-color: color-mix(in srgb, #084f83 58%, transparent);
-}
-.aila-md-document li a[href^="http"] {
-  font-size: 0.95em;
-}
 .aila-md mark {
   border-radius: 3px;
   padding: 0.05em 0.2em;
@@ -449,9 +385,6 @@ body {
   border-left: 2px solid var(--border-strong);
   padding-left: 1em;
   color: color-mix(in srgb, var(--text) 82%, var(--text-soft));
-}
-.aila-md-document blockquote {
-  color: #363636;
 }
 .aila-md blockquote p {
   color: inherit;

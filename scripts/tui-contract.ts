@@ -3,9 +3,9 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
-  AILA_AGENT_EVENT_SCHEMA_VERSION,
   AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
-  createRuntimeEvent,
+  AILA_RUN_EVENT_SCHEMA_VERSION,
+  createWorkbenchEvent,
 } from '@aila/agent'
 import {
   appendMessage,
@@ -244,11 +244,11 @@ async function testRetryLastDoesNotDuplicateUser(): Promise<void> {
   })
 }
 
-function testInterruptedAgentEventCompletesLineModeAdapter(): void {
+function testInterruptedRunEventCompletesLineModeAdapter(): void {
   let completed = false
   handleRuntimeEvent(
-    createRuntimeEvent('agent:event', {
-      schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+    createWorkbenchEvent('run:event', {
+      schemaVersion: AILA_RUN_EVENT_SCHEMA_VERSION,
       timestamp: 1,
       conversationId: 'conversation-interrupted',
       messageId: 'assistant-interrupted',
@@ -294,14 +294,14 @@ async function testTuiUsesSharedRuntimeFactory(): Promise<void> {
     'TUI adapters should not import runtime implementation internals',
   )
   assert(
-    source.includes('createPersistedAgentRuntime'),
+    source.includes('createPersistedWorkbench'),
     'TUI adapter should use the shared persisted runtime factory',
   )
   assert(
-    source.includes('type AgentRuntimeApi') &&
-      fullscreenSource.includes('type AgentRuntimeApi') &&
-      !source.includes('type AgentRuntime,') &&
-      !fullscreenSource.includes('type AgentRuntime,'),
+    source.includes('type Workbench') &&
+      fullscreenSource.includes('type Workbench') &&
+      !source.includes('type WorkbenchRuntime,') &&
+      !fullscreenSource.includes('type WorkbenchRuntime,'),
     'TUI adapters should depend on the host-facing runtime API type, not the concrete runtime class',
   )
   assert(
@@ -343,7 +343,7 @@ async function main(): Promise<void> {
   await testDocCommandsAreNotRuntimeAdapterFeatures()
   await testDocFlagIsRemoved()
   await testRetryLastDoesNotDuplicateUser()
-  testInterruptedAgentEventCompletesLineModeAdapter()
+  testInterruptedRunEventCompletesLineModeAdapter()
   await testTuiUsesSharedRuntimeFactory()
   console.log('tui contract: ok')
 }

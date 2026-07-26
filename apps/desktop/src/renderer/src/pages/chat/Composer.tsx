@@ -1,18 +1,16 @@
 import {
   ArchiveIcon,
-  ArrowLeftIcon,
   ArrowUpIcon,
   ClockIcon,
   FileTextIcon,
   ImageIcon,
   ListChecksIcon,
-  NotebookTextIcon,
   PlusIcon,
   PuzzleIcon,
   RotateCcwIcon,
   SquareIcon,
   XIcon,
-} from "lucide-react";
+} from 'lucide-react'
 import {
   type ClipboardEvent,
   type DragEvent,
@@ -24,211 +22,199 @@ import {
   useMemo,
   useRef,
   useState,
-} from "react";
-import { ModelPicker } from "@/components/ModelPicker";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
+} from 'react'
+import { ModelPicker } from '@/components/ModelPicker'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import type {
   AilaExecutionMode,
   ChatAttachmentInput,
-  DocSummary,
   ExtensionSkillReport,
   ModelSelection,
   ProviderId,
   Settings,
   UsageInfo,
-} from "../../types";
-import type { QueuedRun } from "./useChatStreams";
+} from '../../types'
+import type { QueuedRun } from './useChatStreams'
 
 interface ComposerProps {
-  isStreaming: boolean;
-  onSubmit: (
-    text: string,
-    attachments: ChatAttachmentInput[],
-  ) => Promise<void> | void;
-  onCompact: () => Promise<{ compacted: boolean }> | { compacted: boolean };
-  onAbort: () => void;
-  queuedRuns?: QueuedRun[];
-  usage?: UsageInfo | null;
-  contextLength?: number | null;
-  configuredProviders: ProviderId[];
-  selection: ModelSelection | null;
-  onSelectionChange: (selection: ModelSelection) => void;
-  onOpenSettings: () => void;
-  recentOpenRouterModels: string[];
-  approvalMode: ApprovalMode;
-  onApprovalModeChange: (mode: ApprovalMode) => Promise<void> | void;
-  executionMode?: AilaExecutionMode;
-  onExecutionModeChange?: (mode: AilaExecutionMode) => void;
+  isStreaming: boolean
+  onSubmit: (text: string, attachments: ChatAttachmentInput[]) => Promise<void> | void
+  onCompact: () => Promise<{ compacted: boolean }> | { compacted: boolean }
+  onAbort: () => void
+  queuedRuns?: QueuedRun[]
+  usage?: UsageInfo | null
+  contextLength?: number | null
+  configuredProviders: ProviderId[]
+  selection: ModelSelection | null
+  onSelectionChange: (selection: ModelSelection) => void
+  onOpenSettings: () => void
+  recentOpenRouterModels: string[]
+  approvalMode: ApprovalMode
+  onApprovalModeChange: (mode: ApprovalMode) => Promise<void> | void
+  executionMode?: AilaExecutionMode
+  onExecutionModeChange?: (mode: AilaExecutionMode) => void
 }
 
 // image-store enforces 10MB on disk; stay below it so base64 inflation and
 // IPC overhead never push a valid pick over the limit.
-const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
-const MAX_TEXT_BYTES = 512 * 1024;
+const MAX_IMAGE_BYTES = 8 * 1024 * 1024
+const MAX_TEXT_BYTES = 512 * 1024
 
-type ApprovalMode = NonNullable<Settings["approvalMode"]>;
+type ApprovalMode = NonNullable<Settings['approvalMode']>
 
 const APPROVAL_MODES: Array<{
-  id: ApprovalMode;
-  label: string;
-  description: string;
+  id: ApprovalMode
+  label: string
+  description: string
 }> = [
   {
-    id: "safe",
-    label: "Safe",
-    description: "Ask before write, edit, and shell tools.",
+    id: 'safe',
+    label: 'Safe',
+    description: 'Ask before write, edit, and shell tools.',
   },
   {
-    id: "yolo",
-    label: "Yolo",
-    description: "Run tools without approval prompts.",
+    id: 'yolo',
+    label: 'Yolo',
+    description: 'Run tools without approval prompts.',
   },
-];
+]
 
-type SlashCommandId = "image" | "compact";
+type SlashCommandId = 'image' | 'compact'
 
 interface SlashState {
-  rangeStart: number;
-  rangeEnd: number;
-  query: string;
+  rangeStart: number
+  rangeEnd: number
+  query: string
 }
 
 interface SlashCommand {
-  id: string;
-  kind: "builtin" | "skill";
-  commandId?: SlashCommandId;
-  skillName?: string;
-  token: string;
-  label: string;
-  description: string;
-  keywords: string[];
-  icon: ReactElement;
+  id: string
+  kind: 'builtin' | 'skill'
+  commandId?: SlashCommandId
+  skillName?: string
+  token: string
+  label: string
+  description: string
+  keywords: string[]
+  icon: ReactElement
 }
 
 interface PendingAttachment {
-  id: string;
-  kind: "image" | "text" | "doc";
-  name: string;
-  mime: string;
+  id: string
+  kind: 'image' | 'text'
+  name: string
+  mime: string
   /** kind 'image': base64 (no data: prefix). otherwise raw text. */
-  data: string;
+  data: string
   /** data: URL for image thumbnails. */
-  previewUrl?: string;
+  previewUrl?: string
 }
 
 function compactTextPreview(value: string): string {
-  return value.replace(/\s+/g, " ").trim();
+  return value.replace(/\s+/g, ' ').trim()
 }
 
-function pluralize(
-  count: number,
-  singular: string,
-  plural = `${singular}s`,
-): string {
-  return `${count} ${count === 1 ? singular : plural}`;
+function pluralize(count: number, singular: string, plural = `${singular}s`): string {
+  return `${count} ${count === 1 ? singular : plural}`
 }
 
 function queuedRunPreview(queued: QueuedRun): string {
-  if (queued.kind === "retryLast") return "Resume last turn";
-  if (queued.kind === "approvePlan") return `Approve plan ${queued.planId}`;
-  const text = compactTextPreview(queued.text);
-  if (text) return text;
-  return queued.attachments.length > 0
-    ? "Attachment-only prompt"
-    : "Empty prompt";
+  if (queued.kind === 'retryLast') return 'Resume last turn'
+  if (queued.kind === 'approvePlan') return `Approve plan ${queued.planId}`
+  const text = compactTextPreview(queued.text)
+  if (text) return text
+  return queued.attachments.length > 0 ? 'Attachment-only prompt' : 'Empty prompt'
 }
 
 function queuedRunMeta(queued: QueuedRun): string | null {
-  if (queued.kind === "retryLast") return "Retry";
-  if (queued.kind === "approvePlan") return "Plan approval";
-  const images = queued.attachments.filter(
-    (attachment) => attachment.kind === "image",
-  ).length;
-  const files = queued.attachments.length - images;
+  if (queued.kind === 'retryLast') return 'Retry'
+  if (queued.kind === 'approvePlan') return 'Plan approval'
+  const images = queued.attachments.filter((attachment) => attachment.kind === 'image').length
+  const files = queued.attachments.length - images
   const parts = [
-    images > 0 ? pluralize(images, "image") : null,
-    files > 0 ? pluralize(files, "file") : null,
-  ].filter((part): part is string => Boolean(part));
-  return parts.length > 0 ? parts.join(" · ") : null;
+    images > 0 ? pluralize(images, 'image') : null,
+    files > 0 ? pluralize(files, 'file') : null,
+  ].filter((part): part is string => Boolean(part))
+  return parts.length > 0 ? parts.join(' · ') : null
 }
 
 function getSlashState(text: string, cursor: number): SlashState | null {
-  const beforeCursor = text.slice(0, cursor);
-  const rangeStart = beforeCursor.lastIndexOf("/");
-  if (rangeStart < 0) return null;
+  const beforeCursor = text.slice(0, cursor)
+  const rangeStart = beforeCursor.lastIndexOf('/')
+  if (rangeStart < 0) return null
 
-  const charBefore = rangeStart > 0 ? text[rangeStart - 1] : "";
-  if (charBefore && !/\s/.test(charBefore)) return null;
+  const charBefore = rangeStart > 0 ? text[rangeStart - 1] : ''
+  if (charBefore && !/\s/.test(charBefore)) return null
 
-  const query = beforeCursor.slice(rangeStart + 1);
-  if (query.includes("\n") || /\s/.test(query)) return null;
+  const query = beforeCursor.slice(rangeStart + 1)
+  if (query.includes('\n') || /\s/.test(query)) return null
 
-  return { rangeStart, rangeEnd: cursor, query };
+  return { rangeStart, rangeEnd: cursor, query }
 }
 
 function slashCommandMatches(command: SlashCommand, query: string): boolean {
-  const q = query.trim().toLowerCase();
-  if (!q) return true;
-  const token = command.token.slice(1).toLowerCase();
+  const q = query.trim().toLowerCase()
+  if (!q) return true
+  const token = command.token.slice(1).toLowerCase()
   return (
     token.startsWith(q) ||
     command.label.toLowerCase().includes(q) ||
     command.description.toLowerCase().includes(q) ||
     command.keywords.some((keyword) => keyword.includes(q))
-  );
+  )
 }
 
 function formatTokens(n: number): string {
-  if (n < 1000) return `${n}`;
-  if (n < 10_000) return `${(n / 1000).toFixed(2)}k`;
-  if (n < 1_000_000) return `${(n / 1000).toFixed(1)}k`;
-  return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n < 1000) return `${n}`
+  if (n < 10_000) return `${(n / 1000).toFixed(2)}k`
+  if (n < 1_000_000) return `${(n / 1000).toFixed(1)}k`
+  return `${(n / 1_000_000).toFixed(1)}M`
 }
 
 function formatOptionalTokens(value: number | undefined): string {
-  return typeof value === "number" ? formatTokens(value) : "n/a";
+  return typeof value === 'number' ? formatTokens(value) : 'n/a'
 }
 
 function usageHasSingleCall(usage: UsageInfo | null | undefined): boolean {
-  return usage?.modelCallCount === 1;
+  return usage?.modelCallCount === 1
 }
 
 function lastInputTokens(usage: UsageInfo | null | undefined): number | undefined {
-  return usage?.lastInputTokens ?? (usageHasSingleCall(usage) ? usage?.promptTokens : undefined);
+  return usage?.lastInputTokens ?? (usageHasSingleCall(usage) ? usage?.promptTokens : undefined)
 }
 
 function lastOutputTokens(usage: UsageInfo | null | undefined): number | undefined {
-  return usage?.lastOutputTokens ?? (usageHasSingleCall(usage) ? usage?.completionTokens : undefined);
+  return (
+    usage?.lastOutputTokens ?? (usageHasSingleCall(usage) ? usage?.completionTokens : undefined)
+  )
 }
 
 function lastCacheReadTokens(usage: UsageInfo | null | undefined): number | undefined {
-  return usage?.lastCacheReadTokens ?? (usageHasSingleCall(usage) ? usage?.cacheReadTokens : undefined);
+  return (
+    usage?.lastCacheReadTokens ?? (usageHasSingleCall(usage) ? usage?.cacheReadTokens : undefined)
+  )
 }
 
 function lastCacheMissTokens(usage: UsageInfo | null | undefined): number | undefined {
-  return usage?.lastCacheMissTokens ?? (usageHasSingleCall(usage) ? usage?.cacheMissTokens : undefined);
+  return (
+    usage?.lastCacheMissTokens ?? (usageHasSingleCall(usage) ? usage?.cacheMissTokens : undefined)
+  )
 }
 
 function lastCacheWriteTokens(usage: UsageInfo | null | undefined): number | undefined {
-  return usage?.lastCacheWriteTokens ?? (usageHasSingleCall(usage) ? usage?.cacheWriteTokens : undefined);
+  return (
+    usage?.lastCacheWriteTokens ?? (usageHasSingleCall(usage) ? usage?.cacheWriteTokens : undefined)
+  )
 }
 
 function contextWindowTokens(usage: UsageInfo | null | undefined): number | undefined {
-  const inputTokens = lastInputTokens(usage);
-  const outputTokens = lastOutputTokens(usage);
-  if (typeof inputTokens !== "number" || typeof outputTokens !== "number") {
-    return undefined;
+  const inputTokens = lastInputTokens(usage)
+  const outputTokens = lastOutputTokens(usage)
+  if (typeof inputTokens !== 'number' || typeof outputTokens !== 'number') {
+    return undefined
   }
-  return inputTokens + outputTokens;
+  return inputTokens + outputTokens
 }
 
 function contextWindowSummary(
@@ -237,82 +223,73 @@ function contextWindowSummary(
   ratio: number,
 ): string {
   if (usedTokens !== null && contextLength && contextLength > 0) {
-    return `Context window: ${formatTokens(usedTokens)} / ${formatTokens(contextLength)} (${Math.round(ratio * 100)}%)`;
+    return `Context window: ${formatTokens(usedTokens)} / ${formatTokens(contextLength)} (${Math.round(ratio * 100)}%)`
   }
   if (usedTokens !== null) {
-    return `Context window: ${formatTokens(usedTokens)}`;
+    return `Context window: ${formatTokens(usedTokens)}`
   }
   if (contextLength && contextLength > 0) {
-    return `Context window: n/a / ${formatTokens(contextLength)}`;
+    return `Context window: n/a / ${formatTokens(contextLength)}`
   }
-  return "Context window: n/a";
+  return 'Context window: n/a'
 }
 
 function uncachedInputTokens(usage: UsageInfo | null | undefined): number | undefined {
-  const inputTokens = lastInputTokens(usage);
-  const cacheReadTokens = lastCacheReadTokens(usage);
-  if (typeof inputTokens === "number" && typeof cacheReadTokens === "number") {
-    return Math.max(inputTokens - cacheReadTokens, 0);
+  const inputTokens = lastInputTokens(usage)
+  const cacheReadTokens = lastCacheReadTokens(usage)
+  if (typeof inputTokens === 'number' && typeof cacheReadTokens === 'number') {
+    return Math.max(inputTokens - cacheReadTokens, 0)
   }
-  const cacheMissTokens = lastCacheMissTokens(usage);
-  const cacheWriteTokens = lastCacheWriteTokens(usage);
-  if (typeof cacheMissTokens === "number" || typeof cacheWriteTokens === "number") {
-    return (cacheMissTokens ?? 0) + (cacheWriteTokens ?? 0);
+  const cacheMissTokens = lastCacheMissTokens(usage)
+  const cacheWriteTokens = lastCacheWriteTokens(usage)
+  if (typeof cacheMissTokens === 'number' || typeof cacheWriteTokens === 'number') {
+    return (cacheMissTokens ?? 0) + (cacheWriteTokens ?? 0)
   }
-  return undefined;
+  return undefined
 }
 
 function usageTokenBuckets(usage: UsageInfo | null | undefined): Array<{
-  label: string;
-  value: number | undefined;
-  swatch: string;
+  label: string
+  value: number | undefined
+  swatch: string
 }> {
   return [
     {
-      label: "Input (cached)",
+      label: 'Input (cached)',
       value: lastCacheReadTokens(usage),
-      swatch: "bg-sky-200",
+      swatch: 'bg-sky-200',
     },
     {
-      label: "Input (uncached)",
+      label: 'Input (uncached)',
       value: uncachedInputTokens(usage),
-      swatch: "bg-sky-400",
+      swatch: 'bg-sky-400',
     },
     {
-      label: "Output",
+      label: 'Output',
       value: lastOutputTokens(usage),
-      swatch: "bg-blue-600",
+      swatch: 'bg-blue-600',
     },
-  ];
+  ]
 }
 
 function readAsDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () =>
-      reject(reader.error ?? new Error("failed to read file"));
-    reader.readAsDataURL(file);
-  });
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result))
+    reader.onerror = () => reject(reader.error ?? new Error('failed to read file'))
+    reader.readAsDataURL(file)
+  })
 }
 
 function ContextRing({ ratio }: { ratio: number }): ReactElement {
-  const r = 7;
-  const circumference = 2 * Math.PI * r;
+  const r = 7
+  const circumference = 2 * Math.PI * r
   // Keep a sliver visible once anything has been used so the indicator
   // doesn't read as "empty" at the start of a conversation.
-  const shown = ratio > 0 ? Math.max(ratio, 0.04) : 0;
+  const shown = ratio > 0 ? Math.max(ratio, 0.04) : 0
   return (
     <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
-      <circle
-        cx="8"
-        cy="8"
-        r={r}
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="2"
-        opacity="0.2"
-      />
+      <circle cx="8" cy="8" r={r} fill="none" stroke="currentColor" strokeWidth="2" opacity="0.2" />
       <circle
         cx="8"
         cy="8"
@@ -326,7 +303,7 @@ function ContextRing({ ratio }: { ratio: number }): ReactElement {
         transform="rotate(-90 8 8)"
       />
     </svg>
-  );
+  )
 }
 
 function AttachMenuItem({
@@ -334,9 +311,9 @@ function AttachMenuItem({
   label,
   onClick,
 }: {
-  icon: ReactElement;
-  label: string;
-  onClick: () => void;
+  icon: ReactElement
+  label: string
+  onClick: () => void
 }): ReactElement {
   return (
     <button
@@ -344,34 +321,32 @@ function AttachMenuItem({
       onClick={onClick}
       className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12.5px] text-[var(--text-soft)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
     >
-      <span className="grid size-4 place-items-center text-[var(--text-dim)]">
-        {icon}
-      </span>
+      <span className="grid size-4 place-items-center text-[var(--text-dim)]">{icon}</span>
       {label}
     </button>
-  );
+  )
 }
 
 function PlanModeToggle({
   value,
   onChange,
 }: {
-  value: AilaExecutionMode;
-  onChange: (mode: AilaExecutionMode) => void;
+  value: AilaExecutionMode
+  onChange: (mode: AilaExecutionMode) => void
 }): ReactElement {
-  const active = value === "plan";
+  const active = value === 'plan'
   return (
     <Tooltip>
       <TooltipTrigger asChild>
         <button
           type="button"
-          aria-label={active ? "Turn off plan mode" : "Turn on plan mode"}
+          aria-label={active ? 'Turn off plan mode' : 'Turn on plan mode'}
           aria-pressed={active}
-          onClick={() => onChange(active ? "agent" : "plan")}
+          onClick={() => onChange(active ? 'agent' : 'plan')}
           className={`inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full px-2.5 text-[12px] font-medium outline-none transition-colors ${
             active
-              ? "bg-[var(--text)] text-[var(--surface)] hover:opacity-85"
-              : "text-[var(--text-soft)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
+              ? 'bg-[var(--text)] text-[var(--surface)] hover:opacity-85'
+              : 'text-[var(--text-soft)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]'
           }`}
         >
           <ListChecksIcon className="size-3.5" />
@@ -379,10 +354,10 @@ function PlanModeToggle({
         </button>
       </TooltipTrigger>
       <TooltipContent>
-        {active ? "Plan mode is active" : "Plan before editing or running tools"}
+        {active ? 'Plan mode is active' : 'Plan before editing or running tools'}
       </TooltipContent>
     </Tooltip>
-  );
+  )
 }
 
 function SlashCommandMenu({
@@ -391,20 +366,18 @@ function SlashCommandMenu({
   onSelectCommand,
   onHighlight,
 }: {
-  commands: SlashCommand[];
-  selectedIndex: number;
-  onSelectCommand: (command: SlashCommand) => void;
-  onHighlight: (index: number) => void;
+  commands: SlashCommand[]
+  selectedIndex: number
+  onSelectCommand: (command: SlashCommand) => void
+  onHighlight: (index: number) => void
 }): ReactElement {
   return (
     <div className="flex max-h-72 flex-col overflow-y-auto" role="listbox">
       {commands.length === 0 ? (
-        <p className="px-2 py-2 text-[12px] text-[var(--text-dim)]">
-          No commands found.
-        </p>
+        <p className="px-2 py-2 text-[12px] text-[var(--text-dim)]">No commands found.</p>
       ) : (
         commands.map((command, index) => {
-          const selected = index === selectedIndex;
+          const selected = index === selectedIndex
           return (
             <button
               key={command.id}
@@ -416,8 +389,8 @@ function SlashCommandMenu({
               onClick={() => onSelectCommand(command)}
               className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors ${
                 selected
-                  ? "bg-[var(--surface-hover)]"
-                  : "hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
+                  ? 'bg-[var(--surface-hover)]'
+                  : 'hover:bg-[var(--surface-hover)] hover:text-[var(--text)]'
               }`}
             >
               <span className="grid size-7 shrink-0 place-items-center rounded-md border border-[var(--border)] bg-[var(--bg-soft)] text-[var(--text-soft)]">
@@ -437,19 +410,15 @@ function SlashCommandMenu({
                 {command.token}
               </span>
             </button>
-          );
+          )
         })
       )}
     </div>
-  );
+  )
 }
 
-function QueuedRunsList({
-  queuedRuns,
-}: {
-  queuedRuns: QueuedRun[];
-}): ReactElement | null {
-  if (queuedRuns.length === 0) return null;
+function QueuedRunsList({ queuedRuns }: { queuedRuns: QueuedRun[] }): ReactElement | null {
+  if (queuedRuns.length === 0) return null
 
   return (
     <div className="border-b border-[var(--border)] px-4 py-2.5">
@@ -459,18 +428,18 @@ function QueuedRunsList({
       </div>
       <div className="flex max-h-32 flex-col gap-1 overflow-y-auto pr-1">
         {queuedRuns.map((queued, index) => {
-          const preview = queuedRunPreview(queued);
-          const meta = queuedRunMeta(queued);
+          const preview = queuedRunPreview(queued)
+          const meta = queuedRunMeta(queued)
           return (
             <div
               key={queued.id}
               className="flex min-h-7 items-center gap-2 rounded-lg px-2 py-1 text-[12px] text-[var(--text-soft)]"
             >
               <span className="w-9 shrink-0 text-[11px] text-[var(--text-dim)]">
-                {index === 0 ? "Next" : `#${index + 1}`}
+                {index === 0 ? 'Next' : `#${index + 1}`}
               </span>
               <span className="grid size-4 shrink-0 place-items-center text-[var(--text-dim)]">
-                {queued.kind === "retryLast" ? (
+                {queued.kind === 'retryLast' ? (
                   <RotateCcwIcon className="size-3.5" />
                 ) : (
                   <ArrowUpIcon className="size-3.5" />
@@ -485,11 +454,11 @@ function QueuedRunsList({
                 </span>
               )}
             </div>
-          );
+          )
         })}
       </div>
     </div>
-  );
+  )
 }
 
 export function Composer({
@@ -510,422 +479,350 @@ export function Composer({
   executionMode,
   onExecutionModeChange,
 }: ComposerProps): ReactElement {
-  const [value, setValue] = useState("");
-  const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
-  const [attachError, setAttachError] = useState<string | null>(null);
-  const [menuOpen, setMenuOpen] = useState(false);
-  const [menuView, setMenuView] = useState<"main" | "docs">("main");
-  const [modeOpen, setModeOpen] = useState(false);
-  const [modeSaving, setModeSaving] = useState(false);
-  const [docs, setDocs] = useState<DocSummary[] | null>(null);
-  const [skills, setSkills] = useState<ExtensionSkillReport[]>([]);
-  const [slashState, setSlashState] = useState<SlashState | null>(null);
-  const [slashSelectedIndex, setSlashSelectedIndex] = useState(0);
-  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
-  const imageInputRef = useRef<HTMLInputElement | null>(null);
-  const textInputRef = useRef<HTMLInputElement | null>(null);
-  const slashMenuRef = useRef<HTMLDivElement | null>(null);
+  const [value, setValue] = useState('')
+  const [attachments, setAttachments] = useState<PendingAttachment[]>([])
+  const [attachError, setAttachError] = useState<string | null>(null)
+  const [menuOpen, setMenuOpen] = useState(false)
+  const [modeOpen, setModeOpen] = useState(false)
+  const [modeSaving, setModeSaving] = useState(false)
+  const [skills, setSkills] = useState<ExtensionSkillReport[]>([])
+  const [slashState, setSlashState] = useState<SlashState | null>(null)
+  const [slashSelectedIndex, setSlashSelectedIndex] = useState(0)
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null)
+  const imageInputRef = useRef<HTMLInputElement | null>(null)
+  const textInputRef = useRef<HTMLInputElement | null>(null)
+  const slashMenuRef = useRef<HTMLDivElement | null>(null)
 
   const addImageFiles = useCallback(async (files: File[]) => {
     for (const file of files) {
-      if (!file.type.startsWith("image/")) continue;
+      if (!file.type.startsWith('image/')) continue
       if (file.size > MAX_IMAGE_BYTES) {
-        setAttachError(`${file.name || "Image"} is too large (max 8MB)`);
-        continue;
+        setAttachError(`${file.name || 'Image'} is too large (max 8MB)`)
+        continue
       }
       try {
-        const dataUrl = await readAsDataUrl(file);
-        const base64 = dataUrl.slice(dataUrl.indexOf(",") + 1);
+        const dataUrl = await readAsDataUrl(file)
+        const base64 = dataUrl.slice(dataUrl.indexOf(',') + 1)
         setAttachments((prev) => [
           ...prev,
           {
             id: crypto.randomUUID(),
-            kind: "image",
-            name: file.name || "pasted-image.png",
+            kind: 'image',
+            name: file.name || 'pasted-image.png',
             mime: file.type,
             data: base64,
             previewUrl: dataUrl,
           },
-        ]);
-        setAttachError(null);
+        ])
+        setAttachError(null)
       } catch {
-        setAttachError(`Could not read ${file.name || "image"}`);
+        setAttachError(`Could not read ${file.name || 'image'}`)
       }
     }
-  }, []);
+  }, [])
 
   const addTextFile = useCallback(async (file: File) => {
     if (file.size > MAX_TEXT_BYTES) {
-      setAttachError(`${file.name} is too large (max 512KB)`);
-      return;
+      setAttachError(`${file.name} is too large (max 512KB)`)
+      return
     }
     try {
-      const content = await file.text();
-      if (content.includes("\0")) {
-        setAttachError(`${file.name} looks like a binary file`);
-        return;
+      const content = await file.text()
+      if (content.includes('\0')) {
+        setAttachError(`${file.name} looks like a binary file`)
+        return
       }
       setAttachments((prev) => [
         ...prev,
         {
           id: crypto.randomUUID(),
-          kind: "text",
+          kind: 'text',
           name: file.name,
-          mime: file.type || "text/plain",
+          mime: file.type || 'text/plain',
           data: content,
         },
-      ]);
-      setAttachError(null);
+      ])
+      setAttachError(null)
     } catch {
-      setAttachError(`Could not read ${file.name}`);
+      setAttachError(`Could not read ${file.name}`)
     }
-  }, []);
-
-  const addDocReference = useCallback(async (doc: DocSummary) => {
-    try {
-      const record = await window.api.docs.get(doc.path);
-      setAttachments((prev) => [
-        ...prev,
-        {
-          id: crypto.randomUUID(),
-          kind: "doc",
-          name: `${record.title || doc.path}.md`,
-          mime: "text/markdown",
-          data: record.content,
-        },
-      ]);
-      setAttachError(null);
-    } catch {
-      setAttachError(`Could not read doc ${doc.title || doc.path}`);
-    }
-  }, []);
+  }, [])
 
   const removeAttachment = useCallback((id: string) => {
-    setAttachments((prev) => prev.filter((a) => a.id !== id));
-  }, []);
-
-  const loadDocs = useCallback(() => {
-    setDocs(null);
-    void window.api.docs
-      .list()
-      .then((result) => setDocs(result.docs))
-      .catch(() => setDocs([]));
-  }, []);
-
-  const openDocsView = useCallback(() => {
-    setMenuView("docs");
-    loadDocs();
-  }, [loadDocs]);
+    setAttachments((prev) => prev.filter((a) => a.id !== id))
+  }, [])
 
   // Sends always succeed even while streaming: they're queued and fire after
   // the current run finishes. The primary action becomes Stop while empty.
   const submit = useCallback(async () => {
-    const text = value;
-    if (!text.trim() && attachments.length === 0) return;
+    const text = value
+    if (!text.trim() && attachments.length === 0) return
     const outgoing: ChatAttachmentInput[] = attachments.map((a) => ({
-      kind: a.kind === "image" ? "image" : "text",
+      kind: a.kind === 'image' ? 'image' : 'text',
       name: a.name,
       mime: a.mime,
       data: a.data,
-    }));
-    setValue("");
-    setAttachments([]);
-    setAttachError(null);
-    setSlashState(null);
-    setSlashSelectedIndex(0);
-    await onSubmit(text, outgoing);
-  }, [value, attachments, onSubmit]);
+    }))
+    setValue('')
+    setAttachments([])
+    setAttachError(null)
+    setSlashState(null)
+    setSlashSelectedIndex(0)
+    await onSubmit(text, outgoing)
+  }, [value, attachments, onSubmit])
 
   useLayoutEffect(() => {
-    const textarea = textareaRef.current;
-    if (!textarea) return;
-    textarea.style.height = "0px";
-    textarea.style.height = `${Math.min(textarea.scrollHeight, 180)}px`;
-  });
+    const textarea = textareaRef.current
+    if (!textarea) return
+    textarea.style.height = '0px'
+    textarea.style.height = `${Math.min(textarea.scrollHeight, 180)}px`
+  })
 
-  const updateSlashFromTextarea = useCallback(
-    (text: string, cursor: number) => {
-      const nextSlashState = getSlashState(text, cursor);
-      setSlashState(nextSlashState);
-      if (nextSlashState) setSlashSelectedIndex(0);
-    },
-    [],
-  );
+  const updateSlashFromTextarea = useCallback((text: string, cursor: number) => {
+    const nextSlashState = getSlashState(text, cursor)
+    setSlashState(nextSlashState)
+    if (nextSlashState) setSlashSelectedIndex(0)
+  }, [])
 
   const handleTextareaChange = useCallback(
     (text: string, cursor: number) => {
-      setValue(text);
-      updateSlashFromTextarea(text, cursor);
+      setValue(text)
+      updateSlashFromTextarea(text, cursor)
     },
     [updateSlashFromTextarea],
-  );
+  )
 
   const replaceSlashToken = useCallback(
     (replacement: string) => {
-      const active = slashState;
-      if (!active) return;
+      const active = slashState
+      if (!active) return
 
-      const nextCursor = active.rangeStart + replacement.length;
+      const nextCursor = active.rangeStart + replacement.length
       setValue(
-        (prev) =>
-          `${prev.slice(0, active.rangeStart)}${replacement}${prev.slice(active.rangeEnd)}`,
-      );
-      setSlashState(null);
-      setSlashSelectedIndex(0);
+        (prev) => `${prev.slice(0, active.rangeStart)}${replacement}${prev.slice(active.rangeEnd)}`,
+      )
+      setSlashState(null)
+      setSlashSelectedIndex(0)
 
       window.requestAnimationFrame(() => {
-        const textarea = textareaRef.current;
-        if (!textarea) return;
-        textarea.focus();
-        textarea.setSelectionRange(nextCursor, nextCursor);
-      });
+        const textarea = textareaRef.current
+        if (!textarea) return
+        textarea.focus()
+        textarea.setSelectionRange(nextCursor, nextCursor)
+      })
     },
     [slashState],
-  );
+  )
 
   const handlePaste = useCallback(
     (event: ClipboardEvent<HTMLTextAreaElement>) => {
       const files = Array.from(event.clipboardData.items)
-        .filter(
-          (item) => item.kind === "file" && item.type.startsWith("image/"),
-        )
+        .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
         .map((item) => item.getAsFile())
-        .filter((file): file is File => file !== null);
-      if (files.length === 0) return;
-      event.preventDefault();
-      void addImageFiles(files);
+        .filter((file): file is File => file !== null)
+      if (files.length === 0) return
+      event.preventDefault()
+      void addImageFiles(files)
     },
     [addImageFiles],
-  );
+  )
 
   const handleDrop = useCallback(
     (event: DragEvent<HTMLDivElement>) => {
-      const files = Array.from(event.dataTransfer.files);
-      if (files.length === 0) return;
-      event.preventDefault();
+      const files = Array.from(event.dataTransfer.files)
+      if (files.length === 0) return
+      event.preventDefault()
       for (const file of files) {
-        if (file.type.startsWith("image/")) void addImageFiles([file]);
-        else void addTextFile(file);
+        if (file.type.startsWith('image/')) void addImageFiles([file])
+        else void addTextFile(file)
       }
     },
     [addImageFiles, addTextFile],
-  );
+  )
 
-  const canSend = value.trim().length > 0 || attachments.length > 0;
-  const primaryActionIsAbort = isStreaming && !canSend;
+  const canSend = value.trim().length > 0 || attachments.length > 0
+  const primaryActionIsAbort = isStreaming && !canSend
   const primaryActionLabel = primaryActionIsAbort
-    ? "Stop"
+    ? 'Stop'
     : isStreaming
-      ? "Queue follow-up"
-      : "Send";
-  const primaryActionDisabled = !primaryActionIsAbort && !canSend;
-  const activeApprovalMode = approvalMode ?? "safe";
-  const activeApprovalModeMeta = APPROVAL_MODES.find(
-    (mode) => mode.id === activeApprovalMode,
-  );
-  const slashActive = slashState !== null;
+      ? 'Queue follow-up'
+      : 'Send'
+  const primaryActionDisabled = !primaryActionIsAbort && !canSend
+  const activeApprovalMode = approvalMode ?? 'safe'
+  const activeApprovalModeMeta = APPROVAL_MODES.find((mode) => mode.id === activeApprovalMode)
+  const slashActive = slashState !== null
 
   const handlePrimaryAction = useCallback(() => {
     if (primaryActionIsAbort) {
-      onAbort();
-      return;
+      onAbort()
+      return
     }
-    void submit();
-  }, [primaryActionIsAbort, onAbort, submit]);
+    void submit()
+  }, [primaryActionIsAbort, onAbort, submit])
 
   const setToolMode = useCallback(
     async (mode: ApprovalMode) => {
       if (mode === activeApprovalMode || modeSaving) {
-        setModeOpen(false);
-        return;
+        setModeOpen(false)
+        return
       }
-      setModeSaving(true);
+      setModeSaving(true)
       try {
-        await onApprovalModeChange(mode);
-        setModeOpen(false);
+        await onApprovalModeChange(mode)
+        setModeOpen(false)
       } finally {
-        setModeSaving(false);
+        setModeSaving(false)
       }
     },
     [activeApprovalMode, modeSaving, onApprovalModeChange],
-  );
+  )
 
   const slashCommands = useMemo<SlashCommand[]>(
     () => [
       {
-        id: "image",
-        kind: "builtin",
-        commandId: "image",
-        token: "/image",
-        label: "Image mode",
-        description: "Attach images to this prompt",
-        keywords: ["image", "photo", "picture", "screenshot", "png", "jpg"],
+        id: 'image',
+        kind: 'builtin',
+        commandId: 'image',
+        token: '/image',
+        label: 'Image mode',
+        description: 'Attach images to this prompt',
+        keywords: ['image', 'photo', 'picture', 'screenshot', 'png', 'jpg'],
         icon: <ImageIcon className="size-3.5" />,
       },
       {
-        id: "compact",
-        kind: "builtin",
-        commandId: "compact",
-        token: "/compact",
-        label: "Compact context",
-        description: "Summarize older history into a checkpoint",
-        keywords: ["compact", "context", "summary", "checkpoint"],
+        id: 'compact',
+        kind: 'builtin',
+        commandId: 'compact',
+        token: '/compact',
+        label: 'Compact context',
+        description: 'Summarize older history into a checkpoint',
+        keywords: ['compact', 'context', 'summary', 'checkpoint'],
         icon: <ArchiveIcon className="size-3.5" />,
       },
       ...skills.map((skill) => ({
         id: `skill:${skill.name}`,
-        kind: "skill" as const,
+        kind: 'skill' as const,
         skillName: skill.name,
         token: `/${skill.name}`,
         label: skill.name,
         description: skill.description,
-        keywords: [
-          "skill",
-          skill.name,
-          ...skill.description.toLowerCase().split(/[^a-z0-9-]+/),
-        ],
+        keywords: ['skill', skill.name, ...skill.description.toLowerCase().split(/[^a-z0-9-]+/)],
         icon: <PuzzleIcon className="size-3.5" />,
       })),
     ],
     [skills],
-  );
+  )
 
   const filteredSlashCommands = useMemo(() => {
-    const query = slashState?.query ?? "";
-    return slashCommands.filter((command) =>
-      slashCommandMatches(command, query),
-    );
-  }, [slashCommands, slashState?.query]);
+    const query = slashState?.query ?? ''
+    return slashCommands.filter((command) => slashCommandMatches(command, query))
+  }, [slashCommands, slashState?.query])
 
   useEffect(() => {
-    if (!slashActive) return;
-    let cancelled = false;
+    if (!slashActive) return
+    let cancelled = false
     void (async () => {
       try {
-        const report = await window.api.extensions.report();
-        if (!cancelled) setSkills(report.skills);
+        const report = await window.api.extensions.report()
+        if (!cancelled) setSkills(report.skills)
       } catch {
-        if (!cancelled) setSkills([]);
+        if (!cancelled) setSkills([])
       }
-    })();
+    })()
     return () => {
-      cancelled = true;
-    };
-  }, [slashActive]);
+      cancelled = true
+    }
+  }, [slashActive])
 
   useEffect(() => {
-    if (!slashState) return;
+    if (!slashState) return
 
     const handlePointerDown = (event: MouseEvent) => {
-      const target = event.target;
-      if (!(target instanceof Node)) return;
-      if (slashMenuRef.current?.contains(target)) return;
-      if (textareaRef.current?.contains(target)) return;
-      setSlashState(null);
-    };
+      const target = event.target
+      if (!(target instanceof Node)) return
+      if (slashMenuRef.current?.contains(target)) return
+      if (textareaRef.current?.contains(target)) return
+      setSlashState(null)
+    }
 
-    window.addEventListener("mousedown", handlePointerDown);
-    return () => window.removeEventListener("mousedown", handlePointerDown);
-  }, [slashState]);
+    window.addEventListener('mousedown', handlePointerDown)
+    return () => window.removeEventListener('mousedown', handlePointerDown)
+  }, [slashState])
 
   const runSlashCommand = useCallback(
     (command: SlashCommand) => {
-      if (command.kind === "skill" && command.skillName) {
-        replaceSlashToken(`/${command.skillName} `);
-        return;
+      if (command.kind === 'skill' && command.skillName) {
+        replaceSlashToken(`/${command.skillName} `)
+        return
       }
 
-      replaceSlashToken("");
-      if (command.commandId === "image") imageInputRef.current?.click();
-      if (command.commandId === "compact") {
+      replaceSlashToken('')
+      if (command.commandId === 'image') imageInputRef.current?.click()
+      if (command.commandId === 'compact') {
         void (async () => {
           try {
-            const result = await onCompact();
-            setAttachError(result.compacted ? null : "Nothing to compact yet.");
+            const result = await onCompact()
+            setAttachError(result.compacted ? null : 'Nothing to compact yet.')
           } catch (error) {
-            setAttachError(
-              error instanceof Error ? error.message : String(error),
-            );
+            setAttachError(error instanceof Error ? error.message : String(error))
           }
-        })();
+        })()
       }
     },
     [onCompact, replaceSlashToken],
-  );
+  )
 
   const handleKeyDown = useCallback(
     (event: KeyboardEvent<HTMLTextAreaElement>) => {
       if (slashState) {
-        const itemCount = filteredSlashCommands.length;
+        const itemCount = filteredSlashCommands.length
 
-        if (event.key === "Escape") {
-          event.preventDefault();
-          setSlashState(null);
-          return;
+        if (event.key === 'Escape') {
+          event.preventDefault()
+          setSlashState(null)
+          return
         }
 
-        if (
-          itemCount > 0 &&
-          (event.key === "ArrowDown" || event.key === "ArrowUp")
-        ) {
-          event.preventDefault();
+        if (itemCount > 0 && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
+          event.preventDefault()
           setSlashSelectedIndex((index) => {
-            const delta = event.key === "ArrowDown" ? 1 : -1;
-            return (index + delta + itemCount) % itemCount;
-          });
-          return;
+            const delta = event.key === 'ArrowDown' ? 1 : -1
+            return (index + delta + itemCount) % itemCount
+          })
+          return
         }
 
         if (
           itemCount > 0 &&
-          (event.key === "Enter" || event.key === "Tab") &&
+          (event.key === 'Enter' || event.key === 'Tab') &&
           !event.shiftKey &&
           !event.nativeEvent.isComposing
         ) {
-          event.preventDefault();
-          const index = Math.min(slashSelectedIndex, itemCount - 1);
-          runSlashCommand(filteredSlashCommands[index]);
-          return;
+          event.preventDefault()
+          const index = Math.min(slashSelectedIndex, itemCount - 1)
+          runSlashCommand(filteredSlashCommands[index])
+          return
         }
       }
 
-      if (
-        event.key === "Enter" &&
-        !event.shiftKey &&
-        !event.nativeEvent.isComposing
-      ) {
-        event.preventDefault();
-        void submit();
+      if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
+        event.preventDefault()
+        void submit()
       }
     },
-    [
-      filteredSlashCommands,
-      runSlashCommand,
-      slashSelectedIndex,
-      slashState,
-      submit,
-    ],
-  );
+    [filteredSlashCommands, runSlashCommand, slashSelectedIndex, slashState, submit],
+  )
 
-  const contextMeterTokens = contextWindowTokens(usage) ?? null;
+  const contextMeterTokens = contextWindowTokens(usage) ?? null
   const ratio =
     contextLength && contextLength > 0 && contextMeterTokens !== null
       ? Math.min(contextMeterTokens / contextLength, 1)
-      : 0;
-  const showMeter =
-    (contextLength ?? 0) > 0 || contextMeterTokens !== null || Boolean(usage);
-  const contextSummary = contextWindowSummary(
-    contextMeterTokens,
-    contextLength,
-    ratio,
-  );
-  const usageBuckets = usageTokenBuckets(usage);
+      : 0
+  const showMeter = (contextLength ?? 0) > 0 || contextMeterTokens !== null || Boolean(usage)
+  const contextSummary = contextWindowSummary(contextMeterTokens, contextLength, ratio)
+  const usageBuckets = usageTokenBuckets(usage)
   const meterColor =
-    ratio >= 0.9
-      ? "text-red-500"
-      : ratio >= 0.75
-        ? "text-amber-500"
-        : "text-[var(--text-dim)]";
+    ratio >= 0.9 ? 'text-red-500' : ratio >= 0.75 ? 'text-amber-500' : 'text-[var(--text-dim)]'
 
   return (
     <div className="shrink-0 px-6 pb-6 pt-2">
@@ -954,7 +851,7 @@ export function Composer({
           {(attachments.length > 0 || attachError) && (
             <div className="flex flex-wrap items-center gap-2 px-4 pt-3">
               {attachments.map((attachment) =>
-                attachment.kind === "image" ? (
+                attachment.kind === 'image' ? (
                   <div key={attachment.id} className="group relative">
                     <img
                       src={attachment.previewUrl}
@@ -975,11 +872,7 @@ export function Composer({
                     key={attachment.id}
                     className="inline-flex max-w-56 items-center gap-1.5 rounded-full border border-[var(--border)] bg-[var(--bg-soft)] py-1 pl-2.5 pr-1.5 text-[11.5px] text-[var(--text-soft)]"
                   >
-                    {attachment.kind === "doc" ? (
-                      <NotebookTextIcon className="size-3 shrink-0 text-[var(--text-dim)]" />
-                    ) : (
-                      <FileTextIcon className="size-3 shrink-0 text-[var(--text-dim)]" />
-                    )}
+                    <FileTextIcon className="size-3 shrink-0 text-[var(--text-dim)]" />
                     <span className="min-w-0 truncate">{attachment.name}</span>
                     <button
                       type="button"
@@ -993,9 +886,7 @@ export function Composer({
                 ),
               )}
               {attachError && (
-                <span className="text-[11px] text-[var(--error)]">
-                  {attachError}
-                </span>
+                <span className="text-[11px] text-[var(--error)]">{attachError}</span>
               )}
             </div>
           )}
@@ -1005,10 +896,7 @@ export function Composer({
               ref={textareaRef}
               value={value}
               onChange={(event) =>
-                handleTextareaChange(
-                  event.currentTarget.value,
-                  event.currentTarget.selectionStart,
-                )
+                handleTextareaChange(event.currentTarget.value, event.currentTarget.selectionStart)
               }
               onSelect={(event) =>
                 updateSlashFromTextarea(
@@ -1018,9 +906,7 @@ export function Composer({
               }
               onKeyDown={handleKeyDown}
               onPaste={handlePaste}
-              placeholder={
-                isStreaming ? "Queue a follow-up" : "Ask Aila anything"
-              }
+              placeholder={isStreaming ? 'Queue a follow-up' : 'Ask Aila anything'}
               rows={1}
               className="block min-h-7 max-h-[180px] w-full resize-none overflow-y-auto bg-transparent text-[15px] leading-[1.6] text-[var(--text)] outline-none placeholder:text-[var(--text-dim)]"
             />
@@ -1035,8 +921,8 @@ export function Composer({
                 multiple
                 className="hidden"
                 onChange={(e) => {
-                  void addImageFiles(Array.from(e.target.files ?? []));
-                  e.target.value = "";
+                  void addImageFiles(Array.from(e.target.files ?? []))
+                  e.target.value = ''
                 }}
               />
               <input
@@ -1045,17 +931,15 @@ export function Composer({
                 multiple
                 className="hidden"
                 onChange={(e) => {
-                  for (const file of Array.from(e.target.files ?? []))
-                    void addTextFile(file);
-                  e.target.value = "";
+                  for (const file of Array.from(e.target.files ?? [])) void addTextFile(file)
+                  e.target.value = ''
                 }}
               />
               <Popover
                 open={menuOpen}
                 onOpenChange={(open) => {
-                  setMenuOpen(open);
-                  if (open) setSlashState(null);
-                  if (open) setMenuView("main");
+                  setMenuOpen(open)
+                  if (open) setSlashState(null)
                 }}
               >
                 <PopoverTrigger asChild>
@@ -1068,82 +952,28 @@ export function Composer({
                   </button>
                 </PopoverTrigger>
                 <PopoverContent side="top" align="start" className="w-56 border-0 p-1">
-                  {menuView === "main" ? (
-                    <div className="flex flex-col gap-px">
-                      <AttachMenuItem
-                        icon={<ImageIcon className="size-3.5" />}
-                        label="Image…"
-                        onClick={() => {
-                          setMenuOpen(false);
-                          imageInputRef.current?.click();
-                        }}
-                      />
-                      <AttachMenuItem
-                        icon={<FileTextIcon className="size-3.5" />}
-                        label="Text file…"
-                        onClick={() => {
-                          setMenuOpen(false);
-                          textInputRef.current?.click();
-                        }}
-                      />
-                      <AttachMenuItem
-                        icon={<NotebookTextIcon className="size-3.5" />}
-                        label="Reference doc"
-                        onClick={openDocsView}
-                      />
-                    </div>
-                  ) : (
-                    <div className="flex max-h-64 flex-col">
-                      <div className="flex shrink-0 items-center gap-1.5 border-b border-[var(--border)] px-1 pb-1">
-                        <button
-                          type="button"
-                          aria-label="Back"
-                          onClick={() => setMenuView("main")}
-                          className="grid size-6 place-items-center rounded-md text-[var(--text-dim)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
-                        >
-                          <ArrowLeftIcon className="size-3.5" />
-                        </button>
-                        <span className="text-[12px] font-medium text-[var(--text)]">
-                          Docs
-                        </span>
-                      </div>
-                      <div className="min-h-0 flex-1 overflow-y-auto pt-1">
-                        {docs === null && (
-                          <p className="px-2 py-2 text-[12px] text-[var(--text-dim)]">
-                            Loading…
-                          </p>
-                        )}
-                        {docs?.length === 0 && (
-                          <p className="px-2 py-2 text-[12px] text-[var(--text-dim)]">
-                            No documents yet.
-                          </p>
-                        )}
-                        {docs?.map((doc) => (
-                          <button
-                            key={doc.path}
-                            type="button"
-                            onClick={() => {
-                              setMenuOpen(false);
-                              void addDocReference(doc);
-                            }}
-                            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12.5px] text-[var(--text-soft)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
-                          >
-                            <NotebookTextIcon className="size-3.5 shrink-0 text-[var(--text-dim)]" />
-                            <span className="min-w-0 truncate">
-                              {doc.title || doc.path}
-                            </span>
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  )}
+                  <div className="flex flex-col gap-px">
+                    <AttachMenuItem
+                      icon={<ImageIcon className="size-3.5" />}
+                      label="Image…"
+                      onClick={() => {
+                        setMenuOpen(false)
+                        imageInputRef.current?.click()
+                      }}
+                    />
+                    <AttachMenuItem
+                      icon={<FileTextIcon className="size-3.5" />}
+                      label="Text file…"
+                      onClick={() => {
+                        setMenuOpen(false)
+                        textInputRef.current?.click()
+                      }}
+                    />
+                  </div>
                 </PopoverContent>
               </Popover>
               {executionMode && onExecutionModeChange && (
-                <PlanModeToggle
-                  value={executionMode}
-                  onChange={onExecutionModeChange}
-                />
+                <PlanModeToggle value={executionMode} onChange={onExecutionModeChange} />
               )}
               <Popover open={modeOpen} onOpenChange={setModeOpen}>
                 <PopoverTrigger asChild>
@@ -1151,22 +981,18 @@ export function Composer({
                     type="button"
                     aria-label="Execution mode"
                     className={`inline-flex h-8 shrink-0 items-center px-1 text-[12px] outline-none transition-colors ${
-                      activeApprovalMode === "safe"
-                        ? "text-[var(--text-soft)] hover:text-[var(--text)] focus-visible:text-[var(--text)]"
-                        : "text-amber-600 hover:text-amber-700 focus-visible:text-amber-700"
+                      activeApprovalMode === 'safe'
+                        ? 'text-[var(--text-soft)] hover:text-[var(--text)] focus-visible:text-[var(--text)]'
+                        : 'text-amber-600 hover:text-amber-700 focus-visible:text-amber-700'
                     }`}
                   >
-                    <span>{activeApprovalModeMeta?.label ?? "Safe"}</span>
+                    <span>{activeApprovalModeMeta?.label ?? 'Safe'}</span>
                   </button>
                 </PopoverTrigger>
-                <PopoverContent
-                  side="top"
-                  align="start"
-                  className="w-64 border-0 p-1"
-                >
+                <PopoverContent side="top" align="start" className="w-64 border-0 p-1">
                   <div className="flex flex-col gap-px">
                     {APPROVAL_MODES.map((mode) => {
-                      const selected = activeApprovalMode === mode.id;
+                      const selected = activeApprovalMode === mode.id
                       return (
                         <button
                           key={mode.id}
@@ -1175,8 +1001,8 @@ export function Composer({
                           disabled={modeSaving}
                           className={`rounded-md px-2.5 py-2 text-left outline-none transition-colors focus-visible:bg-[var(--surface-hover)] disabled:opacity-60 ${
                             selected
-                              ? "bg-[var(--surface-hover)]"
-                              : "hover:bg-[var(--surface-hover)]"
+                              ? 'bg-[var(--surface-hover)]'
+                              : 'hover:bg-[var(--surface-hover)]'
                           }`}
                         >
                           <span className="block text-[12px] font-medium text-[var(--text)]">
@@ -1186,7 +1012,7 @@ export function Composer({
                             {mode.description}
                           </span>
                         </button>
-                      );
+                      )
                     })}
                   </div>
                 </PopoverContent>
@@ -1237,8 +1063,8 @@ export function Composer({
                     disabled={primaryActionDisabled}
                     className={`grid size-8 shrink-0 place-items-center rounded-full transition disabled:cursor-not-allowed ${
                       primaryActionIsAbort
-                        ? "border border-[var(--border)] bg-[var(--surface)] text-[var(--text-soft)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
-                        : "bg-[var(--brand-ink)] text-[var(--brand-ink-fg)] hover:opacity-85 disabled:bg-[var(--surface-hover)] disabled:text-[var(--text-dim)]"
+                        ? 'border border-[var(--border)] bg-[var(--surface)] text-[var(--text-soft)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]'
+                        : 'bg-[var(--brand-ink)] text-[var(--brand-ink-fg)] hover:opacity-85 disabled:bg-[var(--surface-hover)] disabled:text-[var(--text-dim)]'
                     }`}
                   >
                     {primaryActionIsAbort ? (
@@ -1255,5 +1081,5 @@ export function Composer({
         </div>
       </div>
     </div>
-  );
+  )
 }

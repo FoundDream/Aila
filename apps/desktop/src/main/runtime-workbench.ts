@@ -1,7 +1,5 @@
 import {
   type ActiveAssistantTurn,
-  type AgentRunCheckpoint,
-  type AgentRuntimeApi,
   type AilaExecutionMode,
   type ChatAttachmentInput,
   type ConversationRecord,
@@ -11,21 +9,25 @@ import {
   type ConversationWorkspaceRef,
   type ModelSelection,
   type PlanArtifact,
+  type RunArtifact,
+  type RunCheckpoint,
   type RuntimeApprovePlanInput,
   type RuntimeCancelPlanInput,
   type RuntimeCompactConversationResult,
   type RuntimeForkRunInput,
-  type RuntimeListConversationsInput,
   type RuntimeRevisePlanInput,
+  type RuntimeRunArtifactInput,
   type RuntimeRunControlInput,
   type RuntimeRunInspection,
+  type RuntimeRunSummary,
   type RuntimeSavePlanMarkdownInput,
   type RuntimeSendResult,
   type ToolApprovalRequest,
   type ToolApprovalRequestPayload,
   ToolApprovalStore,
+  type Workbench,
 } from '@aila/agent'
-import { cleanupConversationImages, createPersistedAgentRuntime } from '@aila/agent-node/app'
+import { cleanupConversationImages, createPersistedWorkbench } from '@aila/agent-node/app'
 import type { IpcMain } from 'electron'
 import {
   buildDesktopWorkspaceContextFromRecord,
@@ -59,7 +61,6 @@ export interface RuntimeWorkbenchCompactInput {
 }
 
 export interface RuntimeWorkbenchCreateConversationInput {
-  docId?: string | null
   workspace?: ConversationWorkspaceRef | null
 }
 
@@ -81,19 +82,19 @@ export interface DesktopRuntimeWorkbench {
   reloadExtensions(): Promise<RuntimeWorkbenchReloadResult>
 
   createConversation(input?: RuntimeWorkbenchCreateConversationInput): Promise<ConversationSummary>
-  listConversations(input?: RuntimeListConversationsInput): Promise<ConversationSummary[]>
+  listConversations(): Promise<ConversationSummary[]>
   getConversation(conversationId: string): Promise<ConversationRecord>
   hydrateConversation(conversationId: string): Promise<ConversationRuntimeHydration>
-  listRunCheckpoints(conversationId: string): Promise<AgentRunCheckpoint[]>
+  listRunCheckpoints(conversationId: string): Promise<RunCheckpoint[]>
+  listRunSummaries(conversationId: string): Promise<RuntimeRunSummary[]>
   inspectRun(input: RuntimeRunControlInput): Promise<RuntimeRunInspection>
+  getRunArtifact(input: RuntimeRunArtifactInput): Promise<RunArtifact>
   stepRun(input: RuntimeRunControlInput): Promise<RuntimeSendResult>
   continueRun(input: RuntimeRunControlInput): Promise<RuntimeSendResult>
   resumeRun(input: RuntimeRunControlInput): Promise<RuntimeSendResult>
-  abortRun(input: RuntimeRunControlInput): Promise<AgentRunCheckpoint>
-  forkRun(input: RuntimeForkRunInput): Promise<AgentRunCheckpoint>
-  listConversationRuntimeStates(
-    input?: RuntimeListConversationsInput,
-  ): Promise<ConversationRuntimeStateSnapshot[]>
+  abortRun(input: RuntimeRunControlInput): Promise<RunCheckpoint>
+  forkRun(input: RuntimeForkRunInput): Promise<RunCheckpoint>
+  listConversationRuntimeStates(): Promise<ConversationRuntimeStateSnapshot[]>
   renameConversation(conversationId: string, title: string): Promise<ConversationSummary>
   deleteConversation(conversationId: string): Promise<void>
 
@@ -117,12 +118,12 @@ export function createDesktopRuntimeWorkbench(
   input: CreateDesktopRuntimeWorkbenchInput,
 ): DesktopRuntimeWorkbench {
   const logger = input.logger ?? console
-  let runtime: AgentRuntimeApi
+  let runtime: Workbench
 
   const toolApprovals = new ToolApprovalStore({
     timeoutMs: TOOL_APPROVAL_TIMEOUT_MS,
-    recordAgentEvent: async (_conversationId, event) => {
-      await runtime.recordAgentEvent(event)
+    recordRunEvent: async (_conversationId, event) => {
+      await runtime.recordRunEvent(event)
       return undefined
     },
     onRequest: (payload) => input.emit('tools:approval-request', payload),
@@ -139,7 +140,7 @@ export function createDesktopRuntimeWorkbench(
     if (resolved > 0) await toolApprovals.flushActivity()
   }
 
-  runtime = createPersistedAgentRuntime({
+  runtime = createPersistedWorkbench({
     host: {
       onEvent: (event) => input.emit(event.type, event.data),
       onToolApproval: requestToolApproval,
@@ -194,12 +195,11 @@ export function createDesktopRuntimeWorkbench(
 
     createConversation(input = {}) {
       return runtime.createConversation({
-        docId: input.docId ?? null,
         workspace: input.workspace ?? null,
       })
     },
-    listConversations(input = {}) {
-      return runtime.listConversations(input)
+    listConversations() {
+      return runtime.listConversations()
     },
     getConversation(conversationId) {
       return runtime.getConversation(conversationId)
@@ -210,8 +210,14 @@ export function createDesktopRuntimeWorkbench(
     listRunCheckpoints(conversationId) {
       return runtime.listRunCheckpoints(conversationId)
     },
+    listRunSummaries(conversationId) {
+      return runtime.listRunSummaries(conversationId)
+    },
     inspectRun(input) {
       return runtime.inspectRun(input)
+    },
+    getRunArtifact(input) {
+      return runtime.getRunArtifact(input)
     },
     stepRun(input) {
       return runtime.stepRun(input)
@@ -228,8 +234,8 @@ export function createDesktopRuntimeWorkbench(
     forkRun(input) {
       return runtime.forkRun(input)
     },
-    listConversationRuntimeStates(input = {}) {
-      return runtime.listConversationRuntimeStates(input)
+    listConversationRuntimeStates() {
+      return runtime.listConversationRuntimeStates()
     },
     renameConversation(conversationId, title) {
       return runtime.renameConversation(conversationId, title)
@@ -287,8 +293,14 @@ export function registerRuntimeWorkbenchIpcHandlers(
   ipc.handle('runtime:runs:list', (_event, conversationId: string) =>
     workbench.listRunCheckpoints(conversationId),
   )
+  ipc.handle('runtime:runs:list-summaries', (_event, conversationId: string) =>
+    workbench.listRunSummaries(conversationId),
+  )
   ipc.handle('runtime:runs:inspect', (_event, request: RuntimeRunControlInput) =>
     workbench.inspectRun(request),
+  )
+  ipc.handle('runtime:runs:get-artifact', (_event, request: RuntimeRunArtifactInput) =>
+    workbench.getRunArtifact(request),
   )
   ipc.handle('runtime:runs:step', (_event, request: RuntimeRunControlInput) =>
     workbench.stepRun(request),
@@ -305,20 +317,14 @@ export function registerRuntimeWorkbenchIpcHandlers(
   ipc.handle('runtime:runs:fork', (_event, request: RuntimeForkRunInput) =>
     workbench.forkRun(request),
   )
-  ipc.handle('runtime:conversations:list', (_event, docId: string | null) =>
-    workbench.listConversations({ docId }),
-  )
+  ipc.handle('runtime:conversations:list', () => workbench.listConversations())
   ipc.handle('runtime:conversations:get', (_event, conversationId: string) =>
     workbench.getConversation(conversationId),
   )
   ipc.handle(
     'runtime:conversations:create',
-    (_event, input?: string | null | RuntimeWorkbenchCreateConversationInput) => {
-      if (typeof input === 'string' || input === null) {
-        return workbench.createConversation({ docId: input ?? null })
-      }
-      return workbench.createConversation(input ?? {})
-    },
+    (_event, input?: RuntimeWorkbenchCreateConversationInput) =>
+      workbench.createConversation(input ?? {}),
   )
   ipc.handle('runtime:conversations:rename', (_event, conversationId: string, title: string) =>
     workbench.renameConversation(conversationId, title),
@@ -326,8 +332,8 @@ export function registerRuntimeWorkbenchIpcHandlers(
   ipc.handle('runtime:conversations:delete', (_event, conversationId: string) =>
     workbench.deleteConversation(conversationId),
   )
-  ipc.handle('runtime:conversations:list-runtime-states', (_event, docId: string | null) =>
-    workbench.listConversationRuntimeStates({ docId }),
+  ipc.handle('runtime:conversations:list-runtime-states', () =>
+    workbench.listConversationRuntimeStates(),
   )
   ipc.handle('runtime:plans:list', (_event, conversationId: string) =>
     workbench.listPlans(conversationId),

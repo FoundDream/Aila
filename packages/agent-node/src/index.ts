@@ -21,6 +21,11 @@ export {
   type DefaultModelStreamClientOptions,
 } from './node/default-model-stream'
 export {
+  createDurableRunExecutor,
+  createModelInfoResolver,
+  type DurableRunExecutorOptions,
+} from './node/durable-run'
+export {
   createFileRuntimeStore,
   type FileRuntimeStoreOptions,
 } from './node/file-store'
@@ -73,9 +78,9 @@ export {
 } from './node/protocols'
 export {
   type CreateDefaultNodeRuntimeHostInput,
-  type CreateNodeAgentRuntimeInput,
+  type CreateNodeWorkbenchInput,
   createDefaultNodeRuntimeHost,
-  createNodeAgentRuntime,
+  createNodeWorkbench,
 } from './node/runtime-host'
 export {
   defaultAilaDataDir,
@@ -86,11 +91,6 @@ export {
   saveNodeSettings,
 } from './node/settings'
 export { runNodeShell } from './node/shell'
-export {
-  createModelInfoResolver,
-  createProviderStreamChat,
-  type ProviderStreamChatOptions,
-} from './node/stream-chat'
 export {
   createNodeToolResultStore,
   DEFAULT_MAX_INLINE_TOOL_RESULT_CHARS,

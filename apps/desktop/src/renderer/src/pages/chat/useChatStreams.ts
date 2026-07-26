@@ -24,8 +24,8 @@ import type {
   ConversationSummary,
   ImageBlockEvent,
   ModelSelection,
-  PersistedAgentEvent,
   PersistedMessage,
+  PersistedRunEvent,
   PlanArtifact,
   ReasoningDeltaEvent,
   RuntimeCompactConversationResult,
@@ -70,7 +70,7 @@ export interface ConversationStream {
   queue: QueuedRun[]
   runningMessageId: string | null
   usage: UsageInfo | null
-  events: PersistedAgentEvent[]
+  events: PersistedRunEvent[]
   plans: PlanArtifact[]
 }
 
@@ -97,7 +97,7 @@ type Action =
       conversationId: string
       messages: Message[]
       usage: UsageInfo | null
-      events: PersistedAgentEvent[]
+      events: PersistedRunEvent[]
       plans?: PlanArtifact[]
       activeTurn?: ActiveAssistantTurn | null
       runtimeState?: ConversationRuntimeReplayState
@@ -163,7 +163,7 @@ type Action =
     }
   | { type: 'CLEAR_QUEUE'; conversationId: string }
   | { type: 'SET_PLANS'; conversationId: string; plans: PlanArtifact[] }
-  | { type: 'AGENT_EVENT'; event: PersistedAgentEvent }
+  | { type: 'RUN_EVENT'; event: PersistedRunEvent }
   | { type: 'DROP'; conversationId: string }
 
 function getStream(state: State, id: string): ConversationStreamState {
@@ -181,7 +181,7 @@ function withStream(
 }
 
 function conversationIdForAction(action: Action): string {
-  return action.type === 'AGENT_EVENT' ? action.event.conversationId : action.conversationId
+  return action.type === 'RUN_EVENT' ? action.event.conversationId : action.conversationId
 }
 
 function appendDelta(blocks: Block[], kind: 'text' | 'reasoning', delta: string): Block[] {
@@ -375,7 +375,7 @@ function hasTerminalMessage(messages: Message[], messageId: string | null): bool
   return Boolean(message && message.status !== 'streaming')
 }
 
-function selectionFromAgentEventData(
+function selectionFromRunEventData(
   data: Record<string, unknown> | undefined,
 ): ModelSelection | undefined {
   const providerId = data?.providerId
@@ -385,7 +385,7 @@ function selectionFromAgentEventData(
     : undefined
 }
 
-function stringFromAgentEventData(
+function stringFromRunEventData(
   data: Record<string, unknown> | undefined,
   key: string,
 ): string | null {
@@ -393,23 +393,23 @@ function stringFromAgentEventData(
   return typeof value === 'string' && value.length > 0 ? value : null
 }
 
-function assistantErrorFromAgentEvent(event: PersistedAgentEvent): string | null {
+function assistantErrorFromRunEvent(event: PersistedRunEvent): string | null {
   if (event.type === 'turn.failed') {
-    return stringFromAgentEventData(event.data, 'error') ?? 'Turn failed'
+    return stringFromRunEventData(event.data, 'error') ?? 'Turn failed'
   }
   if (event.type === 'turn.cancelled' && event.data?.phase === 'completed') {
-    const reason = stringFromAgentEventData(event.data, 'reason')
+    const reason = stringFromRunEventData(event.data, 'reason')
     return reason ? `Cancelled: ${reason}` : 'Cancelled'
   }
   if (event.type === 'turn.interrupted') {
-    return stringFromAgentEventData(event.data, 'reason') ?? 'Interrupted'
+    return stringFromRunEventData(event.data, 'reason') ?? 'Interrupted'
   }
   return null
 }
 
 function assistantErrorFromRuntimeState(
   runtimeState: ConversationRuntimeReplayState | undefined,
-  events: PersistedAgentEvent[],
+  events: PersistedRunEvent[],
 ): string | null {
   if (!runtimeState?.turn || runtimeState.active) return null
   if (
@@ -427,14 +427,14 @@ function assistantErrorFromRuntimeState(
         event.messageId === runtimeState.turn?.assistantMessageId &&
         event.type === runtimeState.turn.eventType,
     )
-  const eventError = replayEvent ? assistantErrorFromAgentEvent(replayEvent) : null
+  const eventError = replayEvent ? assistantErrorFromRunEvent(replayEvent) : null
   if (eventError) return eventError
   if (runtimeState.phase === 'failed') return 'Turn failed'
   if (runtimeState.phase === 'cancelled') return 'Cancelled'
   return 'Interrupted'
 }
 
-function shouldClearRunningFromAgentEvent(event: PersistedAgentEvent): boolean {
+function shouldClearRunningFromRunEvent(event: PersistedRunEvent): boolean {
   return (
     event.type === 'turn.failed' ||
     event.type === 'turn.interrupted' ||
@@ -443,7 +443,7 @@ function shouldClearRunningFromAgentEvent(event: PersistedAgentEvent): boolean {
   )
 }
 
-function agentEventKey(event: PersistedAgentEvent): string {
+function runEventKey(event: PersistedRunEvent): string {
   return [
     event.timestamp,
     event.conversationId,
@@ -453,14 +453,14 @@ function agentEventKey(event: PersistedAgentEvent): string {
   ].join(':')
 }
 
-function mergeAgentEvents(
-  current: PersistedAgentEvent[],
-  incoming: PersistedAgentEvent[],
-): PersistedAgentEvent[] {
-  const seen = new Set(current.map(agentEventKey))
+function mergeRunEvents(
+  current: PersistedRunEvent[],
+  incoming: PersistedRunEvent[],
+): PersistedRunEvent[] {
+  const seen = new Set(current.map(runEventKey))
   const next = [...current]
   for (const event of incoming) {
-    const key = agentEventKey(event)
+    const key = runEventKey(event)
     if (seen.has(key)) continue
     seen.add(key)
     next.push(event)
@@ -476,7 +476,7 @@ function reducer(state: State, action: Action): State {
   switch (action.type) {
     case 'HYDRATE':
       return withStream(state, action.conversationId, (current) => {
-        const events = mergeAgentEvents(current.events, action.events)
+        const events = mergeRunEvents(current.events, action.events)
         const hydratedMessages = mergeHydratedMessages(
           current.messages,
           action.messages,
@@ -682,9 +682,9 @@ function reducer(state: State, action: Action): State {
         queue: [],
       }))
 
-    case 'AGENT_EVENT':
+    case 'RUN_EVENT':
       return withStream(state, action.event.conversationId, (current) => {
-        const terminalError = assistantErrorFromAgentEvent(action.event)
+        const terminalError = assistantErrorFromRunEvent(action.event)
         return {
           ...current,
           messages:
@@ -694,7 +694,7 @@ function reducer(state: State, action: Action): State {
                 : ensureAssistantMessage(
                     current.messages,
                     action.event.messageId,
-                    selectionFromAgentEventData(action.event.data),
+                    selectionFromRunEventData(action.event.data),
                   )
               : terminalError
                 ? finalizeAssistantMessageAsError(
@@ -708,11 +708,11 @@ function reducer(state: State, action: Action): State {
               ? hasTerminalMessage(current.messages, action.event.messageId)
                 ? current.runningMessageId
                 : action.event.messageId
-              : shouldClearRunningFromAgentEvent(action.event) &&
+              : shouldClearRunningFromRunEvent(action.event) &&
                   current.runningMessageId === action.event.messageId
                 ? null
                 : current.runningMessageId,
-          events: mergeAgentEvents(current.events, [action.event]),
+          events: mergeRunEvents(current.events, [action.event]),
         }
       })
 
@@ -1176,8 +1176,8 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
           message: persistedToMessage(event.message),
         })
       }),
-      window.api.runtime.onAgentEvent((event) => {
-        dispatch({ type: 'AGENT_EVENT', event })
+      window.api.runtime.onRunEvent((event) => {
+        dispatch({ type: 'RUN_EVENT', event })
         if (event.type.startsWith('plan.')) void refreshPlans(event.conversationId)
       }),
       window.api.runtime.conversations.onUpdated((summary) => {

@@ -1,49 +1,42 @@
-import { createHash, randomUUID } from 'node:crypto'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { randomUUID } from 'node:crypto'
 import type { Settings } from '@aila/agent'
 import {
-  type AgentEvent,
-  type AgentEventType,
-  type AgentLoopSnapshot,
-  type AgentLoopTransition,
-  type AgentRunArtifact,
-  type AgentRunCheckpoint,
-  type AgentRunIdentity,
-  AILA_AGENT_RUN_ARTIFACT_SCHEMA_VERSION,
-  AILA_AGENT_RUN_CHECKPOINT_SCHEMA_VERSION,
-  AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
-  agentRunRecoveryForLoop,
+  AILA_RUN_ARTIFACT_SCHEMA_VERSION,
+  AILA_RUN_CHECKPOINT_SCHEMA_VERSION,
   type ChatMessage,
-  createAgentLoopSnapshot,
+  type DurableRunExecutor,
   type ImageSideChannelBlock,
-  type ModelCallExecutor,
   type ModelCallToolCall,
   type ModelDescriptor,
   type ModelInfo,
   type ModelSelection,
-  modelSupportsVision,
-  type PersistedBlock,
-  type PersistedImageBlock,
-  type PersistedMessage,
-  type PersistedToolCallBlock,
   type PersistedToolResultRef,
-  type RuntimeStreamChat,
-  reduceAgentLoopTransition,
-  runAgentLoop,
-  type StreamHandlers,
+  type RunArtifact,
+  type RunCheckpoint,
+  type RunEvent,
+  type RunEventType,
+  type RunHandlers,
+  type RunIdentity,
+  runRecoveryFromCursor,
   type ToolActivityTarget,
   type ToolCall,
   type ToolContext,
   type ToolRegistry,
   type UsageInfo,
-  type UserContentPart,
 } from '@aila/agent'
 import { executeTool, getToolDefinitions, summarizeToolTarget } from '@aila/agent/host'
+import {
+  createRunCursor,
+  type RunCursor,
+  type RunTransition,
+  reduceRunTransition,
+  runDurableRun,
+} from '@aila/agent/internal'
+import { AssistantMessageBuilder } from './assistant-message-builder'
 import { MissingApiKeyError, type NodeAuthInput, requireApiKey } from './auth'
 import { createDefaultModelStreamClient } from './default-model-stream'
-import { imageNameFromUrl } from './image-store'
 import { createProviderModelCallExecutor } from './model-call-executor'
+import { prepareModelInput } from './model-input-pipeline'
 import {
   type CreateModelRegistryInput,
   createModelRegistry,
@@ -67,7 +60,7 @@ const EVENT_PREVIEW_CHARS = 1000
  * auto-compaction keeps the window bounded, so this is a runaway/cost guard, not
  * a context guard. Hitting it is graceful: the model gets one final, tool-free
  * step to wrap up (see TOOL_BUDGET_EXHAUSTED_NOTICE) instead of a thrown error.
- * Override per instance via ProviderStreamChatOptions.maxSteps.
+ * Override per instance via DurableRunExecutorOptions.maxSteps.
  */
 const DEFAULT_MAX_TOOL_STEPS = 50
 
@@ -77,14 +70,7 @@ const TOOL_BUDGET_EXHAUSTED_NOTICE =
   'user a clear final answer: what you did, the current state, and any remaining ' +
   'next steps they should take.'
 
-const VISION_BRIDGE_SYSTEM_PROMPT =
-  'You inspect image attachments for a downstream text-only model. ' +
-  'Return concise, factual Markdown. Include visible text/OCR, important objects, layout, ' +
-  'tables/charts/UI structure, and details that could matter for answering the user.'
-const VISION_BRIDGE_PROMPT_VERSION = 1
-const VISION_ANALYSIS_CACHE_SCHEMA_VERSION = 1
-
-export interface ProviderStreamChatOptions extends NodeAuthInput {
+export interface DurableRunExecutorOptions extends NodeAuthInput {
   modelRegistry?: ModelRegistry
   modelRegistryOptions?: CreateModelRegistryInput
   protocolRegistry?: ProtocolRegistry
@@ -104,9 +90,9 @@ export interface ProviderStreamChatOptions extends NodeAuthInput {
   createEventId?: () => string
 }
 
-export function createProviderStreamChat(
-  options: ProviderStreamChatOptions = {},
-): RuntimeStreamChat {
+export function createDurableRunExecutor(
+  options: DurableRunExecutorOptions = {},
+): DurableRunExecutor {
   const modelRegistry =
     options.modelRegistry ??
     createModelRegistry(options.modelRegistryOptions ?? { providers: options.providers })
@@ -143,7 +129,7 @@ export function createProviderStreamChat(
       contextPlan: requestContextPlan,
       selection: requestSelection,
       signal,
-      onAgentEvent,
+      onRunEvent,
       saveRunCheckpoint,
       saveRunArtifact,
       workspaceRoots: requestWorkspaceRoots,
@@ -163,12 +149,12 @@ export function createProviderStreamChat(
     const selection = cloneAgentValue(requestSelection)
     const contextPlan = cloneAgentValue(runCheckpoint?.contextPlan ?? requestContextPlan)
     const workspaceRoots = cloneAgentWorkspaceRoots(requestWorkspaceRoots)
-    const builder = new AssistantBuilder(runCheckpoint?.assistantMessage.blocks)
+    const builder = new AssistantMessageBuilder(runCheckpoint?.assistantMessage.blocks)
     let lastUsage: UsageInfo | null = runCheckpoint?.usage
       ? cloneAgentValue(runCheckpoint.usage)
       : null
     const toolTargets = new Map<string, ToolActivityTarget>()
-    const run: AgentRunIdentity = cloneAgentValue(
+    const run: RunIdentity = cloneAgentValue(
       runCheckpoint?.identity ??
         requestRun ?? {
           conversationId,
@@ -178,12 +164,12 @@ export function createProviderStreamChat(
     )
     let activeStepId: string | undefined
 
-    const createAgentEvent = (
-      type: AgentEventType,
+    const createRunEvent = (
+      type: RunEventType,
       data?: Record<string, unknown>,
       stepId = activeStepId,
-    ): AgentEvent => {
-      const event: AgentEvent = {
+    ): RunEvent => {
+      const event: RunEvent = {
         timestamp: Date.now(),
         conversationId,
         messageId: assistantMessageId,
@@ -196,24 +182,22 @@ export function createProviderStreamChat(
       }
       return event
     }
-    const emitAgentEvent = (
-      type: AgentEventType,
+    const emitRunEvent = (
+      type: RunEventType,
       data?: Record<string, unknown>,
       stepId?: string,
     ): void => {
-      const pending = onAgentEvent?.(
-        cloneAgentValue(createAgentEvent(type, data, stepId)),
-      ) as unknown
+      const pending = onRunEvent?.(cloneAgentValue(createRunEvent(type, data, stepId))) as unknown
       if (pending && typeof (pending as PromiseLike<void>).then === 'function') {
         void Promise.resolve(pending).catch(() => {})
       }
     }
-    const emitDurableAgentEvent = async (
-      type: AgentEventType,
+    const emitDurableRunEvent = async (
+      type: RunEventType,
       data?: Record<string, unknown>,
       stepId?: string,
     ): Promise<void> => {
-      await onAgentEvent?.(cloneAgentValue(createAgentEvent(type, data, stepId)))
+      await onRunEvent?.(cloneAgentValue(createRunEvent(type, data, stepId)))
     }
     let runBoundaryPersisted = false
     const persistPreLoopFailure = async (message: string): Promise<void> => {
@@ -221,29 +205,29 @@ export function createProviderStreamChat(
       runBoundaryPersisted = true
       const timestamp = Date.now()
       const loop = cloneAgentValue(
-        runCheckpoint?.loop ?? createAgentLoopSnapshot<ModelCallToolCall>(run, loopMode),
+        runCheckpoint?.loop ?? createRunCursor<ModelCallToolCall>(run, loopMode),
       )
       if (!runCheckpoint) {
-        const started: AgentLoopTransition = {
+        const started: RunTransition = {
           type: 'run.started',
           timestamp,
           identity: cloneAgentValue(run),
           mode: loopMode,
         }
-        loop.state = reduceAgentLoopTransition(loop.state, started)
-        await emitDurableAgentEvent(started.type, agentLoopTransitionData(started))
+        loop.state = reduceRunTransition(loop.state, started)
+        await emitDurableRunEvent(started.type, runTransitionData(started))
       }
-      const failed: AgentLoopTransition = {
+      const failed: RunTransition = {
         type: 'run.failed',
         timestamp,
         identity: cloneAgentValue(run),
         error: message,
       }
-      loop.state = reduceAgentLoopTransition(loop.state, failed)
-      await emitDurableAgentEvent(failed.type, agentLoopTransitionData(failed))
+      loop.state = reduceRunTransition(loop.state, failed)
+      await emitDurableRunEvent(failed.type, runTransitionData(failed))
       if (!saveRunCheckpoint) return
       await saveRunCheckpoint({
-        schemaVersion: AILA_AGENT_RUN_CHECKPOINT_SCHEMA_VERSION,
+        schemaVersion: AILA_RUN_CHECKPOINT_SCHEMA_VERSION,
         identity: cloneAgentValue(run),
         assistantMessageId,
         selection: cloneAgentValue(selection),
@@ -265,7 +249,7 @@ export function createProviderStreamChat(
                 },
               }
             : {}),
-        recovery: agentRunRecoveryForLoop(loop),
+        recovery: runRecoveryFromCursor(loop),
         revision: (runCheckpoint?.revision ?? 0) + 1,
         createdAt: runCheckpoint?.createdAt ?? timestamp,
         updatedAt: timestamp,
@@ -279,7 +263,7 @@ export function createProviderStreamChat(
     )
     const descriptor = modelRegistry.resolve(selection)
     if (!runCheckpoint) {
-      emitAgentEvent('turn.started', {
+      emitRunEvent('turn.started', {
         providerId: selection.providerId,
         modelId: selection.modelId,
         provider: descriptor.provider,
@@ -318,7 +302,7 @@ export function createProviderStreamChat(
         error: message,
         message: builder.build(assistantMessageId, 'error', selection, message),
       })
-      emitAgentEvent('turn.failed', { error: message })
+      emitRunEvent('turn.failed', { error: message })
       return
     }
 
@@ -328,7 +312,7 @@ export function createProviderStreamChat(
         : createUsageAccumulator()
       const bridged = runCheckpoint
         ? { messages, usage: [] }
-        : await bridgeImagesForTextOnlyModel({
+        : await prepareModelInput({
             messages,
             descriptor,
             selection,
@@ -337,7 +321,7 @@ export function createProviderStreamChat(
             modelCallExecutor,
             authInput: options,
             signal,
-            emitAgentEvent,
+            emitRunEvent: emitRunEvent,
             dataDir: options.dataDir,
             imageDir: options.imageDir,
           })
@@ -350,6 +334,8 @@ export function createProviderStreamChat(
         settings,
         conversationId,
         messageId: assistantMessageId,
+        turnId: run.turnId,
+        runId: run.runId,
         workspaceRoots,
         shellCwd,
         signal,
@@ -375,17 +361,17 @@ export function createProviderStreamChat(
       )
       let checkpointRevision = runCheckpoint?.revision ?? 0
       const checkpointCreatedAt = runCheckpoint?.createdAt ?? Date.now()
-      let latestLoopSnapshot: AgentLoopSnapshot<ModelCallToolCall> | undefined
+      let latestLoopSnapshot: RunCursor<ModelCallToolCall> | undefined
       const persistRunCheckpoint = async (
-        loop: AgentLoopSnapshot<ModelCallToolCall>,
+        loop: RunCursor<ModelCallToolCall>,
         messageStatus: 'streaming' | 'done' | 'error' = 'streaming',
         messageError?: string,
       ): Promise<void> => {
         latestLoopSnapshot = cloneAgentValue(loop)
         if (!saveRunCheckpoint) return
         const timestamp = Date.now()
-        const checkpoint: AgentRunCheckpoint = {
-          schemaVersion: AILA_AGENT_RUN_CHECKPOINT_SCHEMA_VERSION,
+        const checkpoint: RunCheckpoint = {
+          schemaVersion: AILA_RUN_CHECKPOINT_SCHEMA_VERSION,
           identity: cloneAgentValue(run),
           assistantMessageId,
           selection: cloneAgentValue(selection),
@@ -410,7 +396,7 @@ export function createProviderStreamChat(
                 },
               }
             : {}),
-          recovery: agentRunRecoveryForLoop(loop),
+          recovery: runRecoveryFromCursor(loop),
           revision: checkpointRevision + 1,
           createdAt: checkpointCreatedAt,
           updatedAt: timestamp,
@@ -418,13 +404,13 @@ export function createProviderStreamChat(
         const saved = await saveRunCheckpoint(cloneAgentValue(checkpoint))
         checkpointRevision = saved.revision
       }
-      const persistRunArtifact = async (artifact: AgentRunArtifact): Promise<void> => {
+      const persistRunArtifact = async (artifact: RunArtifact): Promise<void> => {
         if (!saveRunArtifact) return
         await saveRunArtifact(cloneAgentValue(artifact))
       }
       const initialSnapshot = runCheckpoint?.loop ? cloneAgentValue(runCheckpoint.loop) : undefined
       if (initialSnapshot) initialSnapshot.state.mode = loopMode
-      const loopResult = await runAgentLoop<ParsedModelToolCall>({
+      const loopResult = await runDurableRun<ParsedModelToolCall>({
         identity: run,
         signal,
         maxToolSteps,
@@ -441,9 +427,9 @@ export function createProviderStreamChat(
             runBoundaryPersisted = true
           }
           if (transition.type === 'step.started') activeStepId = transition.step.stepId
-          await emitDurableAgentEvent(
+          await emitDurableRunEvent(
             transition.type,
-            agentLoopTransitionData(transition),
+            runTransitionData(transition),
             'step' in transition ? transition.step.stepId : undefined,
           )
           if (
@@ -454,22 +440,46 @@ export function createProviderStreamChat(
             activeStepId = undefined
           }
         },
-        executeModelStep: async ({ step, modelStepIndex, toolsEnabled }) => {
+        executeModelStep: async ({ step, modelStepIndex, toolsEnabled, reason }) => {
           activeStepId = step.stepId
           if (!toolsEnabled && !toolBudgetNoticeSent) {
             toolBudgetNoticeSent = true
             modelMessages.push({ role: 'system', content: TOOL_BUDGET_EXHAUSTED_NOTICE })
           }
 
+          const modelCallStartedAt = Date.now()
+          const requestMessages = cloneAgentMessages(modelMessages)
+          const requestTools = toolsEnabled ? cloneAgentValue(tools) : []
+          await persistRunArtifact({
+            schemaVersion: AILA_RUN_ARTIFACT_SCHEMA_VERSION,
+            artifactId: `${run.runId}:${step.stepId}:model_request`,
+            conversationId,
+            turnId: run.turnId,
+            runId: run.runId,
+            stepId: step.stepId,
+            kind: 'model_request',
+            createdAt: modelCallStartedAt,
+            contentType: 'application/json',
+            data: {
+              reason,
+              modelStepIndex,
+              toolsEnabled,
+              descriptor: inspectableModelDescriptor(descriptor),
+              messages: requestMessages,
+              tools: requestTools,
+              ...(contextPlan ? { contextPlan: cloneAgentValue(contextPlan) } : {}),
+              ...(settings.promptCache ? { cache: cloneAgentValue(settings.promptCache) } : {}),
+            },
+          })
           const result = await modelCallExecutor.execute(
             {
               descriptor,
               apiKey,
               conversationId,
-              messages: cloneAgentMessages(modelMessages),
+              messages: requestMessages,
               ...(contextPlan ? { contextPlan } : {}),
               ...(settings.promptCache ? { cache: settings.promptCache } : {}),
-              tools: toolsEnabled ? tools : [],
+              tools: requestTools,
               signal,
               stepIndex: modelStepIndex,
             },
@@ -498,7 +508,7 @@ export function createProviderStreamChat(
                     args: '',
                     builder,
                     startedToolCalls,
-                    emitAgentEvent,
+                    emitRunEvent,
                     handlers,
                     conversationId,
                     assistantMessageId,
@@ -506,7 +516,7 @@ export function createProviderStreamChat(
                   break
                 case 'tool-input-delta':
                   builder.appendToolCallArgs(part.id, part.delta)
-                  emitAgentEvent('tool.input.delta', {
+                  emitRunEvent('tool.input.delta', {
                     toolCallId: part.id,
                     deltaSize: part.delta.length,
                   })
@@ -523,7 +533,7 @@ export function createProviderStreamChat(
                     builder,
                     startedToolCalls,
                     toolTargets,
-                    emitAgentEvent,
+                    emitRunEvent,
                     handlers,
                     conversationId,
                     assistantMessageId,
@@ -548,7 +558,7 @@ export function createProviderStreamChat(
                     isError: false,
                     builder,
                     toolTargets,
-                    emitAgentEvent,
+                    emitRunEvent,
                     handlers,
                     conversationId,
                     assistantMessageId,
@@ -563,7 +573,7 @@ export function createProviderStreamChat(
                     isError: true,
                     builder,
                     toolTargets,
-                    emitAgentEvent,
+                    emitRunEvent,
                     handlers,
                     conversationId,
                     assistantMessageId,
@@ -600,17 +610,22 @@ export function createProviderStreamChat(
           }
 
           assistantTextByModelStep.set(modelStepIndex, result.text)
+          const modelCallCompletedAt = Date.now()
           await persistRunArtifact({
-            schemaVersion: AILA_AGENT_RUN_ARTIFACT_SCHEMA_VERSION,
-            artifactId: `${run.runId}:${step.stepId}:model_call`,
+            schemaVersion: AILA_RUN_ARTIFACT_SCHEMA_VERSION,
+            artifactId: `${run.runId}:${step.stepId}:model_response`,
             conversationId,
             turnId: run.turnId,
             runId: run.runId,
             stepId: step.stepId,
-            kind: 'model_call',
-            createdAt: Date.now(),
+            kind: 'model_response',
+            createdAt: modelCallCompletedAt,
             contentType: 'application/json',
             data: {
+              modelStepIndex,
+              startedAt: modelCallStartedAt,
+              completedAt: modelCallCompletedAt,
+              durationMs: Math.max(0, modelCallCompletedAt - modelCallStartedAt),
               outcome: result.outcome,
               text: result.text,
               reasoning: result.reasoning,
@@ -651,7 +666,30 @@ export function createProviderStreamChat(
           })
 
           for (const toolCall of toolCalls) {
-            if (!tools.some((definition) => definition.name === toolCall.name)) {
+            const toolStartedAt = Date.now()
+            const target = summarizeToolTarget(toolCall.name, toolCall.args)
+            if (target) toolTargets.set(toolCall.id, target)
+            const definitionPresent = tools.some((definition) => definition.name === toolCall.name)
+            await persistRunArtifact({
+              schemaVersion: AILA_RUN_ARTIFACT_SCHEMA_VERSION,
+              artifactId: `${run.runId}:${step.stepId}:tool_request:${toolCall.id}`,
+              conversationId,
+              turnId: run.turnId,
+              runId: run.runId,
+              stepId: step.stepId,
+              kind: 'tool_request',
+              createdAt: toolStartedAt,
+              contentType: 'application/json',
+              data: {
+                toolCallId: toolCall.id,
+                toolName: toolCall.name,
+                args: cloneAgentValue(toolCall.args),
+                definitionPresent,
+                ...(target ? { target } : {}),
+              },
+            })
+
+            if (!definitionPresent) {
               const message = `Unknown tool "${toolCall.name}"`
               recordToolResult({
                 toolCallId: toolCall.id,
@@ -660,7 +698,7 @@ export function createProviderStreamChat(
                 isError: true,
                 builder,
                 toolTargets,
-                emitAgentEvent,
+                emitRunEvent,
                 handlers,
                 conversationId,
                 assistantMessageId,
@@ -672,69 +710,45 @@ export function createProviderStreamChat(
                 result: message,
                 isError: true,
               })
+              await persistRunArtifact({
+                schemaVersion: AILA_RUN_ARTIFACT_SCHEMA_VERSION,
+                artifactId: `${run.runId}:${step.stepId}:tool_result:${toolCall.id}`,
+                conversationId,
+                turnId: run.turnId,
+                runId: run.runId,
+                stepId: step.stepId,
+                kind: 'tool_result',
+                createdAt: Date.now(),
+                contentType: 'application/json',
+                data: {
+                  toolCallId: toolCall.id,
+                  toolName: toolCall.name,
+                  outcome: 'failed',
+                  error: message,
+                  startedAt: toolStartedAt,
+                  completedAt: Date.now(),
+                },
+              })
               continue
             }
 
-            const target = summarizeToolTarget(toolCall.name, toolCall.args)
-            if (target) toolTargets.set(toolCall.id, target)
-            emitAgentEvent('tool.execution.started', {
+            emitRunEvent('tool.execution.started', {
               toolCallId: toolCall.id,
               toolName: toolCall.name,
               input: previewEventValue(toolCall.args),
               ...(target && { target }),
             })
+            let output: unknown
             try {
-              const output = await executeTool(
+              output = await executeTool(
                 toolCall.name,
                 cloneAgentToolArgs(toolCall.args),
-                { ...toolContext, toolCallId: toolCall.id },
+                { ...toolContext, stepId: step.stepId, toolCallId: toolCall.id },
                 toolRegistry,
               )
-              emitAgentEvent('tool.execution.completed', {
-                toolCallId: toolCall.id,
-                toolName: toolCall.name,
-                result: previewEventValue(output),
-                ...(toolTargets.get(toolCall.id) && {
-                  target: toolTargets.get(toolCall.id),
-                }),
-              })
-              const toolResult = await prepareToolResultForModel({
-                store: toolResultStore,
-                content: stringifyToolOutput(output),
-                conversationId,
-                messageId: assistantMessageId,
-                toolCallId: toolCall.id,
-                toolName: toolCall.name,
-                maxInlineChars: maxInlineToolResultChars,
-                previewChars: toolResultPreviewChars,
-              })
-              recordToolResult({
-                toolCallId: toolCall.id,
-                toolName: toolCall.name,
-                result: toolResult.content,
-                ...(toolResult.resultRef && { resultRef: toolResult.resultRef }),
-                isError: false,
-                builder,
-                toolTargets,
-                emitAgentEvent,
-                handlers,
-                conversationId,
-                assistantMessageId,
-              })
-              modelMessages.push({
-                role: 'tool',
-                tool_call_id: toolCall.id,
-                content: toolResult.content,
-              })
-              toolResults.push({
-                toolCallId: toolCall.id,
-                toolName: toolCall.name,
-                result: toolResult.content,
-                isError: false,
-              })
             } catch (error) {
               const message = error instanceof Error ? error.message : String(error)
-              emitAgentEvent('tool.execution.failed', {
+              emitRunEvent('tool.execution.failed', {
                 toolCallId: toolCall.id,
                 toolName: toolCall.name,
                 error: message,
@@ -749,7 +763,7 @@ export function createProviderStreamChat(
                 isError: true,
                 builder,
                 toolTargets,
-                emitAgentEvent,
+                emitRunEvent,
                 handlers,
                 conversationId,
                 assistantMessageId,
@@ -761,11 +775,104 @@ export function createProviderStreamChat(
                 result: message,
                 isError: true,
               })
+              const toolCompletedAt = Date.now()
+              await persistRunArtifact({
+                schemaVersion: AILA_RUN_ARTIFACT_SCHEMA_VERSION,
+                artifactId: `${run.runId}:${step.stepId}:tool_result:${toolCall.id}`,
+                conversationId,
+                turnId: run.turnId,
+                runId: run.runId,
+                stepId: step.stepId,
+                kind: 'tool_result',
+                createdAt: toolCompletedAt,
+                contentType: 'application/json',
+                data: {
+                  toolCallId: toolCall.id,
+                  toolName: toolCall.name,
+                  outcome: 'failed',
+                  error: message,
+                  ...(toolTargets.get(toolCall.id) ? { target: toolTargets.get(toolCall.id) } : {}),
+                  startedAt: toolStartedAt,
+                  completedAt: toolCompletedAt,
+                  durationMs: Math.max(0, toolCompletedAt - toolStartedAt),
+                },
+              })
+              continue
             }
+
+            const outputText = stringifyToolOutput(output)
+            emitRunEvent('tool.execution.completed', {
+              toolCallId: toolCall.id,
+              toolName: toolCall.name,
+              result: previewEventValue(output),
+              ...(toolTargets.get(toolCall.id) && {
+                target: toolTargets.get(toolCall.id),
+              }),
+            })
+            const toolResult = await prepareToolResultForModel({
+              store: toolResultStore,
+              content: outputText,
+              conversationId,
+              messageId: assistantMessageId,
+              toolCallId: toolCall.id,
+              toolName: toolCall.name,
+              maxInlineChars: maxInlineToolResultChars,
+              previewChars: toolResultPreviewChars,
+            })
+            recordToolResult({
+              toolCallId: toolCall.id,
+              toolName: toolCall.name,
+              result: toolResult.content,
+              ...(toolResult.resultRef && { resultRef: toolResult.resultRef }),
+              isError: false,
+              builder,
+              toolTargets,
+              emitRunEvent,
+              handlers,
+              conversationId,
+              assistantMessageId,
+            })
+            modelMessages.push({
+              role: 'tool',
+              tool_call_id: toolCall.id,
+              content: toolResult.content,
+            })
+            toolResults.push({
+              toolCallId: toolCall.id,
+              toolName: toolCall.name,
+              result: toolResult.content,
+              isError: false,
+            })
+            const toolCompletedAt = Date.now()
+            await persistRunArtifact({
+              schemaVersion: AILA_RUN_ARTIFACT_SCHEMA_VERSION,
+              artifactId: `${run.runId}:${step.stepId}:tool_result:${toolCall.id}`,
+              conversationId,
+              turnId: run.turnId,
+              runId: run.runId,
+              stepId: step.stepId,
+              kind: 'tool_result',
+              createdAt: toolCompletedAt,
+              contentType: 'application/json',
+              data: {
+                toolCallId: toolCall.id,
+                toolName: toolCall.name,
+                outcome: 'completed',
+                output: outputText,
+                modelContent: toolResult.content,
+                ...(toolResult.resultRef
+                  ? { resultRef: cloneAgentValue(toolResult.resultRef) }
+                  : {}),
+                ...(toolTargets.get(toolCall.id) ? { target: toolTargets.get(toolCall.id) } : {}),
+                startedAt: toolStartedAt,
+                completedAt: toolCompletedAt,
+                durationMs: Math.max(0, toolCompletedAt - toolStartedAt),
+              },
+            })
           }
 
           await persistRunArtifact({
-            schemaVersion: AILA_AGENT_RUN_ARTIFACT_SCHEMA_VERSION,
+            schemaVersion: AILA_RUN_ARTIFACT_SCHEMA_VERSION,
             artifactId: `${run.runId}:${step.stepId}:tool_batch`,
             conversationId,
             turnId: run.turnId,
@@ -775,8 +882,9 @@ export function createProviderStreamChat(
             createdAt: Date.now(),
             contentType: 'application/json',
             data: {
-              toolCalls: cloneAgentValue(toolCalls),
-              results: toolResults,
+              toolCallIds: toolCalls.map((toolCall) => toolCall.id),
+              completedCount: toolResults.length,
+              errorCount: toolResults.filter((result) => result.isError).length,
               aborted: signal.aborted,
             },
           })
@@ -794,7 +902,7 @@ export function createProviderStreamChat(
               isError: true,
               builder,
               toolTargets,
-              emitAgentEvent,
+              emitRunEvent,
               handlers,
               conversationId,
               assistantMessageId,
@@ -815,7 +923,7 @@ export function createProviderStreamChat(
           error: message,
           message: builder.build(assistantMessageId, 'error', selection, message),
         })
-        emitAgentEvent(
+        emitRunEvent(
           cancelled ? 'turn.cancelled' : 'turn.failed',
           cancelled ? { phase: 'completed', reason: 'abort_signal' } : { error: message },
         )
@@ -824,7 +932,7 @@ export function createProviderStreamChat(
       if (loopResult.state.status === 'paused') return
 
       if (latestLoopSnapshot) await persistRunCheckpoint(latestLoopSnapshot, 'done')
-      emitAgentEvent('turn.completed', {
+      emitRunEvent('turn.completed', {
         usage: lastUsage ?? undefined,
         outputBlockCount: builder.blocks.length,
       })
@@ -844,7 +952,7 @@ export function createProviderStreamChat(
         error: message,
         message: builder.build(assistantMessageId, 'error', selection, message),
       })
-      emitAgentEvent(
+      emitRunEvent(
         isAbort ? 'turn.cancelled' : 'turn.failed',
         isAbort ? { phase: 'completed', reason: 'abort_signal' } : { error: message },
       )
@@ -858,382 +966,9 @@ export function createModelInfoResolver(
   return (selection) => modelRegistry.getModelInfo(selection)
 }
 
-interface VisionBridgeInput {
-  messages: ChatMessage[]
-  descriptor: ModelDescriptor
-  selection: ModelSelection
-  settings: Settings
-  modelRegistry: ModelRegistry
-  modelCallExecutor: ModelCallExecutor
-  authInput: NodeAuthInput
-  signal: AbortSignal
-  emitAgentEvent: EmitAgentEvent
-  dataDir?: string
-  imageDir?: string
-}
-
-interface VisionBridgeResult {
-  messages: ChatMessage[]
-  usage: ModelStreamUsage[]
-}
-
-async function bridgeImagesForTextOnlyModel(input: VisionBridgeInput): Promise<VisionBridgeResult> {
-  const imageMessageIndex = lastUserImageMessageIndex(input.messages)
-  if (imageMessageIndex < 0 || modelSupportsVision(input.descriptor)) {
-    return { messages: cloneAgentMessages(input.messages), usage: [] }
-  }
-
-  const mode = input.settings.visionFallbackMode ?? 'auto'
-  if (mode === 'disabled' || mode === 'ask') {
-    return replaceImagesWithText(
-      input.messages,
-      mode === 'ask'
-        ? 'Vision fallback is set to ask before analyzing images.'
-        : 'Vision fallback is disabled.',
-    )
-  }
-
-  const visionSelection = input.settings.defaultVisionModel
-  if (!visionSelection) {
-    throw new Error(
-      `Model ${input.selection.providerId}:${input.selection.modelId} cannot inspect image attachments. Configure a Default Vision Model or choose a vision-capable chat model.`,
-    )
-  }
-
-  const visionDescriptor = input.modelRegistry.resolve(visionSelection)
-  if (!modelSupportsVision(visionDescriptor)) {
-    throw new Error(
-      `Default Vision Model ${visionSelection.providerId}:${visionSelection.modelId} is not marked as vision-capable.`,
-    )
-  }
-  const visionApiKey = requireApiKey(visionDescriptor, {
-    ...input.authInput,
-    settings: input.settings,
-  })
-  const imageCount = latestImageCount(input.messages[imageMessageIndex])
-
-  input.emitAgentEvent('vision.bridge.started', {
-    providerId: visionSelection.providerId,
-    modelId: visionSelection.modelId,
-    provider: visionDescriptor.provider,
-    api: visionDescriptor.api,
-    sourceProviderId: input.selection.providerId,
-    sourceModelId: input.selection.modelId,
-    imageCount,
-  })
-
-  const usage: ModelStreamUsage[] = []
-  let cacheHitCount = 0
-  let analyzedImageCount = 0
-  const messages: ChatMessage[] = []
-  try {
-    for (const [index, message] of input.messages.entries()) {
-      if (message.role !== 'user' || typeof message.content === 'string') {
-        messages.push(cloneAgentValue(message))
-        continue
-      }
-      if (index !== imageMessageIndex) {
-        messages.push(replaceUserImagesWithText(message, 'Previous image is not re-analyzed.'))
-        continue
-      }
-      messages.push({
-        role: 'user',
-        content: await analyzeUserImageParts({
-          parts: message.content,
-          visionDescriptor,
-          visionApiKey,
-          modelCallExecutor: input.modelCallExecutor,
-          signal: input.signal,
-          usage,
-          dataDir: input.dataDir,
-          imageDir: input.imageDir,
-          onCacheHit: () => {
-            cacheHitCount += 1
-          },
-          onAnalyzed: () => {
-            analyzedImageCount += 1
-          },
-        }),
-      })
-    }
-  } catch (err) {
-    input.emitAgentEvent('vision.bridge.failed', {
-      providerId: visionSelection.providerId,
-      modelId: visionSelection.modelId,
-      provider: visionDescriptor.provider,
-      api: visionDescriptor.api,
-      imageCount,
-      error: err instanceof Error ? err.message : String(err),
-    })
-    throw err
-  }
-
-  input.emitAgentEvent('vision.bridge.completed', {
-    providerId: visionSelection.providerId,
-    modelId: visionSelection.modelId,
-    provider: visionDescriptor.provider,
-    api: visionDescriptor.api,
-    imageCount,
-    usageCount: usage.length,
-    cacheHitCount,
-    analyzedImageCount,
-  })
-
-  return { messages, usage }
-}
-
-async function analyzeUserImageParts(input: {
-  parts: UserContentPart[]
-  visionDescriptor: ModelDescriptor
-  visionApiKey: string
-  modelCallExecutor: ModelCallExecutor
-  signal: AbortSignal
-  usage: ModelStreamUsage[]
-  dataDir?: string
-  imageDir?: string
-  onCacheHit?: () => void
-  onAnalyzed?: () => void
-}): Promise<string> {
-  const textContext = input.parts
-    .filter((part): part is Extract<UserContentPart, { type: 'text' }> => part.type === 'text')
-    .map((part) => part.text)
-    .join('\n\n')
-    .trim()
-  const sections: string[] = []
-  if (textContext) sections.push(textContext)
-
-  let imageIndex = 0
-  for (const part of input.parts) {
-    if (part.type === 'text') continue
-    imageIndex += 1
-    const analysis = await analyzeImagePart({
-      image: part,
-      imageIndex,
-      textContext,
-      visionDescriptor: input.visionDescriptor,
-      visionApiKey: input.visionApiKey,
-      modelCallExecutor: input.modelCallExecutor,
-      signal: input.signal,
-      usage: input.usage,
-      dataDir: input.dataDir,
-      imageDir: input.imageDir,
-    })
-    if (analysis.cacheHit) input.onCacheHit?.()
-    else input.onAnalyzed?.()
-    sections.push(
-      [
-        `<image-analysis index="${imageIndex}" source="${escapeVisionAttribute(part.url)}" mime="${escapeVisionAttribute(part.mime)}">`,
-        analysis.text,
-        '</image-analysis>',
-      ].join('\n'),
-    )
-  }
-
-  return sections.join('\n\n')
-}
-
-async function analyzeImagePart(input: {
-  image: Extract<UserContentPart, { type: 'image' }>
-  imageIndex: number
-  textContext: string
-  visionDescriptor: ModelDescriptor
-  visionApiKey: string
-  modelCallExecutor: ModelCallExecutor
-  signal: AbortSignal
-  usage: ModelStreamUsage[]
-  dataDir?: string
-  imageDir?: string
-}): Promise<{ text: string; cacheHit: boolean }> {
-  const cache = await prepareVisionAnalysisCache({
-    dataDir: input.dataDir,
-    imageDir: input.imageDir,
-    image: input.image,
-    textContext: input.textContext,
-    visionDescriptor: input.visionDescriptor,
-  })
-  if (cache?.cached) return { text: cache.cached.analysis, cacheHit: true }
-
-  const prompt = [
-    `Analyze image ${input.imageIndex} for a downstream text-only model.`,
-    input.textContext ? `User/request context:\n${input.textContext}` : '',
-    'Return only the image analysis. Do not answer the user directly.',
-  ]
-    .filter(Boolean)
-    .join('\n\n')
-  const result = await input.modelCallExecutor.execute({
-    descriptor: input.visionDescriptor,
-    apiKey: input.visionApiKey,
-    messages: [
-      { role: 'system', content: VISION_BRIDGE_SYSTEM_PROMPT },
-      {
-        role: 'user',
-        content: [{ type: 'text', text: prompt }, cloneAgentValue(input.image)],
-      },
-    ],
-    tools: [],
-    signal: input.signal,
-    stepIndex: -1,
-    requireImages: true,
-  })
-  input.usage.push(...result.stepUsage)
-  if (result.totalUsage) input.usage.push(result.totalUsage)
-  if (result.outcome !== 'completed') {
-    throw new Error(
-      `Vision model failed to inspect image ${input.imageIndex}: ${result.error ?? result.outcome}`,
-    )
-  }
-
-  const analysis = result.text.trim()
-  const text = analysis || '[Vision model returned no image analysis.]'
-  await cache?.write(text)
-  return { text, cacheHit: false }
-}
-
-interface VisionAnalysisCacheFile {
-  schemaVersion: typeof VISION_ANALYSIS_CACHE_SCHEMA_VERSION
-  createdAt: number
-  imageHash: string
-  imageMime: string
-  promptVersion: typeof VISION_BRIDGE_PROMPT_VERSION
-  textContextHash: string
-  visionProvider: string
-  visionModelId: string
-  analysis: string
-}
-
-async function prepareVisionAnalysisCache(input: {
-  dataDir?: string
-  imageDir?: string
-  image: Extract<UserContentPart, { type: 'image' }>
-  textContext: string
-  visionDescriptor: ModelDescriptor
-}): Promise<{
-  cached?: VisionAnalysisCacheFile
-  write: (analysis: string) => Promise<void>
-} | null> {
-  if (!input.dataDir || !input.imageDir) return null
-  const imageHash = await hashImageFile(input.image, input.imageDir)
-  const textContextHash = sha256(input.textContext)
-  const key = sha256(
-    JSON.stringify({
-      imageHash,
-      imageMime: input.image.mime,
-      promptVersion: VISION_BRIDGE_PROMPT_VERSION,
-      textContextHash,
-      visionProvider: input.visionDescriptor.provider,
-      visionModelId: input.visionDescriptor.modelId,
-    }),
-  )
-  const cacheDir = join(input.dataDir, 'vision-analysis')
-  const cachePath = join(cacheDir, `${key}.json`)
-  const cached = await readVisionAnalysisCache(cachePath)
-  return {
-    ...(cached ? { cached } : {}),
-    write: async (analysis: string) => {
-      await mkdir(cacheDir, { recursive: true })
-      const record: VisionAnalysisCacheFile = {
-        schemaVersion: VISION_ANALYSIS_CACHE_SCHEMA_VERSION,
-        createdAt: Date.now(),
-        imageHash,
-        imageMime: input.image.mime,
-        promptVersion: VISION_BRIDGE_PROMPT_VERSION,
-        textContextHash,
-        visionProvider: input.visionDescriptor.provider,
-        visionModelId: input.visionDescriptor.modelId,
-        analysis,
-      }
-      await writeFile(cachePath, `${JSON.stringify(record, null, 2)}\n`, 'utf-8')
-    },
-  }
-}
-
-async function hashImageFile(
-  image: Extract<UserContentPart, { type: 'image' }>,
-  imageDir: string,
-): Promise<string> {
-  const name = imageNameFromUrl(image.url)
-  if (!name) throw new Error(`Unable to load attached image ${image.url}: unrecognized image url`)
-  try {
-    return sha256(await readFile(join(imageDir, name)))
-  } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err)
-    throw new Error(`Unable to load attached image ${image.url}: ${detail}`)
-  }
-}
-
-async function readVisionAnalysisCache(path: string): Promise<VisionAnalysisCacheFile | null> {
-  try {
-    const parsed = JSON.parse(await readFile(path, 'utf-8')) as Partial<VisionAnalysisCacheFile>
-    if (
-      parsed.schemaVersion !== VISION_ANALYSIS_CACHE_SCHEMA_VERSION ||
-      typeof parsed.analysis !== 'string' ||
-      !parsed.analysis.trim()
-    ) {
-      return null
-    }
-    return parsed as VisionAnalysisCacheFile
-  } catch {
-    return null
-  }
-}
-
-function sha256(input: string | Uint8Array): string {
-  return createHash('sha256').update(input).digest('hex')
-}
-
-function replaceImagesWithText(messages: ChatMessage[], reason: string): VisionBridgeResult {
-  return {
-    messages: messages.map((message) => {
-      if (message.role !== 'user' || typeof message.content === 'string') {
-        return cloneAgentValue(message)
-      }
-      return replaceUserImagesWithText(message, reason)
-    }),
-    usage: [],
-  }
-}
-
-function replaceUserImagesWithText(
-  message: Extract<ChatMessage, { role: 'user' }>,
-  reason: string,
-): ChatMessage {
-  if (typeof message.content === 'string') return cloneAgentValue(message)
-  const sections = message.content.map((part) =>
-    part.type === 'text'
-      ? part.text
-      : `[Attached image omitted: ${reason} The image was not inspected; do not describe or infer its visual contents. Source: ${part.url}; MIME: ${part.mime}.]`,
-  )
-  return { role: 'user', content: sections.filter(Boolean).join('\n\n') }
-}
-
-function lastUserImageMessageIndex(messages: ChatMessage[]): number {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index]
-    if (
-      message?.role === 'user' &&
-      Array.isArray(message.content) &&
-      message.content.some((part) => part.type === 'image')
-    ) {
-      return index
-    }
-  }
-  return -1
-}
-
-function latestImageCount(message: ChatMessage | undefined): number {
-  if (!message || message.role !== 'user' || typeof message.content === 'string') return 0
-  return message.content.filter((part) => part.type === 'image').length
-}
-
-function escapeVisionAttribute(value: string): string {
-  return value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;')
-}
-
 type ParsedModelToolCall = ModelCallToolCall
 
-function agentLoopTransitionData(
-  transition: AgentLoopTransition,
-): Record<string, unknown> | undefined {
+function runTransitionData(transition: RunTransition): Record<string, unknown> | undefined {
   const identity = {
     ...(transition.identity.parentRunId && {
       parentRunId: transition.identity.parentRunId,
@@ -1247,8 +982,9 @@ function agentLoopTransitionData(
     case 'run.started':
       return { ...identity, mode: transition.mode }
     case 'run.resumed':
-    case 'run.paused':
       return { ...identity, nextAction: transition.nextAction }
+    case 'run.paused':
+      return { ...identity, nextAction: transition.nextAction, wait: transition.wait }
     case 'run.completed':
       return Object.keys(identity).length > 0 ? identity : undefined
     case 'run.failed':
@@ -1262,7 +998,7 @@ function agentLoopTransitionData(
         kind: transition.step.kind,
         index: transition.step.index,
         attempt: transition.step.attempt,
-        nextAction: transition.nextAction,
+        ...(transition.nextAction ? { nextAction: transition.nextAction } : {}),
       }
     case 'step.failed':
       return {
@@ -1283,13 +1019,13 @@ function agentLoopTransitionData(
   }
 }
 
-type EmitAgentEvent = (type: AgentEventType, data?: Record<string, unknown>) => void
+type EmitRunEvent = (type: RunEventType, data?: Record<string, unknown>) => void
 
 interface ToolStreamEventContext {
-  builder: AssistantBuilder
+  builder: AssistantMessageBuilder
   toolTargets: Map<string, ToolActivityTarget>
-  emitAgentEvent: EmitAgentEvent
-  handlers: StreamHandlers
+  emitRunEvent: EmitRunEvent
+  handlers: RunHandlers
   conversationId: string
   assistantMessageId: string
 }
@@ -1353,7 +1089,7 @@ function recordToolInputStart(
     args,
     builder,
     startedToolCalls,
-    emitAgentEvent,
+    emitRunEvent,
     handlers,
     conversationId,
     assistantMessageId,
@@ -1361,7 +1097,7 @@ function recordToolInputStart(
   builder.startToolCall(id, name, args)
   if (startedToolCalls.has(id)) return
   startedToolCalls.add(id)
-  emitAgentEvent('tool.requested', {
+  emitRunEvent('tool.requested', {
     toolCallId: id,
     toolName: name,
   })
@@ -1380,7 +1116,7 @@ function recordToolInputCompleted(input: ToolInputCompletedContext): void {
     builder,
     startedToolCalls,
     toolTargets,
-    emitAgentEvent,
+    emitRunEvent,
     handlers,
     conversationId,
     assistantMessageId,
@@ -1388,7 +1124,7 @@ function recordToolInputCompleted(input: ToolInputCompletedContext): void {
   const target = summarizeToolTarget(call.name, call.args)
   if (target) toolTargets.set(call.id, target)
   builder.startToolCall(call.id, call.name, call.argsJson)
-  emitAgentEvent('tool.input.completed', {
+  emitRunEvent('tool.input.completed', {
     toolCallId: call.id,
     toolName: call.name,
     input: previewEventValue(call.args),
@@ -1396,7 +1132,7 @@ function recordToolInputCompleted(input: ToolInputCompletedContext): void {
   })
   if (startedToolCalls.has(call.id)) return
   startedToolCalls.add(call.id)
-  emitAgentEvent('tool.requested', {
+  emitRunEvent('tool.requested', {
     toolCallId: call.id,
     toolName: call.name,
   })
@@ -1418,13 +1154,13 @@ function recordToolResult(input: ToolResultContext): void {
     isError,
     builder,
     toolTargets,
-    emitAgentEvent,
+    emitRunEvent,
     handlers,
     conversationId,
     assistantMessageId,
   } = input
   builder.finishToolCall(toolCallId, result, isError, resultRef)
-  emitAgentEvent('tool.result.returned', {
+  emitRunEvent('tool.result.returned', {
     toolCallId,
     toolName,
     result: previewEventValue(result),
@@ -1581,6 +1317,28 @@ function previewEventValue(value: unknown): { preview: string; size: number } {
   }
 }
 
+function inspectableModelDescriptor(descriptor: ModelDescriptor): Record<string, unknown> {
+  const { headers, baseUrl, ...safe } = cloneAgentValue(descriptor)
+  let safeBaseUrl = baseUrl
+  if (baseUrl) {
+    try {
+      const parsed = new URL(baseUrl)
+      parsed.username = ''
+      parsed.password = ''
+      parsed.search = ''
+      parsed.hash = ''
+      safeBaseUrl = parsed.toString()
+    } catch {
+      safeBaseUrl = '[invalid-or-redacted-url]'
+    }
+  }
+  return {
+    ...safe,
+    ...(safeBaseUrl ? { baseUrl: safeBaseUrl } : {}),
+    ...(headers ? { headerNames: Object.keys(headers).sort() } : {}),
+  }
+}
+
 function cloneAgentValue<T>(value: T): T {
   return structuredClone(value)
 }
@@ -1620,88 +1378,4 @@ function buildToolSchemas(toolRegistry?: ToolRegistry): ModelStreamToolDefinitio
     description: td.function.description,
     parameters: td.function.parameters,
   }))
-}
-
-class AssistantBuilder {
-  blocks: PersistedBlock[]
-  private toolBlockIndex = new Map<string, number>()
-
-  constructor(blocks: readonly PersistedBlock[] = []) {
-    this.blocks = [...cloneAgentValue(blocks)]
-    this.blocks.forEach((block, index) => {
-      if (block.type === 'tool_call') this.toolBlockIndex.set(block.id, index)
-    })
-  }
-
-  appendText(kind: 'text' | 'reasoning', delta: string): void {
-    if (!delta) return
-    const last = this.blocks[this.blocks.length - 1]
-    if (last && last.type === kind) {
-      last.content += delta
-      return
-    }
-    this.blocks.push({ type: kind, content: delta })
-  }
-
-  startToolCall(id: string, name: string, args: string): void {
-    const existing = this.toolBlockIndex.get(id)
-    if (existing !== undefined) {
-      const block = this.blocks[existing] as PersistedToolCallBlock
-      block.name = name
-      block.arguments = args
-      return
-    }
-    const block: PersistedToolCallBlock = {
-      type: 'tool_call',
-      id,
-      name,
-      arguments: args,
-      status: 'running',
-    }
-    this.toolBlockIndex.set(id, this.blocks.length)
-    this.blocks.push(block)
-  }
-
-  appendToolCallArgs(id: string, delta: string): void {
-    if (!delta) return
-    const idx = this.toolBlockIndex.get(id)
-    if (idx === undefined) return
-    const block = this.blocks[idx] as PersistedToolCallBlock
-    block.arguments += delta
-  }
-
-  appendImage(block: PersistedImageBlock): void {
-    this.blocks.push(cloneAgentValue(block))
-  }
-
-  finishToolCall(
-    id: string,
-    result: string,
-    isError: boolean,
-    resultRef?: PersistedToolResultRef,
-  ): void {
-    const idx = this.toolBlockIndex.get(id)
-    if (idx === undefined) return
-    const block = this.blocks[idx] as PersistedToolCallBlock
-    block.status = isError ? 'error' : 'done'
-    block.result = result
-    if (resultRef) block.resultRef = cloneAgentValue(resultRef)
-  }
-
-  build(
-    messageId: string,
-    status: 'streaming' | 'done' | 'error',
-    selection: ModelSelection,
-    error?: string,
-  ): PersistedMessage {
-    return {
-      schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
-      id: messageId,
-      role: 'assistant',
-      blocks: cloneAgentValue(this.blocks),
-      status,
-      ...(error !== undefined && { error }),
-      model: cloneAgentValue(selection),
-    }
-  }
 }

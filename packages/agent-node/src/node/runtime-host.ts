@@ -1,17 +1,22 @@
 import {
-  AgentRuntime,
-  type AgentRuntimeHost,
-  type AgentRuntimeOptions,
-  type AgentRuntimeStore,
   createInMemoryRuntimeStore,
+  type DurableRunExecutor,
   type ModelSelection,
-  type RuntimeStreamChat,
+  type WorkbenchHost,
+  type WorkbenchOptions,
+  WorkbenchRuntime,
+  type WorkbenchStore,
 } from '@aila/agent'
 import {
   createNodeContextTokenCounter,
   createNodeSemanticCompactGenerator,
   type NodeContextServiceOptions,
 } from './context-services'
+import {
+  createDurableRunExecutor,
+  createModelInfoResolver,
+  type DurableRunExecutorOptions,
+} from './durable-run'
 import { createFileRuntimeStore } from './file-store'
 import { nodeFileSystem, nodeWorkspaceRoots } from './filesystem'
 import { createNodeImageGenerator } from './image-generation'
@@ -24,36 +29,31 @@ import {
 import { nodePath } from './path'
 import { defaultAilaDataDir, loadNodeSettings, type NodeSettingsOptions } from './settings'
 import { runNodeShell } from './shell'
-import {
-  createModelInfoResolver,
-  createProviderStreamChat,
-  type ProviderStreamChatOptions,
-} from './stream-chat'
 
 export interface CreateDefaultNodeRuntimeHostInput
-  extends ProviderStreamChatOptions,
+  extends DurableRunExecutorOptions,
     NodeSettingsOptions,
     Pick<NodeContextServiceOptions, 'fetch'> {
   cwd?: string
   modelRegistry?: ModelRegistry
   modelRegistryOptions?: CreateModelRegistryInput
-  store?: AgentRuntimeStore
+  store?: WorkbenchStore
   enableFileStore?: boolean
   enableShell?: boolean
   enableFileSystem?: boolean
   enableImages?: boolean
-  streamChat?: RuntimeStreamChat
-  host?: AgentRuntimeHost
+  runAgent?: DurableRunExecutor
+  host?: WorkbenchHost
 }
 
-export interface CreateNodeAgentRuntimeInput extends CreateDefaultNodeRuntimeHostInput {
-  options?: Omit<AgentRuntimeOptions, 'host' | 'store'>
+export interface CreateNodeWorkbenchInput extends CreateDefaultNodeRuntimeHostInput {
+  options?: Omit<WorkbenchOptions, 'host' | 'store'>
   model?: ModelSelection
 }
 
 export function createDefaultNodeRuntimeHost(
   input: CreateDefaultNodeRuntimeHostInput = {},
-): AgentRuntimeHost {
+): WorkbenchHost {
   const dataDir = input.dataDir ?? defaultAilaDataDir()
   const cwd = input.cwd ?? process.cwd()
   const modelRegistry =
@@ -63,9 +63,10 @@ export function createDefaultNodeRuntimeHost(
     input.enableImages === false
       ? null
       : createNodeImageStore({ dataDir, imageDir: input.imageDir })
-  const streamChat =
-    input.streamChat ??
-    createProviderStreamChat({
+  const runAgent =
+    input.host?.runAgent ??
+    input.runAgent ??
+    createDurableRunExecutor({
       ...input,
       modelRegistry,
       imageDir: imageStore?.imageDir,
@@ -82,7 +83,6 @@ export function createDefaultNodeRuntimeHost(
     getModelInfo: createModelInfoResolver(modelRegistry),
     countContextTokens: createNodeContextTokenCounter(contextServiceOptions),
     generateContextCompactArtifact: createNodeSemanticCompactGenerator(contextServiceOptions),
-    streamChat,
     path: nodePath,
     ...(input.enableFileSystem === false
       ? {}
@@ -99,17 +99,18 @@ export function createDefaultNodeRuntimeHost(
         }
       : {}),
     ...input.host,
+    runAgent,
   }
 }
 
-export function createNodeAgentRuntime(input: CreateNodeAgentRuntimeInput = {}): AgentRuntime {
+export function createNodeWorkbench(input: CreateNodeWorkbenchInput = {}): WorkbenchRuntime {
   const dataDir = input.dataDir ?? defaultAilaDataDir()
   const store =
     input.store ??
     (input.enableFileStore === false
       ? createInMemoryRuntimeStore()
       : createFileRuntimeStore({ dataDir }))
-  return new AgentRuntime({
+  return new WorkbenchRuntime({
     ...(input.options ?? {}),
     store,
     host: createDefaultNodeRuntimeHost({ ...input, dataDir, store }),

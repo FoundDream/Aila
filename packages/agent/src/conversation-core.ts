@@ -1,9 +1,9 @@
-import type { AgentEvent } from './agent-protocol'
+import type { RunEvent } from './agent-protocol'
 import type { ProviderId } from './models'
 
 export const AILA_CONVERSATION_META_SCHEMA_VERSION = 1
 export const AILA_PERSISTED_MESSAGE_SCHEMA_VERSION = 1
-export const AILA_AGENT_EVENT_SCHEMA_VERSION = 2
+export const AILA_RUN_EVENT_SCHEMA_VERSION = 2
 export const AILA_CONTEXT_CHECKPOINT_SCHEMA_VERSION = 1
 export const AILA_CONTEXT_ARTIFACT_SCHEMA_VERSION = 1
 export const AILA_CONTEXT_TURN_LEDGER_SCHEMA_VERSION = 1
@@ -209,7 +209,7 @@ export interface ConversationActivity {
   state: ConversationActivityState
   title: string
   updatedAt: number
-  eventType: AgentEvent['type']
+  eventType: RunEvent['type']
   messageId: string
   detail?: string
   toolName?: string
@@ -240,7 +240,7 @@ export interface ConversationRuntimeReplayTurn {
   conversationId: string
   assistantMessageId: string
   updatedAt: number
-  eventType: AgentEvent['type']
+  eventType: RunEvent['type']
   startedAt?: number
   selection?: PersistedMessage['model']
   pendingApproval?: ConversationRuntimePendingApproval
@@ -249,7 +249,7 @@ export interface ConversationRuntimeReplayTurn {
 export interface ConversationRuntimeReplayPlan {
   planId: string
   updatedAt: number
-  eventType: AgentEvent['type']
+  eventType: RunEvent['type']
   title?: string
   status?: string
   taskId?: string
@@ -285,9 +285,6 @@ export interface ConversationMeta {
   updatedAt: number
   usage?: ConversationUsage
   activity?: ConversationActivity
-  // When set, this conversation is the AI sidebar attached to a specific doc.
-  // The chat tab filters these out; Desktop owns docs workspace behavior.
-  docId?: string | null
   // Optional workspace affinity for chat sessions. Runtime preserves this as
   // metadata; hosts decide whether and how it affects tool roots.
   workspace?: ConversationWorkspaceRef | null
@@ -301,12 +298,12 @@ export interface ConversationRecord {
   messages: PersistedMessage[]
 }
 
-export interface PersistedAgentEvent extends AgentEvent {
-  schemaVersion: typeof AILA_AGENT_EVENT_SCHEMA_VERSION
+export interface PersistedRunEvent extends RunEvent {
+  schemaVersion: typeof AILA_RUN_EVENT_SCHEMA_VERSION
 }
 
-export interface AgentEventAppendResult {
-  event: PersistedAgentEvent
+export interface RunEventAppendResult {
+  event: PersistedRunEvent
   summary?: ConversationSummary
 }
 
@@ -335,7 +332,7 @@ export function normalizeConversationActivity(value: unknown): ConversationActiv
     state: record.state,
     title: record.title,
     updatedAt: record.updatedAt,
-    eventType: record.eventType as AgentEvent['type'],
+    eventType: record.eventType as RunEvent['type'],
     messageId: record.messageId,
     ...(typeof record.detail === 'string' && record.detail.length > 0
       ? { detail: record.detail }
@@ -772,7 +769,6 @@ export function normalizeConversationMeta(
     updatedAt: typeof value.updatedAt === 'number' ? value.updatedAt : now,
     ...(value.usage ? { usage: value.usage } : {}),
     ...(activity ? { activity } : {}),
-    ...(value.docId !== undefined ? { docId: value.docId } : {}),
     ...(value.workspace === null ? { workspace: null } : workspace ? { workspace } : {}),
     ...(context ? { context } : {}),
   }
@@ -815,15 +811,15 @@ export function upsertPersistedMessage(
   messages.push(message)
 }
 
-export function prepareAgentEvent(event: AgentEvent): PersistedAgentEvent {
+export function prepareRunEvent(event: RunEvent): PersistedRunEvent {
   return {
     ...event,
-    schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+    schemaVersion: AILA_RUN_EVENT_SCHEMA_VERSION,
   }
 }
 
-export interface PreparedAgentEventAppend {
-  event: PersistedAgentEvent
+export interface PreparedRunEventAppend {
+  event: PersistedRunEvent
   duplicate: boolean
 }
 
@@ -831,11 +827,11 @@ export interface PreparedAgentEventAppend {
  * Allocates durable journal identity. Producers may provide eventId for
  * idempotency, but the journal is the sole owner of seq.
  */
-export function prepareAgentEventAppend(
-  existing: readonly PersistedAgentEvent[],
-  event: AgentEvent,
+export function prepareRunEventAppend(
+  existing: readonly PersistedRunEvent[],
+  event: RunEvent,
   createEventId: () => string,
-): PreparedAgentEventAppend {
+): PreparedRunEventAppend {
   if (event.eventId) {
     const duplicate = existing.find((candidate) => candidate.eventId === event.eventId)
     if (duplicate) return { event: structuredClone(duplicate), duplicate: true }
@@ -855,7 +851,7 @@ export function prepareAgentEventAppend(
   // order. Start v2 allocation after those legacy entries instead of at 1.
   const seq = Math.max(existing.length, maximumSequence) + 1
   return {
-    event: prepareAgentEvent({
+    event: prepareRunEvent({
       ...event,
       eventId: event.eventId ?? createEventId(),
       seq,
@@ -864,7 +860,7 @@ export function prepareAgentEventAppend(
   }
 }
 
-function agentEventContentKey(event: AgentEvent): string {
+function agentEventContentKey(event: RunEvent): string {
   return [
     event.timestamp,
     event.conversationId,
@@ -877,16 +873,14 @@ function agentEventContentKey(event: AgentEvent): string {
   ].join(':')
 }
 
-function agentEventReplayKey(event: PersistedAgentEvent): string {
+function runEventReplayKey(event: PersistedRunEvent): string {
   if (event.eventId) return event.eventId
   return agentEventContentKey(event)
 }
 
-export function orderedUniqueAgentEvents(
-  events: readonly PersistedAgentEvent[],
-): PersistedAgentEvent[] {
+export function orderedUniqueRunEvents(events: readonly PersistedRunEvent[]): PersistedRunEvent[] {
   const seen = new Set<string>()
-  const ordered: PersistedAgentEvent[] = []
+  const ordered: PersistedRunEvent[] = []
   const indexed = events.map((event, index) => ({ event, index }))
   const hasDurableSequence = indexed.some(({ event }) => event.seq !== undefined)
   indexed.sort((left, right) => {
@@ -899,7 +893,7 @@ export function orderedUniqueAgentEvents(
     return timestampOrder === 0 ? left.index - right.index : timestampOrder
   })
   for (const { event } of indexed) {
-    const key = agentEventReplayKey(event)
+    const key = runEventReplayKey(event)
     if (seen.has(key)) continue
     seen.add(key)
     ordered.push(event)
@@ -907,10 +901,10 @@ export function orderedUniqueAgentEvents(
   return ordered
 }
 
-export function normalizeAgentEvent(
-  value: Partial<PersistedAgentEvent>,
+export function normalizeRunEvent(
+  value: Partial<PersistedRunEvent>,
   fallbackConversationId?: string,
-): PersistedAgentEvent | null {
+): PersistedRunEvent | null {
   const conversationId =
     typeof value.conversationId === 'string' && value.conversationId.length > 0
       ? value.conversationId
@@ -920,11 +914,11 @@ export function normalizeAgentEvent(
   if (typeof value.type !== 'string' || value.type.length === 0) return null
 
   return {
-    schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+    schemaVersion: AILA_RUN_EVENT_SCHEMA_VERSION,
     timestamp: typeof value.timestamp === 'number' ? value.timestamp : Date.now(),
     conversationId,
     messageId: value.messageId,
-    type: value.type as AgentEvent['type'],
+    type: value.type as RunEvent['type'],
     ...(typeof value.turnId === 'string' && value.turnId.length > 0 && { turnId: value.turnId }),
     ...(typeof value.runId === 'string' && value.runId.length > 0 && { runId: value.runId }),
     ...(typeof value.stepId === 'string' && value.stepId.length > 0 && { stepId: value.stepId }),
@@ -980,7 +974,7 @@ function joinDetail(...values: Array<string | undefined>): string | undefined {
   return detail.length > 0 ? detail : undefined
 }
 
-export function activityFromAgentEvent(event: PersistedAgentEvent): ConversationActivity | null {
+export function activityFromRunEvent(event: PersistedRunEvent): ConversationActivity | null {
   const data = event.data
   const toolName = dataString(data, 'toolName')
   const toolLabel = toolName ?? 'tool'
@@ -1264,11 +1258,11 @@ export function activityFromAgentEvent(event: PersistedAgentEvent): Conversation
 }
 
 export function replayConversationActivity(
-  events: readonly PersistedAgentEvent[],
+  events: readonly PersistedRunEvent[],
 ): ConversationActivity | undefined {
   let activity: ConversationActivity | undefined
-  for (const event of orderedUniqueAgentEvents(events)) {
-    const next = activityFromAgentEvent(event)
+  for (const event of orderedUniqueRunEvents(events)) {
+    const next = activityFromRunEvent(event)
     if (!next) continue
     if (activity && activity.updatedAt > next.updatedAt) continue
     activity = next
@@ -1299,7 +1293,7 @@ function runtimeReplayState(
   }
 }
 
-function pendingApprovalFromEvent(event: PersistedAgentEvent): ConversationRuntimePendingApproval {
+function pendingApprovalFromEvent(event: PersistedRunEvent): ConversationRuntimePendingApproval {
   const requestId = dataString(event.data, 'requestId')
   const toolCallId = dataString(event.data, 'toolCallId')
   const toolName = dataString(event.data, 'toolName')
@@ -1313,7 +1307,7 @@ function pendingApprovalFromEvent(event: PersistedAgentEvent): ConversationRunti
 
 function runtimeTurnFromEvent(
   state: ConversationRuntimeReplayState,
-  event: PersistedAgentEvent,
+  event: PersistedRunEvent,
   options: {
     startedAt?: number
     selection?: PersistedMessage['model']
@@ -1342,7 +1336,7 @@ function runtimeTurnFromEvent(
 
 function runtimePlanFromEvent(
   state: ConversationRuntimeReplayState,
-  event: PersistedAgentEvent,
+  event: PersistedRunEvent,
 ): ConversationRuntimeReplayPlan | undefined {
   const planId = dataString(event.data, 'planId') ?? state.plan?.planId
   if (!planId) return undefined
@@ -1373,11 +1367,11 @@ function nonTerminalToolPhase(
 }
 
 export function replayConversationRuntimeState(
-  events: readonly PersistedAgentEvent[],
+  events: readonly PersistedRunEvent[],
 ): ConversationRuntimeReplayState {
   let state = runtimeReplayState('idle')
 
-  for (const event of orderedUniqueAgentEvents(events)) {
+  for (const event of orderedUniqueRunEvents(events)) {
     switch (event.type) {
       case 'turn.started':
         state = runtimeReplayState(
@@ -1543,9 +1537,9 @@ export function replayConversationRuntimeState(
 }
 
 export function createInterruptedConversationRecoveryEvent(
-  events: readonly PersistedAgentEvent[],
+  events: readonly PersistedRunEvent[],
   options: ConversationInterruptedRecoveryOptions = {},
-): AgentEvent | null {
+): RunEvent | null {
   const runtimeState = replayConversationRuntimeState(events)
   if (!runtimeState.active || !runtimeState.turn) return null
 
@@ -1554,7 +1548,7 @@ export function createInterruptedConversationRecoveryEvent(
       ? options.activity
       : undefined
   const selection = runtimeState.turn.selection
-  const identityEvent = orderedUniqueAgentEvents(events)
+  const identityEvent = orderedUniqueRunEvents(events)
     .reverse()
     .find((event) => event.messageId === runtimeState.turn?.assistantMessageId)
 
@@ -1579,7 +1573,7 @@ export function interruptedRecoveryEventFromLegacyActivity(
   conversationId: string,
   activity: ConversationActivity | undefined,
   reason: string,
-): AgentEvent | null {
+): RunEvent | null {
   if (
     !activity ||
     (activity.state !== 'planning' &&

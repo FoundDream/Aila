@@ -1,9 +1,9 @@
 import {
-  FileTextIcon,
+  CommandIcon,
   PanelLeftCloseIcon,
   PanelLeftOpenIcon,
+  PlusIcon,
   SettingsIcon,
-  SquarePenIcon,
 } from 'lucide-react'
 import {
   lazy,
@@ -23,9 +23,6 @@ import { ChatPage } from '@/pages/chat/ChatPage'
 import { ConversationList } from '@/pages/chat/ConversationList'
 import { useChatStreams } from '@/pages/chat/useChatStreams'
 import { useConversations } from '@/pages/chat/useConversations'
-import { DocList } from '@/pages/docs/DocList'
-import { DocsPage } from '@/pages/docs/DocsPage'
-import { useDocs } from '@/pages/docs/useDocs'
 import {
   createToolApprovalsState,
   mergeToolApprovals,
@@ -39,27 +36,6 @@ import type {
   SettingsState,
   ToolApprovalRequestEvent,
 } from './types'
-
-type Tab = 'chat' | 'docs'
-
-interface NavItem {
-  id: Tab
-  label: string
-  icon: ReactElement
-}
-
-const navItems: NavItem[] = [
-  {
-    id: 'chat',
-    label: 'New chat',
-    icon: <SquarePenIcon className="size-4" />,
-  },
-  {
-    id: 'docs',
-    label: 'Docs',
-    icon: <FileTextIcon className="size-4" />,
-  },
-]
 
 const WorkspaceTerminalPanel = lazy(() =>
   import('@/components/terminal/WorkspaceTerminalPanel').then((module) => ({
@@ -87,7 +63,6 @@ function readStoredSidebarWidth(): number {
 }
 
 export default function App(): ReactElement {
-  const [tab, setTab] = useState<Tab>('chat')
   const [collapsed, setCollapsed] = useState(false)
   const [sidebarWidth, setSidebarWidth] = useState(readStoredSidebarWidth)
   const [resizingSidebar, setResizingSidebar] = useState(false)
@@ -95,7 +70,6 @@ export default function App(): ReactElement {
   // floats it over the content without un-collapsing.
   const [peeking, setPeeking] = useState(false)
   const showPeek = collapsed && peeking
-  const docsState = useDocs()
   const conversationsState = useConversations()
   const chatStreams = useChatStreams(
     useMemo(
@@ -134,6 +108,11 @@ export default function App(): ReactElement {
 
   const openWorkspaceTerminal = useCallback((workspace: ConversationWorkspaceRef) => {
     setTerminalWorkspace(workspace)
+  }, [])
+
+  const handleRunInspectorOpen = useCallback((): void => {
+    setPeeking(false)
+    setCollapsed(true)
   }, [])
 
   useEffect(() => {
@@ -264,30 +243,32 @@ export default function App(): ReactElement {
             {/* Keep the h-11 spacer in peek mode too so content clears the
                 traffic lights; drag region only when docked. */}
             <div className={`h-11 shrink-0 ${showPeek ? '' : '[-webkit-app-region:drag]'}`} />
-            <nav className="flex shrink-0 flex-col gap-px px-2">
-              {navItems.map((item) => (
-                <SidebarButton
-                  key={item.id}
-                  active={
-                    item.id === 'chat'
-                      ? tab === item.id && conversationsState.activeId === null
-                      : tab === item.id
-                  }
-                  onClick={() => {
-                    // Chat is an entry point, not a session: clicking it always
-                    // lands on the new-chat empty state.
-                    if (item.id === 'chat') conversationsState.deselect()
-                    setTab(item.id)
-                  }}
-                  label={item.label}
-                  icon={item.icon}
-                />
-              ))}
-            </nav>
-            <div
-              className={tab === 'chat' ? 'mt-5 flex min-h-0 flex-1 flex-col' : 'hidden'}
-              aria-hidden={(collapsed && !showPeek) || tab !== 'chat'}
-            >
+            <div className="flex shrink-0 items-center justify-between px-4 pb-3">
+              <div className="flex min-w-0 items-center gap-2.5">
+                <span className="grid size-6 shrink-0 place-items-center rounded-md bg-[var(--signal)] font-mono text-[10px] font-bold text-white shadow-[0_3px_12px_var(--signal-glow)]">
+                  A
+                </span>
+                <div className="min-w-0">
+                  <div className="truncate text-[13px] font-semibold tracking-[-0.02em] text-[var(--text)]">
+                    Aila
+                  </div>
+                  <div className="font-mono text-[8px] uppercase tracking-[0.18em] text-[var(--sidebar-text-dim)]">
+                    Agent workbench
+                  </div>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => conversationsState.deselect()}
+                aria-label="New thread"
+                title="New thread"
+                className="grid size-7 place-items-center rounded-md border border-[var(--border)] bg-[var(--surface)] text-[var(--text-soft)] shadow-[0_1px_1px_rgba(0,0,0,0.04)] transition hover:border-[var(--border-strong)] hover:text-[var(--text)]"
+              >
+                <PlusIcon className="size-3.5" />
+              </button>
+            </div>
+            <div className="mx-3 mb-3 h-px bg-[var(--border)]" />
+            <div className="flex min-h-0 flex-1 flex-col" aria-hidden={collapsed && !showPeek}>
               <ConversationList
                 conversations={conversationsState.conversations}
                 activeId={conversationsState.activeId}
@@ -317,30 +298,17 @@ export default function App(): ReactElement {
                 }}
               />
             </div>
-            <div
-              className={tab === 'docs' ? 'mt-5 flex min-h-0 flex-1 flex-col' : 'hidden'}
-              aria-hidden={(collapsed && !showPeek) || tab !== 'docs'}
-            >
-              <DocList
-                docs={docsState.docs}
-                folders={docsState.folders}
-                activePath={docsState.activePath}
-                onSelect={docsState.select}
-                onCreateDoc={docsState.create}
-                onDeleteDoc={docsState.remove}
-                onMoveDoc={docsState.move}
-                onCreateFolder={docsState.createFolder}
-                onRenameFolder={docsState.renameFolder}
-                onMoveFolder={docsState.moveFolder}
-                onDeleteFolder={docsState.deleteFolder}
-              />
-            </div>
-            <div className="flex shrink-0 flex-col px-2 pb-3 pt-1">
+            <div className="mx-3 mt-2 h-px bg-[var(--border)]" />
+            <div className="flex shrink-0 flex-col gap-1 px-2 pb-3 pt-2">
               <SidebarButton
                 onClick={openSettings}
                 label="Settings"
                 icon={<SettingsIcon className="size-4" />}
               />
+              <div className="flex h-7 items-center gap-2 px-2 font-mono text-[9px] uppercase tracking-[0.12em] text-[var(--sidebar-text-dim)]">
+                <CommandIcon className="size-3" />
+                <span>⌘ \ toggles rail</span>
+              </div>
             </div>
           </div>
         </aside>
@@ -370,12 +338,12 @@ export default function App(): ReactElement {
           className={`min-w-0 flex-1 bg-[var(--bg)] ${
             collapsed
               ? ''
-              : 'overflow-hidden rounded-tl-xl border-t border-l border-[var(--border)] shadow-[0_1px_4px_rgba(0,0,0,0.03)]'
+              : 'overflow-hidden rounded-tl-[18px] border-t border-l border-[var(--border)] shadow-[-8px_0_28px_rgba(36,31,22,0.035)]'
           }`}
         >
           <div className="flex h-full min-h-0 flex-col">
             <div className="min-h-0 flex-1">
-              <div className={tab === 'chat' ? 'h-full' : 'hidden'}>
+              <div className="h-full">
                 <ChatPage
                   conversation={conversationsState.activeRecord}
                   onCreateConversation={conversationsState.create}
@@ -384,19 +352,7 @@ export default function App(): ReactElement {
                   configuredProviders={settingsState?.configuredProviders ?? ([] as ProviderId[])}
                   onUpdateSettings={updateSettings}
                   onOpenSettings={openSettings}
-                />
-              </div>
-              <div className={tab === 'docs' ? 'h-full' : 'hidden'}>
-                <DocsPage
-                  active={tab === 'docs'}
-                  state={docsState}
-                  streams={chatStreams}
-                  settings={settingsState?.settings ?? null}
-                  configuredProviders={settingsState?.configuredProviders ?? ([] as ProviderId[])}
-                  pendingApprovalConversationIds={pendingApprovalConversationIds}
-                  onClearConversationApprovals={clearConversationApprovals}
-                  onUpdateSettings={updateSettings}
-                  onOpenSettings={openSettings}
+                  onRunInspectorOpen={handleRunInspectorOpen}
                 />
               </div>
             </div>

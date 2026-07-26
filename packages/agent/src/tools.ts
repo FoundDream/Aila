@@ -800,6 +800,9 @@ export interface ToolApprovalRequest {
   target?: ToolActivityTarget | null
   conversationId?: string
   messageId?: string
+  turnId?: string
+  runId?: string
+  stepId?: string
   toolCallId?: string
 }
 
@@ -844,6 +847,9 @@ function cloneToolPolicyRequest(request: ToolPolicyRequest): ToolPolicyRequest {
     ...(request.target ? { target: structuredClone(request.target) } : {}),
     ...(request.conversationId ? { conversationId: request.conversationId } : {}),
     ...(request.messageId ? { messageId: request.messageId } : {}),
+    ...(request.turnId ? { turnId: request.turnId } : {}),
+    ...(request.runId ? { runId: request.runId } : {}),
+    ...(request.stepId ? { stepId: request.stepId } : {}),
     ...(request.toolCallId ? { toolCallId: request.toolCallId } : {}),
   }
 }
@@ -872,6 +878,9 @@ export interface ToolContext {
   settings: Settings
   conversationId?: string
   messageId?: string
+  turnId?: string
+  runId?: string
+  stepId?: string
   toolCallId?: string
   workspaceRoots?: readonly ToolWorkspaceRoot[]
   shellCwd?: string
@@ -966,6 +975,9 @@ export async function executeTool(
     target: summarizeToolTarget(name, toolArgs),
     ...(ctx.conversationId && { conversationId: ctx.conversationId }),
     ...(ctx.messageId && { messageId: ctx.messageId }),
+    ...(ctx.turnId && { turnId: ctx.turnId }),
+    ...(ctx.runId && { runId: ctx.runId }),
+    ...(ctx.stepId && { stepId: ctx.stepId }),
     ...(ctx.toolCallId && { toolCallId: ctx.toolCallId }),
   }
   const decision = await evaluateToolPolicy(request, toolContext)

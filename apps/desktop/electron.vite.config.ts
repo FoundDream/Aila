@@ -8,6 +8,10 @@ const CONFIG_DIR = dirname(fileURLToPath(import.meta.url))
 
 const sharedAlias = [
   {
+    find: '@aila/agent/internal',
+    replacement: resolve(CONFIG_DIR, '../../packages/agent/src/internal.ts'),
+  },
+  {
     find: '@aila/agent/host',
     replacement: resolve(CONFIG_DIR, '../../packages/agent/src/host.ts'),
   },
@@ -42,14 +46,6 @@ export default defineConfig({
     root: resolve(CONFIG_DIR, 'src/renderer'),
     resolve: {
       alias: [{ find: '@', replacement: resolve(CONFIG_DIR, 'src/renderer/src') }, ...sharedAlias],
-      // CodeMirror 6 packages share a singleton @codemirror/state. Two copies
-      // would silently break view.dispatch with cryptic state-mismatch errors.
-      dedupe: [
-        '@codemirror/state',
-        '@codemirror/view',
-        '@codemirror/language',
-        '@codemirror/commands',
-      ],
     },
     plugins: [tailwindcss(), react()],
   },

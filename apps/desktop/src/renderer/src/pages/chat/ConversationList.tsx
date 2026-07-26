@@ -186,8 +186,8 @@ export function ConversationList({
       <div className="min-h-0 flex-1 overflow-y-auto px-2">
         <section>
           <SectionHeader
-            label="Projects"
-            actionLabel="New workspace chat"
+            label="Workspaces"
+            actionLabel="Open workspace"
             onAction={onCreateWorkspaceChat}
           />
           {projects.length > 0 && (
@@ -232,8 +232,8 @@ export function ConversationList({
                       <button
                         type="button"
                         onClick={() => onCreate(workspace)}
-                        aria-label={`New chat in ${project.label}`}
-                        title={`New chat in ${project.label}`}
+                        aria-label={`New thread in ${project.label}`}
+                        title={`New thread in ${project.label}`}
                         className="mr-1 grid size-5 shrink-0 cursor-pointer place-items-center rounded-md text-[var(--sidebar-text-dim)] opacity-0 transition group-hover/project:opacity-100 hover:bg-[var(--surface)] hover:text-[var(--text)]"
                       >
                         <PlusIcon className="size-3.5" />
@@ -281,13 +281,16 @@ export function ConversationList({
               })}
             </ul>
           )}
+          <div className="mt-4">
+            <SectionHeader label="Threads" />
+          </div>
           {chats.length === 0 ? (
             <button
               type="button"
               onClick={() => onCreate(null)}
               className="mt-2 flex h-7 w-full cursor-pointer items-center rounded-md px-2 text-left text-[13.5px] text-[var(--sidebar-text-dim)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--sidebar-text-soft)]"
             >
-              New chat
+              New thread
             </button>
           ) : (
             <ul className="mt-2 flex flex-col gap-px">

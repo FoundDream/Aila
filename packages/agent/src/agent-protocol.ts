@@ -1,9 +1,9 @@
-import type { AgentRunIdentity } from './agent-loop'
 import type { AgentContextPlan } from './context'
 import type { PersistedImageBlock, PersistedMessage } from './conversation-core'
 import type { ModelDescriptor, ProviderId } from './models'
 import type { PlanArtifact } from './plan-core'
-import type { AgentRunArtifact, AgentRunCheckpoint } from './run-persistence'
+import type { RunIdentity } from './run-machine'
+import type { RunArtifact, RunCheckpoint } from './run-persistence'
 import type { Settings } from './settings-types'
 import type { AilaExecutionMode } from './tool-policy'
 import type { ToolContext, ToolRegistry } from './tools'
@@ -101,7 +101,7 @@ export interface ErrorEvent {
   message: PersistedMessage
 }
 
-export type AgentEventType =
+export type RunEventType =
   | 'run.started'
   | 'run.resumed'
   | 'run.paused'
@@ -147,11 +147,11 @@ export type AgentEventType =
   | 'plan.drift.detected'
   | 'plan.completed'
 
-export interface AgentEvent {
+export interface RunEvent {
   timestamp: number
   conversationId: string
   messageId: string
-  type: AgentEventType
+  type: RunEventType
   /** Stable execution identity. Optional only for legacy events. */
   turnId?: string
   runId?: string
@@ -167,9 +167,9 @@ export interface AgentEvent {
  * Async implementations are supported at runtime. The `void` surface preserves
  * compatibility with callbacks whose expression happens to return a value.
  */
-export type AgentEventSink = (event: AgentEvent) => void
+export type RunEventSink = (event: RunEvent) => void
 
-export interface StreamHandlers {
+export interface RunHandlers {
   onTextDelta: (event: DeltaEvent) => void
   onReasoningDelta: (event: DeltaEvent) => void
   onToolCallStart: (event: ToolCallEvent) => void
@@ -191,12 +191,12 @@ export interface ModelSelection {
   model?: ModelDescriptor
 }
 
-export interface StreamRequest {
+export interface RunRequest {
   conversationId: string
   assistantMessageId: string
-  run?: AgentRunIdentity
+  run?: RunIdentity
   loopMode?: 'continuous' | 'step'
-  runCheckpoint?: AgentRunCheckpoint
+  runCheckpoint?: RunCheckpoint
   messages: ChatMessage[]
   contextPlan?: AgentContextPlan
   mode?: AilaExecutionMode
@@ -204,9 +204,9 @@ export interface StreamRequest {
   planOperation?: 'create' | 'revise' | 'implement'
   selection: ModelSelection
   signal: AbortSignal
-  onAgentEvent?: AgentEventSink
-  saveRunCheckpoint?: (checkpoint: AgentRunCheckpoint) => MaybePromise<AgentRunCheckpoint>
-  saveRunArtifact?: (artifact: AgentRunArtifact) => MaybePromise<AgentRunArtifact>
+  onRunEvent?: RunEventSink
+  saveRunCheckpoint?: (checkpoint: RunCheckpoint) => MaybePromise<RunCheckpoint>
+  saveRunArtifact?: (artifact: RunArtifact) => MaybePromise<RunArtifact>
   workspaceRoots?: ToolContext['workspaceRoots']
   shellCwd?: ToolContext['shellCwd']
   onToolPolicy?: ToolContext['onToolPolicy']
@@ -220,6 +220,10 @@ export interface StreamRequest {
   toolRegistry?: ToolRegistry
 }
 
-export type RuntimeStreamChat = (req: StreamRequest, handlers: StreamHandlers) => MaybePromise<void>
+/**
+ * Executes one durable agent run. Provider adapters remain behind
+ * ModelCallExecutor and never own the model/tool loop.
+ */
+export type DurableRunExecutor = (req: RunRequest, handlers: RunHandlers) => MaybePromise<void>
 
 export type RuntimeModelInfoResolver = (selection: ModelSelection) => MaybePromise<ModelInfo>

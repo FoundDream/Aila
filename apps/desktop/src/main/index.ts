@@ -14,7 +14,6 @@ import {
   listIntegrationDefinitions,
   loadMcpToolPack,
   loadSettings,
-  rewriteDocRefs as rewritePersistedDocRefs,
   type SaveIntegrationRequest,
   type Settings,
   saveImage,
@@ -34,20 +33,6 @@ import {
   type OpenDialogOptions,
   shell,
 } from 'electron'
-import { sweepOrphanedDocConversations } from './doc-conversation-cleanup'
-import type { DocPatch } from './docs'
-import {
-  configureDocConversationRefRewriter,
-  createDoc,
-  createFolder,
-  deleteDoc,
-  deleteFolder,
-  getDoc,
-  listAll,
-  moveFolder,
-  renameFolder,
-  updateDoc,
-} from './docs'
 import { handleImageProtocol, registerImageProtocolScheme } from './images'
 import {
   clearMcpOAuthForServer,
@@ -113,10 +98,10 @@ function createWindow(): void {
   if (process.platform === 'darwin' && app.dock && appIcon) app.dock.setIcon(appIcon)
 
   mainWindow = new BrowserWindow({
-    width: 900,
-    height: 700,
-    minWidth: 600,
-    minHeight: 400,
+    width: 1280,
+    height: 820,
+    minWidth: 920,
+    minHeight: 620,
     show: false,
     titleBarStyle: 'hiddenInset',
     // macOS: the renderer leaves the window background transparent so the
@@ -196,12 +181,6 @@ function getTerminalManager(): TerminalSessionManager {
   return terminalManager
 }
 
-configureDocConversationRefRewriter(async (rewrites) => {
-  const summaries = await rewritePersistedDocRefs(rewrites.map((rewrite) => ({ ...rewrite })))
-  for (const summary of summaries) send('conversations:updated', summary)
-  return summaries
-})
-
 async function shutdownRuntimeWorkbench(): Promise<void> {
   terminalManager?.shutdown()
   await runtimeWorkbench?.shutdown()
@@ -222,41 +201,6 @@ function registerIpcHandlers(): void {
       report,
     }
   }
-
-  ipcMain.handle('docs:list', () => listAll())
-  ipcMain.handle('docs:get', (_event, docPath: string) => getDoc(docPath))
-  ipcMain.handle('docs:create', (_event, folderPath?: string | null) =>
-    createDoc(folderPath ?? null),
-  )
-  ipcMain.handle('docs:update', (_event, docPath: string, patch: DocPatch) =>
-    updateDoc(docPath, patch),
-  )
-
-  ipcMain.handle('folders:create', (_event, parentPath: string | null, name: string) =>
-    createFolder(parentPath, name),
-  )
-  ipcMain.handle('folders:rename', (_event, path: string, newName: string) =>
-    renameFolder(path, newName),
-  )
-  ipcMain.handle('folders:move', (_event, path: string, newParentPath: string | null) =>
-    moveFolder(path, newParentPath),
-  )
-
-  ipcMain.handle('docs:delete', async (_event, docPath: string) => {
-    await deleteDoc(docPath)
-    await sweepOrphanedDocConversations({
-      listConversations: () => runtimeWorkbench.listConversations(),
-      deleteConversation: (id) => runtimeWorkbench.deleteConversation(id),
-    })
-  })
-
-  ipcMain.handle('folders:delete', async (_event, path: string) => {
-    await deleteFolder(path)
-    await sweepOrphanedDocConversations({
-      listConversations: () => runtimeWorkbench.listConversations(),
-      deleteConversation: (id) => runtimeWorkbench.deleteConversation(id),
-    })
-  })
 
   ipcMain.handle('images:save', (_event, bytes: ArrayBuffer, filename: string) =>
     saveImage(bytes, filename),

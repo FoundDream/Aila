@@ -32,7 +32,7 @@ export function mergeConversationSummaryUpdate(
   summary: ConversationSummary,
   removedIds: ReadonlySet<string>,
 ): ConversationSummary[] {
-  if (removedIds.has(summary.id) || summary.docId) {
+  if (removedIds.has(summary.id)) {
     return conversations.filter((conversation) => conversation.id !== summary.id)
   }
   const found = conversations.some((conversation) => conversation.id === summary.id)
@@ -71,8 +71,8 @@ export function useConversations(): ConversationsState {
   useEffect(() => {
     if (!isReady || !activeId) return
     if (conversations.some((conversation) => conversation.id === activeId)) return
-    // Active conversation disappeared (deleted / moved to a doc) — back to the
-    // empty state rather than jumping to another session.
+    // Active conversation disappeared — return to the empty state rather than
+    // jumping to another thread.
     setActiveId(null)
   }, [activeId, conversations, isReady])
 
@@ -152,10 +152,9 @@ export function useConversations(): ConversationsState {
 
   // Reconciles a single ConversationSummary update from main (fired after every
   // appendMessage / setUsage). Keeps the sidebar in sync without a full refetch.
-  // Doc-bound conversations are filtered out — they belong to the docs sidebar.
   const applyUpdate = useCallback((summary: ConversationSummary) => {
     const removed = removedConversationIdsRef.current
-    if (removed.has(summary.id) || summary.docId) {
+    if (removed.has(summary.id)) {
       setConversations((prev) => mergeConversationSummaryUpdate(prev, summary, removed))
       setActiveRecord((current) => (current?.meta.id === summary.id ? null : current))
       setActiveId((current) => (current === summary.id ? null : current))

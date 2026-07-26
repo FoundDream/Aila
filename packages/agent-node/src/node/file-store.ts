@@ -1,16 +1,10 @@
 import { randomUUID } from 'node:crypto'
 import { mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import type {
-  AgentEvent,
-  AgentRunArtifact,
-  AgentRunCheckpoint,
-  AgentRuntimeStore,
-} from '@aila/agent'
+import type { RunArtifact, RunCheckpoint, RunEvent, WorkbenchStore } from '@aila/agent'
 import {
-  type AgentEventAppendResult,
-  AILA_AGENT_EVENT_SCHEMA_VERSION,
   AILA_CONVERSATION_META_SCHEMA_VERSION,
+  AILA_RUN_EVENT_SCHEMA_VERSION,
   appendConversationContextTurnLedgerEntry,
   appendPlanRevisionToPlan,
   type ConversationRecord,
@@ -21,15 +15,17 @@ import {
   DEFAULT_CONVERSATION_TITLE,
   deriveConversationTitle,
   normalizeConversationMeta,
-  orderedUniqueAgentEvents,
-  type PersistedAgentEvent,
+  normalizeRunCheckpoint,
+  orderedUniqueRunEvents,
   type PersistedMessage,
+  type PersistedRunEvent,
   type PlanArtifact,
-  prepareAgentEventAppend,
-  prepareAgentRunArtifact,
-  prepareAgentRunCheckpoint,
   preparePersistedMessage,
   preparePlanArtifact,
+  prepareRunArtifact,
+  prepareRunCheckpoint,
+  prepareRunEventAppend,
+  type RunEventAppendResult,
   replayConversationActivity,
   upsertPersistedMessage,
 } from '@aila/agent'
@@ -43,7 +39,7 @@ export interface FileRuntimeStoreOptions {
   now?: () => number
 }
 
-export function createFileRuntimeStore(options: FileRuntimeStoreOptions): AgentRuntimeStore {
+export function createFileRuntimeStore(options: FileRuntimeStoreOptions): WorkbenchStore {
   const conversationsDir = join(options.dataDir, 'conversations')
   const eventsDir = join(options.dataDir, 'events')
   const plansDir = join(options.dataDir, 'plans')
@@ -74,14 +70,14 @@ export function createFileRuntimeStore(options: FileRuntimeStoreOptions): AgentR
     )
   }
 
-  async function readEvents(conversationId: string): Promise<PersistedAgentEvent[]> {
+  async function readEvents(conversationId: string): Promise<PersistedRunEvent[]> {
     try {
       const raw = await readFile(join(eventsDir, `${conversationId}.json`), 'utf-8')
-      const parsed = JSON.parse(raw) as PersistedAgentEvent[]
-      return orderedUniqueAgentEvents(
+      const parsed = JSON.parse(raw) as PersistedRunEvent[]
+      return orderedUniqueRunEvents(
         parsed.map((event) => ({
           ...event,
-          schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+          schemaVersion: AILA_RUN_EVENT_SCHEMA_VERSION,
         })),
       )
     } catch {
@@ -89,11 +85,11 @@ export function createFileRuntimeStore(options: FileRuntimeStoreOptions): AgentR
     }
   }
 
-  async function writeEvents(conversationId: string, events: PersistedAgentEvent[]): Promise<void> {
+  async function writeEvents(conversationId: string, events: PersistedRunEvent[]): Promise<void> {
     await mkdir(eventsDir, { recursive: true })
     await writeFile(
       join(eventsDir, `${conversationId}.json`),
-      `${JSON.stringify(orderedUniqueAgentEvents(events), null, 2)}\n`,
+      `${JSON.stringify(orderedUniqueRunEvents(events), null, 2)}\n`,
       'utf-8',
     )
   }
@@ -140,10 +136,10 @@ export function createFileRuntimeStore(options: FileRuntimeStoreOptions): AgentR
   async function readRunCheckpoint(
     conversationId: string,
     runId: string,
-  ): Promise<AgentRunCheckpoint | null> {
+  ): Promise<RunCheckpoint | null> {
     try {
       const raw = await readFile(runCheckpointPath(conversationId, runId), 'utf-8')
-      return JSON.parse(raw) as AgentRunCheckpoint
+      return normalizeRunCheckpoint(JSON.parse(raw))
     } catch (error) {
       if (isErrnoCode(error, 'ENOENT')) return null
       throw error
@@ -201,14 +197,14 @@ export function createFileRuntimeStore(options: FileRuntimeStoreOptions): AgentR
     return record
   }
 
-  async function recordAgentEvent(
+  async function recordRunEvent(
     conversationId: string,
-    event: AgentEvent,
-  ): Promise<AgentEventAppendResult> {
+    event: RunEvent,
+  ): Promise<RunEventAppendResult> {
     const record = await readRecord(conversationId)
     const events = await readEvents(conversationId)
     const previousActivity = replayConversationActivity(events)
-    const prepared = prepareAgentEventAppend(events, event, createEventId)
+    const prepared = prepareRunEventAppend(events, event, createEventId)
     const persisted = prepared.event
     if (!prepared.duplicate) {
       events.push(persisted)
@@ -237,7 +233,6 @@ export function createFileRuntimeStore(options: FileRuntimeStoreOptions): AgentR
 
   return {
     async createConversation(
-      docId?: string,
       workspace?: ConversationWorkspaceRef | null,
     ): Promise<ConversationSummary> {
       const createdAt = now()
@@ -247,7 +242,6 @@ export function createFileRuntimeStore(options: FileRuntimeStoreOptions): AgentR
         title: DEFAULT_CONVERSATION_TITLE,
         createdAt,
         updatedAt: createdAt,
-        ...(docId ? { docId } : {}),
         ...(workspace ? { workspace: structuredClone(workspace) } : {}),
       }
       await writeRecord({ meta, messages: [] })
@@ -277,7 +271,7 @@ export function createFileRuntimeStore(options: FileRuntimeStoreOptions): AgentR
       })
       return structuredClone(record.meta)
     },
-    recordAgentEvent,
+    recordRunEvent,
     async listConversations(): Promise<readonly ConversationSummary[]> {
       await mkdir(conversationsDir, { recursive: true })
       const files = await readdir(conversationsDir)
@@ -291,12 +285,12 @@ export function createFileRuntimeStore(options: FileRuntimeStoreOptions): AgentR
         .map((record) => structuredClone(record.meta))
         .sort((left, right) => right.updatedAt - left.updatedAt)
     },
-    async listAgentEvents(conversationId): Promise<readonly PersistedAgentEvent[]> {
+    async listRunEvents(conversationId): Promise<readonly PersistedRunEvent[]> {
       return structuredClone(await readEvents(conversationId))
     },
-    async recoverInterruptedActivities(reason): Promise<readonly AgentEventAppendResult[]> {
+    async recoverInterruptedActivities(reason): Promise<readonly RunEventAppendResult[]> {
       const summaries = (await this.listConversations?.()) ?? []
-      const recovered: AgentEventAppendResult[] = []
+      const recovered: RunEventAppendResult[] = []
       for (const summary of summaries) {
         const events = await readEvents(summary.id)
         const activity = replayConversationActivity(events)
@@ -305,7 +299,7 @@ export function createFileRuntimeStore(options: FileRuntimeStoreOptions): AgentR
           activity,
         })
         if (!recoveryEvent) continue
-        recovered.push(await recordAgentEvent(summary.id, recoveryEvent))
+        recovered.push(await recordRunEvent(summary.id, recoveryEvent))
       }
       return recovered
     },
@@ -357,7 +351,7 @@ export function createFileRuntimeStore(options: FileRuntimeStoreOptions): AgentR
       }))
       return structuredClone(record.meta)
     },
-    async saveRunCheckpoint(checkpoint): Promise<AgentRunCheckpoint> {
+    async saveRunCheckpoint(checkpoint): Promise<RunCheckpoint> {
       return queueRunWrite(
         checkpoint.identity.conversationId,
         checkpoint.identity.runId,
@@ -367,7 +361,7 @@ export function createFileRuntimeStore(options: FileRuntimeStoreOptions): AgentR
             checkpoint.identity.conversationId,
             checkpoint.identity.runId,
           )
-          const prepared = prepareAgentRunCheckpoint(checkpoint, previous ?? undefined)
+          const prepared = prepareRunCheckpoint(checkpoint, previous ?? undefined)
           const dir = runDir(prepared.identity.conversationId, prepared.identity.runId)
           await mkdir(dir, { recursive: true })
           await writeJsonAtomic(
@@ -378,11 +372,11 @@ export function createFileRuntimeStore(options: FileRuntimeStoreOptions): AgentR
         },
       )
     },
-    async getRunCheckpoint(conversationId, runId): Promise<AgentRunCheckpoint | null> {
+    async getRunCheckpoint(conversationId, runId): Promise<RunCheckpoint | null> {
       const checkpoint = await readRunCheckpoint(conversationId, runId)
       return checkpoint ? structuredClone(checkpoint) : null
     },
-    async listRunCheckpoints(conversationId): Promise<readonly AgentRunCheckpoint[]> {
+    async listRunCheckpoints(conversationId): Promise<readonly RunCheckpoint[]> {
       const dir = runConversationDir(conversationId)
       await mkdir(dir, { recursive: true })
       const entries = await readdir(dir, { withFileTypes: true })
@@ -394,20 +388,20 @@ export function createFileRuntimeStore(options: FileRuntimeStoreOptions): AgentR
           ),
       )
       return checkpoints
-        .filter((checkpoint): checkpoint is AgentRunCheckpoint => checkpoint !== null)
+        .filter((checkpoint): checkpoint is RunCheckpoint => checkpoint !== null)
         .map((checkpoint) => structuredClone(checkpoint))
         .sort((left, right) => right.updatedAt - left.updatedAt)
     },
-    async saveRunArtifact(artifact): Promise<AgentRunArtifact> {
+    async saveRunArtifact(artifact): Promise<RunArtifact> {
       return queueRunWrite(artifact.conversationId, artifact.runId, async () => {
         await readRecord(artifact.conversationId)
-        const prepared = prepareAgentRunArtifact(artifact)
+        const prepared = prepareRunArtifact(artifact)
         const dir = runArtifactsDir(prepared.conversationId, prepared.runId)
         const path = join(dir, `${encodeURIComponent(prepared.artifactId)}.json`)
         await mkdir(dir, { recursive: true })
         try {
-          const existing = prepareAgentRunArtifact(
-            JSON.parse(await readFile(path, 'utf-8')) as AgentRunArtifact,
+          const existing = prepareRunArtifact(
+            JSON.parse(await readFile(path, 'utf-8')) as RunArtifact,
           )
           if (JSON.stringify(existing) !== JSON.stringify(prepared)) {
             throw new Error(`run artifact is immutable: ${prepared.artifactId}`)
@@ -420,7 +414,7 @@ export function createFileRuntimeStore(options: FileRuntimeStoreOptions): AgentR
         return structuredClone(prepared)
       })
     },
-    async listRunArtifacts(conversationId, runId): Promise<readonly AgentRunArtifact[]> {
+    async listRunArtifacts(conversationId, runId): Promise<readonly RunArtifact[]> {
       const dir = runArtifactsDir(conversationId, runId)
       await mkdir(dir, { recursive: true })
       const files = await readdir(dir)
@@ -429,8 +423,8 @@ export function createFileRuntimeStore(options: FileRuntimeStoreOptions): AgentR
           .filter((file) => file.endsWith('.json'))
           .map(async (file) => {
             try {
-              return prepareAgentRunArtifact(
-                JSON.parse(await readFile(join(dir, file), 'utf-8')) as AgentRunArtifact,
+              return prepareRunArtifact(
+                JSON.parse(await readFile(join(dir, file), 'utf-8')) as RunArtifact,
               )
             } catch {
               return null
@@ -438,7 +432,7 @@ export function createFileRuntimeStore(options: FileRuntimeStoreOptions): AgentR
           }),
       )
       return artifacts
-        .filter((artifact): artifact is AgentRunArtifact => artifact !== null)
+        .filter((artifact): artifact is RunArtifact => artifact !== null)
         .map((artifact) => structuredClone(artifact))
         .sort((left, right) => left.createdAt - right.createdAt)
     },

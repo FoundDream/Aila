@@ -1,11 +1,10 @@
-import type { AgentLoopNextAction, AgentRunIdentity } from './agent-loop'
 import type {
-  AgentEvent,
   ChatMessage,
+  DurableRunExecutor,
   ModelInfo,
   ModelSelection,
+  RunEvent,
   RuntimeModelInfoResolver,
-  RuntimeStreamChat,
   UsageInfo,
 } from './agent-protocol'
 import {
@@ -17,12 +16,9 @@ import {
   recommendManualContextCheckpoint,
 } from './context'
 import {
-  type AgentEventAppendResult,
   AILA_CONTEXT_CHECKPOINT_SCHEMA_VERSION,
   AILA_CONTEXT_TURN_LEDGER_SCHEMA_VERSION,
-  AILA_CONVERSATION_META_SCHEMA_VERSION,
   AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
-  appendConversationContextTurnLedgerEntry,
   type ConversationCompactArtifact,
   type ConversationContextCheckpoint,
   type ConversationContextTurnLedgerEntry,
@@ -30,43 +26,41 @@ import {
   type ConversationRuntimeReplayState,
   type ConversationSummary,
   type ConversationWorkspaceRef,
-  createConversationUsageSnapshot,
   createInterruptedConversationRecoveryEvent,
   normalizeConversationCompactArtifact,
-  orderedUniqueAgentEvents,
-  type PersistedAgentEvent,
   type PersistedBlock,
   type PersistedMessage,
-  type PersistedTextBlock,
-  prepareAgentEventAppend,
+  type PersistedRunEvent,
+  type RunEventAppendResult,
   replayConversationActivity,
   replayConversationRuntimeState,
 } from './conversation-core'
 import {
-  type AgentRuntimePlanStore,
-  AILA_PLAN_ARTIFACT_SCHEMA_VERSION,
   AILA_PLAN_REVISION_SCHEMA_VERSION,
-  appendPlanRevisionToPlan,
-  normalizePlanArtifact,
   normalizePlanRevision,
-  PLAN_DRIFT_SEVERITIES,
-  PLAN_STATUSES,
   type PlanApprovedBy,
   type PlanArtifact,
-  type PlanDriftSeverity,
-  type PlanQuestion,
   type PlanStatus,
-  type PlanTaskStatus,
-  preparePlanArtifact,
 } from './plan-core'
+import type { RunIdentity, RunNextAction } from './run-machine'
 import {
-  type AgentRunArtifact,
-  type AgentRunCheckpoint,
-  prepareAgentRunArtifact,
-  prepareAgentRunCheckpoint,
-  prepareAgentRunCheckpointForResume,
+  prepareRunCheckpointForResume,
+  type RunArtifact,
+  type RunCheckpoint,
 } from './run-persistence'
-import { type AgentRuntimeEvent, createRuntimeEvent } from './runtime-events'
+import { createInMemoryRuntimeStore } from './runtime/memory-store'
+import {
+  createPlanImplementationToolPack,
+  createPlanToolPack,
+  type PlanToolServices,
+  renderPlanContext,
+} from './runtime/plan-tools'
+import type { PlanRepository, WorkbenchStore } from './runtime/repositories'
+import {
+  type CoordinatedTurn,
+  TurnCoordinator,
+  type TurnStartLock,
+} from './runtime/turn-coordinator'
 import type { Settings } from './settings-types'
 import { createSkillToolPack, type LoadedSkill } from './skills'
 import {
@@ -85,22 +79,17 @@ import {
   type ToolRegistry,
   type ToolWorkspaceRoot,
 } from './tools'
+import { createWorkbenchEvent, type WorkbenchEvent } from './workbench-events'
 
-interface StreamSlot {
+interface StreamSlot extends CoordinatedTurn {
   controller: AbortController
   cleanup: Promise<void>
   assistantMessageId: string
-  run: AgentRunIdentity
+  run: RunIdentity
   selection: ModelSelection
   abortRecorded: boolean
   cleanupInterruptedRecorded: boolean
-  turnStartLock: TurnStartLockSlot
-}
-
-interface TurnStartLockSlot {
-  promise: Promise<void>
-  release: () => void
-  released: boolean
+  turnStartLock: TurnStartLock
 }
 
 interface RuntimeToolContextInput {
@@ -130,27 +119,16 @@ interface RuntimeSemanticCompactArtifact {
   fallbackReason?: RuntimeCompactArtifactFallbackReason
 }
 
-export interface AgentRuntimeEnvironment {
-  createId?: () => string
-  createRunId?: () => string
-  createEventId?: () => string
-  now?: () => number
-}
-
-export type CreateInMemoryRuntimeStoreInput = AgentRuntimeEnvironment
-
 type MaybePromise<T> = T | Promise<T>
-export type RuntimeRecordAgentEventInput = AgentEvent
-type AgentEventInput = RuntimeRecordAgentEventInput
+export type RuntimeRecordRunEventInput = RunEvent
+type RunEventInput = RuntimeRecordRunEventInput
 
 export type ConversationAbortReason = 'user' | 'delete' | 'shutdown'
 
 const DEFAULT_ABORT_ALL_CLEANUP_TIMEOUT_MS = 5_000
-const DEFAULT_CONVERSATION_TITLE = '新对话'
-const CONVERSATION_TITLE_MAX = 40
 const EMPTY_RUNTIME_SETTINGS: Settings = { apiKeys: {}, defaultModel: null }
 const FALLBACK_MODEL_CONTEXT: ModelInfo = { model: 'unknown', contextLength: null }
-const TURN_LIFECYCLE_EVENTS = new Set<AgentEvent['type']>([
+const TURN_LIFECYCLE_EVENTS = new Set<RunEvent['type']>([
   'turn.started',
   'turn.completed',
   'turn.failed',
@@ -174,18 +152,63 @@ function defaultCreateRuntimeId(): string {
   )
 }
 
-function messageText(message: PersistedMessage): string {
-  return message.blocks
-    .filter((block): block is PersistedTextBlock => block.type === 'text')
-    .map((block) => block.content)
-    .join('')
-}
-
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-function withTurnSelection(event: AgentEventInput, selection: ModelSelection): AgentEventInput {
+function runtimeRunAllowedControls(
+  checkpoint: RunCheckpoint,
+  active: boolean,
+): RuntimeRunAllowedControls {
+  const status = checkpoint.loop.state.status
+  const terminal = status === 'completed' || status === 'failed' || status === 'cancelled'
+  const resumable = status === 'paused' && checkpoint.recovery.strategy === 'automatic'
+  return {
+    step: resumable && !active,
+    continue: resumable && !active,
+    abort: !terminal,
+    fork: !active && checkpoint.loop.state.currentStep?.status !== 'running',
+  }
+}
+
+function runArtifactLabel(artifact: RunArtifact): string {
+  const data =
+    artifact.data && typeof artifact.data === 'object'
+      ? (artifact.data as Record<string, unknown>)
+      : undefined
+  const toolName = typeof data?.toolName === 'string' ? data.toolName : undefined
+  const outcome = typeof data?.outcome === 'string' ? data.outcome : undefined
+  if (artifact.kind === 'model_request') return 'Model request'
+  if (artifact.kind === 'model_response')
+    return outcome ? `Model response · ${outcome}` : 'Model response'
+  if (artifact.kind === 'tool_request')
+    return toolName ? `Tool request · ${toolName}` : 'Tool request'
+  if (artifact.kind === 'tool_result') {
+    return [toolName ? `Tool result · ${toolName}` : 'Tool result', outcome]
+      .filter(Boolean)
+      .join(' · ')
+  }
+  if (artifact.kind === 'tool_batch') return 'Tool batch summary'
+  if (artifact.kind === 'compaction') return 'Context compaction'
+  return artifact.kind.replaceAll('_', ' ')
+}
+
+function runArtifactDescriptor(artifact: RunArtifact): RuntimeRunArtifactDescriptor {
+  const { data, ...metadata } = artifact
+  let size = 0
+  try {
+    size = JSON.stringify(data).length
+  } catch {
+    size = String(data).length
+  }
+  return {
+    ...cloneRuntimeValue(metadata),
+    label: runArtifactLabel(artifact),
+    size,
+  }
+}
+
+function withTurnSelection(event: RunEventInput, selection: ModelSelection): RunEventInput {
   if (!TURN_LIFECYCLE_EVENTS.has(event.type)) return event
   const data = event.data ?? {}
   if (typeof data.providerId === 'string' && typeof data.modelId === 'string') return event
@@ -337,11 +360,42 @@ export interface RuntimeForkRunInput extends RuntimeRunControlInput {
   originStepId?: string
 }
 
-export interface RuntimeRunInspection {
-  checkpoint: AgentRunCheckpoint
-  events: PersistedAgentEvent[]
-  artifacts: AgentRunArtifact[]
+export interface RuntimeRunArtifactInput extends RuntimeRunControlInput {
+  artifactId: string
+}
+
+export interface RuntimeRunAllowedControls {
+  step: boolean
+  continue: boolean
+  abort: boolean
+  fork: boolean
+}
+
+export interface RuntimeRunSummary {
+  identity: RunCheckpoint['identity']
+  status: RunCheckpoint['loop']['state']['status']
+  mode: RunCheckpoint['loop']['state']['mode']
+  nextAction?: RunCheckpoint['loop']['state']['nextAction']
+  wait?: RunCheckpoint['loop']['state']['wait']
+  recovery: RunCheckpoint['recovery']
+  revision: number
+  updatedAt: number
+  stepCount: number
   active: boolean
+  allowedControls: RuntimeRunAllowedControls
+}
+
+export interface RuntimeRunArtifactDescriptor extends Omit<RunArtifact, 'data'> {
+  label: string
+  size: number
+}
+
+export interface RuntimeRunInspection {
+  checkpoint: RunCheckpoint
+  events: PersistedRunEvent[]
+  artifacts: RuntimeRunArtifactDescriptor[]
+  active: boolean
+  allowedControls: RuntimeRunAllowedControls
 }
 
 export interface RuntimeSavePlanMarkdownInput {
@@ -386,12 +440,7 @@ export interface ActiveAssistantTurn {
 }
 
 export interface RuntimeCreateConversationInput {
-  docId?: string | null
   workspace?: ConversationWorkspaceRef | null
-}
-
-export interface RuntimeListConversationsInput {
-  docId?: string | null
 }
 
 export interface ConversationRuntimeStateSnapshot {
@@ -401,7 +450,7 @@ export interface ConversationRuntimeStateSnapshot {
 
 export interface ConversationRuntimeHydration {
   record: ConversationRecord
-  events: PersistedAgentEvent[]
+  events: PersistedRunEvent[]
   runtimeState: ConversationRuntimeReplayState
   activeTurn: ActiveAssistantTurn | null
   plans: PlanArtifact[]
@@ -410,7 +459,6 @@ export interface ConversationRuntimeHydration {
 export interface RuntimeResolveConversationInput {
   conversationId?: string
   resumeLatest?: boolean
-  docId?: string | null
 }
 
 export interface RuntimeResolveConversationResult {
@@ -435,21 +483,21 @@ export interface RuntimeExecuteToolInput {
 }
 
 export {
-  type AgentRuntimeEvent,
-  type AgentRuntimeEventMap,
-  AILA_RUNTIME_EVENT_SCHEMA_VERSION,
-  AILA_RUNTIME_EVENT_TYPES,
-  type AilaRuntimeEventType,
-  createRuntimeEvent,
-  isRuntimeEventType,
-} from './runtime-events'
+  AILA_WORKBENCH_EVENT_SCHEMA_VERSION,
+  AILA_WORKBENCH_EVENT_TYPES,
+  createWorkbenchEvent,
+  isWorkbenchEventType,
+  type WorkbenchEvent,
+  type WorkbenchEventMap,
+  type WorkbenchEventType,
+} from './workbench-events'
 
-export interface AgentRuntimeHost {
+export interface WorkbenchHost {
   createId?: () => string
   createRunId?: () => string
   createEventId?: () => string
   now?: () => number
-  onEvent?: (event: AgentRuntimeEvent) => void
+  onEvent?: (event: WorkbenchEvent) => void
   onToolPolicy?: ToolContext['onToolPolicy']
   onToolApproval?: ToolContext['onToolApproval']
   onConversationAbort?: (
@@ -484,55 +532,34 @@ export interface AgentRuntimeHost {
   workspaceRoots?: ToolContext['workspaceRoots'] | (() => ToolContext['workspaceRoots'])
   shellCwd?: ToolContext['shellCwd'] | (() => ToolContext['shellCwd'])
   getModelInfo?: RuntimeModelInfoResolver
-  streamChat?: RuntimeStreamChat
+  runAgent?: DurableRunExecutor
   logger?: Pick<Console, 'error' | 'warn'>
 }
 
-export interface AgentRuntimeOptions extends AgentRuntimeHost {
-  host?: AgentRuntimeHost
-  store?: AgentRuntimeStore
+export interface WorkbenchOptions extends WorkbenchHost {
+  host?: WorkbenchHost
+  store?: WorkbenchStore
   toolPacks?: readonly ToolPack[]
   skills?: readonly LoadedSkill[]
   abortAllCleanupTimeoutMs?: number
 }
 
-export interface AgentRuntimeStore {
-  createConversation?: (
-    docId?: string,
-    workspace?: ConversationWorkspaceRef | null,
-  ) => Promise<ConversationSummary>
-  getConversation: (conversationId: string) => Promise<ConversationRecord>
-  saveMessage: (conversationId: string, message: PersistedMessage) => Promise<ConversationSummary>
-  recordAgentEvent: (conversationId: string, event: AgentEvent) => Promise<AgentEventAppendResult>
-  listConversations?: () => Promise<readonly ConversationSummary[]>
-  listAgentEvents?: (conversationId: string) => Promise<readonly PersistedAgentEvent[]>
-  recoverInterruptedActivities?: (reason?: string) => Promise<readonly AgentEventAppendResult[]>
-  renameConversation?: (conversationId: string, title: string) => Promise<ConversationSummary>
-  recordUsage: (conversationId: string, usage: UsageInfo) => Promise<ConversationSummary>
-  saveContextCheckpoint?: (
-    conversationId: string,
-    checkpoint: ConversationContextCheckpoint,
-  ) => Promise<ConversationSummary>
-  recordContextTurnLedger?: (
-    conversationId: string,
-    entry: ConversationContextTurnLedgerEntry,
-  ) => Promise<ConversationSummary>
-  saveRunCheckpoint?: (checkpoint: AgentRunCheckpoint) => Promise<AgentRunCheckpoint>
-  getRunCheckpoint?: (conversationId: string, runId: string) => Promise<AgentRunCheckpoint | null>
-  listRunCheckpoints?: (conversationId: string) => Promise<readonly AgentRunCheckpoint[]>
-  saveRunArtifact?: (artifact: AgentRunArtifact) => Promise<AgentRunArtifact>
-  listRunArtifacts?: (conversationId: string, runId: string) => Promise<readonly AgentRunArtifact[]>
-  createPlan?: AgentRuntimePlanStore['createPlan']
-  getPlan?: AgentRuntimePlanStore['getPlan']
-  listPlans?: AgentRuntimePlanStore['listPlans']
-  updatePlan?: AgentRuntimePlanStore['updatePlan']
-  appendPlanRevision?: AgentRuntimePlanStore['appendPlanRevision']
-  deleteConversation: (conversationId: string) => Promise<void>
-}
+export {
+  createInMemoryRuntimeStore,
+  type InMemoryStoreOptions,
+  type RuntimeEnvironment,
+} from './runtime/memory-store'
+export type {
+  EventRepository,
+  PlanRepository,
+  RunRepository,
+  SessionRepository,
+  WorkbenchStore,
+} from './runtime/repositories'
 
-export interface AgentRuntimeConversationApi {
+interface WorkbenchSessionApi {
   createConversation(input?: RuntimeCreateConversationInput): Promise<ConversationSummary>
-  listConversations(input?: RuntimeListConversationsInput): Promise<ConversationSummary[]>
+  listConversations(): Promise<ConversationSummary[]>
   getConversation(conversationId: string): Promise<ConversationRecord>
   compactConversation(
     input: RuntimeCompactConversationInput,
@@ -542,27 +569,27 @@ export interface AgentRuntimeConversationApi {
   ): Promise<RuntimeResolveConversationResult>
   hydrateConversation(conversationId: string): Promise<ConversationRuntimeHydration>
   getConversationRuntimeState(conversationId: string): Promise<ConversationRuntimeReplayState>
-  listConversationRuntimeStates(
-    input?: RuntimeListConversationsInput,
-  ): Promise<ConversationRuntimeStateSnapshot[]>
-  listAgentEvents(conversationId: string): Promise<PersistedAgentEvent[]>
-  getRunCheckpoint(conversationId: string, runId: string): Promise<AgentRunCheckpoint | null>
-  listRunCheckpoints(conversationId: string): Promise<AgentRunCheckpoint[]>
+  listConversationRuntimeStates(): Promise<ConversationRuntimeStateSnapshot[]>
+  listRunEvents(conversationId: string): Promise<PersistedRunEvent[]>
+  getRunCheckpoint(conversationId: string, runId: string): Promise<RunCheckpoint | null>
+  listRunCheckpoints(conversationId: string): Promise<RunCheckpoint[]>
+  listRunSummaries(conversationId: string): Promise<RuntimeRunSummary[]>
   inspectRun(input: RuntimeRunControlInput): Promise<RuntimeRunInspection>
+  getRunArtifact(input: RuntimeRunArtifactInput): Promise<RunArtifact>
   appendUserMessage(input: RuntimeAppendUserMessageInput): Promise<PersistedMessage>
-  recordAgentEvent(event: RuntimeRecordAgentEventInput): Promise<boolean>
+  recordRunEvent(event: RuntimeRecordRunEventInput): Promise<boolean>
   renameConversation(conversationId: string, title: string): Promise<ConversationSummary>
   deleteConversation(conversationId: string): Promise<void>
 }
 
-export interface AgentRuntimeTurnApi {
+interface WorkbenchRunApi {
   send(input: RuntimeSendInput): Promise<RuntimeSendResult>
   retryLastUserMessage(input: RuntimeRetryLastInput): Promise<RuntimeSendResult>
   resumeRun(input: RuntimeResumeRunInput): Promise<RuntimeSendResult>
   stepRun(input: RuntimeRunControlInput): Promise<RuntimeSendResult>
   continueRun(input: RuntimeRunControlInput): Promise<RuntimeSendResult>
-  abortRun(input: RuntimeRunControlInput): Promise<AgentRunCheckpoint>
-  forkRun(input: RuntimeForkRunInput): Promise<AgentRunCheckpoint>
+  abortRun(input: RuntimeRunControlInput): Promise<RunCheckpoint>
+  forkRun(input: RuntimeForkRunInput): Promise<RunCheckpoint>
   abort(conversationId: string): Promise<void>
   abortAll(reason?: ConversationAbortReason): Promise<void>
   shutdown(reason?: ConversationAbortReason): Promise<void>
@@ -570,7 +597,7 @@ export interface AgentRuntimeTurnApi {
   recoverInterruptedActivities(reason?: string): Promise<ConversationSummary[]>
 }
 
-export interface AgentRuntimePlanApi {
+interface WorkbenchPlanApi {
   listPlans(conversationId: string): Promise<PlanArtifact[]>
   getPlan(conversationId: string, planId: string): Promise<PlanArtifact>
   savePlanMarkdown(input: RuntimeSavePlanMarkdownInput): Promise<PlanArtifact>
@@ -579,325 +606,25 @@ export interface AgentRuntimePlanApi {
   cancelPlan(input: RuntimeCancelPlanInput): Promise<PlanArtifact>
 }
 
-export interface AgentRuntimeExtensionApi {
+interface WorkbenchExtensionApi {
   getToolRegistry(input?: RuntimeToolPackLoadInput): Promise<ToolRegistry>
   getSkills(): Promise<LoadedSkill[]>
   reloadToolPacks(): Promise<ToolRegistry>
   executeTool(input: RuntimeExecuteToolInput): Promise<string>
 }
 
-export interface AgentRuntimeApi
-  extends AgentRuntimeConversationApi,
-    AgentRuntimeTurnApi,
-    AgentRuntimePlanApi,
-    AgentRuntimeExtensionApi {}
+export interface Workbench
+  extends WorkbenchSessionApi,
+    WorkbenchRunApi,
+    WorkbenchPlanApi,
+    WorkbenchExtensionApi {}
 
 function cloneRuntimeValue<T>(value: T): T {
   return structuredClone(value)
 }
 
-function nextRuntimeUpdatedAt(current: ConversationSummary, timestamp: number): number {
-  return Math.max(current.updatedAt + 1, timestamp)
-}
-
-function deriveConversationTitle(message: PersistedMessage): string | null {
-  if (message.role !== 'user') return null
-  const title = messageText(message).replace(/\s+/g, ' ').trim()
-  if (!title) return null
-  if (title.length <= CONVERSATION_TITLE_MAX) return title
-  return `${title.slice(0, CONVERSATION_TITLE_MAX - 3)}...`
-}
-
-function sameConversationActivity(
-  left: ConversationSummary['activity'],
-  right: ConversationSummary['activity'],
-): boolean {
-  return (
-    left?.state === right?.state &&
-    left?.title === right?.title &&
-    left?.updatedAt === right?.updatedAt &&
-    left?.eventType === right?.eventType &&
-    left?.messageId === right?.messageId &&
-    left?.detail === right?.detail &&
-    left?.toolName === right?.toolName
-  )
-}
-
-export function createInMemoryRuntimeStore(
-  input: CreateInMemoryRuntimeStoreInput = {},
-): AgentRuntimeStore {
-  const createId = input.createId ?? defaultCreateRuntimeId
-  const createEventId = input.createEventId ?? defaultCreateRuntimeId
-  const now = input.now ?? defaultRuntimeNow
-  const records = new Map<string, ConversationRecord>()
-  const agentEvents = new Map<string, PersistedAgentEvent[]>()
-  const plans = new Map<string, PlanArtifact>()
-  const runCheckpoints = new Map<string, AgentRunCheckpoint>()
-  const runArtifacts = new Map<string, AgentRunArtifact>()
-
-  function requireRecord(conversationId: string): ConversationRecord {
-    const record = records.get(conversationId)
-    if (!record) throw new Error(`conversation not found: ${conversationId}`)
-    return record
-  }
-
-  function planKey(conversationId: string, planId: string): string {
-    return `${conversationId}:${planId}`
-  }
-
-  function requirePlan(conversationId: string, planId: string): PlanArtifact {
-    const plan = plans.get(planKey(conversationId, planId))
-    if (!plan) throw new Error(`plan not found: ${conversationId}/${planId}`)
-    return plan
-  }
-
-  function runKey(conversationId: string, runId: string): string {
-    return `${conversationId}:${runId}`
-  }
-
-  function summary(record: ConversationRecord): ConversationSummary {
-    return cloneRuntimeValue(record.meta)
-  }
-
-  function updateMeta(
-    conversationId: string,
-    updater: (current: ConversationSummary) => ConversationSummary,
-  ): ConversationSummary {
-    const record = requireRecord(conversationId)
-    record.meta = cloneRuntimeValue(updater(record.meta))
-    return summary(record)
-  }
-
-  async function recordAgentEvent(
-    conversationId: string,
-    event: AgentEvent,
-  ): Promise<AgentEventAppendResult> {
-    const record = requireRecord(conversationId)
-    const events = agentEvents.get(conversationId) ?? []
-    const previousActivity = replayConversationActivity(events)
-    const prepared = prepareAgentEventAppend(events, cloneRuntimeValue(event), createEventId)
-    const persisted = prepared.event
-    if (!prepared.duplicate) events.push(persisted)
-    agentEvents.set(conversationId, events)
-
-    const activity = replayConversationActivity(events)
-    if (!activity || sameConversationActivity(previousActivity, activity)) {
-      return { event: cloneRuntimeValue(persisted) }
-    }
-    if (record.meta.activity && record.meta.activity.updatedAt > activity.updatedAt) {
-      return { event: cloneRuntimeValue(persisted) }
-    }
-
-    const updated = updateMeta(conversationId, (current) => ({
-      ...current,
-      updatedAt: nextRuntimeUpdatedAt(current, persisted.timestamp),
-      activity,
-    }))
-    return { event: cloneRuntimeValue(persisted), summary: updated }
-  }
-
-  return {
-    async createConversation(
-      docId?: string,
-      workspace?: ConversationWorkspaceRef | null,
-    ): Promise<ConversationSummary> {
-      const createdAt = now()
-      const meta: ConversationSummary = {
-        schemaVersion: AILA_CONVERSATION_META_SCHEMA_VERSION,
-        id: createId(),
-        title: DEFAULT_CONVERSATION_TITLE,
-        createdAt,
-        updatedAt: createdAt,
-        ...(docId ? { docId } : {}),
-        ...(workspace ? { workspace: cloneRuntimeValue(workspace) } : {}),
-      }
-      records.set(meta.id, { meta, messages: [] })
-      agentEvents.set(meta.id, [])
-      return cloneRuntimeValue(meta)
-    },
-    async getConversation(conversationId): Promise<ConversationRecord> {
-      return cloneRuntimeValue(requireRecord(conversationId))
-    },
-    async saveMessage(conversationId, message): Promise<ConversationSummary> {
-      const record = requireRecord(conversationId)
-      const prepared = cloneRuntimeValue(message)
-      const index = record.messages.findIndex((current) => current.id === prepared.id)
-      if (index >= 0) {
-        record.messages[index] = prepared
-      } else {
-        record.messages.push(prepared)
-      }
-
-      record.meta = {
-        ...record.meta,
-        updatedAt: nextRuntimeUpdatedAt(record.meta, now()),
-      }
-      if (record.meta.title === DEFAULT_CONVERSATION_TITLE) {
-        const title = deriveConversationTitle(prepared)
-        if (title) record.meta.title = title
-      }
-      return summary(record)
-    },
-    recordAgentEvent,
-    async listConversations(): Promise<readonly ConversationSummary[]> {
-      return [...records.values()]
-        .map((record) => summary(record))
-        .sort((left, right) => right.updatedAt - left.updatedAt)
-    },
-    async listAgentEvents(conversationId): Promise<readonly PersistedAgentEvent[]> {
-      return cloneRuntimeValue(orderedUniqueAgentEvents(agentEvents.get(conversationId) ?? []))
-    },
-    async recoverInterruptedActivities(reason): Promise<readonly AgentEventAppendResult[]> {
-      const recovered: AgentEventAppendResult[] = []
-      for (const [conversationId, record] of records) {
-        const events = agentEvents.get(conversationId) ?? []
-        const replayedActivity = replayConversationActivity(events)
-        if (replayedActivity && !sameConversationActivity(record.meta.activity, replayedActivity)) {
-          updateMeta(conversationId, (current) =>
-            current.activity && current.activity.updatedAt > replayedActivity.updatedAt
-              ? current
-              : {
-                  ...current,
-                  updatedAt: nextRuntimeUpdatedAt(current, replayedActivity.updatedAt),
-                  activity: replayedActivity,
-                },
-          )
-        }
-        const recoveryEvent = createInterruptedConversationRecoveryEvent(events, {
-          reason,
-          activity: replayedActivity ?? record.meta.activity,
-        })
-        if (!recoveryEvent) continue
-        const result = await recordAgentEvent(conversationId, recoveryEvent)
-        recovered.push(result)
-      }
-      return recovered.sort(
-        (left, right) =>
-          (right.summary?.updatedAt ?? right.event.timestamp) -
-          (left.summary?.updatedAt ?? left.event.timestamp),
-      )
-    },
-    async renameConversation(conversationId, title): Promise<ConversationSummary> {
-      return updateMeta(conversationId, (current) => ({
-        ...current,
-        title: title.trim() || DEFAULT_CONVERSATION_TITLE,
-        updatedAt: nextRuntimeUpdatedAt(current, now()),
-      }))
-    },
-    async recordUsage(conversationId, usage): Promise<ConversationSummary> {
-      const timestamp = now()
-      return updateMeta(conversationId, (current) => ({
-        ...current,
-        updatedAt: nextRuntimeUpdatedAt(current, timestamp),
-        usage: createConversationUsageSnapshot(current.usage, usage, timestamp),
-      }))
-    },
-    async saveContextCheckpoint(conversationId, checkpoint): Promise<ConversationSummary> {
-      return updateMeta(conversationId, (current) => ({
-        ...current,
-        updatedAt: nextRuntimeUpdatedAt(current, checkpoint.createdAt),
-        context: {
-          ...(current.context ?? {}),
-          checkpoint: cloneRuntimeValue(checkpoint),
-        },
-      }))
-    },
-    async recordContextTurnLedger(conversationId, entry): Promise<ConversationSummary> {
-      return updateMeta(conversationId, (current) => ({
-        ...current,
-        updatedAt: nextRuntimeUpdatedAt(current, entry.createdAt),
-        context: appendConversationContextTurnLedgerEntry(current.context, entry),
-      }))
-    },
-    async saveRunCheckpoint(checkpoint): Promise<AgentRunCheckpoint> {
-      requireRecord(checkpoint.identity.conversationId)
-      const key = runKey(checkpoint.identity.conversationId, checkpoint.identity.runId)
-      const prepared = prepareAgentRunCheckpoint(checkpoint, runCheckpoints.get(key))
-      runCheckpoints.set(key, cloneRuntimeValue(prepared))
-      return cloneRuntimeValue(prepared)
-    },
-    async getRunCheckpoint(conversationId, runId): Promise<AgentRunCheckpoint | null> {
-      const checkpoint = runCheckpoints.get(runKey(conversationId, runId))
-      return checkpoint ? cloneRuntimeValue(checkpoint) : null
-    },
-    async listRunCheckpoints(conversationId): Promise<readonly AgentRunCheckpoint[]> {
-      return [...runCheckpoints.values()]
-        .filter((checkpoint) => checkpoint.identity.conversationId === conversationId)
-        .map((checkpoint) => cloneRuntimeValue(checkpoint))
-        .sort((left, right) => right.updatedAt - left.updatedAt)
-    },
-    async saveRunArtifact(artifact): Promise<AgentRunArtifact> {
-      requireRecord(artifact.conversationId)
-      const prepared = prepareAgentRunArtifact(artifact)
-      const existing = runArtifacts.get(prepared.artifactId)
-      if (existing) {
-        if (JSON.stringify(existing) !== JSON.stringify(prepared)) {
-          throw new Error(`run artifact is immutable: ${prepared.artifactId}`)
-        }
-        return cloneRuntimeValue(existing)
-      }
-      runArtifacts.set(prepared.artifactId, cloneRuntimeValue(prepared))
-      return cloneRuntimeValue(prepared)
-    },
-    async listRunArtifacts(conversationId, runId): Promise<readonly AgentRunArtifact[]> {
-      return [...runArtifacts.values()]
-        .filter(
-          (artifact) => artifact.conversationId === conversationId && artifact.runId === runId,
-        )
-        .map((artifact) => cloneRuntimeValue(artifact))
-        .sort((left, right) => left.createdAt - right.createdAt)
-    },
-    async createPlan(plan): Promise<PlanArtifact> {
-      requireRecord(plan.conversationId)
-      const prepared = preparePlanArtifact(plan)
-      const key = planKey(prepared.conversationId, prepared.id)
-      if (plans.has(key)) {
-        throw new Error(`plan already exists: ${prepared.conversationId}/${prepared.id}`)
-      }
-      plans.set(key, cloneRuntimeValue(prepared))
-      return cloneRuntimeValue(prepared)
-    },
-    async getPlan(conversationId, planId): Promise<PlanArtifact> {
-      return cloneRuntimeValue(requirePlan(conversationId, planId))
-    },
-    async listPlans(conversationId): Promise<readonly PlanArtifact[]> {
-      return [...plans.values()]
-        .filter((plan) => plan.conversationId === conversationId)
-        .map((plan) => cloneRuntimeValue(plan))
-        .sort((left, right) => right.updatedAt - left.updatedAt)
-    },
-    async updatePlan(plan): Promise<PlanArtifact> {
-      requireRecord(plan.conversationId)
-      const prepared = preparePlanArtifact(plan)
-      requirePlan(prepared.conversationId, prepared.id)
-      plans.set(planKey(prepared.conversationId, prepared.id), cloneRuntimeValue(prepared))
-      return cloneRuntimeValue(prepared)
-    },
-    async appendPlanRevision(input): Promise<PlanArtifact> {
-      requireRecord(input.conversationId)
-      const current = requirePlan(input.conversationId, input.planId)
-      const updated = appendPlanRevisionToPlan(current, input.revision, now())
-      plans.set(planKey(input.conversationId, input.planId), cloneRuntimeValue(updated))
-      return cloneRuntimeValue(updated)
-    },
-    async deleteConversation(conversationId): Promise<void> {
-      records.delete(conversationId)
-      agentEvents.delete(conversationId)
-      for (const key of runCheckpoints.keys()) {
-        if (key.startsWith(`${conversationId}:`)) runCheckpoints.delete(key)
-      }
-      for (const [artifactId, artifact] of runArtifacts) {
-        if (artifact.conversationId === conversationId) runArtifacts.delete(artifactId)
-      }
-      for (const key of plans.keys()) {
-        if (key.startsWith(`${conversationId}:`)) plans.delete(key)
-      }
-    },
-  }
-}
-
-function normalizeRuntimeHost(options: AgentRuntimeOptions): AgentRuntimeHost {
-  const host: AgentRuntimeHost = {}
+function normalizeRuntimeHost(options: WorkbenchOptions): WorkbenchHost {
+  const host: WorkbenchHost = {}
   if (options.createId) host.createId = options.createId
   if (options.createRunId) host.createRunId = options.createRunId
   if (options.createEventId) host.createEventId = options.createEventId
@@ -930,7 +657,7 @@ function normalizeRuntimeHost(options: AgentRuntimeOptions): AgentRuntimeHost {
   if (options.workspaceRoots !== undefined) host.workspaceRoots = options.workspaceRoots
   if (options.shellCwd !== undefined) host.shellCwd = options.shellCwd
   if (options.getModelInfo) host.getModelInfo = options.getModelInfo
-  if (options.streamChat) host.streamChat = options.streamChat
+  if (options.runAgent) host.runAgent = options.runAgent
   if (options.logger) host.logger = options.logger
 
   if (!options.host) return host
@@ -968,7 +695,7 @@ function normalizeRuntimeHost(options: AgentRuntimeOptions): AgentRuntimeHost {
   if (options.host.workspaceRoots !== undefined) host.workspaceRoots = options.host.workspaceRoots
   if (options.host.shellCwd !== undefined) host.shellCwd = options.host.shellCwd
   if (options.host.getModelInfo) host.getModelInfo = options.host.getModelInfo
-  if (options.host.streamChat) host.streamChat = options.host.streamChat
+  if (options.host.runAgent) host.runAgent = options.host.runAgent
   if (options.host.logger) host.logger = options.host.logger
   return host
 }
@@ -999,100 +726,6 @@ function filterRuntimeToolRegistryForMode(
     }))
     .filter((toolPack) => toolPack.tools.length > 0)
   return createToolRegistry(toolPacks)
-}
-
-function runtimeStringArg(args: Record<string, unknown>, key: string): string {
-  const value = args[key]
-  if (typeof value !== 'string' || value.trim().length === 0) {
-    throw new Error(`plan tool argument "${key}" must be a non-empty string`)
-  }
-  return value.trim()
-}
-
-function runtimeOptionalStringArg(args: Record<string, unknown>, key: string): string | undefined {
-  const value = args[key]
-  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined
-}
-
-function runtimeArrayArg(args: Record<string, unknown>, key: string): unknown[] {
-  const value = args[key]
-  return Array.isArray(value) ? value : []
-}
-
-function runtimePlanStatusArg(
-  args: Record<string, unknown>,
-  key: string,
-  fallback: PlanStatus,
-): PlanStatus {
-  const value = args[key]
-  return typeof value === 'string' && PLAN_STATUSES.includes(value as PlanStatus)
-    ? (value as PlanStatus)
-    : fallback
-}
-
-function runtimePlanDriftSeverityArg(
-  args: Record<string, unknown>,
-  key: string,
-  fallback: PlanDriftSeverity,
-): PlanDriftSeverity {
-  const value = args[key]
-  return typeof value === 'string' && PLAN_DRIFT_SEVERITIES.includes(value as PlanDriftSeverity)
-    ? (value as PlanDriftSeverity)
-    : fallback
-}
-
-function updateRuntimePlanTaskStatus(
-  plan: PlanArtifact,
-  taskId: string,
-  status: PlanTaskStatus,
-): PlanArtifact {
-  let found = false
-  const tasks = plan.tasks.map((task) => {
-    if (task.id !== taskId) return task
-    found = true
-    return { ...task, status }
-  })
-  if (!found) throw new Error(`plan task not found: ${taskId}`)
-  return { ...plan, tasks }
-}
-
-function renderRuntimePlanContext(
-  plan: PlanArtifact,
-  operation: 'revise' | 'implement',
-): ChatMessage {
-  const taskLines = plan.tasks.map((task) => {
-    const status = task.status.replaceAll('_', ' ')
-    return `- [${status}] ${task.id}: ${task.title}`
-  })
-  const verificationLines = plan.verification.map((entry) => `- ${entry}`)
-  const fileLines = plan.files.map(
-    (file) => `- ${file.path}${file.kind ? ` (${file.kind})` : ''}: ${file.reason}`,
-  )
-  return {
-    role: 'system',
-    content: [
-      operation === 'implement'
-        ? 'Approved Aila plan context. Implement this approved plan. Do not silently change task scope; record drift when material changes are discovered.'
-        : 'Aila plan context. Revise this plan and keep the plan artifact in sync.',
-      '',
-      `Plan ID: ${plan.id}`,
-      `Title: ${plan.title}`,
-      `Status: ${plan.status}`,
-      `Approved revision: ${plan.approvedRevisionId ?? plan.latestRevisionId ?? 'none'}`,
-      '',
-      'Markdown:',
-      plan.markdown,
-      '',
-      taskLines.length > 0 ? 'Tasks:' : '',
-      ...taskLines,
-      verificationLines.length > 0 ? 'Verification:' : '',
-      ...verificationLines,
-      fileLines.length > 0 ? 'Affected files:' : '',
-      ...fileLines,
-    ]
-      .filter((line) => line.length > 0)
-      .join('\n'),
-  }
 }
 
 function cloneRuntimeSettings(settings: Settings): Settings {
@@ -1170,35 +803,31 @@ function cloneRuntimePersistedMessage(message: PersistedMessage): PersistedMessa
   return cloneRuntimeValue(message)
 }
 
-function cloneRuntimePersistedAgentEvent(event: PersistedAgentEvent): PersistedAgentEvent {
+function cloneRuntimePersistedRunEvent(event: PersistedRunEvent): PersistedRunEvent {
   return cloneRuntimeValue(event)
 }
 
-function cloneRuntimePersistedAgentEvents(
-  events: readonly PersistedAgentEvent[],
-): PersistedAgentEvent[] {
+function cloneRuntimePersistedRunEvents(events: readonly PersistedRunEvent[]): PersistedRunEvent[] {
   return cloneRuntimeValue([...events])
 }
 
-function cloneRuntimeAgentEventAppendResult(
-  result: AgentEventAppendResult,
-): AgentEventAppendResult {
-  const event = cloneRuntimePersistedAgentEvent(result.event)
+function cloneRuntimeRunEventAppendResult(result: RunEventAppendResult): RunEventAppendResult {
+  const event = cloneRuntimePersistedRunEvent(result.event)
   if (!result.summary) return { event }
   return { event, summary: cloneRuntimeConversationSummary(result.summary) }
 }
 
-function cloneRuntimeAgentEventAppendResults(
-  results: readonly AgentEventAppendResult[],
-): AgentEventAppendResult[] {
-  return results.map(cloneRuntimeAgentEventAppendResult)
+function cloneRuntimeRunEventAppendResults(
+  results: readonly RunEventAppendResult[],
+): RunEventAppendResult[] {
+  return results.map(cloneRuntimeRunEventAppendResult)
 }
 
-function resolveStaticToolPacks(options: AgentRuntimeOptions): readonly ToolPack[] {
+function resolveStaticToolPacks(options: WorkbenchOptions): readonly ToolPack[] {
   return (options.host?.toolPacks ?? options.toolPacks ?? []).map(cloneRuntimeToolPack)
 }
 
-function resolveStaticSkills(options: AgentRuntimeOptions): readonly LoadedSkill[] {
+function resolveStaticSkills(options: WorkbenchOptions): readonly LoadedSkill[] {
   return (options.host?.skills ?? options.skills ?? []).map(cloneRuntimeSkill)
 }
 
@@ -1215,12 +844,11 @@ function createRuntimeSkillToolPacks(skills: readonly LoadedSkill[]): ToolPack[]
   return pack ? [pack] : []
 }
 
-export class AgentRuntime implements AgentRuntimeApi {
-  private readonly activeStreams = new Map<string, StreamSlot>()
-  private readonly turnStartLocks = new Map<string, TurnStartLockSlot>()
+export class WorkbenchRuntime implements Workbench {
+  private readonly turns = new TurnCoordinator<StreamSlot>()
   private readonly deletedConversations = new Set<string>()
-  private readonly host: AgentRuntimeHost
-  private readonly store: AgentRuntimeStore
+  private readonly host: WorkbenchHost
+  private readonly store: WorkbenchStore
   private readonly logger: Pick<Console, 'error' | 'warn'>
   private readonly createId: () => string
   private readonly createRunId: () => string
@@ -1234,7 +862,7 @@ export class AgentRuntime implements AgentRuntimeApi {
   private toolRegistryLoad: Promise<ToolRegistry> | null = null
   private skillsLoad: Promise<readonly LoadedSkill[]> | null = null
 
-  constructor(private readonly options: AgentRuntimeOptions = {}) {
+  constructor(private readonly options: WorkbenchOptions = {}) {
     this.host = normalizeRuntimeHost(options)
     this.createId = this.host.createId ?? defaultCreateRuntimeId
     this.createRunId = this.host.createRunId ?? defaultCreateRuntimeId
@@ -1256,12 +884,12 @@ export class AgentRuntime implements AgentRuntimeApi {
     ])
   }
 
-  private requirePlanStore<K extends keyof AgentRuntimePlanStore>(
+  private requirePlanStore<K extends keyof PlanRepository>(
     method: K,
-  ): AgentRuntimePlanStore[K] {
+  ): NonNullable<PlanRepository[K]> {
     const fn = this.store[method]
     if (!fn) throw new Error(`runtime store cannot ${String(method)}`)
-    return fn as AgentRuntimePlanStore[K]
+    return fn as NonNullable<PlanRepository[K]>
   }
 
   private assertPlanRevisionCurrent(plan: PlanArtifact, expectedRevisionId?: string): void {
@@ -1276,14 +904,14 @@ export class AgentRuntime implements AgentRuntimeApi {
   }
 
   private async recordPlanLifecycleEvent(
-    type: AgentEvent['type'],
+    type: RunEvent['type'],
     input: {
       plan: PlanArtifact
       messageId: string
       data?: Record<string, unknown>
     },
   ): Promise<void> {
-    await this.recordAgentEvent({
+    await this.recordRunEvent({
       timestamp: this.now(),
       conversationId: input.plan.conversationId,
       messageId: input.messageId,
@@ -1297,6 +925,15 @@ export class AgentRuntime implements AgentRuntimeApi {
     })
   }
 
+  private planToolServices(): PlanToolServices {
+    return {
+      store: this.store,
+      createId: this.createId,
+      now: this.now,
+      recordLifecycleEvent: (type, input) => this.recordPlanLifecycleEvent(type, input),
+    }
+  }
+
   async getToolRegistry(input?: RuntimeToolPackLoadInput): Promise<ToolRegistry> {
     if (!this.host.loadToolPacks && !this.host.loadSkills) {
       return cloneRuntimeToolRegistry(this.fallbackToolRegistry)
@@ -1306,486 +943,6 @@ export class AgentRuntime implements AgentRuntimeApi {
     }
     if (!this.toolRegistryLoad) this.toolRegistryLoad = this.loadToolRegistry()
     return cloneRuntimeToolRegistry(await this.toolRegistryLoad)
-  }
-
-  private createPlanToolPack(input: {
-    conversationId: string
-    assistantMessageId: string
-    sourceUserMessageId: string
-  }): ToolPack {
-    const { conversationId, assistantMessageId, sourceUserMessageId } = input
-    const planToolMetadata = (name: string) => ({
-      name,
-      readOnly: true,
-      destructive: false,
-      requiresApproval: false,
-      access: [],
-      scope: [],
-      planSafe: true,
-    })
-    const recordPlanEvent = async (
-      type: AgentEvent['type'],
-      plan: PlanArtifact,
-      data: Record<string, unknown> = {},
-    ): Promise<void> => {
-      await this.recordAgentEvent({
-        timestamp: this.now(),
-        conversationId,
-        messageId: assistantMessageId,
-        type,
-        data: {
-          planId: plan.id,
-          title: plan.title,
-          status: plan.status,
-          ...data,
-        },
-      })
-    }
-
-    return {
-      id: 'aila-plan-tools',
-      name: 'Aila Plan Tools',
-      description: 'Create and revise first-class Aila plan artifacts.',
-      tools: [
-        {
-          spec: {
-            type: 'function',
-            function: {
-              name: 'plan_create',
-              description:
-                'Create a first-class plan artifact for the current conversation. Use this in Plan mode after exploration.',
-              parameters: {
-                type: 'object',
-                properties: {
-                  id: { type: 'string', description: 'Stable plan id.' },
-                  revisionId: { type: 'string', description: 'Optional initial revision id.' },
-                  title: { type: 'string', description: 'Short plan title.' },
-                  status: {
-                    type: 'string',
-                    enum: ['draft', 'needs_input', 'ready'],
-                    description: 'Initial plan status. Defaults to draft.',
-                  },
-                  markdown: { type: 'string', description: 'User-reviewable Markdown plan.' },
-                  tasks: { type: 'array', items: { type: 'object' } },
-                  questions: { type: 'array', items: { type: 'object' } },
-                  assumptions: { type: 'array', items: { type: 'string' } },
-                  risks: { type: 'array', items: { type: 'string' } },
-                  files: { type: 'array', items: { type: 'object' } },
-                  verification: { type: 'array', items: { type: 'string' } },
-                },
-                required: ['id', 'title', 'markdown'],
-                additionalProperties: false,
-              },
-            },
-            metadata: planToolMetadata('plan_create'),
-          },
-          run: async (args) => {
-            if (!this.store.createPlan) throw new Error('runtime store cannot create plans')
-            const planId = runtimeStringArg(args, 'id')
-            const title = runtimeStringArg(args, 'title')
-            const markdown = runtimeStringArg(args, 'markdown')
-            const createdAt = this.now()
-            const revision = normalizePlanRevision({
-              schemaVersion: AILA_PLAN_REVISION_SCHEMA_VERSION,
-              id: runtimeOptionalStringArg(args, 'revisionId') ?? this.createId(),
-              planId,
-              createdAt,
-              author: 'assistant',
-              markdown,
-              tasks: runtimeArrayArg(args, 'tasks'),
-            })
-            if (!revision) throw new Error('plan_create received an invalid revision')
-            const plan = normalizePlanArtifact(
-              {
-                schemaVersion: AILA_PLAN_ARTIFACT_SCHEMA_VERSION,
-                id: planId,
-                conversationId,
-                sourceUserMessageId,
-                latestAssistantMessageId: assistantMessageId,
-                title,
-                status: runtimePlanStatusArg(args, 'status', 'draft'),
-                markdown,
-                tasks: revision.tasks,
-                questions: runtimeArrayArg(args, 'questions'),
-                assumptions: runtimeArrayArg(args, 'assumptions'),
-                risks: runtimeArrayArg(args, 'risks'),
-                files: runtimeArrayArg(args, 'files'),
-                verification: runtimeArrayArg(args, 'verification'),
-                drift: [],
-                revisions: [revision],
-                latestRevisionId: revision.id,
-                createdAt,
-                updatedAt: createdAt,
-              },
-              conversationId,
-            )
-            if (!plan) throw new Error('plan_create received an invalid plan artifact')
-            const created = await this.store.createPlan(plan)
-            await recordPlanEvent('plan.updated', created, { summary: 'Plan created' })
-            if (created.status === 'ready') await recordPlanEvent('plan.ready', created)
-            return JSON.stringify({ ok: true, planId: created.id, status: created.status })
-          },
-        },
-        {
-          spec: {
-            type: 'function',
-            function: {
-              name: 'plan_update',
-              description: 'Append a new revision to an existing plan artifact.',
-              parameters: {
-                type: 'object',
-                properties: {
-                  planId: { type: 'string' },
-                  revisionId: { type: 'string' },
-                  title: { type: 'string' },
-                  status: { type: 'string', enum: PLAN_STATUSES },
-                  markdown: { type: 'string' },
-                  tasks: { type: 'array', items: { type: 'object' } },
-                  summary: { type: 'string' },
-                },
-                required: ['planId', 'markdown'],
-                additionalProperties: false,
-              },
-            },
-            metadata: planToolMetadata('plan_update'),
-          },
-          run: async (args) => {
-            if (!this.store.getPlan || !this.store.appendPlanRevision || !this.store.updatePlan) {
-              throw new Error('runtime store cannot update plans')
-            }
-            const planId = runtimeStringArg(args, 'planId')
-            const current = await this.store.getPlan(conversationId, planId)
-            const markdown = runtimeStringArg(args, 'markdown')
-            const createdAt = this.now()
-            const revision = normalizePlanRevision({
-              schemaVersion: AILA_PLAN_REVISION_SCHEMA_VERSION,
-              id: runtimeOptionalStringArg(args, 'revisionId') ?? this.createId(),
-              planId,
-              createdAt,
-              author: 'assistant',
-              markdown,
-              tasks:
-                runtimeArrayArg(args, 'tasks').length > 0
-                  ? runtimeArrayArg(args, 'tasks')
-                  : current.tasks,
-              summary: runtimeOptionalStringArg(args, 'summary'),
-            })
-            if (!revision) throw new Error('plan_update received an invalid revision')
-            const revised = await this.store.appendPlanRevision({
-              conversationId,
-              planId,
-              revision,
-            })
-            const updated = await this.store.updatePlan({
-              ...revised,
-              title: runtimeOptionalStringArg(args, 'title') ?? revised.title,
-              status: runtimePlanStatusArg(args, 'status', revised.status),
-              updatedAt: Math.max(revised.updatedAt + 1, this.now()),
-            })
-            await recordPlanEvent('plan.updated', updated, {
-              summary: runtimeOptionalStringArg(args, 'summary'),
-            })
-            if (updated.status === 'ready') await recordPlanEvent('plan.ready', updated)
-            return JSON.stringify({ ok: true, planId: updated.id, status: updated.status })
-          },
-        },
-        {
-          spec: {
-            type: 'function',
-            function: {
-              name: 'plan_request_input',
-              description: 'Record a clarifying question on an existing plan.',
-              parameters: {
-                type: 'object',
-                properties: {
-                  planId: { type: 'string' },
-                  questionId: { type: 'string' },
-                  prompt: { type: 'string' },
-                },
-                required: ['planId', 'prompt'],
-                additionalProperties: false,
-              },
-            },
-            metadata: planToolMetadata('plan_request_input'),
-          },
-          run: async (args) => {
-            if (!this.store.getPlan || !this.store.updatePlan) {
-              throw new Error('runtime store cannot update plan questions')
-            }
-            const planId = runtimeStringArg(args, 'planId')
-            const current = await this.store.getPlan(conversationId, planId)
-            const question: PlanQuestion = {
-              id: runtimeOptionalStringArg(args, 'questionId') ?? this.createId(),
-              prompt: runtimeStringArg(args, 'prompt'),
-              status: 'open',
-            }
-            const questions = [
-              ...current.questions.filter((candidate) => candidate.id !== question.id),
-              question,
-            ]
-            const updated = await this.store.updatePlan({
-              ...current,
-              status: 'needs_input',
-              questions,
-              updatedAt: Math.max(current.updatedAt + 1, this.now()),
-            })
-            await recordPlanEvent('plan.question.requested', updated, {
-              questionId: question.id,
-              prompt: question.prompt,
-            })
-            return JSON.stringify({ ok: true, planId: updated.id, questionId: question.id })
-          },
-        },
-        {
-          spec: {
-            type: 'function',
-            function: {
-              name: 'plan_mark_ready',
-              description: 'Mark an existing plan ready for user review and approval.',
-              parameters: {
-                type: 'object',
-                properties: {
-                  planId: { type: 'string' },
-                  summary: { type: 'string' },
-                },
-                required: ['planId'],
-                additionalProperties: false,
-              },
-            },
-            metadata: planToolMetadata('plan_mark_ready'),
-          },
-          run: async (args) => {
-            if (!this.store.getPlan || !this.store.updatePlan) {
-              throw new Error('runtime store cannot mark plans ready')
-            }
-            const planId = runtimeStringArg(args, 'planId')
-            const current = await this.store.getPlan(conversationId, planId)
-            const updated = await this.store.updatePlan({
-              ...current,
-              status: 'ready',
-              updatedAt: Math.max(current.updatedAt + 1, this.now()),
-            })
-            await recordPlanEvent('plan.ready', updated, {
-              summary: runtimeOptionalStringArg(args, 'summary'),
-            })
-            return JSON.stringify({ ok: true, planId: updated.id, status: updated.status })
-          },
-        },
-      ],
-    }
-  }
-
-  private createPlanImplementationToolPack(input: {
-    conversationId: string
-    assistantMessageId: string
-    planId: string
-  }): ToolPack {
-    const { conversationId, assistantMessageId, planId: activePlanId } = input
-    const planToolMetadata = (name: string) => ({
-      name,
-      readOnly: true,
-      destructive: false,
-      requiresApproval: false,
-      access: [],
-      scope: [],
-      planSafe: true,
-    })
-    const requireActivePlanId = (args: Record<string, unknown>): string => {
-      const planId = runtimeStringArg(args, 'planId')
-      if (planId !== activePlanId) {
-        throw new Error(`plan tool cannot update inactive plan: ${planId}`)
-      }
-      return planId
-    }
-    const loadPlan = async (args: Record<string, unknown>): Promise<PlanArtifact> => {
-      const planId = requireActivePlanId(args)
-      return this.requirePlanStore('getPlan')(conversationId, planId)
-    }
-    const savePlan = async (plan: PlanArtifact): Promise<PlanArtifact> =>
-      this.requirePlanStore('updatePlan')({
-        ...plan,
-        updatedAt: Math.max(plan.updatedAt + 1, this.now()),
-      })
-
-    return {
-      id: 'aila-plan-implementation-tools',
-      name: 'Aila Plan Implementation Tools',
-      description: 'Update task progress and drift for the approved plan being implemented.',
-      tools: [
-        {
-          spec: {
-            type: 'function',
-            function: {
-              name: 'start_plan_task',
-              description: 'Mark an approved plan task as in progress.',
-              parameters: {
-                type: 'object',
-                properties: {
-                  planId: { type: 'string' },
-                  taskId: { type: 'string' },
-                  summary: { type: 'string' },
-                },
-                required: ['planId', 'taskId'],
-                additionalProperties: false,
-              },
-            },
-            metadata: planToolMetadata('start_plan_task'),
-          },
-          run: async (args) => {
-            const taskId = runtimeStringArg(args, 'taskId')
-            const current = await loadPlan(args)
-            const updated = await savePlan(
-              updateRuntimePlanTaskStatus(current, taskId, 'in_progress'),
-            )
-            await this.recordPlanLifecycleEvent('plan.task.started', {
-              plan: updated,
-              messageId: assistantMessageId,
-              data: { taskId, summary: runtimeOptionalStringArg(args, 'summary') },
-            })
-            return JSON.stringify({ ok: true, planId: updated.id, taskId, status: 'in_progress' })
-          },
-        },
-        {
-          spec: {
-            type: 'function',
-            function: {
-              name: 'complete_plan_task',
-              description: 'Mark an approved plan task as completed.',
-              parameters: {
-                type: 'object',
-                properties: {
-                  planId: { type: 'string' },
-                  taskId: { type: 'string' },
-                  summary: { type: 'string' },
-                },
-                required: ['planId', 'taskId'],
-                additionalProperties: false,
-              },
-            },
-            metadata: planToolMetadata('complete_plan_task'),
-          },
-          run: async (args) => {
-            const taskId = runtimeStringArg(args, 'taskId')
-            const current = await loadPlan(args)
-            const updated = await savePlan(updateRuntimePlanTaskStatus(current, taskId, 'done'))
-            await this.recordPlanLifecycleEvent('plan.task.completed', {
-              plan: updated,
-              messageId: assistantMessageId,
-              data: { taskId, summary: runtimeOptionalStringArg(args, 'summary') },
-            })
-            return JSON.stringify({ ok: true, planId: updated.id, taskId, status: 'done' })
-          },
-        },
-        {
-          spec: {
-            type: 'function',
-            function: {
-              name: 'block_plan_task',
-              description: 'Mark an approved plan task as blocked.',
-              parameters: {
-                type: 'object',
-                properties: {
-                  planId: { type: 'string' },
-                  taskId: { type: 'string' },
-                  reason: { type: 'string' },
-                },
-                required: ['planId', 'taskId', 'reason'],
-                additionalProperties: false,
-              },
-            },
-            metadata: planToolMetadata('block_plan_task'),
-          },
-          run: async (args) => {
-            const taskId = runtimeStringArg(args, 'taskId')
-            const reason = runtimeStringArg(args, 'reason')
-            const current = await loadPlan(args)
-            const updated = await savePlan(updateRuntimePlanTaskStatus(current, taskId, 'blocked'))
-            await this.recordPlanLifecycleEvent('plan.task.blocked', {
-              plan: updated,
-              messageId: assistantMessageId,
-              data: { taskId, summary: reason },
-            })
-            return JSON.stringify({ ok: true, planId: updated.id, taskId, status: 'blocked' })
-          },
-        },
-        {
-          spec: {
-            type: 'function',
-            function: {
-              name: 'record_plan_drift',
-              description: 'Record material drift discovered while implementing an approved plan.',
-              parameters: {
-                type: 'object',
-                properties: {
-                  planId: { type: 'string' },
-                  driftId: { type: 'string' },
-                  severity: { type: 'string', enum: PLAN_DRIFT_SEVERITIES },
-                  summary: { type: 'string' },
-                  proposedChange: { type: 'string' },
-                },
-                required: ['planId', 'summary'],
-                additionalProperties: false,
-              },
-            },
-            metadata: planToolMetadata('record_plan_drift'),
-          },
-          run: async (args) => {
-            const current = await loadPlan(args)
-            const drift = {
-              id: runtimeOptionalStringArg(args, 'driftId') ?? this.createId(),
-              createdAt: this.now(),
-              severity: runtimePlanDriftSeverityArg(args, 'severity', 'warning'),
-              summary: runtimeStringArg(args, 'summary'),
-              ...(runtimeOptionalStringArg(args, 'proposedChange')
-                ? { proposedChange: runtimeOptionalStringArg(args, 'proposedChange') }
-                : {}),
-            }
-            const updated = await savePlan({ ...current, drift: [...current.drift, drift] })
-            await this.recordPlanLifecycleEvent('plan.drift.detected', {
-              plan: updated,
-              messageId: assistantMessageId,
-              data: { driftId: drift.id, severity: drift.severity, summary: drift.summary },
-            })
-            return JSON.stringify({ ok: true, planId: updated.id, driftId: drift.id })
-          },
-        },
-        {
-          spec: {
-            type: 'function',
-            function: {
-              name: 'complete_plan',
-              description: 'Mark the approved plan implementation as completed.',
-              parameters: {
-                type: 'object',
-                properties: {
-                  planId: { type: 'string' },
-                  summary: { type: 'string' },
-                },
-                required: ['planId'],
-                additionalProperties: false,
-              },
-            },
-            metadata: planToolMetadata('complete_plan'),
-          },
-          run: async (args) => {
-            const current = await loadPlan(args)
-            const completedAt = this.now()
-            const updated = await this.requirePlanStore('updatePlan')({
-              ...current,
-              status: 'completed',
-              completedAt,
-              updatedAt: Math.max(current.updatedAt + 1, completedAt),
-            })
-            await this.recordPlanLifecycleEvent('plan.completed', {
-              plan: updated,
-              messageId: assistantMessageId,
-              data: { summary: runtimeOptionalStringArg(args, 'summary') },
-            })
-            return JSON.stringify({ ok: true, planId: updated.id, status: updated.status })
-          },
-        },
-      ],
-    }
   }
 
   async getSkills(): Promise<LoadedSkill[]> {
@@ -1807,24 +964,17 @@ export class AgentRuntime implements AgentRuntimeApi {
   ): Promise<ConversationSummary> {
     if (!this.store.createConversation) throw new Error('runtime store cannot create conversations')
     const summary = cloneRuntimeConversationSummary(
-      await this.store.createConversation(input.docId ?? undefined, input.workspace ?? undefined),
+      await this.store.createConversation(input.workspace ?? undefined),
     )
-    this.emit(createRuntimeEvent('conversations:updated', summary))
+    this.emit(createWorkbenchEvent('conversations:updated', summary))
     return summary
   }
 
-  async listConversations(
-    input: RuntimeListConversationsInput = {},
-  ): Promise<ConversationSummary[]> {
+  async listConversations(): Promise<ConversationSummary[]> {
     if (!this.store.listConversations) throw new Error('runtime store cannot list conversations')
-    const conversations = sortRuntimeConversationSummaries(
+    return sortRuntimeConversationSummaries(
       cloneRuntimeConversationSummaries(await this.store.listConversations()),
     )
-    if (input.docId === undefined) return conversations
-    if (input.docId === null) {
-      return conversations.filter((summary) => !summary.docId)
-    }
-    return conversations.filter((summary) => summary.docId === input.docId)
   }
 
   async getConversation(conversationId: string): Promise<ConversationRecord> {
@@ -1839,7 +989,7 @@ export class AgentRuntime implements AgentRuntimeApi {
     }
 
     if (input.resumeLatest) {
-      const [summary] = await this.listConversations({ docId: input.docId })
+      const [summary] = await this.listConversations()
       if (!summary) throw new Error('no conversations found to resume')
       return { conversationId: summary.id, isExisting: true, summary }
     }
@@ -1853,29 +1003,54 @@ export class AgentRuntime implements AgentRuntimeApi {
       }
     }
 
-    const summary = await this.createConversation({ docId: input.docId })
+    const summary = await this.createConversation()
     return { conversationId: summary.id, isExisting: false, summary }
   }
 
-  async listAgentEvents(conversationId: string): Promise<PersistedAgentEvent[]> {
-    if (!this.store.listAgentEvents) throw new Error('runtime store cannot list agent events')
-    return cloneRuntimePersistedAgentEvents(await this.store.listAgentEvents(conversationId))
+  async listRunEvents(conversationId: string): Promise<PersistedRunEvent[]> {
+    if (!this.store.listRunEvents) throw new Error('runtime store cannot list agent events')
+    return cloneRuntimePersistedRunEvents(await this.store.listRunEvents(conversationId))
   }
 
-  async getRunCheckpoint(
-    conversationId: string,
-    runId: string,
-  ): Promise<AgentRunCheckpoint | null> {
+  async getRunCheckpoint(conversationId: string, runId: string): Promise<RunCheckpoint | null> {
     if (!this.store.getRunCheckpoint) throw new Error('runtime store cannot load run checkpoints')
     const checkpoint = await this.store.getRunCheckpoint(conversationId, runId)
     return checkpoint ? cloneRuntimeValue(checkpoint) : null
   }
 
-  async listRunCheckpoints(conversationId: string): Promise<AgentRunCheckpoint[]> {
+  async listRunCheckpoints(conversationId: string): Promise<RunCheckpoint[]> {
     if (!this.store.listRunCheckpoints) {
       throw new Error('runtime store cannot list run checkpoints')
     }
     return cloneRuntimeValue([...(await this.store.listRunCheckpoints(conversationId))])
+  }
+
+  async listRunSummaries(conversationId: string): Promise<RuntimeRunSummary[]> {
+    const activeRunIds = new Set(
+      this.listActiveStreams()
+        .filter((turn) => turn.conversationId === conversationId)
+        .map((turn) => turn.runId),
+    )
+    return (await this.listRunCheckpoints(conversationId)).map((checkpoint) => {
+      const active = activeRunIds.has(checkpoint.identity.runId)
+      return {
+        identity: cloneRuntimeValue(checkpoint.identity),
+        status: checkpoint.loop.state.status,
+        mode: checkpoint.loop.state.mode,
+        ...(checkpoint.loop.state.nextAction
+          ? { nextAction: cloneRuntimeValue(checkpoint.loop.state.nextAction) }
+          : {}),
+        ...(checkpoint.loop.state.wait
+          ? { wait: cloneRuntimeValue(checkpoint.loop.state.wait) }
+          : {}),
+        recovery: cloneRuntimeValue(checkpoint.recovery),
+        revision: checkpoint.revision,
+        updatedAt: checkpoint.updatedAt,
+        stepCount: checkpoint.loop.state.steps.length,
+        active,
+        allowedControls: runtimeRunAllowedControls(checkpoint, active),
+      }
+    })
   }
 
   async inspectRun(input: RuntimeRunControlInput): Promise<RuntimeRunInspection> {
@@ -1884,30 +1059,45 @@ export class AgentRuntime implements AgentRuntimeApi {
       throw new Error(`agent run checkpoint not found: ${input.conversationId}/${input.runId}`)
     }
     const [events, artifacts] = await Promise.all([
-      this.listAgentEvents(input.conversationId),
+      this.listRunEvents(input.conversationId),
       this.store.listRunArtifacts
         ? this.store.listRunArtifacts(input.conversationId, input.runId)
         : Promise.resolve([]),
     ])
+    const active = this.listActiveStreams().some((turn) => turn.runId === input.runId)
     return cloneRuntimeValue({
       checkpoint,
       events: events.filter((event) => event.runId === input.runId),
-      artifacts: [...artifacts],
-      active: this.listActiveStreams().some((turn) => turn.runId === input.runId),
+      artifacts: [...artifacts].map(runArtifactDescriptor),
+      active,
+      allowedControls: runtimeRunAllowedControls(checkpoint, active),
     })
+  }
+
+  async getRunArtifact(input: RuntimeRunArtifactInput): Promise<RunArtifact> {
+    if (!this.store.listRunArtifacts) {
+      throw new Error('runtime store cannot load run artifacts')
+    }
+    const artifact = (await this.store.listRunArtifacts(input.conversationId, input.runId)).find(
+      (candidate) => candidate.artifactId === input.artifactId,
+    )
+    if (!artifact) {
+      throw new Error(`agent run artifact not found: ${input.artifactId}`)
+    }
+    return cloneRuntimeValue(artifact)
   }
 
   async getConversationRuntimeState(
     conversationId: string,
   ): Promise<ConversationRuntimeReplayState> {
-    const events = await this.listAgentEvents(conversationId)
+    const events = await this.listRunEvents(conversationId)
     return cloneRuntimeValue(replayConversationRuntimeState(events))
   }
 
   async hydrateConversation(conversationId: string): Promise<ConversationRuntimeHydration> {
     const [record, events, plans] = await Promise.all([
       this.getConversation(conversationId),
-      this.listAgentEvents(conversationId),
+      this.listRunEvents(conversationId),
       this.store.listPlans ? this.listPlans(conversationId) : Promise.resolve([]),
     ])
     const runtimeState = replayConversationRuntimeState(events)
@@ -1916,10 +1106,8 @@ export class AgentRuntime implements AgentRuntimeApi {
     return cloneRuntimeValue({ record, events, runtimeState, activeTurn, plans })
   }
 
-  async listConversationRuntimeStates(
-    input: RuntimeListConversationsInput = {},
-  ): Promise<ConversationRuntimeStateSnapshot[]> {
-    const conversations = await this.listConversations(input)
+  async listConversationRuntimeStates(): Promise<ConversationRuntimeStateSnapshot[]> {
+    const conversations = await this.listConversations()
     return Promise.all(
       conversations.map(async (summary) => ({
         conversationId: summary.id,
@@ -1933,7 +1121,7 @@ export class AgentRuntime implements AgentRuntimeApi {
     const summary = cloneRuntimeConversationSummary(
       await this.store.renameConversation(conversationId, title),
     )
-    this.emit(createRuntimeEvent('conversations:updated', summary))
+    this.emit(createWorkbenchEvent('conversations:updated', summary))
     return summary
   }
 
@@ -2031,10 +1219,10 @@ export class AgentRuntime implements AgentRuntimeApi {
   }
 
   async approvePlan(input: RuntimeApprovePlanInput): Promise<RuntimeSendResult> {
-    return this.withTurnStartLock(input.conversationId, async (turnStartLock) => {
+    return this.turns.withStartLock(input.conversationId, async (turnStartLock) => {
       const { conversationId, planId, selection } = input
       this.assertCanStartTurn(conversationId)
-      const previous = this.activeStreams.get(conversationId)
+      const previous = this.turns.get(conversationId)
       if (previous) await this.waitForPriorStreamBeforeNextTurn(conversationId, previous)
       this.assertCanStartTurn(conversationId)
 
@@ -2145,10 +1333,10 @@ export class AgentRuntime implements AgentRuntimeApi {
   async compactConversation(
     input: RuntimeCompactConversationInput,
   ): Promise<RuntimeCompactConversationResult> {
-    return this.withTurnStartLock(input.conversationId, async () => {
+    return this.turns.withStartLock(input.conversationId, async () => {
       const { conversationId, selection } = input
       this.assertCanStartTurn(conversationId)
-      if (this.activeStreams.has(conversationId)) {
+      if (this.turns.has(conversationId)) {
         throw new Error('cannot compact while assistant turn is running')
       }
       if (!this.store.saveContextCheckpoint) {
@@ -2227,7 +1415,7 @@ export class AgentRuntime implements AgentRuntimeApi {
   }
 
   async send(input: RuntimeSendInput): Promise<RuntimeSendResult> {
-    return this.withTurnStartLock(input.conversationId, async (turnStartLock) => {
+    return this.turns.withStartLock(input.conversationId, async (turnStartLock) => {
       const { conversationId, userText, selection, attachments, transientContext } = input
       const mode = normalizeAilaExecutionMode(input.mode)
 
@@ -2235,7 +1423,7 @@ export class AgentRuntime implements AgentRuntimeApi {
 
       // Wait for any prior stream on this conversation to finish its persistence
       // side-effects before appending the next user message.
-      const previous = this.activeStreams.get(conversationId)
+      const previous = this.turns.get(conversationId)
       if (previous) await this.waitForPriorStreamBeforeNextTurn(conversationId, previous)
       this.assertCanStartTurn(conversationId)
 
@@ -2275,12 +1463,12 @@ export class AgentRuntime implements AgentRuntimeApi {
   }
 
   async retryLastUserMessage(input: RuntimeRetryLastInput): Promise<RuntimeSendResult> {
-    return this.withTurnStartLock(input.conversationId, async (turnStartLock) => {
+    return this.turns.withStartLock(input.conversationId, async (turnStartLock) => {
       const { conversationId, selection, transientContext } = input
       const mode = normalizeAilaExecutionMode(input.mode)
 
       this.assertCanStartTurn(conversationId)
-      const previous = this.activeStreams.get(conversationId)
+      const previous = this.turns.get(conversationId)
       if (previous) await this.waitForPriorStreamBeforeNextTurn(conversationId, previous)
       this.assertCanStartTurn(conversationId)
 
@@ -2320,8 +1508,8 @@ export class AgentRuntime implements AgentRuntimeApi {
     return this.resumeRun({ ...input, loopMode: 'continuous' })
   }
 
-  async abortRun(input: RuntimeRunControlInput): Promise<AgentRunCheckpoint> {
-    const active = this.activeStreams.get(input.conversationId)
+  async abortRun(input: RuntimeRunControlInput): Promise<RunCheckpoint> {
+    const active = this.turns.get(input.conversationId)
     if (active) {
       if (active.run.runId !== input.runId) {
         throw new Error(`another run is active: ${active.run.runId}`)
@@ -2348,6 +1536,8 @@ export class AgentRuntime implements AgentRuntimeApi {
     checkpoint.loop.state.status = 'cancelled'
     checkpoint.loop.state.completedAt = timestamp
     checkpoint.loop.state.currentStep = undefined
+    checkpoint.loop.state.nextAction = undefined
+    checkpoint.loop.state.wait = undefined
     checkpoint.loop.state.error = 'user'
     checkpoint.assistantMessage = {
       ...checkpoint.assistantMessage,
@@ -2356,7 +1546,7 @@ export class AgentRuntime implements AgentRuntimeApi {
     }
     checkpoint.recovery = { strategy: 'automatic' }
     checkpoint.updatedAt = timestamp
-    await this.recordAgentEvent({
+    await this.recordRunEvent({
       timestamp,
       conversationId: input.conversationId,
       messageId: checkpoint.assistantMessageId,
@@ -2370,7 +1560,7 @@ export class AgentRuntime implements AgentRuntimeApi {
     return saved
   }
 
-  async forkRun(input: RuntimeForkRunInput): Promise<AgentRunCheckpoint> {
+  async forkRun(input: RuntimeForkRunInput): Promise<RunCheckpoint> {
     if (!this.store.getRunCheckpoint || !this.store.saveRunCheckpoint) {
       throw new Error('runtime store cannot fork persisted agent runs')
     }
@@ -2387,21 +1577,21 @@ export class AgentRuntime implements AgentRuntimeApi {
     const assistantMessageId = this.createId()
     const originStepId =
       input.originStepId ?? source.loop.state.steps[source.loop.state.steps.length - 1]?.stepId
-    const identity: AgentRunIdentity = {
+    const identity: RunIdentity = {
       conversationId: input.conversationId,
       turnId: source.identity.turnId,
       runId,
       parentRunId: source.identity.runId,
       ...(originStepId ? { originStepId } : {}),
     }
-    const nextAction: AgentLoopNextAction = cloneRuntimeValue(
+    const nextAction: RunNextAction = cloneRuntimeValue(
       source.loop.state.nextAction ?? { type: 'model', reason: 'resume' as const },
     )
     const pendingModelOutput =
       nextAction.type === 'tools'
         ? source.modelStepOutputs[String(Math.max(0, source.loop.modelStepIndex - 1))]
         : undefined
-    const checkpoint: AgentRunCheckpoint = {
+    const checkpoint: RunCheckpoint = {
       ...cloneRuntimeValue(source),
       identity,
       assistantMessageId,
@@ -2413,6 +1603,7 @@ export class AgentRuntime implements AgentRuntimeApi {
           startedAt: timestamp,
           steps: [],
           nextAction,
+          wait: { reason: 'debug', detail: 'forked run is ready for inspection' },
         },
         nextStepIndex: 0,
         modelStepIndex: nextAction.type === 'tools' ? 1 : 0,
@@ -2437,7 +1628,7 @@ export class AgentRuntime implements AgentRuntimeApi {
       parentRunId: source.identity.runId,
       ...(originStepId ? { originStepId } : {}),
     }
-    await this.recordAgentEvent({
+    await this.recordRunEvent({
       timestamp,
       conversationId: input.conversationId,
       messageId: assistantMessageId,
@@ -2446,22 +1637,26 @@ export class AgentRuntime implements AgentRuntimeApi {
       type: 'run.started',
       data: { ...identityData, mode: source.loop.state.mode },
     })
-    await this.recordAgentEvent({
+    await this.recordRunEvent({
       timestamp,
       conversationId: input.conversationId,
       messageId: assistantMessageId,
       turnId: identity.turnId,
       runId,
       type: 'run.paused',
-      data: { ...identityData, nextAction },
+      data: {
+        ...identityData,
+        nextAction,
+        wait: { reason: 'debug', detail: 'forked run is ready for inspection' },
+      },
     })
     return saved
   }
 
   async resumeRun(input: RuntimeResumeRunInput): Promise<RuntimeSendResult> {
-    return this.withTurnStartLock(input.conversationId, async (turnStartLock) => {
+    return this.turns.withStartLock(input.conversationId, async (turnStartLock) => {
       this.assertCanStartTurn(input.conversationId)
-      const previous = this.activeStreams.get(input.conversationId)
+      const previous = this.turns.get(input.conversationId)
       if (previous) {
         await this.waitForPriorStreamBeforeNextTurn(input.conversationId, previous)
       }
@@ -2480,9 +1675,9 @@ export class AgentRuntime implements AgentRuntimeApi {
         checkpoint.updatedAt + 1,
         (interruptedStep?.startedAt ?? checkpoint.updatedAt) + 1,
       )
-      const resumed = prepareAgentRunCheckpointForResume(checkpoint, recoveryTimestamp)
+      const resumed = prepareRunCheckpointForResume(checkpoint, recoveryTimestamp)
       if (interruptedStep?.status === 'running') {
-        await this.recordAgentEvent({
+        await this.recordRunEvent({
           timestamp: recoveryTimestamp,
           conversationId: input.conversationId,
           messageId: checkpoint.assistantMessageId,
@@ -2497,14 +1692,17 @@ export class AgentRuntime implements AgentRuntimeApi {
             reason: 'interrupted_before_resume',
           },
         })
-        await this.recordAgentEvent({
+        await this.recordRunEvent({
           timestamp: recoveryTimestamp,
           conversationId: input.conversationId,
           messageId: checkpoint.assistantMessageId,
           turnId: checkpoint.identity.turnId,
           runId: checkpoint.identity.runId,
           type: 'run.paused',
-          data: { nextAction: cloneRuntimeValue(resumed.loop.state.nextAction) },
+          data: {
+            nextAction: cloneRuntimeValue(resumed.loop.state.nextAction),
+            wait: cloneRuntimeValue(resumed.loop.state.wait),
+          },
         })
       }
       const savedCheckpoint = cloneRuntimeValue(await this.store.saveRunCheckpoint(resumed))
@@ -2535,7 +1733,7 @@ export class AgentRuntime implements AgentRuntimeApi {
       }
       if (mode === 'plan') {
         planToolPacks.push(
-          this.createPlanToolPack({
+          createPlanToolPack(this.planToolServices(), {
             conversationId: input.conversationId,
             assistantMessageId,
             sourceUserMessageId: savedCheckpoint.identity.turnId,
@@ -2544,7 +1742,7 @@ export class AgentRuntime implements AgentRuntimeApi {
       }
       if (activePlan && savedCheckpoint.plan?.operation === 'implement') {
         planToolPacks.push(
-          this.createPlanImplementationToolPack({
+          createPlanImplementationToolPack(this.planToolServices(), {
             conversationId: input.conversationId,
             assistantMessageId,
             planId: activePlan.id,
@@ -2567,7 +1765,7 @@ export class AgentRuntime implements AgentRuntimeApi {
       const cleanup = new Promise<void>((resolve) => {
         resolveCleanup = resolve
       })
-      this.activeStreams.set(input.conversationId, {
+      this.turns.set(input.conversationId, {
         controller,
         cleanup,
         assistantMessageId,
@@ -2607,52 +1805,6 @@ export class AgentRuntime implements AgentRuntimeApi {
     })
   }
 
-  private async withTurnStartLock<T>(
-    conversationId: string,
-    operation: (turnStartLock: TurnStartLockSlot) => Promise<T>,
-  ): Promise<T> {
-    const previous = this.turnStartLocks.get(conversationId)
-    let release: () => void = () => {}
-    const promise = new Promise<void>((resolve) => {
-      release = resolve
-    })
-    const current: TurnStartLockSlot = {
-      promise,
-      released: false,
-      release: () => {},
-    }
-    current.release = () => {
-      if (current.released) return
-      current.released = true
-      release()
-    }
-    this.turnStartLocks.set(conversationId, current)
-
-    if (previous) await previous.promise
-    try {
-      return await operation(current)
-    } finally {
-      this.releaseTurnStartLock(current)
-      if (this.turnStartLocks.get(conversationId) === current) {
-        this.turnStartLocks.delete(conversationId)
-      }
-    }
-  }
-
-  private releaseTurnStartLock(lock: TurnStartLockSlot): void {
-    lock.release()
-  }
-
-  private clearTimedOutStreamSlot(conversationId: string, slot: StreamSlot): void {
-    if (this.activeStreams.get(conversationId)?.controller === slot.controller) {
-      this.activeStreams.delete(conversationId)
-    }
-    this.releaseTurnStartLock(slot.turnStartLock)
-    if (this.turnStartLocks.get(conversationId) === slot.turnStartLock) {
-      this.turnStartLocks.delete(conversationId)
-    }
-  }
-
   private async startAssistantTurn(input: {
     conversationId: string
     userMessage: PersistedMessage
@@ -2664,7 +1816,7 @@ export class AgentRuntime implements AgentRuntimeApi {
     planOperation?: 'revise' | 'implement'
     transientContext?: ChatMessage[]
     source: RuntimeTransientContextInput['source']
-    turnStartLock: TurnStartLockSlot
+    turnStartLock: TurnStartLock
   }): Promise<RuntimeSendResult> {
     const {
       conversationId,
@@ -2680,7 +1832,7 @@ export class AgentRuntime implements AgentRuntimeApi {
     } = input
     const selection = cloneRuntimeValue(input.selection)
     const assistantMessageId = this.createId()
-    const run: AgentRunIdentity = {
+    const run: RunIdentity = {
       conversationId,
       turnId: userMessage.id,
       runId: this.createRunId(),
@@ -2692,7 +1844,7 @@ export class AgentRuntime implements AgentRuntimeApi {
     const cleanup = new Promise<void>((resolve) => {
       resolveCleanup = resolve
     })
-    this.activeStreams.set(conversationId, {
+    this.turns.set(conversationId, {
       controller,
       cleanup,
       assistantMessageId,
@@ -2711,7 +1863,7 @@ export class AgentRuntime implements AgentRuntimeApi {
     let activePlan: PlanArtifact | undefined
     let activePlanOperation: 'revise' | 'implement' | undefined
     try {
-      if (!this.host.streamChat) throw new Error('runtime host cannot stream chat')
+      if (!this.host.runAgent) throw new Error('runtime host cannot execute agent runs')
       if (planId) {
         activePlan = await this.requirePlanStore('getPlan')(conversationId, planId)
         activePlanOperation = planOperation ?? (mode === 'plan' ? 'revise' : undefined)
@@ -2734,7 +1886,7 @@ export class AgentRuntime implements AgentRuntimeApi {
       const resolvedDynamicContext = inputTransientContext ?? hostTransientContext
       const planContext =
         activePlan && activePlanOperation
-          ? [renderRuntimePlanContext(activePlan, activePlanOperation)]
+          ? [renderPlanContext(activePlan, activePlanOperation)]
           : []
       const context = assembleAgentContext({
         stableInstructions: resolvedStableInstructions,
@@ -2763,7 +1915,7 @@ export class AgentRuntime implements AgentRuntimeApi {
       const planToolPacks: ToolPack[] = []
       if (mode === 'plan') {
         planToolPacks.push(
-          this.createPlanToolPack({
+          createPlanToolPack(this.planToolServices(), {
             conversationId,
             assistantMessageId,
             sourceUserMessageId: userMessage.id,
@@ -2772,7 +1924,7 @@ export class AgentRuntime implements AgentRuntimeApi {
       }
       if (activePlan && activePlanOperation === 'implement') {
         planToolPacks.push(
-          this.createPlanImplementationToolPack({
+          createPlanImplementationToolPack(this.planToolServices(), {
             conversationId,
             assistantMessageId,
             planId: activePlan.id,
@@ -2814,9 +1966,7 @@ export class AgentRuntime implements AgentRuntimeApi {
       return { userMessage, assistantMessageId, turnId: run.turnId, runId: run.runId }
     } finally {
       if (!streamStarted) {
-        if (this.activeStreams.get(conversationId)?.controller === controller) {
-          this.activeStreams.delete(conversationId)
-        }
+        this.turns.deleteWhere(conversationId, (turn) => turn.controller === controller)
         resolveCleanup()
       }
     }
@@ -2842,7 +1992,7 @@ export class AgentRuntime implements AgentRuntimeApi {
   }
 
   async abort(conversationId: string): Promise<void> {
-    const slot = this.activeStreams.get(conversationId)
+    const slot = this.turns.get(conversationId)
     if (!slot) return
     slot.controller.abort()
     const abortCleanup = this.notifyConversationAbort(conversationId, 'user')
@@ -2860,7 +2010,7 @@ export class AgentRuntime implements AgentRuntimeApi {
   }
 
   listActiveStreams(): ActiveAssistantTurn[] {
-    return Array.from(this.activeStreams.entries()).map(([conversationId, slot]) => ({
+    return this.turns.entries().map(([conversationId, slot]) => ({
       conversationId,
       assistantMessageId: slot.assistantMessageId,
       turnId: slot.run.turnId,
@@ -2873,39 +2023,39 @@ export class AgentRuntime implements AgentRuntimeApi {
     reason = 'runtime restarted before this turn finished',
   ): Promise<ConversationSummary[]> {
     if (this.store.recoverInterruptedActivities) {
-      const recoveredResults = cloneRuntimeAgentEventAppendResults(
+      const recoveredResults = cloneRuntimeRunEventAppendResults(
         await this.store.recoverInterruptedActivities(reason),
       )
       const recovered: ConversationSummary[] = []
       for (const result of recoveredResults) {
-        this.emit(createRuntimeEvent('agent:event', result.event))
+        this.emit(createWorkbenchEvent('run:event', result.event))
         if (!result.summary) continue
-        this.emit(createRuntimeEvent('conversations:updated', result.summary))
+        this.emit(createWorkbenchEvent('conversations:updated', result.summary))
         recovered.push(result.summary)
       }
       return [...recovered].sort((a, b) => b.updatedAt - a.updatedAt)
     }
 
-    if (!this.store.listConversations || !this.store.listAgentEvents) return []
+    if (!this.store.listConversations || !this.store.listRunEvents) return []
 
     const conversations = cloneRuntimeConversationSummaries(await this.store.listConversations())
     const recovered: ConversationSummary[] = []
     await Promise.all(
       conversations.map(async (summary) => {
-        const loadedEvents = await this.store.listAgentEvents?.(summary.id)
-        const events = loadedEvents ? cloneRuntimePersistedAgentEvents(loadedEvents) : undefined
+        const loadedEvents = await this.store.listRunEvents?.(summary.id)
+        const events = loadedEvents ? cloneRuntimePersistedRunEvents(loadedEvents) : undefined
         if (!events) return
         const recoveryEvent = createInterruptedConversationRecoveryEvent(events, {
           reason,
           activity: replayConversationActivity(events) ?? summary.activity,
         })
         if (!recoveryEvent) return
-        const { event, summary: nextSummary } = cloneRuntimeAgentEventAppendResult(
-          await this.store.recordAgentEvent(summary.id, cloneRuntimeValue(recoveryEvent)),
+        const { event, summary: nextSummary } = cloneRuntimeRunEventAppendResult(
+          await this.store.recordRunEvent(summary.id, cloneRuntimeValue(recoveryEvent)),
         )
-        this.emit(createRuntimeEvent('agent:event', event))
+        this.emit(createWorkbenchEvent('run:event', event))
         if (!nextSummary) return
-        this.emit(createRuntimeEvent('conversations:updated', nextSummary))
+        this.emit(createWorkbenchEvent('conversations:updated', nextSummary))
         recovered.push(nextSummary)
       }),
     )
@@ -2916,7 +2066,7 @@ export class AgentRuntime implements AgentRuntimeApi {
     const cleanupTimeoutMs =
       this.options.abortAllCleanupTimeoutMs ?? DEFAULT_ABORT_ALL_CLEANUP_TIMEOUT_MS
     await Promise.all(
-      Array.from(this.activeStreams.entries()).map(async ([conversationId, slot]) => {
+      this.turns.entries().map(async ([conversationId, slot]) => {
         slot.controller.abort()
         const abortCleanup = this.notifyConversationAbort(conversationId, reason)
         await this.recordCancellationRequest(conversationId, slot, reason)
@@ -2944,7 +2094,7 @@ export class AgentRuntime implements AgentRuntimeApi {
   async deleteConversation(conversationId: string): Promise<void> {
     this.deletedConversations.add(conversationId)
     let removed = false
-    const slot = this.activeStreams.get(conversationId)
+    const slot = this.turns.get(conversationId)
     let streamCleanupTimedOut = false
     try {
       if (slot) {
@@ -2956,7 +2106,7 @@ export class AgentRuntime implements AgentRuntimeApi {
         )
         streamCleanupTimedOut = !cleanedUp
         if (!cleanedUp) {
-          this.clearTimedOutStreamSlot(conversationId, slot)
+          this.turns.clearTimedOut(conversationId, slot)
         }
       } else {
         await this.notifyConversationAbort(conversationId, 'delete')
@@ -2997,7 +2147,7 @@ export class AgentRuntime implements AgentRuntimeApi {
       await this.store.saveMessage(conversationId, cloneRuntimePersistedMessage(message)),
     )
     if (this.deletedConversations.has(conversationId)) return false
-    this.emit(createRuntimeEvent('conversations:updated', summary))
+    this.emit(createWorkbenchEvent('conversations:updated', summary))
     return true
   }
 
@@ -3024,7 +2174,7 @@ export class AgentRuntime implements AgentRuntimeApi {
   private async persistSetupFailure(
     conversationId: string,
     assistantMessageId: string,
-    run: AgentRunIdentity,
+    run: RunIdentity,
     selection: ModelSelection,
     message: string,
   ): Promise<void> {
@@ -3040,7 +2190,7 @@ export class AgentRuntime implements AgentRuntimeApi {
     const persisted = await this.persistAndAnnounce(conversationId, errored)
     if (!persisted) return
     try {
-      await this.recordAgentEvent(
+      await this.recordRunEvent(
         withTurnSelection(
           {
             timestamp: this.now(),
@@ -3060,7 +2210,7 @@ export class AgentRuntime implements AgentRuntimeApi {
     }
     if (this.deletedConversations.has(conversationId)) return
     this.emit(
-      createRuntimeEvent('chat:error', {
+      createWorkbenchEvent('chat:error', {
         conversationId,
         messageId: assistantMessageId,
         error: message,
@@ -3072,7 +2222,7 @@ export class AgentRuntime implements AgentRuntimeApi {
   private async persistSetupCancellation(
     conversationId: string,
     assistantMessageId: string,
-    run: AgentRunIdentity,
+    run: RunIdentity,
     selection: ModelSelection,
   ): Promise<void> {
     const errored: PersistedMessage = {
@@ -3087,7 +2237,7 @@ export class AgentRuntime implements AgentRuntimeApi {
     const persisted = await this.persistAndAnnounce(conversationId, errored)
     if (!persisted) return
     try {
-      await this.recordAgentEvent(
+      await this.recordRunEvent(
         withTurnSelection(
           {
             timestamp: this.now(),
@@ -3107,7 +2257,7 @@ export class AgentRuntime implements AgentRuntimeApi {
     }
     if (this.deletedConversations.has(conversationId)) return
     this.emit(
-      createRuntimeEvent('chat:error', {
+      createWorkbenchEvent('chat:error', {
         conversationId,
         messageId: assistantMessageId,
         error: 'Aborted',
@@ -3116,34 +2266,34 @@ export class AgentRuntime implements AgentRuntimeApi {
     )
   }
 
-  private emit(event: AgentRuntimeEvent): void {
+  private emit(event: WorkbenchEvent): void {
     this.host.onEvent?.(cloneRuntimeValue(event))
   }
 
   private emitStreamEvent(
     conversationId: string,
     controller: AbortController,
-    event: AgentRuntimeEvent,
+    event: WorkbenchEvent,
   ): void {
     if (!this.acceptsStreamEvents(conversationId, controller)) return
     this.emit(event)
   }
 
-  async recordAgentEvent(event: RuntimeRecordAgentEventInput): Promise<boolean> {
-    return (await this.recordAgentEventWithResult(event)) !== null
+  async recordRunEvent(event: RuntimeRecordRunEventInput): Promise<boolean> {
+    return (await this.recordRunEventWithResult(event)) !== null
   }
 
-  private async recordAgentEventWithResult(
-    event: RuntimeRecordAgentEventInput,
-  ): Promise<AgentEventAppendResult | null> {
+  private async recordRunEventWithResult(
+    event: RuntimeRecordRunEventInput,
+  ): Promise<RunEventAppendResult | null> {
     if (this.deletedConversations.has(event.conversationId)) return null
-    const result = cloneRuntimeAgentEventAppendResult(
-      await this.store.recordAgentEvent(event.conversationId, cloneRuntimeValue(event)),
+    const result = cloneRuntimeRunEventAppendResult(
+      await this.store.recordRunEvent(event.conversationId, cloneRuntimeValue(event)),
     )
     if (this.deletedConversations.has(event.conversationId)) return null
     const { event: persisted, summary } = result
-    this.emit(createRuntimeEvent('agent:event', persisted))
-    if (summary) this.emit(createRuntimeEvent('conversations:updated', summary))
+    this.emit(createWorkbenchEvent('run:event', persisted))
+    if (summary) this.emit(createWorkbenchEvent('conversations:updated', summary))
     return result
   }
 
@@ -3269,7 +2419,7 @@ export class AgentRuntime implements AgentRuntimeApi {
     const cleanedUp = await this.waitForStreamCleanup(slot, this.cleanupTimeoutMs())
     if (cleanedUp) return
 
-    this.clearTimedOutStreamSlot(conversationId, slot)
+    this.turns.clearTimedOut(conversationId, slot)
     await this.recordInterruptedStreamCleanup(conversationId, slot, 'aborted cleanup timed out')
   }
 
@@ -3282,7 +2432,7 @@ export class AgentRuntime implements AgentRuntimeApi {
     const cleanedUp = await this.waitForStreamCleanup(slot, timeoutMs)
     if (cleanedUp) return
 
-    this.clearTimedOutStreamSlot(conversationId, slot)
+    this.turns.clearTimedOut(conversationId, slot)
     await this.recordInterruptedStreamCleanup(conversationId, slot, interruptedReason)
   }
 
@@ -3294,7 +2444,7 @@ export class AgentRuntime implements AgentRuntimeApi {
     if (slot.abortRecorded) return
     slot.abortRecorded = true
     try {
-      await this.recordAgentEvent(
+      await this.recordRunEvent(
         withTurnSelection(
           {
             timestamp: this.now(),
@@ -3321,7 +2471,7 @@ export class AgentRuntime implements AgentRuntimeApi {
   ): Promise<void> {
     if (slot.cleanupInterruptedRecorded) return
     slot.cleanupInterruptedRecorded = true
-    await this.recordAgentEvent(
+    await this.recordRunEvent(
       withTurnSelection(
         {
           timestamp: this.now(),
@@ -3345,7 +2495,7 @@ export class AgentRuntime implements AgentRuntimeApi {
 
   private acceptsStreamEvents(conversationId: string, controller: AbortController): boolean {
     if (this.deletedConversations.has(conversationId)) return false
-    return this.activeStreams.get(conversationId)?.controller === controller
+    return this.turns.get(conversationId)?.controller === controller
   }
 
   private async notifyConversationAbort(
@@ -3548,7 +2698,7 @@ export class AgentRuntime implements AgentRuntimeApi {
       const summary = cloneRuntimeConversationSummary(
         await this.store.saveContextCheckpoint(conversationId, checkpoint),
       )
-      this.emit(createRuntimeEvent('conversations:updated', summary))
+      this.emit(createWorkbenchEvent('conversations:updated', summary))
       await this.recordContextCompactionEvent({
         conversationId,
         messageId,
@@ -3592,7 +2742,7 @@ export class AgentRuntime implements AgentRuntimeApi {
       recommended.sourceEstimatedTokens - checkpointEstimatedTokens,
     )
     try {
-      await this.recordAgentEvent({
+      await this.recordRunEvent({
         timestamp: this.now(),
         conversationId,
         messageId,
@@ -3691,7 +2841,7 @@ export class AgentRuntime implements AgentRuntimeApi {
           this.createContextTurnLedgerEntry(input),
         ),
       )
-      this.emit(createRuntimeEvent('conversations:updated', summary))
+      this.emit(createWorkbenchEvent('conversations:updated', summary))
     } catch (error) {
       this.logger.warn('[runtime] context turn ledger persistence failed:', error)
     }
@@ -3700,7 +2850,7 @@ export class AgentRuntime implements AgentRuntimeApi {
   private async runStream(input: {
     conversationId: string
     assistantMessageId: string
-    run: AgentRunIdentity
+    run: RunIdentity
     selection: ModelSelection
     controller: AbortController
     resolveCleanup: () => void
@@ -3710,7 +2860,7 @@ export class AgentRuntime implements AgentRuntimeApi {
     toolRegistry: ToolRegistry
     mode: AilaExecutionMode
     loopMode: 'continuous' | 'step'
-    runCheckpoint?: AgentRunCheckpoint
+    runCheckpoint?: RunCheckpoint
     plan?: PlanArtifact
     planOperation?: 'create' | 'revise' | 'implement'
   }): Promise<void> {
@@ -3733,8 +2883,8 @@ export class AgentRuntime implements AgentRuntimeApi {
     } = input
     let eventLogChain = Promise.resolve()
     let lastEventSeq = runCheckpoint?.lastEventSeq
-    let terminalAgentEventQueued = false
-    const queueAgentEvent = (event: AgentEventInput): Promise<void> => {
+    let terminalRunEventQueued = false
+    const queueRunEvent = (event: RunEventInput): Promise<void> => {
       const eventWithSelection = withTurnSelection(
         {
           ...cloneRuntimeValue(event),
@@ -3750,12 +2900,12 @@ export class AgentRuntime implements AgentRuntimeApi {
         (eventWithSelection.type === 'turn.cancelled' &&
           eventWithSelection.data?.phase === 'completed')
       ) {
-        terminalAgentEventQueued = true
+        terminalRunEventQueued = true
       }
       if (!this.acceptsStreamEvents(conversationId, controller)) return Promise.resolve()
       eventLogChain = eventLogChain
         .then(async () => {
-          const result = await this.recordAgentEventWithResult(eventWithSelection)
+          const result = await this.recordRunEventWithResult(eventWithSelection)
           if (result?.event.seq !== undefined) lastEventSeq = result.event.seq
         })
         .catch((err) => {
@@ -3765,9 +2915,9 @@ export class AgentRuntime implements AgentRuntimeApi {
     }
 
     try {
-      const streamChat = this.host.streamChat
-      if (!streamChat) throw new Error('runtime host cannot stream chat')
-      await streamChat(
+      const runAgent = this.host.runAgent
+      if (!runAgent) throw new Error('runtime host cannot execute agent runs')
+      await runAgent(
         {
           conversationId,
           assistantMessageId,
@@ -3791,10 +2941,10 @@ export class AgentRuntime implements AgentRuntimeApi {
           fileSystem: toolContext.fileSystem,
           onToolPolicy: toolContext.onToolPolicy,
           onToolApproval: toolContext.onToolApproval,
-          onAgentEvent: queueAgentEvent,
+          onRunEvent: queueRunEvent,
           ...(this.store.saveRunCheckpoint
             ? {
-                saveRunCheckpoint: (checkpoint: AgentRunCheckpoint) =>
+                saveRunCheckpoint: (checkpoint: RunCheckpoint) =>
                   this.store.saveRunCheckpoint?.(
                     cloneRuntimeValue({
                       ...checkpoint,
@@ -3805,7 +2955,7 @@ export class AgentRuntime implements AgentRuntimeApi {
             : {}),
           ...(this.store.saveRunArtifact
             ? {
-                saveRunArtifact: (artifact: AgentRunArtifact) =>
+                saveRunArtifact: (artifact: RunArtifact) =>
                   this.store.saveRunArtifact?.(cloneRuntimeValue(artifact)) ??
                   Promise.resolve(cloneRuntimeValue(artifact)),
               }
@@ -3817,50 +2967,50 @@ export class AgentRuntime implements AgentRuntimeApi {
             this.emitStreamEvent(
               conversationId,
               controller,
-              createRuntimeEvent('chat:text-delta', cloneRuntimeValue(event)),
+              createWorkbenchEvent('chat:text-delta', cloneRuntimeValue(event)),
             ),
           onReasoningDelta: (event) =>
             this.emitStreamEvent(
               conversationId,
               controller,
-              createRuntimeEvent('chat:reasoning-delta', cloneRuntimeValue(event)),
+              createWorkbenchEvent('chat:reasoning-delta', cloneRuntimeValue(event)),
             ),
           onToolCallStart: (event) =>
             this.emitStreamEvent(
               conversationId,
               controller,
-              createRuntimeEvent('chat:tool-call-start', cloneRuntimeValue(event)),
+              createWorkbenchEvent('chat:tool-call-start', cloneRuntimeValue(event)),
             ),
           onToolCallArgsDelta: (event) =>
             this.emitStreamEvent(
               conversationId,
               controller,
-              createRuntimeEvent('chat:tool-call-args-delta', cloneRuntimeValue(event)),
+              createWorkbenchEvent('chat:tool-call-args-delta', cloneRuntimeValue(event)),
             ),
           onToolCallResult: (event) =>
             this.emitStreamEvent(
               conversationId,
               controller,
-              createRuntimeEvent('chat:tool-call-result', cloneRuntimeValue(event)),
+              createWorkbenchEvent('chat:tool-call-result', cloneRuntimeValue(event)),
             ),
           onImageBlock: (event) =>
             this.emitStreamEvent(
               conversationId,
               controller,
-              createRuntimeEvent('chat:image-block', cloneRuntimeValue(event)),
+              createWorkbenchEvent('chat:image-block', cloneRuntimeValue(event)),
             ),
           onDone: async (event) => {
             const doneEvent = cloneRuntimeValue(event)
             if (!this.acceptsStreamEvents(conversationId, controller)) return
             const persisted = await this.persistAndAnnounce(conversationId, doneEvent.message)
             if (!persisted || !this.acceptsStreamEvents(conversationId, controller)) return
-            this.emit(createRuntimeEvent('chat:done', doneEvent))
+            this.emit(createWorkbenchEvent('chat:done', doneEvent))
             if (doneEvent.usage) {
               try {
                 const summary = cloneRuntimeConversationSummary(
                   await this.store.recordUsage(conversationId, cloneRuntimeValue(doneEvent.usage)),
                 )
-                this.emit(createRuntimeEvent('conversations:updated', summary))
+                this.emit(createWorkbenchEvent('conversations:updated', summary))
               } catch (err) {
                 this.logger.warn('[runtime] usage persistence failed:', err)
               }
@@ -3878,7 +3028,7 @@ export class AgentRuntime implements AgentRuntimeApi {
             if (!this.acceptsStreamEvents(conversationId, controller)) return
             const persisted = await this.persistAndAnnounce(conversationId, errorEvent.message)
             if (!persisted || !this.acceptsStreamEvents(conversationId, controller)) return
-            this.emit(createRuntimeEvent('chat:error', errorEvent))
+            this.emit(createWorkbenchEvent('chat:error', errorEvent))
           },
         },
       )
@@ -3899,7 +3049,7 @@ export class AgentRuntime implements AgentRuntimeApi {
         const persisted = await this.persistAndAnnounce(conversationId, errored).catch(() => false)
         if (persisted && this.acceptsStreamEvents(conversationId, controller)) {
           this.emit(
-            createRuntimeEvent('chat:error', {
+            createWorkbenchEvent('chat:error', {
               conversationId,
               messageId: assistantMessageId,
               error: message,
@@ -3907,8 +3057,8 @@ export class AgentRuntime implements AgentRuntimeApi {
             }),
           )
         }
-        if (!terminalAgentEventQueued) {
-          queueAgentEvent({
+        if (!terminalRunEventQueued) {
+          queueRunEvent({
             timestamp: this.now(),
             conversationId,
             messageId: assistantMessageId,
@@ -3918,9 +3068,7 @@ export class AgentRuntime implements AgentRuntimeApi {
         }
       }
     } finally {
-      if (this.activeStreams.get(conversationId)?.controller === controller) {
-        this.activeStreams.delete(conversationId)
-      }
+      this.turns.deleteWhere(conversationId, (turn) => turn.controller === controller)
       await eventLogChain
       resolveCleanup()
     }

@@ -46,6 +46,15 @@ async function packageJson(path: string): Promise<{
   return JSON.parse(await readFile(path, 'utf-8'))
 }
 
+async function exists(path: string): Promise<boolean> {
+  try {
+    await stat(path)
+    return true
+  } catch {
+    return false
+  }
+}
+
 async function main(): Promise<void> {
   assert(
     (await stat(join(root, 'apps/desktop'))).isDirectory(),
@@ -98,6 +107,63 @@ async function main(): Promise<void> {
     agentNode.dependencies?.['@aila/agent'] === 'workspace:*',
     '@aila/agent-node must declare @aila/agent as a workspace dependency',
   )
+  assert(
+    !Object.keys(agent.dependencies ?? {}).some((name) => name.includes('pi-ai')),
+    '@aila/agent must implement its own model boundary rather than depend on pi-ai',
+  )
+  assert(
+    !Object.keys(agentNode.dependencies ?? {}).some((name) => name.includes('pi-ai')),
+    '@aila/agent-node must implement its own providers rather than depend on pi-ai',
+  )
+
+  assert(
+    !(await exists(join(root, 'packages/agent-node/src/node/stream-chat.ts'))),
+    'legacy stream-chat implementation must stay deleted',
+  )
+
+  const agentKernel = await readFile(join(root, 'packages/agent/src/agent/agent.ts'), 'utf-8')
+  for (const forbidden of [
+    'conversation-core',
+    'run-persistence',
+    'runtime',
+    'plan-core',
+    '@aila/agent-node',
+  ]) {
+    assert(
+      !agentKernel.includes(forbidden),
+      `minimal Agent kernel cannot depend on durable/product layer "${forbidden}"`,
+    )
+  }
+  assert(
+    agentKernel.includes("from '../run-machine'") && agentKernel.includes('runDurableRun'),
+    'minimal Agent and durable Workbench execution must share the pure Run Machine',
+  )
+  const durableExecutor = await readFile(
+    join(root, 'packages/agent-node/src/node/durable-run.ts'),
+    'utf-8',
+  )
+  assert(
+    durableExecutor.includes("from '@aila/agent/internal'") &&
+      durableExecutor.includes('runDurableRun'),
+    'durable executor must schedule work through the shared Run Machine',
+  )
+
+  const publicCore = await readFile(join(root, 'packages/agent/src/core.ts'), 'utf-8')
+  for (const legacy of [
+    'AgentRuntimeHost',
+    'AgentRuntimeStore',
+    'AgentRuntimeEvent',
+    'RuntimeStreamChat',
+    'createProviderStreamChat',
+    'type RunState',
+    'type RunTransition',
+    'runDurableRun,',
+  ]) {
+    assert(
+      !publicCore.includes(legacy),
+      `root Agent API must not expose legacy concept "${legacy}"`,
+    )
+  }
 
   for (const app of ['desktop', 'cli', 'tui']) {
     const manifest = await packageJson(join(root, `apps/${app}/package.json`))

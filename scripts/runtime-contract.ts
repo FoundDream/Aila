@@ -5,39 +5,31 @@ import * as runtimeSdk from '@aila/agent'
 import * as runtimeCoreSdk from '@aila/agent'
 import {
   type AgentContextPlan,
-  type AgentEvent,
-  type AgentLoopTransition,
-  AgentRuntime,
-  type AgentRuntimeEvent,
-  type AgentRuntimeHost,
-  type AgentRuntimeStore,
   AILA_EXECUTION_MODES,
   AILA_PLAN_ARTIFACT_SCHEMA_VERSION,
   AILA_PLAN_REVISION_SCHEMA_VERSION,
-  AILA_RUNTIME_EVENT_SCHEMA_VERSION,
-  AILA_RUNTIME_EVENT_TYPES,
   AILA_SKILL_FILE,
-  advanceAgentLoop,
+  AILA_WORKBENCH_EVENT_SCHEMA_VERSION,
+  AILA_WORKBENCH_EVENT_TYPES,
   type ChatMessage,
   createExecutionModeToolPolicy,
   createInMemoryRuntimeStore,
   createInterruptedConversationRecoveryEvent,
-  createRuntimeEvent,
+  createWorkbenchEvent,
   evaluateExecutionModeToolPolicy,
   isPlanSafeToolMetadata,
-  isRuntimeEventType,
+  isWorkbenchEventType,
   normalizePlanArtifact,
   type PlanArtifact,
   type PlanRevision,
   parseSkillDocument,
+  type RunEvent,
   type RuntimeAttachmentBlock,
   type RuntimePersistAttachmentInput,
-  type RuntimeRecordAgentEventInput,
-  replayAgentLoopState,
+  type RuntimeRecordRunEventInput,
   replayConversationActivity,
   replayConversationRuntimeState,
   requestToolApprovalWithActivity,
-  runAgentLoop,
   type Settings,
   SKILL_TOOL_NAME,
   type ToolApprovalRequest,
@@ -45,18 +37,22 @@ import {
   type ToolPack,
   type ToolShellRequest,
   type ToolWebSearchRequest,
+  type WorkbenchEvent,
+  type WorkbenchHost,
+  WorkbenchRuntime,
+  type WorkbenchStore,
 } from '@aila/agent'
 import * as runtimePackageNodeSdk from '@aila/agent-node'
 import * as runtimeNodeSdk from '@aila/agent-node/app'
 import {
-  AILA_AGENT_EVENT_SCHEMA_VERSION,
   AILA_CONVERSATION_META_SCHEMA_VERSION,
   AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+  AILA_RUN_EVENT_SCHEMA_VERSION,
   AILA_TOOL_PACK_MANIFEST_FILE,
   AILA_TOOL_PACK_MANIFEST_SCHEMA_VERSION,
-  appendAgentEvent,
-  appendAgentEventAndTouchConversation,
   appendMessage,
+  appendRunEvent,
+  appendRunEventAndTouchConversation,
   type ConversationRecord,
   type ConversationSummary,
   configureDataDir,
@@ -70,22 +66,27 @@ import {
   getPlansDir,
   getSkillsDir,
   getToolPacksDir,
-  listAgentEvents,
   listConversations,
+  listRunEvents,
   loadSkillFromDir,
   loadSkillsFromDir,
   loadToolPacksFromDir,
-  type PersistedAgentEvent,
   type PersistedMessage,
+  type PersistedRunEvent,
   recoverInterruptedConversationActivities,
   setConversationUsage,
   upsertMessage,
 } from '@aila/agent-node/app'
 import * as runtimeInternalSdk from '../packages/agent/src/internal'
 import {
+  advanceRun,
   createDefaultToolRegistry,
+  createRunCursor,
   executeTool,
   getToolDefinitions,
+  type RunTransition,
+  replayRunState,
+  runDurableRun,
   summarizeToolTarget,
 } from '../packages/agent/src/internal'
 
@@ -109,12 +110,12 @@ async function withTempDataDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
   }
 }
 
-async function testAgentLoopStepModePausesBeforeToolBatch(): Promise<void> {
-  const transitions: AgentLoopTransition[] = []
+async function testRunMachineStepModePausesBeforeToolBatch(): Promise<void> {
+  const transitions: RunTransition[] = []
   let modelStepCount = 0
   let toolBatchCount = 0
 
-  const result = await runAgentLoop<{ id: string }>({
+  const result = await runDurableRun<{ id: string }>({
     identity: {
       conversationId: 'loop-step-conversation',
       turnId: 'loop-step-turn',
@@ -153,13 +154,13 @@ async function testAgentLoopStepModePausesBeforeToolBatch(): Promise<void> {
   )
 }
 
-async function testAgentLoopSnapshotResumesOneActionAtATime(): Promise<void> {
+async function testRunCursorResumesOneActionAtATime(): Promise<void> {
   const identity = {
     conversationId: 'loop-resume-conversation',
     turnId: 'loop-resume-turn',
     runId: 'loop-resume-run',
   }
-  const transitions: AgentLoopTransition[] = []
+  const transitions: RunTransition[] = []
   let modelCalls = 0
   let toolBatches = 0
   const executeModelStep = async () => {
@@ -179,22 +180,22 @@ async function testAgentLoopSnapshotResumesOneActionAtATime(): Promise<void> {
     policy: { mode: 'step' as const },
     executeModelStep,
     executeToolBatch,
-    onTransition: (transition: AgentLoopTransition) => {
+    onTransition: (transition: RunTransition) => {
       transitions.push(transition)
     },
   }
 
-  const first = await advanceAgentLoop(common)
+  const first = await advanceRun(common)
   assertEqual(first.state.status, 'paused', 'first action should pause after the model')
   assertEqual(modelCalls, 1, 'first advance should execute one model action')
   assertEqual(toolBatches, 0, 'first advance should not execute pending tools')
 
-  const second = await advanceAgentLoop({ ...common, snapshot: first.snapshot })
+  const second = await advanceRun({ ...common, snapshot: first.snapshot })
   assertEqual(second.state.status, 'paused', 'second action should pause after tools')
   assertEqual(modelCalls, 1, 'second advance should not call the model')
   assertEqual(toolBatches, 1, 'second advance should execute one tool batch')
 
-  const third = await advanceAgentLoop({ ...common, snapshot: second.snapshot })
+  const third = await advanceRun({ ...common, snapshot: second.snapshot })
   assertEqual(third.state.status, 'completed', 'third action should complete the run')
   assertEqual(modelCalls, 2, 'third advance should execute the final model action')
   assertEqual(toolBatches, 1, 'third advance should not replay tools')
@@ -221,14 +222,14 @@ async function testRunCheckpointAndArtifactStoreContract(): Promise<void> {
     turnId: 'run-store-turn',
     runId: 'run-store-run',
   }
-  const checkpoint: runtimeSdk.AgentRunCheckpoint = {
-    schemaVersion: runtimeSdk.AILA_AGENT_RUN_CHECKPOINT_SCHEMA_VERSION,
+  const checkpoint: runtimeSdk.RunCheckpoint = {
+    schemaVersion: runtimeSdk.AILA_RUN_CHECKPOINT_SCHEMA_VERSION,
     identity,
     assistantMessageId: 'run-store-assistant',
     selection: { providerId: 'openrouter', modelId: 'contract/mock' },
     executionMode: 'agent',
     maxToolSteps: 2,
-    loop: runtimeSdk.createAgentLoopSnapshot(identity, 'step'),
+    loop: createRunCursor(identity, 'step'),
     messages: [{ role: 'user', content: 'persist this run' }],
     modelStepOutputs: {},
     assistantMessage: {
@@ -257,8 +258,8 @@ async function testRunCheckpointAndArtifactStoreContract(): Promise<void> {
   const loaded = await store.getRunCheckpoint(conversation.id, identity.runId)
   assertEqual(loaded?.updatedAt, 20, 'checkpoint should load the latest cursor')
 
-  const artifact: runtimeSdk.AgentRunArtifact = {
-    schemaVersion: runtimeSdk.AILA_AGENT_RUN_ARTIFACT_SCHEMA_VERSION,
+  const artifact: runtimeSdk.RunArtifact = {
+    schemaVersion: runtimeSdk.AILA_RUN_ARTIFACT_SCHEMA_VERSION,
     artifactId: 'run-store-artifact',
     conversationId: conversation.id,
     turnId: identity.turnId,
@@ -294,7 +295,7 @@ async function testRuntimeRunInspectionForkAndAbortContract(): Promise<void> {
   })
   let generatedId = 0
   let timestamp = 100
-  const runtime = new AgentRuntime({
+  const runtime = new WorkbenchRuntime({
     store,
     createId: () => (generatedId++ === 0 ? 'run-control-turn' : 'run-control-fork-assistant'),
     createRunId: () => 'run-control-fork',
@@ -318,7 +319,7 @@ async function testRuntimeRunInspectionForkAndAbortContract(): Promise<void> {
   assert(store.saveRunArtifact, 'run control contract requires artifact persistence')
   await store.saveRunCheckpoint(source)
   await store.saveRunArtifact({
-    schemaVersion: runtimeSdk.AILA_AGENT_RUN_ARTIFACT_SCHEMA_VERSION,
+    schemaVersion: runtimeSdk.AILA_RUN_ARTIFACT_SCHEMA_VERSION,
     artifactId: 'run-control-source-artifact',
     conversationId: conversation.id,
     turnId: userMessage.id,
@@ -329,7 +330,7 @@ async function testRuntimeRunInspectionForkAndAbortContract(): Promise<void> {
     contentType: 'application/json',
     data: { inspected: true },
   })
-  await runtime.recordAgentEvent({
+  await runtime.recordRunEvent({
     timestamp: timestamp++,
     conversationId: conversation.id,
     messageId: source.assistantMessageId,
@@ -395,7 +396,7 @@ function testRunCheckpointRecoverySafetyContract(): void {
   toolCheckpoint.loop.state.currentStep = toolStep
   toolCheckpoint.loop.state.steps = [toolStep]
   toolCheckpoint.loop.state.nextAction = { type: 'tools', toolCallIds: ['unsafe-call'] }
-  const preparedTool = runtimeSdk.prepareAgentRunCheckpoint(toolCheckpoint)
+  const preparedTool = runtimeSdk.prepareRunCheckpoint(toolCheckpoint)
   assertEqual(
     preparedTool.recovery.strategy,
     'manual_review',
@@ -403,7 +404,7 @@ function testRunCheckpointRecoverySafetyContract(): void {
   )
   let manualReviewError = ''
   try {
-    runtimeSdk.prepareAgentRunCheckpointForResume(preparedTool, 30)
+    runtimeSdk.prepareRunCheckpointForResume(preparedTool, 30)
   } catch (error) {
     manualReviewError = error instanceof Error ? error.message : String(error)
   }
@@ -425,7 +426,7 @@ function testRunCheckpointRecoverySafetyContract(): void {
   modelCheckpoint.loop.state.currentStep = modelStep
   modelCheckpoint.loop.state.steps = [modelStep]
   modelCheckpoint.loop.state.nextAction = { type: 'model', reason: 'user' }
-  const resumed = runtimeSdk.prepareAgentRunCheckpointForResume(modelCheckpoint, 30)
+  const resumed = runtimeSdk.prepareRunCheckpointForResume(modelCheckpoint, 30)
   assertEqual(
     resumed.loop.state.status,
     'paused',
@@ -440,6 +441,43 @@ function testRunCheckpointRecoverySafetyContract(): void {
     resumed.loop.state.steps[0]?.status,
     'cancelled',
     'recovery should close the interrupted model step before retry',
+  )
+}
+
+function testRunCheckpointV1MigrationContract(): void {
+  const legacy = structuredClone(
+    createRunCheckpointFixture('migration-conversation', 'migration-run'),
+  ) as unknown as {
+    schemaVersion: number
+    loop: {
+      state: {
+        status: string
+        nextAction?: unknown
+        wait?: unknown
+      }
+    }
+  }
+  legacy.schemaVersion = 1
+  legacy.loop.state.status = 'paused'
+  legacy.loop.state.nextAction = { type: 'tools', toolCallIds: ['legacy-tool'] }
+  delete legacy.loop.state.wait
+
+  const migrated = runtimeSdk.normalizeRunCheckpoint(legacy)
+  assertEqual(
+    migrated.schemaVersion,
+    runtimeSdk.AILA_RUN_CHECKPOINT_SCHEMA_VERSION,
+    'legacy checkpoints should upgrade to the current schema',
+  )
+  assertEqual(migrated.loop.state.status, 'paused', 'legacy paused runs should stay resumable')
+  assertEqual(
+    migrated.loop.state.wait?.reason,
+    'debug',
+    'legacy paused runs should receive an explicit debug wait state',
+  )
+  assertEqual(
+    migrated.loop.state.nextAction?.type,
+    'tools',
+    'legacy executable actions should survive migration',
   )
 }
 
@@ -512,9 +550,9 @@ async function testProviderModelCallExecutesExactlyOneRequest(): Promise<void> {
 async function testProviderStreamStepCheckpointResumeContract(): Promise<void> {
   let modelRequestCount = 0
   let toolRunCount = 0
-  let checkpoint: runtimeSdk.AgentRunCheckpoint | undefined
-  const artifacts = new Map<string, runtimeSdk.AgentRunArtifact>()
-  const events: AgentEvent[] = []
+  let checkpoint: runtimeSdk.RunCheckpoint | undefined
+  const artifacts = new Map<string, runtimeSdk.RunArtifact>()
+  const events: RunEvent[] = []
   const doneMessages: PersistedMessage[] = []
   const modelStreamClient: runtimePackageNodeSdk.ModelStreamClient = {
     async *stream(input) {
@@ -582,15 +620,15 @@ async function testProviderStreamStepCheckpointResumeContract(): Promise<void> {
       },
     ],
   }
-  const streamChat = runtimePackageNodeSdk.createProviderStreamChat({
+  const runAgent = runtimePackageNodeSdk.createDurableRunExecutor({
     modelStreamClient,
     settings: { apiKeys: { openrouter: 'contract-key' }, defaultModel: null },
   })
-  const saveRunCheckpoint = (input: runtimeSdk.AgentRunCheckpoint) => {
-    checkpoint = runtimeSdk.prepareAgentRunCheckpoint(input, checkpoint)
+  const saveRunCheckpoint = (input: runtimeSdk.RunCheckpoint) => {
+    checkpoint = runtimeSdk.prepareRunCheckpoint(input, checkpoint)
     return structuredClone(checkpoint)
   }
-  const saveRunArtifact = (artifact: runtimeSdk.AgentRunArtifact) => {
+  const saveRunArtifact = (artifact: runtimeSdk.RunArtifact) => {
     const existing = artifacts.get(artifact.artifactId)
     if (existing && JSON.stringify(existing) !== JSON.stringify(artifact)) {
       throw new Error(`artifact overwrite: ${artifact.artifactId}`)
@@ -623,13 +661,13 @@ async function testProviderStreamStepCheckpointResumeContract(): Promise<void> {
     messages: [{ role: 'user' as const, content: 'start' }],
     selection: { providerId: 'openrouter' as const, modelId: 'contract/mock' },
     signal: new AbortController().signal,
-    onAgentEvent: (event: AgentEvent) => events.push(event),
+    onRunEvent: (event: RunEvent) => events.push(event),
     saveRunCheckpoint,
     saveRunArtifact,
     toolRegistry: createDefaultToolRegistry([toolPack]),
   }
 
-  await streamChat({ ...baseRequest, loopMode: 'step' }, handlers)
+  await runAgent({ ...baseRequest, loopMode: 'step' }, handlers)
   assert(checkpoint, 'step stream should persist a checkpoint')
   assertEqual(checkpoint.loop.state.status, 'paused', 'step stream should pause after one action')
   assertEqual(
@@ -640,9 +678,9 @@ async function testProviderStreamStepCheckpointResumeContract(): Promise<void> {
   assertEqual(toolRunCount, 0, 'paused model action should not execute tools')
   assertEqual(doneMessages.length, 0, 'paused stream should not finalize the assistant message')
   const pausedEvents = events.map(
-    (event): PersistedAgentEvent => ({
+    (event): PersistedRunEvent => ({
       ...event,
-      schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+      schemaVersion: AILA_RUN_EVENT_SCHEMA_VERSION,
     }),
   )
   const pausedReplay = replayConversationRuntimeState(pausedEvents)
@@ -659,7 +697,7 @@ async function testProviderStreamStepCheckpointResumeContract(): Promise<void> {
     'paused runs should not be mistaken for interrupted work after restart',
   )
 
-  await streamChat(
+  await runAgent(
     {
       ...baseRequest,
       loopMode: 'continuous',
@@ -673,7 +711,30 @@ async function testProviderStreamStepCheckpointResumeContract(): Promise<void> {
   assertEqual(doneMessages.length, 1, 'continued stream should finalize once')
   assertEqual(checkpoint.loop.state.status, 'completed', 'continued checkpoint should be terminal')
   assertEqual(checkpoint.assistantMessage.status, 'done', 'terminal checkpoint message status')
-  assertEqual(artifacts.size, 3, 'run should persist two model artifacts and one tool artifact')
+  assertEqual(
+    artifacts.size,
+    7,
+    'run should persist model request/response and per-tool request/result artifacts',
+  )
+  assertEqual(
+    [...artifacts.values()]
+      .map((artifact) => artifact.kind)
+      .sort()
+      .join(','),
+    'model_request,model_request,model_response,model_response,tool_batch,tool_request,tool_result',
+    'debug artifacts should expose every provider and tool boundary',
+  )
+  assert(
+    !JSON.stringify([...artifacts.values()]).includes('contract-key'),
+    'debug artifacts must never persist provider credentials',
+  )
+  const toolResultArtifact = [...artifacts.values()].find(
+    (artifact) => artifact.kind === 'tool_result',
+  )
+  assert(
+    JSON.stringify(toolResultArtifact?.data).includes('echo:ok'),
+    'tool result artifact should preserve the inspectable tool output',
+  )
   assert(
     events.some((event) => event.type === 'run.resumed'),
     'continued stream should emit run.resumed',
@@ -682,10 +743,10 @@ async function testProviderStreamStepCheckpointResumeContract(): Promise<void> {
 
 async function testProviderStreamPreflightFailureCheckpointContract(): Promise<void> {
   let modelRequestCount = 0
-  let checkpoint: runtimeSdk.AgentRunCheckpoint | undefined
-  const events: AgentEvent[] = []
+  let checkpoint: runtimeSdk.RunCheckpoint | undefined
+  const events: RunEvent[] = []
   const errors: string[] = []
-  const streamChat = runtimePackageNodeSdk.createProviderStreamChat({
+  const runAgent = runtimePackageNodeSdk.createDurableRunExecutor({
     settings: { apiKeys: {}, defaultModel: null },
     modelStreamClient: {
       async *stream() {
@@ -695,7 +756,7 @@ async function testProviderStreamPreflightFailureCheckpointContract(): Promise<v
     },
   })
 
-  await streamChat(
+  await runAgent(
     {
       conversationId: 'preflight-failure-conversation',
       assistantMessageId: 'preflight-failure-assistant',
@@ -707,9 +768,9 @@ async function testProviderStreamPreflightFailureCheckpointContract(): Promise<v
       messages: [{ role: 'user', content: 'start' }],
       selection: { providerId: 'openrouter', modelId: 'contract/mock' },
       signal: new AbortController().signal,
-      onAgentEvent: (event) => events.push(event),
+      onRunEvent: (event) => events.push(event),
       saveRunCheckpoint(input) {
-        checkpoint = runtimeSdk.prepareAgentRunCheckpoint(input, checkpoint)
+        checkpoint = runtimeSdk.prepareRunCheckpoint(input, checkpoint)
         return structuredClone(checkpoint)
       },
     },
@@ -904,31 +965,31 @@ async function withTimeout<T>(promise: Promise<T>, message: string, timeoutMs = 
 }
 
 async function testRuntimeEventContract(): Promise<void> {
-  assertEqual(AILA_RUNTIME_EVENT_SCHEMA_VERSION, 1, 'runtime event schema version changed')
+  assertEqual(AILA_WORKBENCH_EVENT_SCHEMA_VERSION, 1, 'runtime event schema version changed')
   assertEqual(
-    new Set(AILA_RUNTIME_EVENT_TYPES).size,
-    AILA_RUNTIME_EVENT_TYPES.length,
+    new Set(AILA_WORKBENCH_EVENT_TYPES).size,
+    AILA_WORKBENCH_EVENT_TYPES.length,
     'runtime event types must be unique',
   )
-  for (const type of AILA_RUNTIME_EVENT_TYPES) {
-    assert(isRuntimeEventType(type), `runtime event type should decode: ${type}`)
+  for (const type of AILA_WORKBENCH_EVENT_TYPES) {
+    assert(isWorkbenchEventType(type), `runtime event type should decode: ${type}`)
   }
-  assert(!isRuntimeEventType('chat:unknown'), 'unknown runtime event type should be rejected')
+  assert(!isWorkbenchEventType('chat:unknown'), 'unknown runtime event type should be rejected')
 
-  const event = createRuntimeEvent('chat:text-delta', {
+  const event = createWorkbenchEvent('chat:text-delta', {
     conversationId: 'conversation',
     messageId: 'message',
     delta: 'hello',
   })
-  assertEqual(event.schemaVersion, AILA_RUNTIME_EVENT_SCHEMA_VERSION, 'event version')
+  assertEqual(event.schemaVersion, AILA_WORKBENCH_EVENT_SCHEMA_VERSION, 'event version')
   assertEqual(event.type, 'chat:text-delta', 'event type')
   assertEqual(event.data.delta, 'hello', 'event data')
 }
 
 async function testRuntimeEmitsVersionedEvents(): Promise<void> {
   await withTempDataDir(async () => {
-    const events: AgentRuntimeEvent[] = []
-    const runtime = new AgentRuntime({
+    const events: WorkbenchEvent[] = []
+    const runtime = new WorkbenchRuntime({
       onEvent: (event) => events.push(event),
       logger: { warn() {}, error() {} },
     })
@@ -948,16 +1009,16 @@ async function testRuntimeEmitsVersionedEvents(): Promise<void> {
 
     assert(events.length >= 2, 'runtime should emit persistence and error events')
     for (const event of events) {
-      assertEqual(event.schemaVersion, AILA_RUNTIME_EVENT_SCHEMA_VERSION, 'runtime event version')
-      assert(isRuntimeEventType(event.type), `runtime emitted unknown event type: ${event.type}`)
+      assertEqual(event.schemaVersion, AILA_WORKBENCH_EVENT_SCHEMA_VERSION, 'runtime event version')
+      assert(isWorkbenchEventType(event.type), `runtime emitted unknown event type: ${event.type}`)
     }
   })
 }
 
 async function testRuntimeWithoutStreamHostFailsAtSetupBoundary(): Promise<void> {
   await withTempDataDir(async () => {
-    const events: AgentRuntimeEvent[] = []
-    const runtime = new AgentRuntime({
+    const events: WorkbenchEvent[] = []
+    const runtime = new WorkbenchRuntime({
       store: createPersistedRuntimeStore(),
       onEvent: (event) => events.push(event),
       logger: { warn() {}, error() {} },
@@ -981,16 +1042,16 @@ async function testRuntimeWithoutStreamHostFailsAtSetupBoundary(): Promise<void>
     assertEqual(record.messages[1]?.status, 'error', 'hostless setup assistant status')
     assertEqual(
       record.messages[1]?.error,
-      'runtime host cannot stream chat',
+      'runtime host cannot execute agent runs',
       'hostless setup assistant error',
     )
     assert(
       events.some(
         (event) =>
-          event.type === 'agent:event' &&
+          event.type === 'run:event' &&
           event.data.type === 'turn.failed' &&
           event.data.data?.phase === 'setup' &&
-          event.data.data.error === 'runtime host cannot stream chat',
+          event.data.data.error === 'runtime host cannot execute agent runs',
       ),
       'hostless runtime should record a setup failure activity',
     )
@@ -999,7 +1060,7 @@ async function testRuntimeWithoutStreamHostFailsAtSetupBoundary(): Promise<void>
         (event) =>
           event.type === 'chat:error' &&
           event.data.messageId === result.assistantMessageId &&
-          event.data.error === 'runtime host cannot stream chat',
+          event.data.error === 'runtime host cannot execute agent runs',
       ),
       'hostless runtime should emit a setup chat:error',
     )
@@ -1009,7 +1070,7 @@ async function testRuntimeWithoutStreamHostFailsAtSetupBoundary(): Promise<void>
 async function testRuntimeHostBoundaryContract(): Promise<void> {
   await withTempDataDir(async () => {
     const conversation = await createConversation()
-    const events: AgentRuntimeEvent[] = []
+    const events: WorkbenchEvent[] = []
     let streamStarted = false
     let policyRequested = false
     let approvalRequested = false
@@ -1024,8 +1085,8 @@ async function testRuntimeHostBoundaryContract(): Promise<void> {
     let settingsLoaded = false
     let streamSettingsKey: string | null = null
     let activeSelectionModelIdDuringStream: string | null = null
-    let runtime: AgentRuntime | undefined
-    const runShell: AgentRuntimeHost['runShell'] = async () => ({
+    let runtime: WorkbenchRuntime | undefined
+    const runShell: WorkbenchHost['runShell'] = async () => ({
       exitCode: 0,
       stdout: '',
       stderr: '',
@@ -1035,7 +1096,7 @@ async function testRuntimeHostBoundaryContract(): Promise<void> {
       writeTextFile: async () => {},
     }
 
-    const host: AgentRuntimeHost = {
+    const host: WorkbenchHost = {
       onEvent: (event) => events.push(event),
       onToolPolicy: async (request) => {
         policyRequested = request.name === 'write_file'
@@ -1057,7 +1118,7 @@ async function testRuntimeHostBoundaryContract(): Promise<void> {
       fileSystem,
       shellCwd: () => '/host/shell',
       runShell,
-      streamChat: async (req, handlers) => {
+      runAgent: async (req, handlers) => {
         fileSystemPassed = req.fileSystem === fileSystem
         shellCwdPath = req.shellCwd ?? null
         shellRunnerPassed = req.runShell === runShell
@@ -1102,7 +1163,7 @@ async function testRuntimeHostBoundaryContract(): Promise<void> {
             messageId: req.assistantMessageId,
             toolCallId: 'host-tool-call',
           })) === true
-        req.onAgentEvent?.({
+        req.onRunEvent?.({
           timestamp: Date.now(),
           conversationId: req.conversationId,
           messageId: req.assistantMessageId,
@@ -1117,7 +1178,7 @@ async function testRuntimeHostBoundaryContract(): Promise<void> {
           }
           req.signal.addEventListener('abort', () => resolve(), { once: true })
         })
-        req.onAgentEvent?.({
+        req.onRunEvent?.({
           timestamp: Date.now(),
           conversationId: req.conversationId,
           messageId: req.assistantMessageId,
@@ -1141,27 +1202,27 @@ async function testRuntimeHostBoundaryContract(): Promise<void> {
       },
       logger: { warn() {}, error() {} },
     }
-    runtime = new AgentRuntime({ store: createPersistedRuntimeStore(), host })
+    runtime = new WorkbenchRuntime({ store: createPersistedRuntimeStore(), host })
 
     await runtime.send({
       conversationId: conversation.id,
       userText: 'exercise host boundary',
       selection: { providerId: 'openrouter', modelId: 'contract/mock' },
     })
-    await waitFor(() => streamStarted, 'host streamChat should start')
+    await waitFor(() => streamStarted, 'host runAgent should start')
     await runtime.abort(conversation.id)
 
     assertEqual(settingsLoaded, true, 'host settings loader should be called')
     assertEqual(
       streamSettingsKey,
       'host-openrouter-key',
-      'host settings should be passed to streamChat',
+      'host settings should be passed to runAgent',
     )
     assertEqual(workspaceRootPath, '/host/workspace', 'host workspace root path')
     assertEqual(workspaceRootLabel, 'host-root', 'host workspace root label')
-    assertEqual(fileSystemPassed, true, 'host filesystem should pass to streamChat')
-    assertEqual(shellCwdPath, '/host/shell', 'host shell cwd should pass to streamChat')
-    assertEqual(shellRunnerPassed, true, 'host shell runner should pass to streamChat')
+    assertEqual(fileSystemPassed, true, 'host filesystem should pass to runAgent')
+    assertEqual(shellCwdPath, '/host/shell', 'host shell cwd should pass to runAgent')
+    assertEqual(shellRunnerPassed, true, 'host shell runner should pass to runAgent')
     assertEqual(
       activeSelectionModelIdDuringStream,
       'contract/mock',
@@ -1173,13 +1234,13 @@ async function testRuntimeHostBoundaryContract(): Promise<void> {
     assertEqual(abortConversationId, conversation.id, 'host abort cleanup conversation id')
     assertEqual(abortReason, 'user', 'host abort cleanup reason')
     assert(
-      events.some((event) => event.type === 'agent:event' && event.data.type === 'turn.cancelled'),
+      events.some((event) => event.type === 'run:event' && event.data.type === 'turn.cancelled'),
       'host onEvent should receive runtime events',
     )
     assert(
       events.some(
         (event) =>
-          event.type === 'agent:event' &&
+          event.type === 'run:event' &&
           event.data.type === 'turn.started' &&
           event.data.data?.modelId === 'contract/mock',
       ),
@@ -1198,9 +1259,9 @@ async function testRuntimeSettingsFallbackIsHostAgnostic(): Promise<void> {
       let streamStarted = false
       let streamSettingsKey: string | null | undefined
       let streamDefaultModel: Settings['defaultModel'] | undefined
-      const runtime = new AgentRuntime({
+      const runtime = new WorkbenchRuntime({
         store: createPersistedRuntimeStore(),
-        streamChat: async (req, handlers) => {
+        runAgent: async (req, handlers) => {
           streamSettingsKey = req.settings?.apiKeys.openrouter
           streamDefaultModel = req.settings?.defaultModel
           streamStarted = true
@@ -1259,7 +1320,7 @@ async function testRuntimeStreamAndModelInfoUseHostBoundary(): Promise<void> {
   let streamSelectionModel: string | null = null
   let streamReached = false
 
-  const runtime = new AgentRuntime({
+  const runtime = new WorkbenchRuntime({
     store: {
       getConversation: async () => record,
       saveMessage: async (_id, message) => {
@@ -1275,10 +1336,10 @@ async function testRuntimeStreamAndModelInfoUseHostBoundary(): Promise<void> {
             : { ...record, messages: [...record.messages, message] }
         return { ...summary, updatedAt: summary.updatedAt + record.messages.length }
       },
-      recordAgentEvent: async (_id, event) => ({
+      recordRunEvent: async (_id, event) => ({
         event: {
           ...event,
-          schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+          schemaVersion: AILA_RUN_EVENT_SCHEMA_VERSION,
         },
         summary: { ...summary, updatedAt: summary.updatedAt + record.messages.length + 1 },
       }),
@@ -1294,7 +1355,7 @@ async function testRuntimeStreamAndModelInfoUseHostBoundary(): Promise<void> {
       selection.modelId = 'host-mutated-model-info-selection'
       return { model: 'Host Model Fixture', contextLength: 8_000 }
     },
-    streamChat: async (req, handlers) => {
+    runAgent: async (req, handlers) => {
       streamReached = true
       streamSelectionModel = req.selection.modelId
       req.selection.modelId = 'host-mutated-stream-selection'
@@ -1321,7 +1382,7 @@ async function testRuntimeStreamAndModelInfoUseHostBoundary(): Promise<void> {
   })
   await waitFor(() => runtime.listActiveStreams().length === 0, 'host stream should settle')
 
-  assertEqual(streamReached, true, 'runtime should use injected host streamChat')
+  assertEqual(streamReached, true, 'runtime should use injected host runAgent')
   assertEqual(
     modelInfoSelectionModel,
     'contract/mock',
@@ -1373,7 +1434,7 @@ async function testRuntimeAttachmentPersistenceUsesHostBoundary(): Promise<void>
     },
   ]
 
-  const store: AgentRuntimeStore = {
+  const store: WorkbenchStore = {
     getConversation: async (id) => {
       if (id !== conversationId) throw new Error(`unexpected conversation: ${id}`)
       return record
@@ -1391,10 +1452,10 @@ async function testRuntimeAttachmentPersistenceUsesHostBoundary(): Promise<void>
           : { ...record, messages: [...record.messages, message] }
       return { ...summary, updatedAt: summary.updatedAt + record.messages.length }
     },
-    recordAgentEvent: async (_id, event) => ({
+    recordRunEvent: async (_id, event) => ({
       event: {
         ...event,
-        schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+        schemaVersion: AILA_RUN_EVENT_SCHEMA_VERSION,
       },
       summary: { ...summary, updatedAt: summary.updatedAt + record.messages.length + 1 },
     }),
@@ -1406,7 +1467,7 @@ async function testRuntimeAttachmentPersistenceUsesHostBoundary(): Promise<void>
     },
   }
 
-  const runtime = new AgentRuntime({
+  const runtime = new WorkbenchRuntime({
     store,
     persistAttachment: async (input) => {
       persistedInputs.push({ ...input })
@@ -1420,7 +1481,7 @@ async function testRuntimeAttachmentPersistenceUsesHostBoundary(): Promise<void>
       }
       return { type: 'file', name: 'host-notes.txt', content: `${input.data}\nfrom host` }
     },
-    streamChat: async (req, handlers) => {
+    runAgent: async (req, handlers) => {
       for (const message of req.messages) {
         if (message.role === 'user') streamedUserContent = message.content
       }
@@ -1497,14 +1558,14 @@ async function testRuntimeTextAttachmentFallbackIsHostAgnostic(): Promise<void> 
   let record: ConversationRecord = { meta: summary, messages: [] }
   let streamedUserContent = ''
 
-  const store: AgentRuntimeStore = {
+  const store: WorkbenchStore = {
     getConversation: async () => record,
     saveMessage: async (_id, message) => {
       record = { ...record, messages: [...record.messages, message] }
       return { ...summary, updatedAt: summary.updatedAt + record.messages.length }
     },
-    recordAgentEvent: async (_id, event) => ({
-      event: { ...event, schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION },
+    recordRunEvent: async (_id, event) => ({
+      event: { ...event, schemaVersion: AILA_RUN_EVENT_SCHEMA_VERSION },
       summary,
     }),
     recordUsage: async () => {
@@ -1515,9 +1576,9 @@ async function testRuntimeTextAttachmentFallbackIsHostAgnostic(): Promise<void> 
     },
   }
 
-  const runtime = new AgentRuntime({
+  const runtime = new WorkbenchRuntime({
     store,
-    streamChat: async (req, handlers) => {
+    runAgent: async (req, handlers) => {
       const user = req.messages.find(
         (message): message is { role: 'user'; content: string } =>
           message.role === 'user' && typeof message.content === 'string',
@@ -1578,15 +1639,15 @@ async function testRuntimeImageAttachmentRequiresHostBoundary(): Promise<void> {
   let record: ConversationRecord = { meta: summary, messages: [] }
   let streamReached = false
 
-  const runtime = new AgentRuntime({
+  const runtime = new WorkbenchRuntime({
     store: {
       getConversation: async () => record,
       saveMessage: async (_id, message) => {
         record = { ...record, messages: [...record.messages, message] }
         return { ...summary, updatedAt: summary.updatedAt + record.messages.length }
       },
-      recordAgentEvent: async (_id, event) => ({
-        event: { ...event, schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION },
+      recordRunEvent: async (_id, event) => ({
+        event: { ...event, schemaVersion: AILA_RUN_EVENT_SCHEMA_VERSION },
         summary,
       }),
       recordUsage: async () => {
@@ -1596,7 +1657,7 @@ async function testRuntimeImageAttachmentRequiresHostBoundary(): Promise<void> {
         throw new Error('image attachment boundary should not delete conversation')
       },
     },
-    streamChat: async () => {
+    runAgent: async () => {
       streamReached = true
     },
     logger: { warn() {}, error() {} },
@@ -1624,7 +1685,7 @@ async function testRuntimeImageAttachmentRequiresHostBoundary(): Promise<void> {
     )
   }
 
-  assertEqual(streamReached, false, 'image attachment rejection should not start streamChat')
+  assertEqual(streamReached, false, 'image attachment rejection should not start runAgent')
   assertEqual(record.messages.length, 0, 'image attachment rejection should not persist user input')
 }
 
@@ -1639,15 +1700,15 @@ async function testRuntimeRejectsInvalidHostAttachmentBlocks(): Promise<void> {
   }
   let record: ConversationRecord = { meta: summary, messages: [] }
 
-  const runtime = new AgentRuntime({
+  const runtime = new WorkbenchRuntime({
     store: {
       getConversation: async () => record,
       saveMessage: async (_id, message) => {
         record = { ...record, messages: [...record.messages, message] }
         return { ...summary, updatedAt: summary.updatedAt + record.messages.length }
       },
-      recordAgentEvent: async (_id, event) => ({
-        event: { ...event, schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION },
+      recordRunEvent: async (_id, event) => ({
+        event: { ...event, schemaVersion: AILA_RUN_EVENT_SCHEMA_VERSION },
         summary,
       }),
       recordUsage: async () => {
@@ -1738,7 +1799,7 @@ async function testRuntimeHostStaticExtensionContract(): Promise<void> {
   const topLevelToolPacks = [topLevelPack]
   const hostToolPacks = [hostPack]
 
-  const runtime = new AgentRuntime({
+  const runtime = new WorkbenchRuntime({
     toolPacks: topLevelToolPacks,
     host: {
       toolPacks: hostToolPacks,
@@ -1809,7 +1870,7 @@ async function testRuntimeDynamicExtensionLoaderSnapshots(): Promise<void> {
       },
     ],
   }
-  const runtime = new AgentRuntime({
+  const runtime = new WorkbenchRuntime({
     loadToolPacks: async () => [loadedPack],
     logger: { warn() {}, error() {} },
   })
@@ -1840,7 +1901,7 @@ async function testRuntimeInjectableStoreContract(): Promise<void> {
   await withTempDataDir(async () => {
     const conversation = await createConversation()
     const calls: string[] = []
-    const store: AgentRuntimeStore = {
+    const store: WorkbenchStore = {
       getConversation: async (conversationId) => {
         calls.push(`get:${conversationId}`)
         return getConversation(conversationId)
@@ -1849,9 +1910,9 @@ async function testRuntimeInjectableStoreContract(): Promise<void> {
         calls.push(`upsert:${message.role}:${message.id}`)
         return upsertMessage(conversationId, message)
       },
-      recordAgentEvent: async (conversationId, event) => {
+      recordRunEvent: async (conversationId, event) => {
         calls.push(`event:${event.type}`)
-        return appendAgentEventAndTouchConversation(conversationId, event)
+        return appendRunEventAndTouchConversation(conversationId, event)
       },
       recordUsage: async (conversationId, usage) => {
         calls.push(`usage:${usage.totalTokens}`)
@@ -1862,18 +1923,18 @@ async function testRuntimeInjectableStoreContract(): Promise<void> {
         return deleteConversation(conversationId)
       },
     }
-    const runtime = new AgentRuntime({
+    const runtime = new WorkbenchRuntime({
       store,
       logger: { warn() {}, error() {} },
-      streamChat: async (req, handlers) => {
-        req.onAgentEvent?.({
+      runAgent: async (req, handlers) => {
+        req.onRunEvent?.({
           timestamp: Date.now(),
           conversationId: req.conversationId,
           messageId: req.assistantMessageId,
           type: 'turn.started',
           data: { providerId: req.selection.providerId, modelId: req.selection.modelId },
         })
-        req.onAgentEvent?.({
+        req.onRunEvent?.({
           timestamp: Date.now(),
           conversationId: req.conversationId,
           messageId: req.assistantMessageId,
@@ -2240,20 +2301,20 @@ async function testPersistedRuntimeStorePlanContract(): Promise<void> {
 function createRunCheckpointFixture(
   conversationId: string,
   runId: string,
-): runtimeSdk.AgentRunCheckpoint {
+): runtimeSdk.RunCheckpoint {
   const identity = {
     conversationId,
     turnId: `${runId}-turn`,
     runId,
   }
   return {
-    schemaVersion: runtimeSdk.AILA_AGENT_RUN_CHECKPOINT_SCHEMA_VERSION,
+    schemaVersion: runtimeSdk.AILA_RUN_CHECKPOINT_SCHEMA_VERSION,
     identity,
     assistantMessageId: `${runId}-assistant`,
     selection: { providerId: 'openrouter', modelId: 'contract/mock' },
     executionMode: 'agent',
     maxToolSteps: 3,
-    loop: runtimeSdk.createAgentLoopSnapshot(identity, 'step'),
+    loop: createRunCursor(identity, 'step'),
     messages: [{ role: 'user', content: 'restart-safe run' }],
     modelStepOutputs: {},
     assistantMessage: {
@@ -2284,7 +2345,7 @@ async function testFileRunPersistenceSurvivesRestart(): Promise<void> {
     const checkpoint = createRunCheckpointFixture(conversation.id, 'run-file-id')
     await store.saveRunCheckpoint(checkpoint)
     await store.saveRunArtifact({
-      schemaVersion: runtimeSdk.AILA_AGENT_RUN_ARTIFACT_SCHEMA_VERSION,
+      schemaVersion: runtimeSdk.AILA_RUN_ARTIFACT_SCHEMA_VERSION,
       artifactId: 'run-file-artifact',
       conversationId: conversation.id,
       turnId: checkpoint.identity.turnId,
@@ -2334,7 +2395,7 @@ async function testDesktopRunPersistenceSurvivesRestart(): Promise<void> {
     const checkpoint = createRunCheckpointFixture(conversation.id, 'run-desktop-id')
     await store.saveRunCheckpoint(checkpoint)
     await store.saveRunArtifact({
-      schemaVersion: runtimeSdk.AILA_AGENT_RUN_ARTIFACT_SCHEMA_VERSION,
+      schemaVersion: runtimeSdk.AILA_RUN_ARTIFACT_SCHEMA_VERSION,
       artifactId: 'run-desktop-artifact',
       conversationId: conversation.id,
       turnId: checkpoint.identity.turnId,
@@ -2364,7 +2425,7 @@ async function testDesktopRunPersistenceSurvivesRestart(): Promise<void> {
 
 async function testRuntimePlanApprovalStaleRevisionContract(): Promise<void> {
   const store = createInMemoryRuntimeStore()
-  const runtime = new AgentRuntime({ store, logger: { warn() {}, error() {} } })
+  const runtime = new WorkbenchRuntime({ store, logger: { warn() {}, error() {} } })
   const conversation = await runtime.createConversation()
   assert(store.createPlan, 'in-memory store should create plan fixture')
   await store.createPlan(createPlanFixture({ conversationId: conversation.id }))
@@ -2395,9 +2456,9 @@ async function testRuntimeApprovedPlanExecutionContract(): Promise<void> {
   let sawPlanContext = false
   let sawPlanOperation = false
   let sawImplementationTools = false
-  const runtime = new AgentRuntime({
+  const runtime = new WorkbenchRuntime({
     store,
-    streamChat: async (req, handlers) => {
+    runAgent: async (req, handlers) => {
       sawPlanOperation = req.planOperation === 'implement'
       sawPlanContext =
         req.plan?.id === 'plan-1' &&
@@ -2482,7 +2543,7 @@ async function testRuntimeApprovedPlanExecutionContract(): Promise<void> {
   assertEqual(plan.tasks[0]?.status, 'done', 'complete_plan_task should mark task done')
   assertEqual(plan.drift[0]?.id, 'drift-1', 'record_plan_drift should append drift')
 
-  const events = (await store.listAgentEvents?.(conversation.id)) ?? []
+  const events = (await store.listRunEvents?.(conversation.id)) ?? []
   for (const type of [
     'plan.approved',
     'plan.implementation.started',
@@ -2515,7 +2576,7 @@ async function testRuntimeHostTransientContextUsesInjectedRecord(): Promise<void
   let streamedContext: string | null = null
   let streamedUserMessages: string[] = []
 
-  const store: AgentRuntimeStore = {
+  const store: WorkbenchStore = {
     getConversation: async (id) => {
       calls.push(`get:${id}`)
       if (id !== conversationId) throw new Error(`unexpected conversation: ${id}`)
@@ -2526,12 +2587,12 @@ async function testRuntimeHostTransientContextUsesInjectedRecord(): Promise<void
       record = { ...record, messages: [...record.messages, message] }
       return { ...summary, updatedAt: summary.updatedAt + record.messages.length }
     },
-    recordAgentEvent: async (_id, event) => {
+    recordRunEvent: async (_id, event) => {
       calls.push(`event:${event.type}`)
       return {
         event: {
           ...event,
-          schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+          schemaVersion: AILA_RUN_EVENT_SCHEMA_VERSION,
         },
         summary: { ...summary, updatedAt: summary.updatedAt + record.messages.length + 1 },
       }
@@ -2544,7 +2605,7 @@ async function testRuntimeHostTransientContextUsesInjectedRecord(): Promise<void
     },
   }
 
-  const runtime = new AgentRuntime({
+  const runtime = new WorkbenchRuntime({
     store,
     loadTransientContext: ({ record: inputRecord, source }) => {
       const messageCount = inputRecord.messages.length
@@ -2563,7 +2624,7 @@ async function testRuntimeHostTransientContextUsesInjectedRecord(): Promise<void
         },
       ]
     },
-    streamChat: async (req, handlers) => {
+    runAgent: async (req, handlers) => {
       streamedContext =
         req.messages.find(
           (message): message is { role: 'system'; content: string } =>
@@ -2606,7 +2667,7 @@ async function testRuntimeHostTransientContextUsesInjectedRecord(): Promise<void
   assertEqual(
     streamedContext,
     `host context for ${conversationId} with 1 messages`,
-    'host transient context should be passed to streamChat',
+    'host transient context should be passed to runAgent',
   )
   assert(
     !streamedUserMessages.includes('host mutated record'),
@@ -2631,7 +2692,7 @@ async function testRuntimeHostStableInstructionsUsesInjectedRecord(): Promise<vo
   let stableLoaderMessageCount = 0
   let transientLoaderMessageCount = 0
 
-  const store: AgentRuntimeStore = {
+  const store: WorkbenchStore = {
     getConversation: async (id) => {
       calls.push(`get:${id}`)
       if (id !== conversationId) throw new Error(`unexpected conversation: ${id}`)
@@ -2642,12 +2703,12 @@ async function testRuntimeHostStableInstructionsUsesInjectedRecord(): Promise<vo
       record = { ...record, messages: [...record.messages, message] }
       return { ...summary, updatedAt: summary.updatedAt + record.messages.length }
     },
-    recordAgentEvent: async (_id, event) => {
+    recordRunEvent: async (_id, event) => {
       calls.push(`event:${event.type}`)
       return {
         event: {
           ...event,
-          schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+          schemaVersion: AILA_RUN_EVENT_SCHEMA_VERSION,
         },
         summary: { ...summary, updatedAt: summary.updatedAt + record.messages.length + 1 },
       }
@@ -2660,7 +2721,7 @@ async function testRuntimeHostStableInstructionsUsesInjectedRecord(): Promise<vo
     },
   }
 
-  const runtime = new AgentRuntime({
+  const runtime = new WorkbenchRuntime({
     store,
     loadStableInstructions: ({ record: inputRecord, source }) => {
       stableLoaderMessageCount = inputRecord.messages.length
@@ -2689,7 +2750,7 @@ async function testRuntimeHostStableInstructionsUsesInjectedRecord(): Promise<vo
         },
       ]
     },
-    streamChat: async (req, handlers) => {
+    runAgent: async (req, handlers) => {
       streamedMessages = req.messages
       streamedContextPlan = req.contextPlan
       await handlers.onDone({
@@ -3124,7 +3185,7 @@ async function testRuntimePersistsAutoContextCheckpoint(): Promise<void> {
   let streamedPlan: AgentContextPlan | undefined
   let streamedAssistantMessageId: string | undefined
   let semanticSourceMessageCount = 0
-  const runtime = new AgentRuntime({
+  const runtime = new WorkbenchRuntime({
     store,
     getModelInfo: () => ({ model: 'small-context-contract', contextLength: 4_000 }),
     countContextTokens: async (input) => {
@@ -3150,7 +3211,7 @@ async function testRuntimePersistsAutoContextCheckpoint(): Promise<void> {
         summary: 'semantic compact rendered summary',
       }
     },
-    streamChat: async (req, handlers) => {
+    runAgent: async (req, handlers) => {
       streamedPlan = req.contextPlan
       streamedAssistantMessageId = req.assistantMessageId
       await handlers.onDone({
@@ -3256,7 +3317,7 @@ async function testRuntimePersistsAutoContextCheckpoint(): Promise<void> {
     streamedPlan?.compaction.recommendedCheckpoint?.id,
     'context turn ledger should link the turn to the recommended checkpoint',
   )
-  const agentEvents = [...((await store.listAgentEvents?.(conversation.id)) ?? [])]
+  const agentEvents = [...((await store.listRunEvents?.(conversation.id)) ?? [])]
   const compactingEvent = agentEvents.find((event) => event.type === 'context:compacting')
   const compactedEvent = agentEvents.find((event) => event.type === 'context:compacted')
   assert(compactingEvent, 'runtime should record a context compacting activity event')
@@ -3330,7 +3391,7 @@ async function testRuntimeManualCompactConversation(): Promise<void> {
   }
 
   let semanticSourceIds: string[] = []
-  const runtime = new AgentRuntime({
+  const runtime = new WorkbenchRuntime({
     store,
     getModelInfo: () => ({ model: 'large-context-contract', contextLength: 128_000 }),
     countContextTokens: async (input) => ({
@@ -3381,7 +3442,7 @@ async function testRuntimeManualCompactConversation(): Promise<void> {
     'manual compact should update conversation context metadata',
   )
 
-  const agentEvents = [...((await store.listAgentEvents?.(conversation.id)) ?? [])]
+  const agentEvents = [...((await store.listRunEvents?.(conversation.id)) ?? [])]
   const compactingEvent = agentEvents.find((event) => event.type === 'context:compacting')
   const compactedEvent = agentEvents.find((event) => event.type === 'context:compacted')
   assert(compactingEvent, 'manual compact should record a compacting event')
@@ -3413,7 +3474,7 @@ async function testRuntimeManualCompactConversation(): Promise<void> {
 
 async function testRuntimeStreamHandlerSnapshots(): Promise<void> {
   const conversationId = 'stream-handler-snapshot-contract'
-  const emitted: AgentRuntimeEvent[] = []
+  const emitted: WorkbenchEvent[] = []
   let storedUsageTotal: number | null = null
   let record: ConversationRecord = {
     meta: {
@@ -3426,7 +3487,7 @@ async function testRuntimeStreamHandlerSnapshots(): Promise<void> {
     messages: [],
   }
 
-  const store: AgentRuntimeStore = {
+  const store: WorkbenchStore = {
     getConversation: async (id) => {
       if (id !== conversationId) throw new Error(`unexpected conversation: ${id}`)
       return record
@@ -3445,10 +3506,10 @@ async function testRuntimeStreamHandlerSnapshots(): Promise<void> {
           : { ...record, messages: [...record.messages, message] }
       return { ...record.meta, updatedAt: record.meta.updatedAt + record.messages.length }
     },
-    recordAgentEvent: async (_id, event) => ({
+    recordRunEvent: async (_id, event) => ({
       event: {
         ...event,
-        schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+        schemaVersion: AILA_RUN_EVENT_SCHEMA_VERSION,
       },
       summary: { ...record.meta, updatedAt: record.meta.updatedAt + record.messages.length + 1 },
     }),
@@ -3465,10 +3526,10 @@ async function testRuntimeStreamHandlerSnapshots(): Promise<void> {
     },
   }
 
-  const runtime = new AgentRuntime({
+  const runtime = new WorkbenchRuntime({
     store,
     onEvent: (event) => emitted.push(event),
-    streamChat: async (req, handlers) => {
+    runAgent: async (req, handlers) => {
       const doneEvent = {
         conversationId: req.conversationId,
         messageId: req.assistantMessageId,
@@ -3521,30 +3582,29 @@ async function testRuntimeStreamHandlerSnapshots(): Promise<void> {
 
 async function testRuntimeConversationStoreFacadeContract(): Promise<void> {
   const calls: string[] = []
-  const emitted: AgentRuntimeEvent[] = []
-  const eventsByConversation = new Map<string, PersistedAgentEvent[]>()
+  const emitted: WorkbenchEvent[] = []
+  const eventsByConversation = new Map<string, PersistedRunEvent[]>()
   const summaries = new Map<string, ConversationSummary>()
   const records = new Map<string, ConversationRecord>()
   let nextId = 1
 
-  const store: AgentRuntimeStore = {
-    createConversation: async (docId, workspace) => {
+  const store: WorkbenchStore = {
+    createConversation: async (workspace) => {
       const id = `injected-conversation-${nextId++}`
-      calls.push(`create:${docId ?? 'chat'}:${workspace?.id ?? 'no-workspace'}`)
+      calls.push(`create:${workspace?.id ?? 'no-workspace'}`)
       const summary: ConversationSummary = {
         schemaVersion: AILA_CONVERSATION_META_SCHEMA_VERSION,
         id,
         title: 'injected conversation',
         createdAt: nextId,
         updatedAt: nextId,
-        ...(docId ? { docId } : {}),
         ...(workspace ? { workspace: structuredClone(workspace) } : {}),
       }
       summaries.set(id, summary)
       records.set(id, { meta: summary, messages: [] })
       eventsByConversation.set(id, [
         {
-          schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+          schemaVersion: AILA_RUN_EVENT_SCHEMA_VERSION,
           timestamp: 1,
           conversationId: id,
           messageId: 'assistant-injected-facade',
@@ -3563,14 +3623,14 @@ async function testRuntimeConversationStoreFacadeContract(): Promise<void> {
     saveMessage: async () => {
       throw new Error('conversation facade should not upsert messages')
     },
-    recordAgentEvent: async () => {
+    recordRunEvent: async () => {
       throw new Error('conversation facade should not append events')
     },
     listConversations: async () => {
       calls.push('list')
       return Array.from(summaries.values())
     },
-    listAgentEvents: async (conversationId) => {
+    listRunEvents: async (conversationId) => {
       calls.push(`events:${conversationId}`)
       return eventsByConversation.get(conversationId) ?? []
     },
@@ -3592,13 +3652,13 @@ async function testRuntimeConversationStoreFacadeContract(): Promise<void> {
     },
   }
 
-  const runtime = new AgentRuntime({
+  const runtime = new WorkbenchRuntime({
     store,
     onEvent: (event) => {
       if (event.type === 'conversations:updated') {
         event.data.title = `event-mutated:${event.data.title}`
       }
-      if (event.type === 'agent:event' && event.data.data) {
+      if (event.type === 'run:event' && event.data.data) {
         event.data.data.modelId = 'event-mutated'
       }
       emitted.push(event)
@@ -3607,7 +3667,7 @@ async function testRuntimeConversationStoreFacadeContract(): Promise<void> {
   })
 
   const chat = await runtime.createConversation()
-  const doc = await runtime.createConversation({ docId: 'docs/facade.md' })
+  const newerThread = await runtime.createConversation()
   assertEqual(
     chat.title,
     'injected conversation',
@@ -3619,14 +3679,11 @@ async function testRuntimeConversationStoreFacadeContract(): Promise<void> {
     'injected conversation',
     'runtime create should isolate store summary from caller mutation',
   )
-  assertEqual(chat.docId, undefined, 'runtime create chat conversation')
-  assertEqual(doc.docId, 'docs/facade.md', 'runtime create doc-bound conversation')
-
   const listedConversations = await runtime.listConversations()
   assertEqual(listedConversations.length, 2, 'runtime should list all conversations')
   assertEqual(
     listedConversations.map((summary) => summary.id).join(','),
-    `${doc.id},${chat.id}`,
+    `${newerThread.id},${chat.id}`,
     'runtime should sort injected store conversations by updatedAt desc',
   )
   const listedChat = listedConversations.find((summary) => summary.id === chat.id)
@@ -3636,17 +3693,6 @@ async function testRuntimeConversationStoreFacadeContract(): Promise<void> {
     'injected conversation',
     'runtime list should isolate store summaries from caller mutation',
   )
-  assertEqual(
-    (await runtime.listConversations({ docId: null })).map((summary) => summary.id).join(','),
-    chat.id,
-    'runtime should filter chat conversations',
-  )
-  assertEqual(
-    (await runtime.listConversations({ docId: 'docs/facade.md' }))[0]?.id,
-    doc.id,
-    'runtime should filter doc-bound conversations by metadata',
-  )
-
   const fetchedChat = await runtime.getConversation(chat.id)
   assertEqual(fetchedChat.meta.id, chat.id, 'runtime get conversation should delegate to store')
   fetchedChat.meta.title = 'caller-mutated-record'
@@ -3656,35 +3702,23 @@ async function testRuntimeConversationStoreFacadeContract(): Promise<void> {
     'runtime get should isolate store records from caller mutation',
   )
   assertEqual(
-    (await runtime.resolveConversation({ conversationId: doc.id })).summary.id,
-    doc.id,
+    (await runtime.resolveConversation({ conversationId: newerThread.id })).summary.id,
+    newerThread.id,
     'runtime resolve should validate and return explicit conversations',
   )
   assertEqual(
-    (await runtime.resolveConversation({ resumeLatest: true, docId: 'docs/facade.md' }))
-      .conversationId,
-    doc.id,
-    'runtime resolve should resume within a conversation scope',
-  )
-  assertEqual(
     (await runtime.resolveConversation({ resumeLatest: true })).conversationId,
-    doc.id,
+    newerThread.id,
     'runtime resolve latest should not depend on injected store ordering',
   )
-  const resolvedNew = await runtime.resolveConversation({ docId: 'docs/resolved.md' })
+  const resolvedNew = await runtime.resolveConversation()
   assertEqual(resolvedNew.isExisting, false, 'runtime resolve should create missing input')
-  assertEqual(
-    resolvedNew.summary.docId,
-    'docs/resolved.md',
-    'runtime resolve should pass create metadata through the store',
-  )
   const workspaceRef = {
     id: '/contract/workspace',
     path: '/contract/workspace',
     label: 'Contract Workspace',
   }
   const workspaceChat = await runtime.createConversation({ workspace: workspaceRef })
-  assertEqual(workspaceChat.docId, undefined, 'runtime create workspace chat should not bind a doc')
   assertEqual(
     workspaceChat.workspace?.id,
     '/contract/workspace',
@@ -3705,7 +3739,7 @@ async function testRuntimeConversationStoreFacadeContract(): Promise<void> {
       'runtime resolve should reject ambiguous conversation options',
     )
   }
-  const listedEvents = await runtime.listAgentEvents(chat.id)
+  const listedEvents = await runtime.listRunEvents(chat.id)
   assertEqual(listedEvents[0]?.type, 'turn.started', 'runtime list events should delegate to store')
   if (listedEvents[0]?.data) listedEvents[0].data.modelId = 'caller-mutated-event'
   assertEqual(
@@ -3738,12 +3772,12 @@ async function testRuntimeConversationStoreFacadeContract(): Promise<void> {
 
 async function testRuntimeConversationRuntimeStateApiUsesEventReplay(): Promise<void> {
   const store = createInMemoryRuntimeStore()
-  const runtime = new AgentRuntime({
+  const runtime = new WorkbenchRuntime({
     store,
     logger: { warn() {}, error() {} },
   })
   const chat = await runtime.createConversation()
-  const docChat = await runtime.createConversation({ docId: 'docs@aila/agent-state.md' })
+  const completedThread = await runtime.createConversation()
   await store.createPlan?.(
     createPlanFixture({
       conversationId: chat.id,
@@ -3752,7 +3786,7 @@ async function testRuntimeConversationRuntimeStateApiUsesEventReplay(): Promise<
     }),
   )
 
-  await runtime.recordAgentEvent({
+  await runtime.recordRunEvent({
     timestamp: 10,
     conversationId: chat.id,
     messageId: 'assistant-runtime-state',
@@ -3763,7 +3797,7 @@ async function testRuntimeConversationRuntimeStateApiUsesEventReplay(): Promise<
       inputMessageCount: 1,
     },
   })
-  await runtime.recordAgentEvent({
+  await runtime.recordRunEvent({
     timestamp: 20,
     conversationId: chat.id,
     messageId: 'assistant-runtime-state',
@@ -3774,7 +3808,7 @@ async function testRuntimeConversationRuntimeStateApiUsesEventReplay(): Promise<
       toolName: 'write',
     },
   })
-  await runtime.recordAgentEvent({
+  await runtime.recordRunEvent({
     timestamp: 20,
     conversationId: chat.id,
     messageId: 'assistant-runtime-state',
@@ -3785,10 +3819,10 @@ async function testRuntimeConversationRuntimeStateApiUsesEventReplay(): Promise<
       toolName: 'write',
     },
   })
-  await runtime.recordAgentEvent({
+  await runtime.recordRunEvent({
     timestamp: 30,
-    conversationId: docChat.id,
-    messageId: 'assistant-doc-runtime-state',
+    conversationId: completedThread.id,
+    messageId: 'assistant-completed-runtime-state',
     type: 'turn.completed',
     data: { outputBlockCount: 1 },
   })
@@ -3867,32 +3901,32 @@ async function testRuntimeConversationRuntimeStateApiUsesEventReplay(): Promise<
     'runtime hydrate should isolate plans from caller mutation',
   )
 
-  const chatStates = await runtime.listConversationRuntimeStates({ docId: null })
-  assertEqual(chatStates.length, 1, 'runtime state list should respect chat conversation filter')
+  const runtimeStates = await runtime.listConversationRuntimeStates()
+  assertEqual(runtimeStates.length, 2, 'runtime state list should include every thread')
+  const chatState = runtimeStates.find((candidate) => candidate.conversationId === chat.id)
   assertEqual(
-    chatStates[0]?.conversationId,
+    chatState?.conversationId,
     chat.id,
-    'runtime state list should include the filtered chat conversation',
+    'runtime state list should include the active thread',
   )
   assertEqual(
-    chatStates[0]?.state.phase,
+    chatState?.state.phase,
     'approval',
     'runtime state list should include replay state snapshots',
   )
 
-  const docStates = await runtime.listConversationRuntimeStates({
-    docId: 'docs@aila/agent-state.md',
-  })
-  assertEqual(docStates.length, 1, 'runtime state list should respect doc conversation filter')
-  assertEqual(
-    docStates[0]?.conversationId,
-    docChat.id,
-    'runtime state list should include the filtered doc conversation',
+  const completedState = runtimeStates.find(
+    (candidate) => candidate.conversationId === completedThread.id,
   )
   assertEqual(
-    docStates[0]?.state.phase,
+    completedState?.conversationId,
+    completedThread.id,
+    'runtime state list should include the completed thread',
+  )
+  assertEqual(
+    completedState?.state.phase,
     'completed',
-    'runtime state list should replay terminal doc conversation state',
+    'runtime state list should replay terminal thread state',
   )
 }
 
@@ -3905,16 +3939,16 @@ async function testRuntimeOptionalStoreCapabilitiesFailClosed(): Promise<void> {
     updatedAt: 1,
   }
   const record: ConversationRecord = { meta: summary, messages: [] }
-  const store: AgentRuntimeStore = {
+  const store: WorkbenchStore = {
     getConversation: async () => record,
     saveMessage: async () => summary,
-    recordAgentEvent: async (_conversationId, event) => ({
-      event: { ...event, schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION },
+    recordRunEvent: async (_conversationId, event) => ({
+      event: { ...event, schemaVersion: AILA_RUN_EVENT_SCHEMA_VERSION },
     }),
     recordUsage: async () => summary,
     deleteConversation: async () => {},
   }
-  const runtime = new AgentRuntime({ store, logger: { warn() {}, error() {} } })
+  const runtime = new WorkbenchRuntime({ store, logger: { warn() {}, error() {} } })
 
   async function expectCapabilityError(
     label: string,
@@ -3944,7 +3978,7 @@ async function testRuntimeOptionalStoreCapabilitiesFailClosed(): Promise<void> {
   )
   await expectCapabilityError(
     'event list without store capability',
-    () => runtime.listAgentEvents(summary.id),
+    () => runtime.listRunEvents(summary.id),
     'runtime store cannot list agent events',
   )
   await expectCapabilityError(
@@ -3952,7 +3986,7 @@ async function testRuntimeOptionalStoreCapabilitiesFailClosed(): Promise<void> {
     () => runtime.getConversationRuntimeState(summary.id),
     'runtime store cannot list agent events',
   )
-  const listOnlyRuntime = new AgentRuntime({
+  const listOnlyRuntime = new WorkbenchRuntime({
     store: { ...store, listConversations: async () => [summary] },
     logger: { warn() {}, error() {} },
   })
@@ -3978,7 +4012,7 @@ async function testInMemoryRuntimeStoreEventListContract(): Promise<void> {
   const store = createInMemoryRuntimeStore()
   const summary = await store.createConversation?.()
   assert(summary, 'in-memory runtime store should create conversations')
-  const workspaceSummary = await store.createConversation?.(undefined, {
+  const workspaceSummary = await store.createConversation?.({
     id: '/memory/workspace',
     path: '/memory/workspace',
     label: 'Memory Workspace',
@@ -3996,16 +4030,16 @@ async function testInMemoryRuntimeStoreEventListContract(): Promise<void> {
     'in-memory runtime store should isolate workspace metadata from caller mutation',
   )
 
-  const laterEvent: PersistedAgentEvent = {
-    schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+  const laterEvent: PersistedRunEvent = {
+    schemaVersion: AILA_RUN_EVENT_SCHEMA_VERSION,
     timestamp: 20,
     conversationId: summary.id,
     messageId: 'assistant-memory-events',
     type: 'tool.requested',
     data: { toolName: 'read' },
   }
-  const earlierEvent: PersistedAgentEvent = {
-    schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+  const earlierEvent: PersistedRunEvent = {
+    schemaVersion: AILA_RUN_EVENT_SCHEMA_VERSION,
     timestamp: 10,
     conversationId: summary.id,
     messageId: 'assistant-memory-events',
@@ -4013,11 +4047,11 @@ async function testInMemoryRuntimeStoreEventListContract(): Promise<void> {
     data: { providerId: 'openrouter', modelId: 'contract/mock' },
   }
 
-  await store.recordAgentEvent(summary.id, laterEvent)
-  await store.recordAgentEvent(summary.id, earlierEvent)
-  await store.recordAgentEvent(summary.id, earlierEvent)
+  await store.recordRunEvent(summary.id, laterEvent)
+  await store.recordRunEvent(summary.id, earlierEvent)
+  await store.recordRunEvent(summary.id, earlierEvent)
 
-  const listed = [...((await store.listAgentEvents?.(summary.id)) ?? [])]
+  const listed = [...((await store.listRunEvents?.(summary.id)) ?? [])]
   assertEqual(listed.length, 2, 'in-memory event list should deduplicate replay events')
   assertEqual(listed[0]?.timestamp, 20, 'durable journal order should follow allocated sequence')
   assertEqual(listed[0]?.seq, 1, 'first append should own the first journal sequence')
@@ -4025,7 +4059,7 @@ async function testInMemoryRuntimeStoreEventListContract(): Promise<void> {
   assertEqual(listed[1]?.seq, 2, 'second append should own the next journal sequence')
 
   if (listed[1]?.data) listed[1].data.modelId = 'mutated'
-  const relisted = [...((await store.listAgentEvents?.(summary.id)) ?? [])]
+  const relisted = [...((await store.listRunEvents?.(summary.id)) ?? [])]
   assertEqual(
     relisted[1]?.data?.modelId,
     'contract/mock',
@@ -4034,7 +4068,7 @@ async function testInMemoryRuntimeStoreEventListContract(): Promise<void> {
 
   await store.deleteConversation(summary.id)
   assertEqual(
-    ((await store.listAgentEvents?.(summary.id)) ?? []).length,
+    ((await store.listRunEvents?.(summary.id)) ?? []).length,
     0,
     'in-memory event list should match persisted store after delete',
   )
@@ -4043,8 +4077,8 @@ async function testInMemoryRuntimeStoreEventListContract(): Promise<void> {
 async function testRuntimeEnvironmentContract(): Promise<void> {
   const ids = ['conversation-env-id', 'user-env-id', 'assistant-env-id']
   const timestamps = [100, 200, 300, 400]
-  const emitted: AgentRuntimeEvent[] = []
-  const runtime = new AgentRuntime({
+  const emitted: WorkbenchEvent[] = []
+  const runtime = new WorkbenchRuntime({
     createId: () => {
       const id = ids.shift()
       if (!id) throw new Error('runtime requested an unexpected id')
@@ -4083,9 +4117,9 @@ async function testRuntimeEnvironmentContract(): Promise<void> {
   assertEqual(record.messages[1]?.status, 'error', 'hostless assistant status')
 
   const failedEvent = emitted.find(
-    (event) => event.type === 'agent:event' && event.data.type === 'turn.failed',
+    (event) => event.type === 'run:event' && event.data.type === 'turn.failed',
   )
-  assert(failedEvent?.type === 'agent:event', 'runtime should emit setup failure event')
+  assert(failedEvent?.type === 'run:event', 'runtime should emit setup failure event')
   assertEqual(
     failedEvent.data.timestamp,
     400,
@@ -4098,8 +4132,8 @@ async function testRuntimeEnvironmentContract(): Promise<void> {
 async function testRuntimeAppendUserMessageUsesInjectedStore(): Promise<void> {
   const conversationId = 'append-user-message-contract'
   const calls: string[] = []
-  const emitted: AgentRuntimeEvent[] = []
-  const store: AgentRuntimeStore = {
+  const emitted: WorkbenchEvent[] = []
+  const store: WorkbenchStore = {
     getConversation: async () => {
       throw new Error('append user message should not read conversation')
     },
@@ -4116,7 +4150,7 @@ async function testRuntimeAppendUserMessageUsesInjectedStore(): Promise<void> {
       }
       return summary
     },
-    recordAgentEvent: async () => {
+    recordRunEvent: async () => {
       throw new Error('append user message should not append agent events')
     },
     recordUsage: async () => {
@@ -4127,7 +4161,7 @@ async function testRuntimeAppendUserMessageUsesInjectedStore(): Promise<void> {
     },
   }
 
-  const runtime = new AgentRuntime({
+  const runtime = new WorkbenchRuntime({
     store,
     onEvent: (event) => emitted.push(event),
     logger: { warn() {}, error() {} },
@@ -4156,25 +4190,25 @@ async function testRuntimeAppendUserMessageUsesInjectedStore(): Promise<void> {
   )
 }
 
-async function testRuntimeRecordAgentEventUsesInjectedStore(): Promise<void> {
+async function testRuntimeRecordRunEventUsesInjectedStore(): Promise<void> {
   const conversationId = 'record-agent-event-contract'
   const calls: string[] = []
-  const emitted: AgentRuntimeEvent[] = []
-  let persistedFromStore: PersistedAgentEvent | undefined
+  const emitted: WorkbenchEvent[] = []
+  let persistedFromStore: PersistedRunEvent | undefined
   let summaryFromStore: ConversationSummary | undefined
-  const store: AgentRuntimeStore = {
+  const store: WorkbenchStore = {
     getConversation: async () => {
       throw new Error('record agent event should not read conversation')
     },
     saveMessage: async () => {
       throw new Error('record agent event should not upsert messages')
     },
-    recordAgentEvent: async (id, event) => {
+    recordRunEvent: async (id, event) => {
       calls.push(`event:${id}:${event.type}`)
       if (event.data) event.data.requestId = 'store-mutated-request'
       persistedFromStore = {
         ...event,
-        schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+        schemaVersion: AILA_RUN_EVENT_SCHEMA_VERSION,
       }
       summaryFromStore = {
         schemaVersion: AILA_CONVERSATION_META_SCHEMA_VERSION,
@@ -4196,10 +4230,10 @@ async function testRuntimeRecordAgentEventUsesInjectedStore(): Promise<void> {
     },
   }
 
-  const runtime = new AgentRuntime({
+  const runtime = new WorkbenchRuntime({
     store,
     onEvent: (event) => {
-      if (event.type === 'agent:event' && event.data.data) {
+      if (event.type === 'run:event' && event.data.data) {
         event.data.data.requestId = 'event-mutated-request'
       }
       if (event.type === 'conversations:updated') {
@@ -4209,14 +4243,14 @@ async function testRuntimeRecordAgentEventUsesInjectedStore(): Promise<void> {
     },
     logger: { warn() {}, error() {} },
   })
-  const inputEvent: RuntimeRecordAgentEventInput = {
+  const inputEvent: RuntimeRecordRunEventInput = {
     timestamp: 2,
     conversationId,
     messageId: 'assistant-message',
     type: 'tool.approval.requested',
     data: { requestId: 'approval-request', toolName: 'write_file' },
   }
-  const recorded = await runtime.recordAgentEvent(inputEvent)
+  const recorded = await runtime.recordRunEvent(inputEvent)
 
   assertEqual(recorded, true, 'runtime record agent event result')
   assertEqual(
@@ -4242,7 +4276,7 @@ async function testRuntimeRecordAgentEventUsesInjectedStore(): Promise<void> {
   assert(
     emitted.some(
       (event) =>
-        event.type === 'agent:event' &&
+        event.type === 'run:event' &&
         event.data.conversationId === conversationId &&
         event.data.type === 'tool.approval.requested',
     ),
@@ -4264,8 +4298,8 @@ async function testRuntimeRecoveryDelegatesToInjectedStore(): Promise<void> {
     createdAt: 1,
     updatedAt: 2,
   }
-  const recoveredEvent: PersistedAgentEvent = {
-    schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+  const recoveredEvent: PersistedRunEvent = {
+    schemaVersion: AILA_RUN_EVENT_SCHEMA_VERSION,
     timestamp: 2,
     conversationId: summary.id,
     messageId: 'delegated-assistant',
@@ -4273,15 +4307,15 @@ async function testRuntimeRecoveryDelegatesToInjectedStore(): Promise<void> {
     data: { reason: 'delegated' },
   }
   let delegatedReason: string | undefined
-  const events: AgentRuntimeEvent[] = []
-  const store: AgentRuntimeStore = {
+  const events: WorkbenchEvent[] = []
+  const store: WorkbenchStore = {
     getConversation: async () => {
       throw new Error('delegated recovery should not read conversations directly')
     },
     saveMessage: async () => {
       throw new Error('delegated recovery should not upsert messages')
     },
-    recordAgentEvent: async () => {
+    recordRunEvent: async () => {
       throw new Error('delegated recovery should not append directly')
     },
     recoverInterruptedActivities: async (reason) => {
@@ -4296,7 +4330,7 @@ async function testRuntimeRecoveryDelegatesToInjectedStore(): Promise<void> {
     },
   }
 
-  const runtime = new AgentRuntime({
+  const runtime = new WorkbenchRuntime({
     store,
     onEvent: (event) => {
       if (event.type === 'conversations:updated') event.data.title = 'event-mutated recovery'
@@ -4327,7 +4361,7 @@ async function testRuntimeRecoveryDelegatesToInjectedStore(): Promise<void> {
   )
   assert(
     events.some(
-      (event) => event.type === 'agent:event' && event.data.conversationId === 'delegated-recovery',
+      (event) => event.type === 'run:event' && event.data.conversationId === 'delegated-recovery',
     ),
     'delegated recovery should emit recovered agent event',
   )
@@ -4350,9 +4384,9 @@ async function testRuntimeRecoveryUsesInjectedStoreReplay(): Promise<void> {
       detail: 'contract/mock',
     },
   }
-  const storedEvents: PersistedAgentEvent[] = [
+  const storedEvents: PersistedRunEvent[] = [
     {
-      schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+      schemaVersion: AILA_RUN_EVENT_SCHEMA_VERSION,
       timestamp: 10,
       conversationId,
       messageId: 'assistant-injected-recovery',
@@ -4361,9 +4395,9 @@ async function testRuntimeRecoveryUsesInjectedStoreReplay(): Promise<void> {
     },
   ]
   const calls: string[] = []
-  const emitted: AgentRuntimeEvent[] = []
-  let appendedEvent: PersistedAgentEvent | undefined
-  const store: AgentRuntimeStore = {
+  const emitted: WorkbenchEvent[] = []
+  let appendedEvent: PersistedRunEvent | undefined
+  const store: WorkbenchStore = {
     getConversation: async () => {
       throw new Error('injected replay recovery should not read a conversation record')
     },
@@ -4374,14 +4408,14 @@ async function testRuntimeRecoveryUsesInjectedStoreReplay(): Promise<void> {
       calls.push('list-conversations')
       return [summary]
     },
-    listAgentEvents: async (id) => {
+    listRunEvents: async (id) => {
       calls.push(`list-events:${id}`)
       return storedEvents
     },
-    recordAgentEvent: async (id, event) => {
+    recordRunEvent: async (id, event) => {
       calls.push(`append:${event.type}:${id}`)
       appendedEvent = {
-        schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+        schemaVersion: AILA_RUN_EVENT_SCHEMA_VERSION,
         ...event,
       }
       storedEvents.push(appendedEvent)
@@ -4400,7 +4434,7 @@ async function testRuntimeRecoveryUsesInjectedStoreReplay(): Promise<void> {
     },
   }
 
-  const runtime = new AgentRuntime({
+  const runtime = new WorkbenchRuntime({
     store,
     onEvent: (event) => emitted.push(event),
     logger: { warn() {}, error() {} },
@@ -4425,7 +4459,7 @@ async function testRuntimeRecoveryUsesInjectedStoreReplay(): Promise<void> {
   )
   assertEqual(recovered[0]?.activity?.state, 'interrupted', 'injected replay recovered state')
   assert(
-    emitted.some((event) => event.type === 'agent:event' && event.data.type === 'turn.interrupted'),
+    emitted.some((event) => event.type === 'run:event' && event.data.type === 'turn.interrupted'),
     'injected replay recovery should emit agent event',
   )
   assert(
@@ -4441,7 +4475,7 @@ async function testRuntimeDeleteAssetCleanupHostBoundary(): Promise<void> {
   await withTempDataDir(async () => {
     let getCalledWithoutHook = false
     let deleteCalledWithoutHook = false
-    const withoutCleanupStore: AgentRuntimeStore = {
+    const withoutCleanupStore: WorkbenchStore = {
       getConversation: async () => {
         getCalledWithoutHook = true
         throw new Error('delete without cleanup hook should not read conversation')
@@ -4449,7 +4483,7 @@ async function testRuntimeDeleteAssetCleanupHostBoundary(): Promise<void> {
       saveMessage: async () => {
         throw new Error('not used')
       },
-      recordAgentEvent: async () => {
+      recordRunEvent: async () => {
         throw new Error('not used')
       },
       recordUsage: async () => {
@@ -4459,7 +4493,7 @@ async function testRuntimeDeleteAssetCleanupHostBoundary(): Promise<void> {
         deleteCalledWithoutHook = true
       },
     }
-    const runtimeWithoutCleanup = new AgentRuntime({
+    const runtimeWithoutCleanup = new WorkbenchRuntime({
       store: withoutCleanupStore,
       logger: { warn() {}, error() {} },
     })
@@ -4495,7 +4529,7 @@ async function testRuntimeDeleteAssetCleanupHostBoundary(): Promise<void> {
         },
       ],
     }
-    const withCleanupStore: AgentRuntimeStore = {
+    const withCleanupStore: WorkbenchStore = {
       getConversation: async (conversationId) => {
         order.push(`get:${conversationId}`)
         return record
@@ -4503,7 +4537,7 @@ async function testRuntimeDeleteAssetCleanupHostBoundary(): Promise<void> {
       saveMessage: async () => {
         throw new Error('not used')
       },
-      recordAgentEvent: async () => {
+      recordRunEvent: async () => {
         throw new Error('not used')
       },
       recordUsage: async () => {
@@ -4513,7 +4547,7 @@ async function testRuntimeDeleteAssetCleanupHostBoundary(): Promise<void> {
         order.push(`delete:${conversationId}`)
       },
     }
-    const runtimeWithCleanup = new AgentRuntime({
+    const runtimeWithCleanup = new WorkbenchRuntime({
       store: withCleanupStore,
       host: {
         cleanupConversationAssets: (cleanupRecord) => {
@@ -4564,8 +4598,8 @@ async function testRuntimeRetriesDanglingUserTurn(): Promise<void> {
         status: 'done',
       })
 
-      const events: AgentRuntimeEvent[] = []
-      const runtime = new AgentRuntime({
+      const events: WorkbenchEvent[] = []
+      const runtime = new WorkbenchRuntime({
         store: createPersistedRuntimeStore(),
         onEvent: (event) => events.push(event),
         logger: { warn() {}, error() {} },
@@ -4625,22 +4659,22 @@ async function testRuntimeRetriesFailedAssistantTurn(): Promise<void> {
       model: { providerId: 'openrouter', modelId: 'contract/mock' },
     })
 
-    const events: AgentRuntimeEvent[] = []
+    const events: WorkbenchEvent[] = []
     let modelInput = ''
-    const runtime = new AgentRuntime({
+    const runtime = new WorkbenchRuntime({
       store: createPersistedRuntimeStore(),
       onEvent: (event) => events.push(event),
       logger: { warn() {}, error() {} },
-      streamChat: async (req, handlers) => {
+      runAgent: async (req, handlers) => {
         modelInput = JSON.stringify(req.messages)
-        req.onAgentEvent?.({
+        req.onRunEvent?.({
           timestamp: Date.now(),
           conversationId: req.conversationId,
           messageId: req.assistantMessageId,
           type: 'turn.started',
           data: { providerId: req.selection.providerId, modelId: req.selection.modelId },
         })
-        req.onAgentEvent?.({
+        req.onRunEvent?.({
           timestamp: Date.now(),
           conversationId: req.conversationId,
           messageId: req.assistantMessageId,
@@ -4735,19 +4769,19 @@ async function testRuntimeContextSkipsNonDoneAssistantHistory(): Promise<void> {
     })
 
     let modelInput = ''
-    const runtime = new AgentRuntime({
+    const runtime = new WorkbenchRuntime({
       store: createPersistedRuntimeStore(),
       logger: { warn() {}, error() {} },
-      streamChat: async (req, handlers) => {
+      runAgent: async (req, handlers) => {
         modelInput = JSON.stringify(req.messages)
-        req.onAgentEvent?.({
+        req.onRunEvent?.({
           timestamp: Date.now(),
           conversationId: req.conversationId,
           messageId: req.assistantMessageId,
           type: 'turn.started',
           data: { providerId: req.selection.providerId, modelId: req.selection.modelId },
         })
-        req.onAgentEvent?.({
+        req.onRunEvent?.({
           timestamp: Date.now(),
           conversationId: req.conversationId,
           messageId: req.assistantMessageId,
@@ -4813,7 +4847,7 @@ async function testRuntimeSerializesConcurrentTurnStarts(): Promise<void> {
     let streamCount = 0
     let secondModelInput = ''
 
-    const runtime = new AgentRuntime({
+    const runtime = new WorkbenchRuntime({
       store: createPersistedRuntimeStore(),
       logger: { warn() {}, error() {} },
       loadTransientContext: async () => {
@@ -4826,18 +4860,18 @@ async function testRuntimeSerializesConcurrentTurnStarts(): Promise<void> {
         }
         return undefined
       },
-      streamChat: async (req, handlers) => {
+      runAgent: async (req, handlers) => {
         streamCount += 1
         const callIndex = streamCount
         if (callIndex === 2) secondModelInput = JSON.stringify(req.messages)
-        req.onAgentEvent?.({
+        req.onRunEvent?.({
           timestamp: Date.now(),
           conversationId: req.conversationId,
           messageId: req.assistantMessageId,
           type: 'turn.started',
           data: { providerId: req.selection.providerId, modelId: req.selection.modelId },
         })
-        req.onAgentEvent?.({
+        req.onRunEvent?.({
           timestamp: Date.now(),
           conversationId: req.conversationId,
           messageId: req.assistantMessageId,
@@ -4924,7 +4958,7 @@ async function testRuntimeSerializesConcurrentTurnStarts(): Promise<void> {
 async function testRuntimeAbortCancelsTurnSetupBeforeStreamStarts(): Promise<void> {
   await withTempDataDir(async () => {
     const conversation = await createConversation()
-    const events: AgentRuntimeEvent[] = []
+    const events: WorkbenchEvent[] = []
     let resolveSetupStarted: () => void = () => {}
     let releaseSetup: () => void = () => {}
     const setupStarted = new Promise<void>((resolve) => {
@@ -4936,7 +4970,7 @@ async function testRuntimeAbortCancelsTurnSetupBeforeStreamStarts(): Promise<voi
     let streamStarted = false
     let cleanupReason: string | null = null
 
-    const runtime = new AgentRuntime({
+    const runtime = new WorkbenchRuntime({
       store: createPersistedRuntimeStore(),
       onEvent: (event) => events.push(event),
       logger: { warn() {}, error() {} },
@@ -4948,7 +4982,7 @@ async function testRuntimeAbortCancelsTurnSetupBeforeStreamStarts(): Promise<voi
         await setupRelease
         return undefined
       },
-      streamChat: async () => {
+      runAgent: async () => {
         streamStarted = true
       },
     })
@@ -4979,7 +5013,7 @@ async function testRuntimeAbortCancelsTurnSetupBeforeStreamStarts(): Promise<voi
       'send result should match setup-stage active assistant id',
     )
 
-    const agentEvents = await listAgentEvents(conversation.id)
+    const agentEvents = await listRunEvents(conversation.id)
     assert(
       agentEvents.some(
         (event) =>
@@ -5033,7 +5067,7 @@ async function testRuntimeSendRecoversTimedOutTurnSetupLock(): Promise<void> {
     let streamCount = 0
     let firstSendSettled = false
 
-    const runtime = new AgentRuntime({
+    const runtime = new WorkbenchRuntime({
       store: createPersistedRuntimeStore(),
       abortAllCleanupTimeoutMs: 10,
       logger: { warn() {}, error() {} },
@@ -5048,16 +5082,16 @@ async function testRuntimeSendRecoversTimedOutTurnSetupLock(): Promise<void> {
         }
         return undefined
       },
-      streamChat: async (req, handlers) => {
+      runAgent: async (req, handlers) => {
         streamCount += 1
-        req.onAgentEvent?.({
+        req.onRunEvent?.({
           timestamp: Date.now(),
           conversationId: req.conversationId,
           messageId: req.assistantMessageId,
           type: 'turn.started',
           data: { providerId: req.selection.providerId, modelId: req.selection.modelId },
         })
-        req.onAgentEvent?.({
+        req.onRunEvent?.({
           timestamp: Date.now(),
           conversationId: req.conversationId,
           messageId: req.assistantMessageId,
@@ -5120,7 +5154,7 @@ async function testRuntimeSendRecoversTimedOutTurnSetupLock(): Promise<void> {
     assertEqual(transientContextCalls, 2, 'replacement should run a fresh setup phase')
     assertEqual(streamCount, 1, 'only replacement turn should reach provider stream')
 
-    const agentEvents = await listAgentEvents(conversation.id)
+    const agentEvents = await listRunEvents(conversation.id)
     assert(
       agentEvents.some(
         (event) =>
@@ -5168,17 +5202,17 @@ async function testRuntimeSendRecoversTimedOutTurnSetupLock(): Promise<void> {
 async function testRuntimeAbortPersistsCancellationActivity(): Promise<void> {
   await withTempDataDir(async () => {
     const conversation = await createConversation()
-    const events: AgentRuntimeEvent[] = []
+    const events: WorkbenchEvent[] = []
     let resolveStarted: () => void = () => {}
     const started = new Promise<void>((resolve) => {
       resolveStarted = resolve
     })
-    const runtime = new AgentRuntime({
+    const runtime = new WorkbenchRuntime({
       store: createPersistedRuntimeStore(),
       onEvent: (event) => events.push(event),
       logger: { warn() {}, error() {} },
-      streamChat: async (req, handlers) => {
-        req.onAgentEvent?.({
+      runAgent: async (req, handlers) => {
+        req.onRunEvent?.({
           timestamp: Date.now(),
           conversationId: req.conversationId,
           messageId: req.assistantMessageId,
@@ -5193,7 +5227,7 @@ async function testRuntimeAbortPersistsCancellationActivity(): Promise<void> {
           }
           req.signal.addEventListener('abort', () => resolve(), { once: true })
         })
-        req.onAgentEvent?.({
+        req.onRunEvent?.({
           timestamp: Date.now(),
           conversationId: req.conversationId,
           messageId: req.assistantMessageId,
@@ -5233,14 +5267,14 @@ async function testRuntimeAbortPersistsCancellationActivity(): Promise<void> {
       () =>
         events.some(
           (event) =>
-            event.type === 'agent:event' &&
+            event.type === 'run:event' &&
             event.data.type === 'turn.cancelled' &&
             event.data.data?.phase === 'completed',
         ),
       'abort should persist completed cancellation activity',
     )
 
-    const agentEvents = await listAgentEvents(conversation.id)
+    const agentEvents = await listRunEvents(conversation.id)
     assert(
       agentEvents.some(
         (event) => event.type === 'turn.cancelled' && event.data?.phase === 'requested',
@@ -5275,14 +5309,14 @@ async function testRuntimeAbortPersistsCancellationActivity(): Promise<void> {
 async function testRuntimeAbortTimesOutStuckStreamCleanup(): Promise<void> {
   await withTempDataDir(async () => {
     const conversation = await createConversation()
-    const events: AgentRuntimeEvent[] = []
+    const events: WorkbenchEvent[] = []
     let resolveStarted: () => void = () => {}
     const started = new Promise<void>((resolve) => {
       resolveStarted = resolve
     })
     let cleanupReason: string | null = null
 
-    const runtime = new AgentRuntime({
+    const runtime = new WorkbenchRuntime({
       store: createPersistedRuntimeStore(),
       abortAllCleanupTimeoutMs: 10,
       onEvent: (event) => events.push(event),
@@ -5290,8 +5324,8 @@ async function testRuntimeAbortTimesOutStuckStreamCleanup(): Promise<void> {
       onConversationAbort: (_conversationId, reason) => {
         cleanupReason = reason
       },
-      streamChat: async (req) => {
-        req.onAgentEvent?.({
+      runAgent: async (req) => {
+        req.onRunEvent?.({
           timestamp: Date.now(),
           conversationId: req.conversationId,
           messageId: req.assistantMessageId,
@@ -5314,7 +5348,7 @@ async function testRuntimeAbortTimesOutStuckStreamCleanup(): Promise<void> {
     assertEqual(cleanupReason, 'user', 'stuck abort cleanup reason')
     assertEqual(runtime.listActiveStreams().length, 0, 'stuck abort should clear active stream')
 
-    const agentEvents = await listAgentEvents(conversation.id)
+    const agentEvents = await listRunEvents(conversation.id)
     assert(
       agentEvents.some(
         (event) =>
@@ -5354,9 +5388,7 @@ async function testRuntimeAbortTimesOutStuckStreamCleanup(): Promise<void> {
       'stuck abort activity message id',
     )
     assert(
-      events.some(
-        (event) => event.type === 'agent:event' && event.data.type === 'turn.interrupted',
-      ),
+      events.some((event) => event.type === 'run:event' && event.data.type === 'turn.interrupted'),
       'stuck abort should emit interrupted runtime event',
     )
   })
@@ -5371,15 +5403,15 @@ async function testRuntimeRepeatedAbortWaitsForSameCleanup(): Promise<void> {
     })
     let cleanupCalls = 0
 
-    const runtime = new AgentRuntime({
+    const runtime = new WorkbenchRuntime({
       store: createPersistedRuntimeStore(),
       abortAllCleanupTimeoutMs: 50,
       logger: { warn() {}, error() {} },
       onConversationAbort: () => {
         cleanupCalls += 1
       },
-      streamChat: async (req) => {
-        req.onAgentEvent?.({
+      runAgent: async (req) => {
+        req.onRunEvent?.({
           timestamp: Date.now(),
           conversationId: req.conversationId,
           messageId: req.assistantMessageId,
@@ -5421,7 +5453,7 @@ async function testRuntimeRepeatedAbortWaitsForSameCleanup(): Promise<void> {
     await withTimeout(secondAbort, 'second repeated abort should share cleanup timeout', 500)
     assertEqual(runtime.listActiveStreams().length, 0, 'repeated abort should clear active stream')
 
-    const agentEvents = await listAgentEvents(conversation.id)
+    const agentEvents = await listRunEvents(conversation.id)
     const requestedCancellations = agentEvents.filter(
       (event) =>
         event.type === 'turn.cancelled' &&
@@ -5448,13 +5480,13 @@ async function testRuntimeRepeatedAbortWaitsForSameCleanup(): Promise<void> {
 async function testRuntimeUnexpectedStreamErrorPersistsFailureActivity(): Promise<void> {
   await withTempDataDir(async () => {
     const conversation = await createConversation()
-    const events: AgentRuntimeEvent[] = []
-    const runtime = new AgentRuntime({
+    const events: WorkbenchEvent[] = []
+    const runtime = new WorkbenchRuntime({
       store: createPersistedRuntimeStore(),
       onEvent: (event) => events.push(event),
       logger: { warn() {}, error() {} },
-      streamChat: async (req) => {
-        req.onAgentEvent?.({
+      runAgent: async (req) => {
+        req.onRunEvent?.({
           timestamp: Date.now(),
           conversationId: req.conversationId,
           messageId: req.assistantMessageId,
@@ -5483,14 +5515,14 @@ async function testRuntimeUnexpectedStreamErrorPersistsFailureActivity(): Promis
       () =>
         events.some(
           (event) =>
-            event.type === 'agent:event' &&
+            event.type === 'run:event' &&
             event.data.type === 'turn.failed' &&
             event.data.messageId === result.assistantMessageId,
         ),
       'unexpected stream error should persist failed activity',
     )
 
-    const agentEvents = await listAgentEvents(conversation.id)
+    const agentEvents = await listRunEvents(conversation.id)
     assertEqual(agentEvents.at(-1)?.type, 'turn.failed', 'unexpected error final activity event')
     assertEqual(
       agentEvents.at(-1)?.data?.error,
@@ -5519,15 +5551,15 @@ async function testRuntimeUnexpectedStreamErrorPersistsFailureActivity(): Promis
 async function testRuntimeSetupFailurePersistsAssistantError(): Promise<void> {
   await withTempDataDir(async () => {
     const conversation = await createConversation()
-    const events: AgentRuntimeEvent[] = []
-    const runtime = new AgentRuntime({
+    const events: WorkbenchEvent[] = []
+    const runtime = new WorkbenchRuntime({
       store: createPersistedRuntimeStore(),
       onEvent: (event) => events.push(event),
       logger: { warn() {}, error() {} },
       workspaceRoots: () => {
         throw new Error('workspace roots unavailable')
       },
-      streamChat: async () => {
+      runAgent: async () => {
         throw new Error('stream should not start after setup failure')
       },
     })
@@ -5549,14 +5581,14 @@ async function testRuntimeSetupFailurePersistsAssistantError(): Promise<void> {
     assert(
       events.some(
         (event) =>
-          event.type === 'agent:event' &&
+          event.type === 'run:event' &&
           event.data.type === 'turn.failed' &&
           event.data.messageId === result.assistantMessageId,
       ),
       'setup failure should emit persisted turn.failed event',
     )
 
-    const agentEvents = await listAgentEvents(conversation.id)
+    const agentEvents = await listRunEvents(conversation.id)
     assertEqual(agentEvents.at(-1)?.type, 'turn.failed', 'setup failure final activity event')
     assertEqual(agentEvents.at(-1)?.data?.phase, 'setup', 'setup failure activity phase')
     assertEqual(
@@ -5602,12 +5634,12 @@ async function testRuntimeSetupFailurePersistsAssistantError(): Promise<void> {
 async function testRuntimeSetupFailureRejectsWhenConversationDeleted(): Promise<void> {
   await withTempDataDir(async () => {
     const conversation = await createConversation()
-    const events: AgentRuntimeEvent[] = []
+    const events: WorkbenchEvent[] = []
     let deleteStarted: Promise<void> | null = null
     let streamStarted = false
-    let runtime: AgentRuntime
+    let runtime: WorkbenchRuntime
 
-    runtime = new AgentRuntime({
+    runtime = new WorkbenchRuntime({
       store: createPersistedRuntimeStore(),
       onEvent: (event) => events.push(event),
       logger: { warn() {}, error() {} },
@@ -5615,7 +5647,7 @@ async function testRuntimeSetupFailureRejectsWhenConversationDeleted(): Promise<
         deleteStarted = runtime.deleteConversation(conversation.id)
         throw new Error('workspace roots unavailable after delete')
       },
-      streamChat: async () => {
+      runAgent: async () => {
         streamStarted = true
       },
     })
@@ -5645,7 +5677,7 @@ async function testRuntimeSetupFailureRejectsWhenConversationDeleted(): Promise<
       'setup failure delete should remove conversation',
     )
     assertEqual(
-      (await listAgentEvents(conversation.id)).length,
+      (await listRunEvents(conversation.id)).length,
       0,
       'deleted setup failure should not recreate event log',
     )
@@ -5655,16 +5687,16 @@ async function testRuntimeSetupFailureRejectsWhenConversationDeleted(): Promise<
 async function testRuntimeSetupFailureSuppressesChatErrorAfterDelete(): Promise<void> {
   await withTempDataDir(async () => {
     const conversation = await createConversation()
-    const events: AgentRuntimeEvent[] = []
+    const events: WorkbenchEvent[] = []
     let deleteStarted: Promise<void> | null = null
-    let runtime: AgentRuntime
+    let runtime: WorkbenchRuntime
 
-    runtime = new AgentRuntime({
+    runtime = new WorkbenchRuntime({
       store: createPersistedRuntimeStore(),
       onEvent: (event) => {
         events.push(event)
         if (
-          event.type === 'agent:event' &&
+          event.type === 'run:event' &&
           event.data.type === 'turn.failed' &&
           event.data.messageId
         ) {
@@ -5675,7 +5707,7 @@ async function testRuntimeSetupFailureSuppressesChatErrorAfterDelete(): Promise<
       workspaceRoots: () => {
         throw new Error('workspace roots unavailable before delete')
       },
-      streamChat: async () => {
+      runAgent: async () => {
         throw new Error('stream should not start after setup failure')
       },
     })
@@ -5693,7 +5725,7 @@ async function testRuntimeSetupFailureSuppressesChatErrorAfterDelete(): Promise<
 
     assert(rejected, 'setup failure after activity delete should reject the send')
     assert(
-      events.some((event) => event.type === 'agent:event' && event.data.type === 'turn.failed'),
+      events.some((event) => event.type === 'run:event' && event.data.type === 'turn.failed'),
       'setup failure should emit activity before deletion',
     )
     assert(
@@ -5707,7 +5739,7 @@ async function testRuntimeSetupFailureSuppressesChatErrorAfterDelete(): Promise<
       'setup failure activity delete should remove conversation',
     )
     assertEqual(
-      (await listAgentEvents(conversation.id)).length,
+      (await listRunEvents(conversation.id)).length,
       0,
       'setup failure activity delete should remove event log',
     )
@@ -5725,11 +5757,11 @@ async function testRuntimeListsActiveAssistantTurns(): Promise<void> {
     const release = new Promise<void>((resolve) => {
       resolveStream = resolve
     })
-    const runtime = new AgentRuntime({
+    const runtime = new WorkbenchRuntime({
       store: createPersistedRuntimeStore(),
       logger: { warn() {}, error() {} },
-      streamChat: async (req, handlers) => {
-        req.onAgentEvent?.({
+      runAgent: async (req, handlers) => {
+        req.onRunEvent?.({
           timestamp: Date.now(),
           conversationId: req.conversationId,
           messageId: req.assistantMessageId,
@@ -5738,7 +5770,7 @@ async function testRuntimeListsActiveAssistantTurns(): Promise<void> {
         })
         resolveStarted()
         await release
-        req.onAgentEvent?.({
+        req.onRunEvent?.({
           timestamp: Date.now(),
           conversationId: req.conversationId,
           messageId: req.assistantMessageId,
@@ -5814,7 +5846,7 @@ async function testRuntimeDeleteRunsAbortCleanupBeforeWaitingForStream(): Promis
     let cleanupConversationId: string | null = null
     let cleanupReason: string | null = null
 
-    const runtime = new AgentRuntime({
+    const runtime = new WorkbenchRuntime({
       store: createPersistedRuntimeStore(),
       logger: { warn() {}, error() {} },
       onConversationAbort: (conversationId, reason) => {
@@ -5822,8 +5854,8 @@ async function testRuntimeDeleteRunsAbortCleanupBeforeWaitingForStream(): Promis
         cleanupReason = reason
         resolveStream()
       },
-      streamChat: async (req, handlers) => {
-        req.onAgentEvent?.({
+      runAgent: async (req, handlers) => {
+        req.onRunEvent?.({
           timestamp: Date.now(),
           conversationId: req.conversationId,
           messageId: req.assistantMessageId,
@@ -5832,7 +5864,7 @@ async function testRuntimeDeleteRunsAbortCleanupBeforeWaitingForStream(): Promis
         })
         resolveStarted()
         await released
-        req.onAgentEvent?.({
+        req.onRunEvent?.({
           timestamp: Date.now(),
           conversationId: req.conversationId,
           messageId: req.assistantMessageId,
@@ -5880,7 +5912,7 @@ async function testRuntimeDeleteRunsAbortCleanupBeforeWaitingForStream(): Promis
 async function testRuntimeDeleteTimesOutStuckStreamAndSuppressesLateEvents(): Promise<void> {
   await withTempDataDir(async () => {
     const conversation = await createConversation()
-    const events: AgentRuntimeEvent[] = []
+    const events: WorkbenchEvent[] = []
     let resolveStarted: () => void = () => {}
     let resolveLateStream: () => void = () => {}
     const started = new Promise<void>((resolve) => {
@@ -5892,7 +5924,7 @@ async function testRuntimeDeleteTimesOutStuckStreamAndSuppressesLateEvents(): Pr
     let cleanupReason: string | null = null
     let lateStreamFinished = false
 
-    const runtime = new AgentRuntime({
+    const runtime = new WorkbenchRuntime({
       store: createPersistedRuntimeStore(),
       abortAllCleanupTimeoutMs: 10,
       onEvent: (event) => events.push(event),
@@ -5900,8 +5932,8 @@ async function testRuntimeDeleteTimesOutStuckStreamAndSuppressesLateEvents(): Pr
       onConversationAbort: (_conversationId, reason) => {
         cleanupReason = reason
       },
-      streamChat: async (req, handlers) => {
-        req.onAgentEvent?.({
+      runAgent: async (req, handlers) => {
+        req.onRunEvent?.({
           timestamp: Date.now(),
           conversationId: req.conversationId,
           messageId: req.assistantMessageId,
@@ -5915,7 +5947,7 @@ async function testRuntimeDeleteTimesOutStuckStreamAndSuppressesLateEvents(): Pr
           messageId: req.assistantMessageId,
           delta: 'late text after delete',
         })
-        req.onAgentEvent?.({
+        req.onRunEvent?.({
           timestamp: Date.now(),
           conversationId: req.conversationId,
           messageId: req.assistantMessageId,
@@ -5963,7 +5995,7 @@ async function testRuntimeDeleteTimesOutStuckStreamAndSuppressesLateEvents(): Pr
       'late stream should not recreate deleted conversation',
     )
     assertEqual(
-      (await listAgentEvents(conversation.id)).length,
+      (await listRunEvents(conversation.id)).length,
       0,
       'late stream should not recreate deleted event log',
     )
@@ -5996,7 +6028,7 @@ async function testRuntimeRejectsNewTurnsAfterDeleteStarts(): Promise<void> {
       resolveAbortCleanup = resolve
     })
 
-    const runtime = new AgentRuntime({
+    const runtime = new WorkbenchRuntime({
       store: createPersistedRuntimeStore(),
       abortAllCleanupTimeoutMs: 10,
       logger: { warn() {}, error() {} },
@@ -6004,7 +6036,7 @@ async function testRuntimeRejectsNewTurnsAfterDeleteStarts(): Promise<void> {
         resolveAbortNotified()
         return abortCleanup
       },
-      streamChat: async () => {
+      runAgent: async () => {
         streamCount += 1
         resolveStarted()
         await streamRelease
@@ -6059,19 +6091,19 @@ async function testRuntimeDeleteFailureReopensConversation(): Promise<void> {
     const conversation = await createConversation()
     const conversationsDir = getConversationsDir()
     let streamCount = 0
-    const runtime = new AgentRuntime({
+    const runtime = new WorkbenchRuntime({
       store: createPersistedRuntimeStore(),
       logger: { warn() {}, error() {} },
-      streamChat: async (req, handlers) => {
+      runAgent: async (req, handlers) => {
         streamCount += 1
-        req.onAgentEvent?.({
+        req.onRunEvent?.({
           timestamp: Date.now(),
           conversationId: req.conversationId,
           messageId: req.assistantMessageId,
           type: 'turn.started',
           data: { providerId: req.selection.providerId, modelId: req.selection.modelId },
         })
-        req.onAgentEvent?.({
+        req.onRunEvent?.({
           timestamp: Date.now(),
           conversationId: req.conversationId,
           messageId: req.assistantMessageId,
@@ -6132,7 +6164,7 @@ async function testRuntimeDeleteFailureRecordsCancellationForReopenedTurn(): Pro
   const baseStore = createInMemoryRuntimeStore()
   const conversation = await baseStore.createConversation?.()
   assert(conversation, 'in-memory store should create conversation for delete failure contract')
-  const store: AgentRuntimeStore = {
+  const store: WorkbenchStore = {
     ...baseStore,
     deleteConversation: async () => {
       throw new Error('contract delete failed')
@@ -6143,12 +6175,12 @@ async function testRuntimeDeleteFailureRecordsCancellationForReopenedTurn(): Pro
   const started = new Promise<void>((resolve) => {
     resolveStarted = resolve
   })
-  const runtime = new AgentRuntime({
+  const runtime = new WorkbenchRuntime({
     store,
     logger: { warn() {}, error() {} },
-    streamChat: async (req, handlers) => {
+    runAgent: async (req, handlers) => {
       streamCount += 1
-      req.onAgentEvent?.({
+      req.onRunEvent?.({
         timestamp: Date.now(),
         conversationId: req.conversationId,
         messageId: req.assistantMessageId,
@@ -6164,7 +6196,7 @@ async function testRuntimeDeleteFailureRecordsCancellationForReopenedTurn(): Pro
           }
           req.signal.addEventListener('abort', () => resolve(), { once: true })
         })
-        req.onAgentEvent?.({
+        req.onRunEvent?.({
           timestamp: Date.now(),
           conversationId: req.conversationId,
           messageId: req.assistantMessageId,
@@ -6188,7 +6220,7 @@ async function testRuntimeDeleteFailureRecordsCancellationForReopenedTurn(): Pro
         return
       }
 
-      req.onAgentEvent?.({
+      req.onRunEvent?.({
         timestamp: Date.now(),
         conversationId: req.conversationId,
         messageId: req.assistantMessageId,
@@ -6225,7 +6257,7 @@ async function testRuntimeDeleteFailureRecordsCancellationForReopenedTurn(): Pro
   assert(deleteFailed, 'active delete failure should reject')
   assertEqual(runtime.listActiveStreams().length, 0, 'failed active delete should clear stream')
 
-  const events = [...((await store.listAgentEvents?.(conversation.id)) ?? [])]
+  const events = [...((await store.listRunEvents?.(conversation.id)) ?? [])]
   assert(
     events.some(
       (event) =>
@@ -6262,7 +6294,7 @@ async function testRuntimeDeleteFailureRecordsCancellationForReopenedTurn(): Pro
 async function testRuntimeSendRecoversAbortedStuckPreviousStream(): Promise<void> {
   await withTempDataDir(async () => {
     const conversation = await createConversation()
-    const events: AgentRuntimeEvent[] = []
+    const events: WorkbenchEvent[] = []
     let resolveFirstStarted: () => void = () => {}
     let resolveFirstLateStream: () => void = () => {}
     const firstStarted = new Promise<void>((resolve) => {
@@ -6274,15 +6306,15 @@ async function testRuntimeSendRecoversAbortedStuckPreviousStream(): Promise<void
     let streamCount = 0
     let firstLateStreamFinished = false
 
-    const runtime = new AgentRuntime({
+    const runtime = new WorkbenchRuntime({
       store: createPersistedRuntimeStore(),
       abortAllCleanupTimeoutMs: 10,
       onEvent: (event) => events.push(event),
       logger: { warn() {}, error() {} },
-      streamChat: async (req, handlers) => {
+      runAgent: async (req, handlers) => {
         streamCount += 1
         const callIndex = streamCount
-        req.onAgentEvent?.({
+        req.onRunEvent?.({
           timestamp: Date.now(),
           conversationId: req.conversationId,
           messageId: req.assistantMessageId,
@@ -6293,7 +6325,7 @@ async function testRuntimeSendRecoversAbortedStuckPreviousStream(): Promise<void
         if (callIndex === 1) {
           resolveFirstStarted()
           await firstLateRelease
-          req.onAgentEvent?.({
+          req.onRunEvent?.({
             timestamp: Date.now(),
             conversationId: req.conversationId,
             messageId: req.assistantMessageId,
@@ -6315,7 +6347,7 @@ async function testRuntimeSendRecoversAbortedStuckPreviousStream(): Promise<void
           return
         }
 
-        req.onAgentEvent?.({
+        req.onRunEvent?.({
           timestamp: Date.now(),
           conversationId: req.conversationId,
           messageId: req.assistantMessageId,
@@ -6364,7 +6396,7 @@ async function testRuntimeSendRecoversAbortedStuckPreviousStream(): Promise<void
       'replacement stream should finish',
     )
 
-    const agentEvents = await listAgentEvents(conversation.id)
+    const agentEvents = await listRunEvents(conversation.id)
     assert(
       agentEvents.some(
         (event) =>
@@ -6415,15 +6447,15 @@ async function testRuntimeAbortAllWaitsForShutdownCleanup(): Promise<void> {
     let cleanupReason: string | null = null
     let streamFinished = false
 
-    const runtime = new AgentRuntime({
+    const runtime = new WorkbenchRuntime({
       store: createPersistedRuntimeStore(),
       logger: { warn() {}, error() {} },
       onConversationAbort: (conversationId, reason) => {
         cleanupConversationId = conversationId
         cleanupReason = reason
       },
-      streamChat: async (req, handlers) => {
-        req.onAgentEvent?.({
+      runAgent: async (req, handlers) => {
+        req.onRunEvent?.({
           timestamp: Date.now(),
           conversationId: req.conversationId,
           messageId: req.assistantMessageId,
@@ -6438,7 +6470,7 @@ async function testRuntimeAbortAllWaitsForShutdownCleanup(): Promise<void> {
           }
           req.signal.addEventListener('abort', () => resolve(), { once: true })
         })
-        req.onAgentEvent?.({
+        req.onRunEvent?.({
           timestamp: Date.now(),
           conversationId: req.conversationId,
           messageId: req.assistantMessageId,
@@ -6476,7 +6508,7 @@ async function testRuntimeAbortAllWaitsForShutdownCleanup(): Promise<void> {
     assertEqual(streamFinished, true, 'abortAll should wait for stream cleanup')
     assertEqual(runtime.listActiveStreams().length, 0, 'abortAll should clear active stream')
 
-    const agentEvents = await listAgentEvents(conversation.id)
+    const agentEvents = await listRunEvents(conversation.id)
     assert(
       agentEvents.some(
         (event) =>
@@ -6504,15 +6536,15 @@ async function testRuntimeAbortAllTimesOutStuckStreamCleanup(): Promise<void> {
     })
     let cleanupReason: string | null = null
 
-    const runtime = new AgentRuntime({
+    const runtime = new WorkbenchRuntime({
       store: createPersistedRuntimeStore(),
       abortAllCleanupTimeoutMs: 10,
       logger: { warn() {}, error() {} },
       onConversationAbort: (_conversationId, reason) => {
         cleanupReason = reason
       },
-      streamChat: async (req) => {
-        req.onAgentEvent?.({
+      runAgent: async (req) => {
+        req.onRunEvent?.({
           timestamp: Date.now(),
           conversationId: req.conversationId,
           messageId: req.assistantMessageId,
@@ -6535,7 +6567,7 @@ async function testRuntimeAbortAllTimesOutStuckStreamCleanup(): Promise<void> {
     assertEqual(cleanupReason, 'shutdown', 'stuck abortAll cleanup reason')
     assertEqual(runtime.listActiveStreams().length, 0, 'stuck cleanup should clear active stream')
 
-    const agentEvents = await listAgentEvents(conversation.id)
+    const agentEvents = await listRunEvents(conversation.id)
     assert(
       agentEvents.some(
         (event) =>
@@ -6572,12 +6604,12 @@ async function testRuntimeShutdownRejectsNewTurns(): Promise<void> {
     let streamCount = 0
     let streamFinished = false
 
-    const runtime = new AgentRuntime({
+    const runtime = new WorkbenchRuntime({
       store: createPersistedRuntimeStore(),
       logger: { warn() {}, error() {} },
-      streamChat: async (req, handlers) => {
+      runAgent: async (req, handlers) => {
         streamCount += 1
-        req.onAgentEvent?.({
+        req.onRunEvent?.({
           timestamp: Date.now(),
           conversationId: req.conversationId,
           messageId: req.assistantMessageId,
@@ -6592,7 +6624,7 @@ async function testRuntimeShutdownRejectsNewTurns(): Promise<void> {
           }
           req.signal.addEventListener('abort', () => resolve(), { once: true })
         })
-        req.onAgentEvent?.({
+        req.onRunEvent?.({
           timestamp: Date.now(),
           conversationId: req.conversationId,
           messageId: req.assistantMessageId,
@@ -6670,7 +6702,7 @@ async function testRuntimeShutdownRejectsNewTurns(): Promise<void> {
 
 async function testPersistenceContract(): Promise<void> {
   await withTempDataDir(async () => {
-    const conversation = await createConversation('docs@aila/agent-contract')
+    const conversation = await createConversation()
     assertEqual(
       conversation.schemaVersion,
       AILA_CONVERSATION_META_SCHEMA_VERSION,
@@ -6715,30 +6747,30 @@ async function testPersistenceContract(): Promise<void> {
       'written message version',
     )
 
-    await appendAgentEvent(conversation.id, {
+    await appendRunEvent(conversation.id, {
       timestamp: 1,
       conversationId: conversation.id,
       messageId: 'message-1',
       type: 'tool.approval.requested',
       data: { toolName: 'write', requestId: 'approval-1', risk: 'destructive write' },
     })
-    const events = await listAgentEvents(conversation.id)
+    const events = await listRunEvents(conversation.id)
     assertEqual(events.length, 1, 'agent events should be readable')
     const [event] = events
     assert(event, 'listed agent event should exist')
-    assertEqual(event.schemaVersion, AILA_AGENT_EVENT_SCHEMA_VERSION, 'listed event version')
+    assertEqual(event.schemaVersion, AILA_RUN_EVENT_SCHEMA_VERSION, 'listed event version')
     assertEqual(event.type, 'tool.approval.requested', 'listed event type')
-    const rawAgentEvent = JSON.parse(
+    const rawRunEvent = JSON.parse(
       (await readFile(join(dir, `${conversation.id}.events.jsonl`), 'utf-8')).trim(),
     ) as { schemaVersion?: number }
     assertEqual(
-      rawAgentEvent.schemaVersion,
-      AILA_AGENT_EVENT_SCHEMA_VERSION,
+      rawRunEvent.schemaVersion,
+      AILA_RUN_EVENT_SCHEMA_VERSION,
       'written agent event version',
     )
 
-    const runtimeEvent = createRuntimeEvent('agent:event', event)
-    assertEqual(runtimeEvent.type, 'agent:event', 'agent event runtime wrapper type')
+    const runtimeEvent = createWorkbenchEvent('run:event', event)
+    assertEqual(runtimeEvent.type, 'run:event', 'agent event runtime wrapper type')
   })
 }
 
@@ -6779,7 +6811,7 @@ async function testMessageUpsertPreventsDuplicatePersistedMessages(): Promise<vo
   })
 }
 
-async function testAgentEventReplayDeduplicatesExactDuplicates(): Promise<void> {
+async function testRunEventReplayDeduplicatesExactDuplicates(): Promise<void> {
   await withTempDataDir(async () => {
     const conversation = await createConversation()
     const event = {
@@ -6790,10 +6822,10 @@ async function testAgentEventReplayDeduplicatesExactDuplicates(): Promise<void> 
       data: { toolCallId: 'tool-call', toolName: 'read_file' },
     }
 
-    await appendAgentEvent(conversation.id, event)
-    await appendAgentEvent(conversation.id, event)
+    await appendRunEvent(conversation.id, event)
+    await appendRunEvent(conversation.id, event)
 
-    const events = await listAgentEvents(conversation.id)
+    const events = await listRunEvents(conversation.id)
     assertEqual(events.length, 1, 'duplicate agent events should collapse during replay')
     assertEqual(events[0]?.type, 'tool.execution.started', 'deduped event type')
     assertEqual(events[0]?.data?.toolName, 'read_file', 'deduped event data')
@@ -6813,11 +6845,11 @@ async function testAgentEventReplayDeduplicatesExactDuplicates(): Promise<void> 
   })
 }
 
-async function testAgentEventReplayPreservesAppendOrderForSameTimestamp(): Promise<void> {
+async function testRunEventReplayPreservesAppendOrderForSameTimestamp(): Promise<void> {
   await withTempDataDir(async () => {
     const conversation = await createConversation()
     const timestamp = 100
-    const events: AgentEvent[] = [
+    const events: RunEvent[] = [
       {
         timestamp,
         conversationId: conversation.id,
@@ -6863,9 +6895,9 @@ async function testAgentEventReplayPreservesAppendOrderForSameTimestamp(): Promi
       },
     ]
 
-    for (const event of events) await appendAgentEvent(conversation.id, event)
+    for (const event of events) await appendRunEvent(conversation.id, event)
 
-    const listed = await listAgentEvents(conversation.id)
+    const listed = await listRunEvents(conversation.id)
     assertEqual(listed.length, 4, 'same-timestamp replay should deduplicate exact duplicates')
     assertEqual(
       listed.map((event) => event.type).join(','),
@@ -6893,30 +6925,30 @@ async function testAgentEventReplayPreservesAppendOrderForSameTimestamp(): Promi
       'same-timestamp completed replay should not recover as interrupted',
     )
     assert(
-      !(await listAgentEvents(conversation.id)).some((event) => event.type === 'turn.interrupted'),
+      !(await listRunEvents(conversation.id)).some((event) => event.type === 'turn.interrupted'),
       'same-timestamp completed replay should not append interrupted recovery',
     )
   })
 }
 
-function testAgentEventSequenceMigratesLegacyJournalOrder(): void {
-  const legacy: PersistedAgentEvent[] = [
+function testRunEventSequenceMigratesLegacyJournalOrder(): void {
+  const legacy: PersistedRunEvent[] = [
     {
-      schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+      schemaVersion: AILA_RUN_EVENT_SCHEMA_VERSION,
       timestamp: 100,
       conversationId: 'legacy-sequence-conversation',
       messageId: 'legacy-sequence-assistant',
       type: 'turn.started',
     },
     {
-      schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+      schemaVersion: AILA_RUN_EVENT_SCHEMA_VERSION,
       timestamp: 200,
       conversationId: 'legacy-sequence-conversation',
       messageId: 'legacy-sequence-assistant',
       type: 'tool.execution.started',
     },
   ]
-  const appended = runtimeSdk.prepareAgentEventAppend(
+  const appended = runtimeSdk.prepareRunEventAppend(
     legacy,
     {
       timestamp: 50,
@@ -6930,7 +6962,7 @@ function testAgentEventSequenceMigratesLegacyJournalOrder(): void {
   assertEqual(appended.event.seq, 3, 'v2 sequence should continue after legacy journal entries')
   assertEqual(
     runtimeSdk
-      .orderedUniqueAgentEvents([...legacy, appended.event])
+      .orderedUniqueRunEvents([...legacy, appended.event])
       .map((event) => event.type)
       .join(','),
     'turn.started,tool.execution.started,turn.completed',
@@ -6938,17 +6970,17 @@ function testAgentEventSequenceMigratesLegacyJournalOrder(): void {
   )
 }
 
-function testAgentEventReplayDerivesLatestActivity(): void {
-  const events: PersistedAgentEvent[] = [
+function testRunEventReplayDerivesLatestActivity(): void {
+  const events: PersistedRunEvent[] = [
     {
-      schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+      schemaVersion: AILA_RUN_EVENT_SCHEMA_VERSION,
       timestamp: 30,
       conversationId: 'conversation-replay',
       messageId: 'assistant-replay',
       type: 'turn.completed' as const,
     },
     {
-      schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+      schemaVersion: AILA_RUN_EVENT_SCHEMA_VERSION,
       timestamp: 10,
       conversationId: 'conversation-replay',
       messageId: 'assistant-replay',
@@ -6956,7 +6988,7 @@ function testAgentEventReplayDerivesLatestActivity(): void {
       data: { modelId: 'contract/mock' },
     },
     {
-      schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+      schemaVersion: AILA_RUN_EVENT_SCHEMA_VERSION,
       timestamp: 20,
       conversationId: 'conversation-replay',
       messageId: 'assistant-replay',
@@ -6964,7 +6996,7 @@ function testAgentEventReplayDerivesLatestActivity(): void {
       data: { deltaSize: 20 },
     },
     {
-      schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+      schemaVersion: AILA_RUN_EVENT_SCHEMA_VERSION,
       timestamp: 30,
       conversationId: 'conversation-replay',
       messageId: 'assistant-replay',
@@ -6979,10 +7011,10 @@ function testAgentEventReplayDerivesLatestActivity(): void {
   assertEqual(activity.updatedAt, 30, 'event replay activity timestamp')
 }
 
-function testAgentEventReplayDerivesRuntimeState(): void {
-  const baseEvents: PersistedAgentEvent[] = [
+function testRunEventReplayDerivesRuntimeState(): void {
+  const baseEvents: PersistedRunEvent[] = [
     {
-      schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+      schemaVersion: AILA_RUN_EVENT_SCHEMA_VERSION,
       timestamp: 10,
       conversationId: 'conversation-runtime-replay',
       messageId: 'assistant-runtime-replay',
@@ -6994,7 +7026,7 @@ function testAgentEventReplayDerivesRuntimeState(): void {
       },
     },
     {
-      schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+      schemaVersion: AILA_RUN_EVENT_SCHEMA_VERSION,
       timestamp: 20,
       conversationId: 'conversation-runtime-replay',
       messageId: 'assistant-runtime-replay',
@@ -7006,7 +7038,7 @@ function testAgentEventReplayDerivesRuntimeState(): void {
       },
     },
     {
-      schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+      schemaVersion: AILA_RUN_EVENT_SCHEMA_VERSION,
       timestamp: 20,
       conversationId: 'conversation-runtime-replay',
       messageId: 'assistant-runtime-replay',
@@ -7041,7 +7073,7 @@ function testAgentEventReplayDerivesRuntimeState(): void {
   const resolvedState = replayConversationRuntimeState([
     ...baseEvents,
     {
-      schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+      schemaVersion: AILA_RUN_EVENT_SCHEMA_VERSION,
       timestamp: 30,
       conversationId: 'conversation-runtime-replay',
       messageId: 'assistant-runtime-replay',
@@ -7064,7 +7096,7 @@ function testAgentEventReplayDerivesRuntimeState(): void {
   const cancellingState = replayConversationRuntimeState([
     ...baseEvents,
     {
-      schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+      schemaVersion: AILA_RUN_EVENT_SCHEMA_VERSION,
       timestamp: 40,
       conversationId: 'conversation-runtime-replay',
       messageId: 'assistant-runtime-replay',
@@ -7078,7 +7110,7 @@ function testAgentEventReplayDerivesRuntimeState(): void {
   const cancelledState = replayConversationRuntimeState([
     ...baseEvents,
     {
-      schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+      schemaVersion: AILA_RUN_EVENT_SCHEMA_VERSION,
       timestamp: 40,
       conversationId: 'conversation-runtime-replay',
       messageId: 'assistant-runtime-replay',
@@ -7086,7 +7118,7 @@ function testAgentEventReplayDerivesRuntimeState(): void {
       data: { phase: 'requested', reason: 'user' },
     },
     {
-      schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+      schemaVersion: AILA_RUN_EVENT_SCHEMA_VERSION,
       timestamp: 50,
       conversationId: 'conversation-runtime-replay',
       messageId: 'assistant-runtime-replay',
@@ -7099,9 +7131,9 @@ function testAgentEventReplayDerivesRuntimeState(): void {
 }
 
 function testPlanEventReplayDerivesActivityAndRuntimeState(): void {
-  const baseEvents: PersistedAgentEvent[] = [
+  const baseEvents: PersistedRunEvent[] = [
     {
-      schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+      schemaVersion: AILA_RUN_EVENT_SCHEMA_VERSION,
       timestamp: 10,
       conversationId: 'conversation-plan-replay',
       messageId: 'assistant-plan-replay',
@@ -7109,7 +7141,7 @@ function testPlanEventReplayDerivesActivityAndRuntimeState(): void {
       data: { planId: 'plan-1', title: 'Plan Replay' },
     },
     {
-      schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+      schemaVersion: AILA_RUN_EVENT_SCHEMA_VERSION,
       timestamp: 20,
       conversationId: 'conversation-plan-replay',
       messageId: 'assistant-plan-replay',
@@ -7117,7 +7149,7 @@ function testPlanEventReplayDerivesActivityAndRuntimeState(): void {
       data: { planId: 'plan-1', status: 'draft', summary: 'Initial draft' },
     },
     {
-      schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+      schemaVersion: AILA_RUN_EVENT_SCHEMA_VERSION,
       timestamp: 30,
       conversationId: 'conversation-plan-replay',
       messageId: 'assistant-plan-replay',
@@ -7134,10 +7166,10 @@ function testPlanEventReplayDerivesActivityAndRuntimeState(): void {
   assertEqual(readyState.plan?.planId, 'plan-1', 'plan replay should preserve plan id')
   assertEqual(readyState.plan?.status, 'ready', 'plan replay should preserve status')
 
-  const implementingEvents: PersistedAgentEvent[] = [
+  const implementingEvents: PersistedRunEvent[] = [
     ...baseEvents,
     {
-      schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+      schemaVersion: AILA_RUN_EVENT_SCHEMA_VERSION,
       timestamp: 40,
       conversationId: 'conversation-plan-replay',
       messageId: 'assistant-plan-replay',
@@ -7145,7 +7177,7 @@ function testPlanEventReplayDerivesActivityAndRuntimeState(): void {
       data: { planId: 'plan-1', status: 'implementing', title: 'Plan Replay' },
     },
     {
-      schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+      schemaVersion: AILA_RUN_EVENT_SCHEMA_VERSION,
       timestamp: 50,
       conversationId: 'conversation-plan-replay',
       messageId: 'assistant-plan-replay',
@@ -7183,7 +7215,7 @@ function testPlanEventReplayDerivesActivityAndRuntimeState(): void {
   const completedState = replayConversationRuntimeState([
     ...implementingEvents,
     {
-      schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+      schemaVersion: AILA_RUN_EVENT_SCHEMA_VERSION,
       timestamp: 70,
       conversationId: 'conversation-plan-replay',
       messageId: 'assistant-plan-replay',
@@ -7196,10 +7228,10 @@ function testPlanEventReplayDerivesActivityAndRuntimeState(): void {
   assertEqual(completedState.plan?.status, 'completed', 'completed plan status should replay')
 }
 
-function testAgentEventReplayKeepsToolFailureActive(): void {
-  const events: PersistedAgentEvent[] = [
+function testRunEventReplayKeepsToolFailureActive(): void {
+  const events: PersistedRunEvent[] = [
     {
-      schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+      schemaVersion: AILA_RUN_EVENT_SCHEMA_VERSION,
       timestamp: 10,
       conversationId: 'conversation-tool-failure-replay',
       messageId: 'assistant-tool-failure-replay',
@@ -7207,7 +7239,7 @@ function testAgentEventReplayKeepsToolFailureActive(): void {
       data: { providerId: 'openrouter', modelId: 'contract/mock' },
     },
     {
-      schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+      schemaVersion: AILA_RUN_EVENT_SCHEMA_VERSION,
       timestamp: 20,
       conversationId: 'conversation-tool-failure-replay',
       messageId: 'assistant-tool-failure-replay',
@@ -7232,9 +7264,9 @@ function testAgentEventReplayKeepsToolFailureActive(): void {
 }
 
 function testInterruptedRecoveryEventHelper(): void {
-  const activeEvents: PersistedAgentEvent[] = [
+  const activeEvents: PersistedRunEvent[] = [
     {
-      schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+      schemaVersion: AILA_RUN_EVENT_SCHEMA_VERSION,
       timestamp: 10,
       conversationId: 'conversation-recovery-helper',
       messageId: 'assistant-recovery-helper',
@@ -7242,7 +7274,7 @@ function testInterruptedRecoveryEventHelper(): void {
       data: { providerId: 'openrouter', modelId: 'contract/mock' },
     },
     {
-      schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+      schemaVersion: AILA_RUN_EVENT_SCHEMA_VERSION,
       timestamp: 20,
       conversationId: 'conversation-recovery-helper',
       messageId: 'assistant-recovery-helper',
@@ -7286,7 +7318,7 @@ function testInterruptedRecoveryEventHelper(): void {
   const terminalEvent = createInterruptedConversationRecoveryEvent([
     ...activeEvents,
     {
-      schemaVersion: AILA_AGENT_EVENT_SCHEMA_VERSION,
+      schemaVersion: AILA_RUN_EVENT_SCHEMA_VERSION,
       timestamp: 40,
       conversationId: 'conversation-recovery-helper',
       messageId: 'assistant-recovery-helper',
@@ -7299,14 +7331,14 @@ function testInterruptedRecoveryEventHelper(): void {
 async function testInterruptedRecoveryUsesEventReplayOverStaleMeta(): Promise<void> {
   await withTempDataDir(async () => {
     const conversation = await createConversation()
-    await appendAgentEventAndTouchConversation(conversation.id, {
+    await appendRunEventAndTouchConversation(conversation.id, {
       timestamp: 10,
       conversationId: conversation.id,
       messageId: 'assistant-stale-meta',
       type: 'turn.started',
       data: { modelId: 'contract/mock' },
     })
-    await appendAgentEvent(conversation.id, {
+    await appendRunEvent(conversation.id, {
       timestamp: 20,
       conversationId: conversation.id,
       messageId: 'assistant-stale-meta',
@@ -7323,7 +7355,7 @@ async function testInterruptedRecoveryUsesEventReplayOverStaleMeta(): Promise<vo
       'completed replay should not be recovered as interrupted',
     )
 
-    const events = await listAgentEvents(conversation.id)
+    const events = await listRunEvents(conversation.id)
     assert(
       !events.some((event) => event.type === 'turn.interrupted'),
       'completed replay should not append interrupted event',
@@ -7372,7 +7404,7 @@ async function testInterruptedRecoveryFallsBackToLegacyMetaActivity(): Promise<v
       'legacy running meta activity should recover as interrupted',
     )
 
-    const events = await listAgentEvents(id)
+    const events = await listRunEvents(id)
     const interrupted = events.find((event) => event.type === 'turn.interrupted')
     assert(interrupted, 'legacy meta fallback should append interrupted event')
     assertEqual(
@@ -7391,14 +7423,14 @@ async function testInterruptedRecoveryFallsBackToLegacyMetaActivity(): Promise<v
 async function testInterruptedRecoveryUsesRuntimeReplayForNonTerminalToolFailure(): Promise<void> {
   await withTempDataDir(async () => {
     const conversation = await createConversation()
-    await appendAgentEventAndTouchConversation(conversation.id, {
+    await appendRunEventAndTouchConversation(conversation.id, {
       timestamp: 10,
       conversationId: conversation.id,
       messageId: 'assistant-tool-failure-recovery',
       type: 'turn.started',
       data: { providerId: 'openrouter', modelId: 'contract/mock' },
     })
-    await appendAgentEventAndTouchConversation(conversation.id, {
+    await appendRunEventAndTouchConversation(conversation.id, {
       timestamp: 20,
       conversationId: conversation.id,
       messageId: 'assistant-tool-failure-recovery',
@@ -7419,7 +7451,7 @@ async function testInterruptedRecoveryUsesRuntimeReplayForNonTerminalToolFailure
       'non-terminal tool failure should be recovered as interrupted',
     )
 
-    const events = await listAgentEvents(conversation.id)
+    const events = await listRunEvents(conversation.id)
     const interrupted = events.find((event) => event.type === 'turn.interrupted')
     assert(interrupted, 'runtime replay recovery should append interrupted event')
     assertEqual(
@@ -7493,7 +7525,7 @@ async function testLegacyPersistenceNormalization(): Promise<void> {
 }
 
 async function testImmediateToolApprovalActivityHelper(): Promise<void> {
-  const recorded: AgentEvent[] = []
+  const recorded: RunEvent[] = []
   const request: ToolApprovalRequest = {
     name: 'write',
     args: {
@@ -7529,7 +7561,7 @@ async function testImmediateToolApprovalActivityHelper(): Promise<void> {
       approvalRequest.metadata.access.push('shell')
       return true
     },
-    recordAgentEvent: async (_conversationId, event) => {
+    recordRunEvent: async (_conversationId, event) => {
       recorded.push(event)
     },
   })
@@ -7568,7 +7600,7 @@ async function testImmediateToolApprovalActivityHelper(): Promise<void> {
   assertEqual(recorded[1]?.data?.approved, true, 'approval helper resolved approved flag')
   assertEqual(recorded[1]?.data?.reason, 'user', 'approval helper resolved reason')
 
-  const failedRecorded: AgentEvent[] = []
+  const failedRecorded: RunEvent[] = []
   try {
     await requestToolApprovalWithActivity({
       request,
@@ -7576,7 +7608,7 @@ async function testImmediateToolApprovalActivityHelper(): Promise<void> {
       approve: async () => {
         throw new Error('approval prompt failed')
       },
-      recordAgentEvent: async (_conversationId, event) => {
+      recordRunEvent: async (_conversationId, event) => {
         failedRecorded.push(event)
       },
     })
@@ -7678,7 +7710,7 @@ async function testExecutionModeToolPolicyContract(): Promise<void> {
 
 async function testRuntimePlanModeToolBoundaryContract(): Promise<void> {
   let hostPolicyCalls = 0
-  const runtime = new AgentRuntime({
+  const runtime = new WorkbenchRuntime({
     onToolPolicy: () => {
       hostPolicyCalls += 1
       return { action: 'allow', reason: 'host allow' }
@@ -7709,8 +7741,8 @@ async function testRuntimePlanModeFiltersStreamToolsContract(): Promise<void> {
     let sawPlanCreate = false
     let sawWrite = false
     let sawShell = false
-    const runtime = new AgentRuntime({
-      streamChat: async (req, handlers) => {
+    const runtime = new WorkbenchRuntime({
+      runAgent: async (req, handlers) => {
         sawMode = req.mode
         sawRead = req.toolRegistry?.specsByName.has('read') === true
         sawPlanCreate = req.toolRegistry?.specsByName.has('plan_create') === true
@@ -7749,9 +7781,9 @@ async function testRuntimePlanModeFiltersStreamToolsContract(): Promise<void> {
 
 async function testRuntimePlanModePlanToolPersistsArtifactContract(): Promise<void> {
   const store = createInMemoryRuntimeStore()
-  const runtime = new AgentRuntime({
+  const runtime = new WorkbenchRuntime({
     store,
-    streamChat: async (req, handlers) => {
+    runAgent: async (req, handlers) => {
       const runner = req.toolRegistry?.runnersByName.get('plan_create')
       assert(runner, 'plan mode stream should expose plan_create runner')
       const result = JSON.parse(
@@ -7801,7 +7833,7 @@ async function testRuntimePlanModePlanToolPersistsArtifactContract(): Promise<vo
   assert(plan, 'plan_create should persist a plan artifact')
   assertEqual(plan.status, 'ready', 'plan_create should persist ready status')
   assertEqual(plan.revisions.length, 1, 'plan_create should persist initial revision')
-  const events = (await store.listAgentEvents?.(conversation.id)) ?? []
+  const events = (await store.listRunEvents?.(conversation.id)) ?? []
   assert(
     events.some((event) => event.type === 'plan.ready' && event.data?.planId === 'tool-plan'),
     'plan_create ready status should record plan.ready event',
@@ -8232,7 +8264,7 @@ async function testRuntimeExecuteToolUsesHostBoundary(): Promise<void> {
     ],
   }
 
-  const runtime = new AgentRuntime({
+  const runtime = new WorkbenchRuntime({
     loadSettings: () => {
       loadSettingsCalled = true
       return settings
@@ -9308,7 +9340,7 @@ async function testNativeGoogleModelStreamContract(): Promise<void> {
 
 async function testProviderStreamChatOwnsToolLoopContract(): Promise<void> {
   const modelRequests: ChatMessage[][] = []
-  const agentEvents: AgentEvent[] = []
+  const agentEvents: RunEvent[] = []
   const toolResults: string[] = []
   const doneMessages: PersistedMessage[] = []
   let toolRunCount = 0
@@ -9411,12 +9443,12 @@ async function testProviderStreamChatOwnsToolLoopContract(): Promise<void> {
     ],
   }
 
-  const streamChat = runtimePackageNodeSdk.createProviderStreamChat({
+  const runAgent = runtimePackageNodeSdk.createDurableRunExecutor({
     modelStreamClient,
     settings: { apiKeys: { openrouter: 'contract-key' }, defaultModel: null },
   })
 
-  await streamChat(
+  await runAgent(
     {
       conversationId: 'provider-loop-conversation',
       assistantMessageId: 'provider-loop-assistant',
@@ -9428,7 +9460,7 @@ async function testProviderStreamChatOwnsToolLoopContract(): Promise<void> {
       messages: [{ role: 'user', content: 'hello' }],
       selection: { providerId: 'openrouter', modelId: 'contract/mock' },
       signal: new AbortController().signal,
-      onAgentEvent: (event) => agentEvents.push(event),
+      onRunEvent: (event) => agentEvents.push(event),
       toolRegistry: createDefaultToolRegistry([toolPack]),
     },
     {
@@ -9510,7 +9542,7 @@ async function testProviderStreamChatOwnsToolLoopContract(): Promise<void> {
     completedToolEvent?.stepId !== undefined && completedToolEvent.stepId === toolStepEvent?.stepId,
     'tool execution events should belong to the tool batch step',
   )
-  const replayed = replayAgentLoopState(agentEvents, 'provider-loop-run')
+  const replayed = replayRunState(agentEvents, 'provider-loop-run')
   assertEqual(replayed?.status, 'completed', 'run state should replay from emitted events')
   assertEqual(
     replayed?.steps.length,
@@ -9584,7 +9616,7 @@ async function testProviderStreamChatVisionFallbackContract(): Promise<void> {
     step?: number
     requireImages?: boolean
   }> = []
-  const agentEvents: AgentEvent[] = []
+  const agentEvents: RunEvent[] = []
   let doneUsage: { promptTokens: number; completionTokens: number; totalTokens: number } | undefined
 
   const modelStreamClient: runtimePackageNodeSdk.ModelStreamClient = {
@@ -9633,7 +9665,7 @@ async function testProviderStreamChatVisionFallbackContract(): Promise<void> {
     },
   }
 
-  const streamChat = runtimePackageNodeSdk.createProviderStreamChat({
+  const runAgent = runtimePackageNodeSdk.createDurableRunExecutor({
     modelRegistry: createVisionBridgeContractModelRegistry(),
     modelStreamClient,
     settings: {
@@ -9644,7 +9676,7 @@ async function testProviderStreamChatVisionFallbackContract(): Promise<void> {
     },
   })
 
-  await streamChat(
+  await runAgent(
     {
       conversationId: 'provider-vision-fallback-conversation',
       assistantMessageId: 'provider-vision-fallback-assistant',
@@ -9659,7 +9691,7 @@ async function testProviderStreamChatVisionFallbackContract(): Promise<void> {
       ],
       selection: { providerId: 'deepseek', modelId: 'deepseek-contract-text' },
       signal: new AbortController().signal,
-      onAgentEvent(event) {
+      onRunEvent(event) {
         agentEvents.push(event)
       },
     },
@@ -9755,7 +9787,7 @@ async function testProviderStreamChatVisionFallbackUsesLatestImageContract(): Pr
     },
   }
 
-  const streamChat = runtimePackageNodeSdk.createProviderStreamChat({
+  const runAgent = runtimePackageNodeSdk.createDurableRunExecutor({
     modelRegistry: createVisionBridgeContractModelRegistry(),
     modelStreamClient,
     settings: {
@@ -9766,7 +9798,7 @@ async function testProviderStreamChatVisionFallbackUsesLatestImageContract(): Pr
     },
   })
 
-  await streamChat(
+  await runAgent(
     {
       conversationId: 'provider-vision-latest-image-conversation',
       assistantMessageId: 'provider-vision-latest-image-assistant',
@@ -9824,7 +9856,7 @@ async function testProviderStreamChatVisionFallbackCachesAnalysisContract(): Pro
 
     let visionCalls = 0
     const finalPrompts: string[] = []
-    const agentEvents: AgentEvent[] = []
+    const agentEvents: RunEvent[] = []
     const modelStreamClient: runtimePackageNodeSdk.ModelStreamClient = {
       async *stream(input) {
         if (input.descriptor.provider === 'openai') {
@@ -9840,7 +9872,7 @@ async function testProviderStreamChatVisionFallbackCachesAnalysisContract(): Pro
       },
     }
 
-    const streamChat = runtimePackageNodeSdk.createProviderStreamChat({
+    const runAgent = runtimePackageNodeSdk.createDurableRunExecutor({
       modelRegistry: createVisionBridgeContractModelRegistry(),
       modelStreamClient,
       dataDir: dir,
@@ -9868,14 +9900,14 @@ async function testProviderStreamChatVisionFallbackCachesAnalysisContract(): Pro
         { role: 'user' as const, content: '继续解释一下' },
       ],
     ].entries()) {
-      await streamChat(
+      await runAgent(
         {
           conversationId: `provider-vision-cache-conversation-${index}`,
           assistantMessageId: `provider-vision-cache-assistant-${index}`,
           messages,
           selection: { providerId: 'deepseek', modelId: 'deepseek-contract-text' },
           signal: new AbortController().signal,
-          onAgentEvent(event) {
+          onRunEvent(event) {
             agentEvents.push(event)
           },
         },
@@ -9935,7 +9967,7 @@ async function testProviderStreamChatVisionPassThroughContract(): Promise<void> 
     },
   }
 
-  const streamChat = runtimePackageNodeSdk.createProviderStreamChat({
+  const runAgent = runtimePackageNodeSdk.createDurableRunExecutor({
     modelRegistry: createVisionBridgeContractModelRegistry(),
     modelStreamClient,
     settings: {
@@ -9946,7 +9978,7 @@ async function testProviderStreamChatVisionPassThroughContract(): Promise<void> 
     },
   })
 
-  await streamChat(
+  await runAgent(
     {
       conversationId: 'provider-vision-native-conversation',
       assistantMessageId: 'provider-vision-native-assistant',
@@ -10004,7 +10036,7 @@ async function testProviderStreamChatVisionFallbackDisabledContract(): Promise<v
     },
   }
 
-  const streamChat = runtimePackageNodeSdk.createProviderStreamChat({
+  const runAgent = runtimePackageNodeSdk.createDurableRunExecutor({
     modelRegistry: createVisionBridgeContractModelRegistry(),
     modelStreamClient,
     settings: {
@@ -10015,7 +10047,7 @@ async function testProviderStreamChatVisionFallbackDisabledContract(): Promise<v
     },
   })
 
-  await streamChat(
+  await runAgent(
     {
       conversationId: 'provider-vision-disabled-conversation',
       assistantMessageId: 'provider-vision-disabled-assistant',
@@ -10059,7 +10091,7 @@ async function testProviderStreamChatVisionFallbackMissingConfigContract(): Prom
     },
   }
 
-  const streamChat = runtimePackageNodeSdk.createProviderStreamChat({
+  const runAgent = runtimePackageNodeSdk.createDurableRunExecutor({
     modelRegistry: createVisionBridgeContractModelRegistry(),
     modelStreamClient,
     settings: {
@@ -10070,7 +10102,7 @@ async function testProviderStreamChatVisionFallbackMissingConfigContract(): Prom
     },
   })
 
-  await streamChat(
+  await runAgent(
     {
       conversationId: 'provider-vision-missing-config-conversation',
       assistantMessageId: 'provider-vision-missing-config-assistant',
@@ -10189,7 +10221,7 @@ async function testProviderStreamChatPersistsLargeToolResultsContract(): Promise
     ],
   }
 
-  const streamChat = runtimePackageNodeSdk.createProviderStreamChat({
+  const runAgent = runtimePackageNodeSdk.createDurableRunExecutor({
     modelStreamClient,
     toolResultStore,
     maxInlineToolResultChars: 10,
@@ -10197,7 +10229,7 @@ async function testProviderStreamChatPersistsLargeToolResultsContract(): Promise
     settings: { apiKeys: { openrouter: 'contract-key' }, defaultModel: null },
   })
 
-  await streamChat(
+  await runAgent(
     {
       conversationId: 'provider-large-result-conversation',
       assistantMessageId: 'provider-large-result-assistant',
@@ -10433,7 +10465,7 @@ async function testDefaultRuntimeHostOwnsFilesystemTools(): Promise<void> {
       const writePath = join(dir, 'created.md')
       await writeFile(sourcePath, 'default host filesystem', 'utf-8')
 
-      const runtime = runtimeNodeSdk.createPersistedAgentRuntime({
+      const runtime = runtimeNodeSdk.createPersistedWorkbench({
         host: {
           workspaceRoots: () => [dir],
           onToolApproval: async () => true,
@@ -10557,14 +10589,13 @@ async function testRuntimeSdkDoesNotExportDocsContract(): Promise<void> {
   }
 
   for (const name of [
-    'appendAgentEvent',
-    'appendAgentEventAndTouchConversation',
+    'appendRunEvent',
+    'appendRunEventAndTouchConversation',
     'appendMessage',
     'createConversation',
     'deleteConversation',
     'getConversation',
-    'listAgentEvents',
-    'listChatConversations',
+    'listRunEvents',
     'listConversations',
     'recoverInterruptedConversationActivities',
     'recoverInterruptedConversationActivityResults',
@@ -10601,9 +10632,9 @@ async function testRuntimeSdkDoesNotExportDocsContract(): Promise<void> {
     'runtime SDK should expose the default runtime host factory',
   )
   assertEqual(
-    typeof runtimeNodeSdk.createPersistedAgentRuntime,
+    typeof runtimeNodeSdk.createPersistedWorkbench,
     'function',
-    'runtime SDK should expose the persisted AgentRuntime factory',
+    'runtime SDK should expose the persisted WorkbenchRuntime factory',
   )
   const store = runtimeNodeSdk.createPersistedRuntimeStore()
   assertEqual(typeof store.getConversation, 'function', 'persisted store should read records')
@@ -10613,12 +10644,12 @@ async function testRuntimeSdkDoesNotExportDocsContract(): Promise<void> {
     'persisted runtime store adapter should not expose raw persisted message helper names',
   )
   assertEqual(
-    typeof store.recordAgentEvent,
+    typeof store.recordRunEvent,
     'function',
     'persisted store should persist agent events',
   )
   assert(
-    !('appendAgentEventAndTouchConversation' in store),
+    !('appendRunEventAndTouchConversation' in store),
     'persisted runtime store adapter should not expose raw persisted event helper names',
   )
   assertEqual(
@@ -10661,7 +10692,7 @@ async function testRuntimeSdkDoesNotExportDocsContract(): Promise<void> {
     'configuredProviders',
     'createPersistedRuntimeStore',
     'createDefaultRuntimeHost',
-    'createPersistedAgentRuntime',
+    'createPersistedWorkbench',
     'loadSkillsFromDir',
     'loadToolPacksFromDir',
     'getExtensionReport',
@@ -10669,7 +10700,7 @@ async function testRuntimeSdkDoesNotExportDocsContract(): Promise<void> {
   ]) {
     assert(!(name in coreSdk), `runtime core SDK must not export node adapter API: ${name}`)
   }
-  assertEqual(typeof coreSdk.AgentRuntime, 'function', 'runtime core SDK should export runtime')
+  assertEqual(typeof coreSdk.WorkbenchRuntime, 'function', 'runtime core SDK should export runtime')
   assertEqual(
     typeof coreSdk.createInMemoryRuntimeStore,
     'function',
@@ -10745,10 +10776,9 @@ async function testRuntimeSdkDoesNotExportDocsContract(): Promise<void> {
     'utf-8',
   )
   for (const name of [
-    'AgentRuntimeApi',
-    'AgentRuntimeHost',
-    'AgentRuntimeStore',
-    'AgentRuntimePlanApi',
+    'Workbench',
+    'WorkbenchHost',
+    'WorkbenchStore',
     'AgentContextPlan',
     'AgentContextPlanSection',
     'AgentContextBudgetPlan',
@@ -10766,7 +10796,7 @@ async function testRuntimeSdkDoesNotExportDocsContract(): Promise<void> {
     'AgentContextSectionCachePolicy',
     'AgentContextSectionMetadata',
     'AgentContextSectionSource',
-    'RuntimeStreamChat',
+    'DurableRunExecutor',
     'RuntimeModelInfoResolver',
     'RuntimeStableInstructionsInput',
     'RuntimeApprovePlanInput',
@@ -10798,8 +10828,8 @@ async function testRuntimeSdkDoesNotExportDocsContract(): Promise<void> {
     'RuntimeContextCompactArtifactResult',
     'RuntimeContextTokenCountInput',
     'RuntimeContextTokenCountResult',
-    'AgentEvent',
-    'AgentRuntimeEvent',
+    'RunEvent',
+    'WorkbenchEvent',
   ]) {
     assert(
       runtimeCoreSurfaceSource.includes(`type ${name}`) &&
@@ -10815,7 +10845,7 @@ async function testRuntimeSdkDoesNotExportDocsContract(): Promise<void> {
     'loadSettings',
     'createPersistedRuntimeStore',
     'createDefaultRuntimeHost',
-    'createPersistedAgentRuntime',
+    'createPersistedWorkbench',
     'loadSkillsFromDir',
     'loadToolPacksFromDir',
     'getExtensionReport',
@@ -10826,8 +10856,8 @@ async function testRuntimeSdkDoesNotExportDocsContract(): Promise<void> {
   const packageNodeSdk = runtimePackageNodeSdk as Record<string, unknown>
   for (const name of [
     'createDefaultNodeRuntimeHost',
-    'createNodeAgentRuntime',
-    'createProviderStreamChat',
+    'createNodeWorkbench',
+    'createDurableRunExecutor',
     'createNodeContextTokenCounter',
     'createNodeSemanticCompactGenerator',
     'createModelRegistry',
@@ -10935,7 +10965,7 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
   assert(!rootEntries.includes('src'), 'application source should live under apps/*, not root src')
 }
 
-async function testPersistedAgentRuntimeFactoryContract(): Promise<void> {
+async function testPersistedWorkbenchFactoryContract(): Promise<void> {
   await withTempDataDir(async () => {
     const toolPacksDir = getToolPacksDir()
     const factoryToolPackDir = join(toolPacksDir, 'factory-pack')
@@ -10989,8 +11019,8 @@ export default {
       'utf-8',
     )
 
-    const emitted: AgentRuntimeEvent[] = []
-    const runtime = runtimeNodeSdk.createPersistedAgentRuntime({
+    const emitted: WorkbenchEvent[] = []
+    const runtime = runtimeNodeSdk.createPersistedWorkbench({
       host: {
         onEvent: (event) => emitted.push(event),
       },
@@ -11018,9 +11048,9 @@ export default {
 
 async function testPersistedRuntimeFactoryPersistsImageAttachmentsThroughDefaultHost(): Promise<void> {
   await withTempDataDir(async () => {
-    const runtime = runtimeNodeSdk.createPersistedAgentRuntime({
+    const runtime = runtimeNodeSdk.createPersistedWorkbench({
       host: {
-        streamChat: async (req, handlers) => {
+        runAgent: async (req, handlers) => {
           await handlers.onDone({
             conversationId: req.conversationId,
             messageId: req.assistantMessageId,
@@ -11160,14 +11190,14 @@ export default {
     )
     assertEqual(JSON.parse(result).value, 'from manifest', 'manifest tool result')
 
-    const runtime = new AgentRuntime({
+    const runtime = new WorkbenchRuntime({
       loadToolPacks: async () => (await loadToolPacksFromDir()).map((pack) => pack.toolPack),
       logger: { warn() {}, error() {} },
     })
     const runtimeRegistry = await runtime.getToolRegistry()
     assert(
       runtimeRegistry.specsByName.has('manifest_echo'),
-      'AgentRuntime should load manifest tool packs',
+      'WorkbenchRuntime should load manifest tool packs',
     )
   })
 }
@@ -11238,7 +11268,7 @@ export default {
       await writeFile(valuePath, `export const reloadValue = ${JSON.stringify(value)}\n`, 'utf-8')
     }
 
-    const runtime = new AgentRuntime({
+    const runtime = new WorkbenchRuntime({
       loadToolPacks: async () => (await loadToolPacksFromDir()).map((pack) => pack.toolPack),
       logger: { warn() {}, error() {} },
     })
@@ -11437,7 +11467,7 @@ async function testSkillToolProgressiveDisclosureContract(): Promise<void> {
     await mkdir(join(skillsDir, 'brand-voice', 'references'), { recursive: true })
     await writeFile(referencePath, '# Tone\nFriendly.\n', 'utf-8')
 
-    const runtime = new AgentRuntime({
+    const runtime = new WorkbenchRuntime({
       loadSkills: async () => (await loadSkillsFromDir()).skills,
       fileSystem: {
         readTextFile: (path) => readFile(path, 'utf-8'),
@@ -11493,7 +11523,7 @@ async function testSkillBundledFilesAreReadableContract(): Promise<void> {
     await mkdir(join(skillsDir, 'data-helper', 'scripts'), { recursive: true })
     await writeFile(scriptPath, 'print("hi")\n', 'utf-8')
 
-    const runtime = new AgentRuntime({
+    const runtime = new WorkbenchRuntime({
       loadSkills: async () => (await loadSkillsFromDir()).skills,
       fileSystem: {
         readTextFile: (path) => readFile(path, 'utf-8'),
@@ -11515,7 +11545,7 @@ async function testSkillReloadPicksUpNewSkillsContract(): Promise<void> {
     const skillsDir = getSkillsDir()
     await writeSkill(skillsDir, 'first', skillDocument('first', 'The first skill.'))
 
-    const runtime = new AgentRuntime({
+    const runtime = new WorkbenchRuntime({
       loadSkills: async () => (await loadSkillsFromDir()).skills,
       logger: { warn() {}, error() {} },
     })
@@ -11547,7 +11577,7 @@ async function testPersistedRuntimeLoadsSkillsContract(): Promise<void> {
       'factory-skill',
       skillDocument('factory-skill', 'Loaded through the default host.'),
     )
-    const runtime = runtimeNodeSdk.createPersistedAgentRuntime()
+    const runtime = runtimeNodeSdk.createPersistedWorkbench()
     const registry = await runtime.getToolRegistry()
     assert(
       registry.specsByName.has(SKILL_TOOL_NAME),
@@ -11582,11 +11612,12 @@ async function testSkillExtensionReportContract(): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  await testAgentLoopStepModePausesBeforeToolBatch()
-  await testAgentLoopSnapshotResumesOneActionAtATime()
+  await testRunMachineStepModePausesBeforeToolBatch()
+  await testRunCursorResumesOneActionAtATime()
   await testRunCheckpointAndArtifactStoreContract()
   await testRuntimeRunInspectionForkAndAbortContract()
   testRunCheckpointRecoverySafetyContract()
+  testRunCheckpointV1MigrationContract()
   await testProviderModelCallExecutesExactlyOneRequest()
   await testProviderStreamStepCheckpointResumeContract()
   await testProviderStreamPreflightFailureCheckpointContract()
@@ -11625,7 +11656,7 @@ async function main(): Promise<void> {
   await testInMemoryRuntimeStoreEventListContract()
   await testRuntimeEnvironmentContract()
   await testRuntimeAppendUserMessageUsesInjectedStore()
-  await testRuntimeRecordAgentEventUsesInjectedStore()
+  await testRuntimeRecordRunEventUsesInjectedStore()
   await testRuntimeRecoveryDelegatesToInjectedStore()
   await testRuntimeRecoveryUsesInjectedStoreReplay()
   await testRuntimeDeleteAssetCleanupHostBoundary()
@@ -11654,13 +11685,13 @@ async function main(): Promise<void> {
   await testRuntimeShutdownRejectsNewTurns()
   await testPersistenceContract()
   await testMessageUpsertPreventsDuplicatePersistedMessages()
-  await testAgentEventReplayDeduplicatesExactDuplicates()
-  await testAgentEventReplayPreservesAppendOrderForSameTimestamp()
-  testAgentEventSequenceMigratesLegacyJournalOrder()
-  testAgentEventReplayDerivesLatestActivity()
-  testAgentEventReplayDerivesRuntimeState()
+  await testRunEventReplayDeduplicatesExactDuplicates()
+  await testRunEventReplayPreservesAppendOrderForSameTimestamp()
+  testRunEventSequenceMigratesLegacyJournalOrder()
+  testRunEventReplayDerivesLatestActivity()
+  testRunEventReplayDerivesRuntimeState()
   testPlanEventReplayDerivesActivityAndRuntimeState()
-  testAgentEventReplayKeepsToolFailureActive()
+  testRunEventReplayKeepsToolFailureActive()
   testInterruptedRecoveryEventHelper()
   await testInterruptedRecoveryUsesEventReplayOverStaleMeta()
   await testInterruptedRecoveryFallsBackToLegacyMetaActivity()
@@ -11703,7 +11734,7 @@ async function main(): Promise<void> {
   await testRuntimeCoreHasNoDocToolContract()
   await testRuntimeSdkDoesNotExportDocsContract()
   await testRuntimeCoreHostBoundarySourceContract()
-  await testPersistedAgentRuntimeFactoryContract()
+  await testPersistedWorkbenchFactoryContract()
   await testPersistedRuntimeFactoryPersistsImageAttachmentsThroughDefaultHost()
   await testToolPackManifestLoader()
   await testToolPackReloadsChangedEntry()

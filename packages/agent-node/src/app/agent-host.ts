@@ -12,7 +12,6 @@ export {
   configureDataDir,
   getConversationsDir,
   getDataDir,
-  getDocumentsDir,
   getImagesDir,
   getPlansDir,
   getSettingsPath,
@@ -20,9 +19,9 @@ export {
   getToolPacksDir,
 } from './paths'
 export {
-  type CreatePersistedAgentRuntimeInput,
+  type CreatePersistedWorkbenchInput,
   createDefaultRuntimeHost,
-  createPersistedAgentRuntime,
+  createPersistedWorkbench,
 } from './runtime-host'
 export { createPersistedRuntimeStore } from './runtime-store'
 export {

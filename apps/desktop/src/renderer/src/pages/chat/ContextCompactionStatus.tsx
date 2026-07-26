@@ -1,13 +1,13 @@
 import { CheckCircle2Icon, LoaderCircleIcon } from 'lucide-react'
 import type { ReactElement } from 'react'
-import type { PersistedAgentEvent } from '../../types'
+import type { PersistedRunEvent } from '../../types'
 
-type ContextCompactionEvent = PersistedAgentEvent & {
+type ContextCompactionEvent = PersistedRunEvent & {
   type: 'context:compacting' | 'context:compacted'
 }
 
 interface ContextCompactionStatusProps {
-  events: PersistedAgentEvent[]
+  events: PersistedRunEvent[]
 }
 
 export function ContextCompactionStatus({
@@ -34,7 +34,7 @@ export function ContextCompactionStatus({
   )
 }
 
-function latestCompactionEvent(events: PersistedAgentEvent[]): ContextCompactionEvent | null {
+function latestCompactionEvent(events: PersistedRunEvent[]): ContextCompactionEvent | null {
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index]
     if (event.type === 'context:compacting' || event.type === 'context:compacted') {

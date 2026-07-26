@@ -1,4 +1,5 @@
 import {
+  Agent,
   type AgentContextAutoCompactReason,
   type AgentContextBudgetPlan,
   type AgentContextBudgetPressure,
@@ -14,23 +15,9 @@ import {
   type AgentContextTokenLedgerEntry,
   type AgentContextTokenPreflight,
   type AgentEvent,
-  type AgentLoopNextAction,
-  type AgentLoopPolicy,
-  type AgentLoopState,
-  type AgentLoopTransition,
-  type AgentRunIdentity,
-  AgentRuntime,
-  type AgentRuntimeApi,
-  type AgentRuntimeConversationApi,
-  type AgentRuntimeEvent,
-  type AgentRuntimeExtensionApi,
-  type AgentRuntimeHost,
-  type AgentRuntimePlanApi,
-  type AgentRuntimeStore,
-  type AgentRuntimeTurnApi,
-  AILA_RUNTIME_EVENT_SCHEMA_VERSION,
-  AILA_RUNTIME_EVENT_TYPES,
   AILA_RUNTIME_SDK_VERSION,
+  AILA_WORKBENCH_EVENT_SCHEMA_VERSION,
+  AILA_WORKBENCH_EVENT_TYPES,
   type ChatMessage,
   ContextBudgetManager,
   type ContextBudgetManagerInput,
@@ -53,20 +40,22 @@ import {
   type ConversationRuntimeReplayState,
   type ConversationSummary,
   type ConversationUsage,
-  createAgentLoopState,
   createInMemoryRuntimeStore,
-  createRuntimeEvent,
   createSkillToolPack,
   createToolPolicy,
+  createWorkbenchEvent,
+  type DurableRunExecutor,
   findModel,
   type ImageGenerateRequest,
   type ImageResult,
-  isRuntimeEventType,
+  isWorkbenchEventType,
   MODEL_CATALOG,
   type ModelSelection,
   type PersistedMessage,
   type PersistedToolResultRef,
   parseSkillDocument,
+  type RunEvent,
+  type RunIdentity,
   type RuntimeApprovePlanInput,
   type RuntimeCancelPlanInput,
   type RuntimeCompactConversationInput,
@@ -79,11 +68,7 @@ import {
   type RuntimeRevisePlanInput,
   type RuntimeSavePlanMarkdownInput,
   type RuntimeStableInstructionsInput,
-  type RuntimeStreamChat,
-  reduceAgentLoopTransition,
-  replayAgentLoopState,
   requestToolApprovalWithActivity,
-  runAgentLoop,
   type Settings,
   type ToolApprovalMode,
   type ToolApprovalRequest,
@@ -94,15 +79,20 @@ import {
   type ToolRegistry,
   type ToolShellRequest,
   type ToolWebSearchRequest,
+  type Turn,
+  type Workbench,
+  type WorkbenchEvent,
+  type WorkbenchHost,
+  WorkbenchRuntime,
+  type WorkbenchStore,
 } from '@aila/agent'
 
 export type RuntimeCorePublicSurfaceContract = {
+  agent: Agent
   agentEvent: AgentEvent
-  agentLoopNextAction: AgentLoopNextAction
-  agentLoopPolicy: AgentLoopPolicy<{ id: string }>
-  agentLoopState: AgentLoopState
-  agentLoopTransition: AgentLoopTransition
-  agentRunIdentity: AgentRunIdentity
+  turn: Turn
+  runEvent: RunEvent
+  agentRunIdentity: RunIdentity
   agentContextPlan: AgentContextPlan
   agentContextPlanSection: AgentContextPlanSection
   agentContextAutoCompactReason: AgentContextAutoCompactReason
@@ -117,9 +107,8 @@ export type RuntimeCorePublicSurfaceContract = {
   agentContextTokenLedger: AgentContextTokenLedger
   agentContextTokenLedgerEntry: AgentContextTokenLedgerEntry
   agentContextTokenPreflight: AgentContextTokenPreflight
-  api: AgentRuntimeApi
+  api: Workbench
   chatMessage: ChatMessage
-  conversationApi: AgentRuntimeConversationApi
   conversationRecord: ConversationRecord
   conversationRuntimePlan: ConversationRuntimeReplayPlan
   conversationRuntimeState: ConversationRuntimeReplayState
@@ -135,9 +124,8 @@ export type RuntimeCorePublicSurfaceContract = {
   contextTokenEstimate: ContextTokenEstimate
   contextTokenEstimateMethod: ContextTokenEstimateMethod
   contextTokenEstimatorSnapshot: ContextTokenEstimatorSnapshot
-  event: AgentRuntimeEvent
-  extensionApi: AgentRuntimeExtensionApi
-  host: AgentRuntimeHost
+  event: WorkbenchEvent
+  host: WorkbenchHost
   imageRequest: ImageGenerateRequest
   imageResult: ImageResult
   modelInfoResolver: RuntimeModelInfoResolver
@@ -148,8 +136,7 @@ export type RuntimeCorePublicSurfaceContract = {
   conversationCompactToolResultArtifact: ConversationCompactToolResultArtifact
   persistedMessage: PersistedMessage
   persistedToolResultRef: PersistedToolResultRef
-  runtime: AgentRuntime
-  planApi: AgentRuntimePlanApi
+  runtime: WorkbenchRuntime
   runtimeApprovePlanInput: RuntimeApprovePlanInput
   runtimeCancelPlanInput: RuntimeCancelPlanInput
   runtimeCompactConversationInput: RuntimeCompactConversationInput
@@ -163,37 +150,33 @@ export type RuntimeCorePublicSurfaceContract = {
   stableInstructionsInput: RuntimeStableInstructionsInput
   settings: Settings
   shellRequest: ToolShellRequest
-  store: AgentRuntimeStore
-  streamChat: RuntimeStreamChat
+  store: WorkbenchStore
+  runAgent: DurableRunExecutor
   toolApprovalPayload: ToolApprovalRequestPayload
   toolApprovalMode: ToolApprovalMode
   toolApprovalRequest: ToolApprovalRequest
   toolContext: ToolContext
   toolPack: ToolPack
   toolRegistry: ToolRegistry
-  turnApi: AgentRuntimeTurnApi
   webSearchRequest: ToolWebSearchRequest
 }
 
 export const runtimeCorePublicValueSurfaceContract = {
-  eventSchemaVersion: AILA_RUNTIME_EVENT_SCHEMA_VERSION,
-  eventTypes: AILA_RUNTIME_EVENT_TYPES,
+  eventSchemaVersion: AILA_WORKBENCH_EVENT_SCHEMA_VERSION,
+  eventTypes: AILA_WORKBENCH_EVENT_TYPES,
   findModel,
-  isRuntimeEventType,
+  isWorkbenchEventType,
   modelCatalog: MODEL_CATALOG,
   contextBudgetManager: ContextBudgetManager,
   contextTokenEstimator: ContextTokenEstimator,
-  runtime: AgentRuntime,
-  runtimeEvent: createRuntimeEvent,
+  runtime: WorkbenchRuntime,
+  runtimeEvent: createWorkbenchEvent,
   sdkVersion: AILA_RUNTIME_SDK_VERSION,
   toolApprovalStore: ToolApprovalStore,
   createToolPolicy,
-  createAgentLoopState,
   createInMemoryRuntimeStore,
   createSkillToolPack,
   parseSkillDocument,
   requestToolApprovalWithActivity,
-  reduceAgentLoopTransition,
-  replayAgentLoopState,
-  runAgentLoop,
+  agent: Agent,
 } satisfies Record<string, unknown>

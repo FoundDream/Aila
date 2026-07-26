@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
-  AILA_AGENT_EVENT_SCHEMA_VERSION,
+  AILA_RUN_EVENT_SCHEMA_VERSION,
   type ToolApprovalRequestPayload,
   type ToolApprovalResolvedPayload,
   ToolApprovalStore,
@@ -10,30 +10,17 @@ import {
 import {
   AILA_CONVERSATION_META_SCHEMA_VERSION,
   AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
-  appendAgentEvent,
-  appendAgentEventAndTouchConversation,
   appendMessage,
+  appendRunEvent,
+  appendRunEventAndTouchConversation,
   configureDataDir,
   createConversation,
   deleteConversation,
   getConversation,
-  getDocumentsDir,
-  listAgentEvents,
-  listChatConversations,
   listConversations,
-  listDocConversations,
+  listRunEvents,
   recoverInterruptedConversationActivities,
 } from '@aila/agent-node/app'
-import { sweepOrphanedDocConversations } from '../apps/desktop/src/main/doc-conversation-cleanup'
-import {
-  configureDocConversationRefRewriter,
-  createDoc,
-  createFolder,
-  deleteDoc,
-  deleteFolder,
-  getDocFilePath,
-  updateDoc,
-} from '../apps/desktop/src/main/docs'
 import {
   buildDesktopWorkspaceContextFromRecord,
   getDesktopWorkspaceRoots,
@@ -48,11 +35,6 @@ import {
   reduceChatStreamsForTest,
 } from '../apps/desktop/src/renderer/src/pages/chat/useChatStreams'
 import { mergeConversationSummaryUpdate } from '../apps/desktop/src/renderer/src/pages/chat/useConversations'
-import {
-  docsHtmlSanitizeSchema,
-  isSafeDocsUrl,
-} from '../apps/desktop/src/renderer/src/pages/docs/docHtmlRendering'
-import { mergeDocConversationSummaryUpdate } from '../apps/desktop/src/renderer/src/pages/docs/useDocConversation'
 import {
   createToolApprovalsState,
   mergeToolApprovals,
@@ -89,48 +71,36 @@ async function waitFor(predicate: () => boolean, message: string, timeoutMs = 15
   throw new Error(message)
 }
 
-async function testDocConversationWorkspaceContext(): Promise<void> {
+async function testWorkspaceConversationContext(): Promise<void> {
   await withTempDataDir(async () => {
-    const created = await createDoc(null)
-    const doc = await updateDoc(created.path, {
-      title: 'Workbench Contract',
-      content: 'This note lives in Desktop documents and is edited through file tools.',
-    })
-    const conversation = await createConversation(doc.path)
+    const workspace: ConversationWorkspaceRef = {
+      id: '/tmp/aila-workbench-contract',
+      path: '/tmp/aila-workbench-contract',
+      label: 'Workbench Contract',
+    }
+    const conversation = await createConversation(workspace)
 
     const context = await buildDesktopWorkspaceContextFromRecord(
       await getConversation(conversation.id),
     )
-    assertEqual(context.length, 1, 'doc-bound conversation should get one context message')
+    assertEqual(context.length, 1, 'workspace conversation should get one context message')
     assertEqual(context[0]?.role, 'system', 'context should be a system message')
 
     const rawContent = context[0]?.content ?? ''
     const content = typeof rawContent === 'string' ? rawContent : ''
     assert(content.includes('Desktop workspace context:'), 'context should identify Desktop scope')
-    assert(
-      content.includes('Active document title: Workbench Contract'),
-      'context should include title',
-    )
-    assert(content.includes(`Vault path: ${doc.path}`), 'context should include vault path')
-    assert(content.includes(getDocFilePath(doc.path)), 'context should include absolute file path')
-    assert(
-      content.includes('This note lives in Desktop documents'),
-      'context should include document preview',
-    )
-    assert(!content.includes('edit_doc'), 'Desktop context must not revive doc-specific tools')
+    assert(content.includes('Workspace: Workbench Contract'), 'context should include label')
+    assert(content.includes(workspace.path), 'context should include absolute workspace path')
   })
 }
 
 async function testDesktopWorkspaceRoots(): Promise<void> {
   await withTempDataDir(async () => {
     const roots = getDesktopWorkspaceRoots()
-    assert(roots && roots.length >= 1, 'Desktop should expose workspace roots')
-    const root = roots.find(
-      (candidate) => typeof candidate !== 'string' && candidate.path === getDocumentsDir(),
-    )
-    assert(root, 'Desktop should expose documents as an extra root')
-    assert(typeof root !== 'string', 'Desktop workspace root should keep a label')
-    assertEqual(root.path, getDocumentsDir(), 'Desktop documents root path')
+    assertEqual(roots?.length, 1, 'Desktop should expose only the project root')
+    const root = roots?.[0]
+    assert(root && typeof root !== 'string', 'Desktop project root should keep a label')
+    assertEqual(root.path, process.cwd(), 'Desktop project root path')
   })
 }
 
@@ -157,6 +127,11 @@ async function testDesktopMainUsesEsmSafeRuntimePaths(): Promise<void> {
     !configSource.includes('__dirname'),
     'electron-vite ESM config must not depend on __dirname',
   )
+  assert(
+    configSource.includes("find: '@aila/agent/internal'") &&
+      configSource.includes('packages/agent/src/internal.ts'),
+    'electron-vite must resolve the agent internal subpath before the package root alias',
+  )
 }
 
 async function testDesktopUsesSharedRuntimeFactory(): Promise<void> {
@@ -170,11 +145,11 @@ async function testDesktopUsesSharedRuntimeFactory(): Promise<void> {
     'Desktop main process should use the runtime workbench adapter',
   )
   assert(
-    !source.includes('new AgentRuntime'),
-    'Desktop main process should not construct AgentRuntime directly',
+    !source.includes('new WorkbenchRuntime'),
+    'Desktop main process should not construct WorkbenchRuntime directly',
   )
   assert(
-    !source.includes('createPersistedAgentRuntime'),
+    !source.includes('createPersistedWorkbench'),
     'Desktop main process should not wire the persisted runtime factory directly',
   )
   assert(
@@ -186,15 +161,15 @@ async function testDesktopUsesSharedRuntimeFactory(): Promise<void> {
     'Desktop main process should not wire tool-pack loaders directly',
   )
   assert(
-    workbenchSource.includes('createPersistedAgentRuntime') &&
+    workbenchSource.includes('createPersistedWorkbench') &&
       workbenchSource.includes('ToolApprovalStore') &&
-      workbenchSource.includes('AgentRuntimeApi') &&
+      workbenchSource.includes('Workbench') &&
       workbenchSource.includes('registerRuntimeWorkbenchIpcHandlers'),
     'Desktop runtime workbench should own runtime construction, approvals, typed runtime API, and IPC registration',
   )
   assert(
-    workbenchSource.includes('let runtime: AgentRuntimeApi') &&
-      !workbenchSource.includes('ReturnType<typeof createPersistedAgentRuntime>'),
+    workbenchSource.includes('let runtime: Workbench') &&
+      !workbenchSource.includes('ReturnType<typeof createPersistedWorkbench>'),
     'Desktop runtime workbench should depend on the host-facing runtime API type',
   )
   assert(
@@ -270,6 +245,10 @@ async function testDesktopExposesRunInspectorApi(): Promise<void> {
     join(process.cwd(), 'apps/desktop/src/renderer/src/pages/chat/ChatPage.tsx'),
     'utf-8',
   )
+  const appSource = await readFile(
+    join(process.cwd(), 'apps/desktop/src/renderer/src/App.tsx'),
+    'utf-8',
+  )
   const inspectorSource = await readFile(
     join(process.cwd(), 'apps/desktop/src/renderer/src/pages/chat/RunInspector.tsx'),
     'utf-8',
@@ -280,9 +259,17 @@ async function testDesktopExposesRunInspectorApi(): Promise<void> {
       `Desktop workbench should register runtime:runs:${action}`,
     )
   }
+  for (const action of ['list-summaries', 'get-artifact']) {
+    assert(
+      workbenchSource.includes(`'runtime:runs:${action}'`),
+      `Desktop workbench should register scalable inspector API runtime:runs:${action}`,
+    )
+  }
   assert(
     preloadSource.includes('listRuns:') &&
+      preloadSource.includes('listRunSummaries:') &&
       preloadSource.includes('inspectRun:') &&
+      preloadSource.includes('getRunArtifact:') &&
       preloadSource.includes('stepRun:') &&
       preloadSource.includes('continueRun:') &&
       preloadSource.includes('abortRun:') &&
@@ -291,8 +278,30 @@ async function testDesktopExposesRunInspectorApi(): Promise<void> {
   )
   assert(
     chatPageSource.includes('loopMode: stepMode') &&
+      chatPageSource.includes('showRunInspector && conversationId &&') &&
       chatPageSource.includes('<RunInspector') &&
-      inspectorSource.includes('Step ledger') &&
+      inspectorSource.includes('ExecutionTree') &&
+      inspectorSource.includes('PanelHeader title="Runs"') &&
+      inspectorSource.includes('Run debugger') &&
+      inspectorSource.includes('type InspectionScope') &&
+      inspectorSource.includes("{ type: 'run'; runId: string }") &&
+      inspectorSource.includes("{ type: 'step'; runId: string; stepId: string }") &&
+      inspectorSource.includes("setScope({ type: 'run', runId })") &&
+      inspectorSource.includes("setScope({ type: 'step', runId, stepId })") &&
+      inspectorSource.includes("type DetailTab = 'overview' | 'trace' | 'events' | 'raw'") &&
+      inspectorSource.includes("{ id: 'trace', label: 'Trace'") &&
+      inspectorSource.includes("type TraceFilter = 'all' | 'model' | 'tools'") &&
+      inspectorSource.includes('ArtifactChain') &&
+      inspectorSource.includes('Entire run events') &&
+      inspectorSource.includes('Selected step events') &&
+      inspectorSource.includes('modelResponseTokenUsage') &&
+      inspectorSource.includes('Checkpoint') &&
+      inspectorSource.includes('MessageBlock') &&
+      chatPageSource.includes('onRunInspectorOpen') &&
+      chatPageSource.includes('Continuous next run') &&
+      appSource.includes('onRunInspectorOpen={handleRunInspectorOpen}') &&
+      inspectorSource.includes('getRunArtifact') &&
+      inspectorSource.includes('onRunEvent') &&
       inspectorSource.includes("control('step')") &&
       inspectorSource.includes("control('continue')") &&
       inspectorSource.includes("control('fork')") &&
@@ -382,7 +391,7 @@ async function testDesktopExposesPlanRuntimeApi(): Promise<void> {
       composerSource.includes('function PlanModeToggle') &&
       composerSource.includes('executionMode?: AilaExecutionMode') &&
       composerSource.includes('onExecutionModeChange?: (mode: AilaExecutionMode) => void') &&
-      composerSource.includes('onChange(active ? "agent" : "plan")') &&
+      composerSource.includes("onChange(active ? 'agent' : 'plan')") &&
       composerSource.includes('executionMode && onExecutionModeChange') &&
       !chatPageSource.includes('ModeSegmentedControl'),
     'Desktop chat page should keep plan review controls while Composer owns the Plan mode toggle',
@@ -523,154 +532,24 @@ async function testDesktopExposesMcpIntegrationOAuthApi(): Promise<void> {
   )
 }
 
-async function testConversationPartitionContract(): Promise<void> {
+async function testConversationListContract(): Promise<void> {
   await withTempDataDir(async () => {
-    const chat = await createConversation()
-    const created = await createDoc(null)
-    const doc = await updateDoc(created.path, { title: 'Partitioned Doc' })
-    const docConversation = await createConversation(doc.path)
-
-    const chatList = await listChatConversations()
-    assert(
-      chatList.some((conversation) => conversation.id === chat.id),
-      'chat list should include chat conversations',
-    )
-    assert(
-      !chatList.some((conversation) => conversation.id === docConversation.id),
-      'chat list must not include doc-owned conversations',
-    )
-
-    const docList = await listDocConversations(doc.path)
-    assertEqual(docList.length, 1, 'doc list should include doc-owned conversation')
-    assertEqual(docList[0]?.id, docConversation.id, 'doc-owned conversation id')
-  })
-}
-
-async function testDocConversationFollowsDocRename(): Promise<void> {
-  await withTempDataDir(async () => {
-    const created = await createDoc(null)
-    const doc = await updateDoc(created.path, { title: 'Original Session Doc' })
-    const conversation = await createConversation(doc.path)
-
-    const renamed = await updateDoc(doc.path, { title: 'Renamed Session Doc' })
-    const record = await getConversation(conversation.id)
-    assertEqual(record.meta.docId, renamed.path, 'doc rename should rewrite conversation docId')
-    assertEqual(
-      (await listDocConversations(doc.path)).length,
-      0,
-      'old doc path should have no sessions after rename',
-    )
-    assertEqual(
-      (await listDocConversations(renamed.path))[0]?.id,
-      conversation.id,
-      'renamed doc path should retain session',
-    )
-  })
-}
-
-async function testDocRenameUsesInjectedConversationRefRewriter(): Promise<void> {
-  await withTempDataDir(async () => {
-    const created = await createDoc(null)
-    const doc = await updateDoc(created.path, { title: 'Injected Rewrite Source' })
-    const rewrites: string[] = []
-
-    configureDocConversationRefRewriter(async (input) => {
-      rewrites.push(
-        input
-          .map((rewrite) => `${rewrite.oldPath}->${rewrite.newPath}:${rewrite.isFolder === true}`)
-          .join(','),
-      )
-      return []
-    })
-    try {
-      await updateDoc(doc.path, { title: 'Injected Rewrite Target' })
-    } finally {
-      configureDocConversationRefRewriter()
-    }
-
-    assertEqual(
-      rewrites.join(','),
-      `${doc.path}->Injected Rewrite Target:false`,
-      'doc rename should use injected conversation ref rewriter',
-    )
-  })
-}
-
-async function testDocDeleteSweepsOnlyDeletedDocConversations(): Promise<void> {
-  await withTempDataDir(async () => {
-    const deletedDoc = await updateDoc((await createDoc(null)).path, { title: 'Deleted Doc' })
-    const keptDoc = await updateDoc((await createDoc(null)).path, { title: 'Kept Doc' })
-    const deletedDocConversation = await createConversation(deletedDoc.path)
-    const keptDocConversation = await createConversation(keptDoc.path)
-    const chatConversation = await createConversation()
-
-    await deleteDoc(deletedDoc.path)
-    let usedInjectedList = false
-    const swept = await sweepOrphanedDocConversations({
-      listConversations: async () => {
-        usedInjectedList = true
-        return listConversations()
-      },
-      deleteConversation,
+    const general = await createConversation()
+    const workspace = await createConversation({
+      id: '/tmp/aila-list-contract',
+      path: '/tmp/aila-list-contract',
+      label: 'List Contract',
     })
 
-    assertEqual(usedInjectedList, true, 'doc delete sweep should use injected conversation list')
-    assertEqual(swept.length, 1, 'doc delete sweep should return one orphan')
-    assertEqual(
-      swept[0]?.id,
-      deletedDocConversation.id,
-      'doc delete sweep should target deleted doc conversation',
-    )
-    assertEqual(
-      (await listDocConversations(deletedDoc.path)).length,
-      0,
-      'deleted doc should have no remaining conversations',
-    )
-    assertEqual(
-      (await listDocConversations(keptDoc.path))[0]?.id,
-      keptDocConversation.id,
-      'doc delete sweep should keep other doc conversations',
+    const all = await listConversations()
+    assertEqual(all.length, 2, 'conversation list should include every thread')
+    assert(
+      all.some((conversation) => conversation.id === general.id),
+      'general thread is listed',
     )
     assert(
-      (await listChatConversations()).some(
-        (conversation) => conversation.id === chatConversation.id,
-      ),
-      'doc delete sweep should keep ordinary chat conversations',
-    )
-  })
-}
-
-async function testFolderDeleteSweepsNestedDocConversations(): Promise<void> {
-  await withTempDataDir(async () => {
-    const folder = await createFolder(null, 'Folder Sweep')
-    const nestedDoc = await updateDoc((await createDoc(folder.path)).path, {
-      title: 'Nested Deleted Doc',
-    })
-    const keptDoc = await updateDoc((await createDoc(null)).path, { title: 'Outside Kept Doc' })
-    const nestedConversation = await createConversation(nestedDoc.path)
-    const keptConversation = await createConversation(keptDoc.path)
-
-    await deleteFolder(folder.path)
-    const swept = await sweepOrphanedDocConversations({
-      listConversations,
-      deleteConversation,
-    })
-
-    assertEqual(swept.length, 1, 'folder delete sweep should return one nested orphan')
-    assertEqual(
-      swept[0]?.id,
-      nestedConversation.id,
-      'folder delete sweep should target nested doc conversation',
-    )
-    assertEqual(
-      (await listDocConversations(nestedDoc.path)).length,
-      0,
-      'deleted folder doc should have no remaining conversations',
-    )
-    assertEqual(
-      (await listDocConversations(keptDoc.path))[0]?.id,
-      keptConversation.id,
-      'folder delete sweep should keep outside doc conversations',
+      all.some((conversation) => conversation.id === workspace.id),
+      'workspace thread is listed',
     )
   })
 }
@@ -685,7 +564,7 @@ async function testConversationDeleteCleansActivity(): Promise<void> {
       blocks: [{ type: 'text', content: 'delete me' }],
       status: 'done',
     })
-    await appendAgentEvent(conversation.id, {
+    await appendRunEvent(conversation.id, {
       timestamp: 1,
       conversationId: conversation.id,
       messageId: 'message',
@@ -694,7 +573,7 @@ async function testConversationDeleteCleansActivity(): Promise<void> {
 
     await deleteConversation(conversation.id)
     assertEqual(
-      (await listAgentEvents(conversation.id)).length,
+      (await listRunEvents(conversation.id)).length,
       0,
       'delete should remove activity log',
     )
@@ -715,7 +594,7 @@ async function testActivityUpdatesConversationSummary(): Promise<void> {
     const conversation = await createConversation()
     const before = await getConversation(conversation.id)
 
-    const { event, summary } = await appendAgentEventAndTouchConversation(conversation.id, {
+    const { event, summary } = await appendRunEventAndTouchConversation(conversation.id, {
       timestamp: before.meta.updatedAt,
       conversationId: conversation.id,
       messageId: 'assistant-message',
@@ -725,7 +604,7 @@ async function testActivityUpdatesConversationSummary(): Promise<void> {
 
     assertEqual(
       event.schemaVersion,
-      AILA_AGENT_EVENT_SCHEMA_VERSION,
+      AILA_RUN_EVENT_SCHEMA_VERSION,
       'activity event should be versioned',
     )
     assert(summary, 'activity append should return refreshed summary')
@@ -743,12 +622,12 @@ async function testActivityUpdatesConversationSummary(): Promise<void> {
       'activity summary event type',
     )
     assertEqual(
-      (await listAgentEvents(conversation.id))[0]?.type,
+      (await listRunEvents(conversation.id))[0]?.type,
       'tool.execution.started',
       'activity append should still persist the event log',
     )
     assertEqual(
-      (await listChatConversations())[0]?.id,
+      (await listConversations())[0]?.id,
       conversation.id,
       'activity append should refresh conversation summaries',
     )
@@ -760,7 +639,7 @@ async function testActivityDeltaDoesNotTouchConversationSummary(): Promise<void>
     const conversation = await createConversation()
     const before = await getConversation(conversation.id)
 
-    const { event, summary } = await appendAgentEventAndTouchConversation(conversation.id, {
+    const { event, summary } = await appendRunEventAndTouchConversation(conversation.id, {
       timestamp: before.meta.updatedAt + 10,
       conversationId: conversation.id,
       messageId: 'assistant-message',
@@ -770,12 +649,12 @@ async function testActivityDeltaDoesNotTouchConversationSummary(): Promise<void>
 
     assertEqual(
       event.schemaVersion,
-      AILA_AGENT_EVENT_SCHEMA_VERSION,
+      AILA_RUN_EVENT_SCHEMA_VERSION,
       'delta event should be versioned',
     )
     assertEqual(summary, undefined, 'input deltas should not refresh conversation summaries')
     assertEqual(
-      (await listAgentEvents(conversation.id))[0]?.type,
+      (await listRunEvents(conversation.id))[0]?.type,
       'tool.input.delta',
       'input deltas should still persist the event log',
     )
@@ -793,13 +672,13 @@ async function testActivityDeltaDoesNotTouchConversationSummary(): Promise<void>
 async function testStaleActivityDoesNotOverwriteNewerSummary(): Promise<void> {
   await withTempDataDir(async () => {
     const conversation = await createConversation()
-    await appendAgentEventAndTouchConversation(conversation.id, {
+    await appendRunEventAndTouchConversation(conversation.id, {
       timestamp: 200,
       conversationId: conversation.id,
       messageId: 'assistant-message',
       type: 'turn.completed',
     })
-    const { summary } = await appendAgentEventAndTouchConversation(conversation.id, {
+    const { summary } = await appendRunEventAndTouchConversation(conversation.id, {
       timestamp: 100,
       conversationId: conversation.id,
       messageId: 'assistant-message',
@@ -811,7 +690,7 @@ async function testStaleActivityDoesNotOverwriteNewerSummary(): Promise<void> {
     assertEqual(summary.activity?.state, 'completed', 'newer activity state should be preserved')
     assertEqual(summary.activity?.eventType, 'turn.completed', 'newer activity event should stay')
     assertEqual(summary.activity?.updatedAt, 200, 'newer activity timestamp should stay')
-    const events = await listAgentEvents(conversation.id)
+    const events = await listRunEvents(conversation.id)
     assertEqual(events.length, 2, 'stale activity should still persist in the event log')
     assertEqual(
       events[0]?.type,
@@ -826,7 +705,7 @@ async function testStaleActivityDoesNotOverwriteNewerSummary(): Promise<void> {
 async function testToolResultActivityKeepsToolName(): Promise<void> {
   await withTempDataDir(async () => {
     const conversation = await createConversation()
-    const { summary } = await appendAgentEventAndTouchConversation(conversation.id, {
+    const { summary } = await appendRunEventAndTouchConversation(conversation.id, {
       timestamp: Date.now(),
       conversationId: conversation.id,
       messageId: 'assistant-message',
@@ -1105,7 +984,7 @@ function testRendererCompletedEventWaitsForFinishMessage(): void {
     },
   })
   state = reduceChatStreamsForTest(state, {
-    type: 'AGENT_EVENT',
+    type: 'RUN_EVENT',
     event: {
       schemaVersion: 1,
       timestamp: 1,
@@ -1169,7 +1048,7 @@ function testRendererFailedEventFinalizesStreamingPlaceholder(): void {
     },
   })
   state = reduceChatStreamsForTest(state, {
-    type: 'AGENT_EVENT',
+    type: 'RUN_EVENT',
     event: {
       schemaVersion: 1,
       timestamp: 1,
@@ -1208,7 +1087,7 @@ function testRendererInterruptedEventFinalizesStreamingPlaceholder(): void {
     },
   })
   state = reduceChatStreamsForTest(state, {
-    type: 'AGENT_EVENT',
+    type: 'RUN_EVENT',
     event: {
       schemaVersion: 1,
       timestamp: 1,
@@ -1246,7 +1125,7 @@ function testRendererStaleFailureDoesNotDowngradeFinishedMessage(): void {
     },
   })
   state = reduceChatStreamsForTest(state, {
-    type: 'AGENT_EVENT',
+    type: 'RUN_EVENT',
     event: {
       schemaVersion: 1,
       timestamp: 1,
@@ -1284,7 +1163,7 @@ function testRendererLateStartedEventDoesNotReviveFinishedMessage(): void {
     },
   })
   state = reduceChatStreamsForTest(state, {
-    type: 'AGENT_EVENT',
+    type: 'RUN_EVENT',
     event: {
       schemaVersion: 1,
       timestamp: 1,
@@ -1377,7 +1256,7 @@ function testRendererDropTombstonesLateStreamEvents(): void {
     delta: 'late text',
   })
   state = reduceChatStreamsForTest(state, {
-    type: 'AGENT_EVENT',
+    type: 'RUN_EVENT',
     event: {
       schemaVersion: 1,
       timestamp: 1,
@@ -1503,18 +1382,6 @@ function conversationSummary(id: string, title: string, updatedAt: number): Conv
   }
 }
 
-function docConversationSummary(
-  id: string,
-  title: string,
-  docId: string,
-  updatedAt: number,
-): ConversationSummary {
-  return {
-    ...conversationSummary(id, title, updatedAt),
-    docId,
-  }
-}
-
 function workspaceConversationSummary(
   id: string,
   title: string,
@@ -1624,70 +1491,6 @@ function testRendererConversationListGroupsWorkspaceSessions(): void {
     'general-new,general-old',
     'Codex-style sidebar should render sessions without workspace under Chats',
   )
-}
-
-function testRendererDocConversationListIgnoresRemovedSummaryUpdates(): void {
-  const docPath = 'docs/current.md'
-  const removedIds = new Set<string>(['doc-session-deleted'])
-  const deletedSummary = docConversationSummary('doc-session-deleted', 'Deleted', docPath, 10)
-  const visibleSummary = docConversationSummary('doc-session-visible', 'Visible', docPath, 5)
-
-  let sessions = mergeDocConversationSummaryUpdate(
-    [deletedSummary, visibleSummary],
-    deletedSummary,
-    docPath,
-    removedIds,
-  )
-  assert(
-    !sessions.some((session) => session.id === 'doc-session-deleted'),
-    'removed doc session should be filtered immediately',
-  )
-
-  sessions = mergeDocConversationSummaryUpdate(
-    sessions,
-    {
-      ...deletedSummary,
-      updatedAt: 20,
-      activity: {
-        state: 'interrupted',
-        title: 'Interrupted',
-        updatedAt: 20,
-        eventType: 'turn.interrupted',
-        messageId: 'assistant-deleted-doc-session',
-      },
-    },
-    docPath,
-    removedIds,
-  )
-
-  assertEqual(sessions.length, 1, 'late summary should not reinsert removed doc session')
-  assertEqual(
-    sessions[0]?.id,
-    'doc-session-visible',
-    'visible doc session should remain after late removed update',
-  )
-}
-
-function testDocsHtmlAllowsDesktopImageProtocolOnlyForImages(): void {
-  const tagNames = docsHtmlSanitizeSchema.tagNames ?? []
-  const srcProtocols = docsHtmlSanitizeSchema.protocols?.src ?? []
-  const hrefProtocols = docsHtmlSanitizeSchema.protocols?.href ?? []
-
-  assert(
-    isSafeDocsUrl('aila-image://i/contract.png', 'src'),
-    'docs html should allow Desktop image protocol for markdown images',
-  )
-  assert(
-    !isSafeDocsUrl('aila-image://i/contract.png', 'href'),
-    'docs html should not allow Desktop image protocol for links',
-  )
-  assert(isSafeDocsUrl('mailto:docs@example.com', 'href'), 'docs html should allow mail links')
-  assert(!isSafeDocsUrl('javascript:alert(1)', 'src'), 'docs html should reject script URLs')
-  assert(srcProtocols.includes('aila-image'), 'docs sanitize schema should keep local images')
-  assert(hrefProtocols.includes('mailto'), 'docs sanitize schema should keep email autolinks')
-  assert(tagNames.includes('input'), 'docs sanitize schema should keep GFM task checkboxes')
-  assert(tagNames.includes('section'), 'docs sanitize schema should keep GFM footnotes')
-  assert(tagNames.includes('mark'), 'docs sanitize schema should keep highlighted text')
 }
 
 function testRendererFinishAppendsMissingAssistantMessage(): void {
@@ -1807,7 +1610,7 @@ async function testInterruptedActivityRecovery(): Promise<void> {
       blocks: [{ type: 'text', content: 'recover interrupted running turn' }],
       status: 'done',
     })
-    await appendAgentEventAndTouchConversation(running.id, {
+    await appendRunEventAndTouchConversation(running.id, {
       timestamp: Date.now(),
       conversationId: running.id,
       messageId: 'running-assistant',
@@ -1815,7 +1618,7 @@ async function testInterruptedActivityRecovery(): Promise<void> {
     })
 
     const approval = await createConversation()
-    await appendAgentEventAndTouchConversation(approval.id, {
+    await appendRunEventAndTouchConversation(approval.id, {
       timestamp: Date.now(),
       conversationId: approval.id,
       messageId: 'approval-assistant',
@@ -1824,7 +1627,7 @@ async function testInterruptedActivityRecovery(): Promise<void> {
     })
 
     const completed = await createConversation()
-    await appendAgentEventAndTouchConversation(completed.id, {
+    await appendRunEventAndTouchConversation(completed.id, {
       timestamp: Date.now(),
       conversationId: completed.id,
       messageId: 'completed-assistant',
@@ -1865,7 +1668,7 @@ async function testInterruptedActivityRecovery(): Promise<void> {
       'completed activity should not be recovered',
     )
 
-    const events = await listAgentEvents(running.id)
+    const events = await listRunEvents(running.id)
     assertEqual(events.at(-1)?.type, 'turn.interrupted', 'recovery should append event log entry')
     assertEqual(
       events.at(-1)?.data?.previousState,
@@ -1879,13 +1682,13 @@ async function testInterruptedActivityRecoveryRespectsSameTimestampAppendOrder()
   await withTempDataDir(async () => {
     const completed = await createConversation()
     const timestamp = Date.now()
-    await appendAgentEvent(completed.id, {
+    await appendRunEvent(completed.id, {
       timestamp,
       conversationId: completed.id,
       messageId: 'same-timestamp-assistant',
       type: 'turn.started',
     })
-    await appendAgentEvent(completed.id, {
+    await appendRunEvent(completed.id, {
       timestamp,
       conversationId: completed.id,
       messageId: 'same-timestamp-assistant',
@@ -1898,7 +1701,7 @@ async function testInterruptedActivityRecoveryRespectsSameTimestampAppendOrder()
       'same-timestamp completed turn should not recover as interrupted',
     )
 
-    const events = await listAgentEvents(completed.id)
+    const events = await listRunEvents(completed.id)
     assertEqual(
       events.map((event) => event.type).join(','),
       'turn.started,turn.completed',
@@ -1924,7 +1727,7 @@ async function testToolApprovalsCanHydrateAndResolvePendingRequests(): Promise<v
     const store = new ToolApprovalStore({
       timeoutMs: 1000,
       createId: () => 'approval-store-contract-id',
-      recordAgentEvent: appendAgentEventAndTouchConversation,
+      recordRunEvent: appendRunEventAndTouchConversation,
       onRequest: (payload) => requested.push(payload),
       onResolved: (payload) => resolved.push(payload),
     })
@@ -1942,6 +1745,9 @@ async function testToolApprovalsCanHydrateAndResolvePendingRequests(): Promise<v
       },
       conversationId: conversation.id,
       messageId: 'assistant-message',
+      turnId: 'turn-approval',
+      runId: 'run-approval',
+      stepId: 'step-approval',
       toolCallId: 'tool-call',
     })
 
@@ -1972,8 +1778,11 @@ async function testToolApprovalsCanHydrateAndResolvePendingRequests(): Promise<v
     assertEqual(resolved[0]?.reason, 'user', 'resolved approval reason')
 
     await store.flushActivity()
-    const events = await listAgentEvents(conversation.id)
+    const events = await listRunEvents(conversation.id)
     assertEqual(events[0]?.type, 'tool.approval.requested', 'approval requested event')
+    assertEqual(events[0]?.turnId, 'turn-approval', 'approval event turn identity')
+    assertEqual(events[0]?.runId, 'run-approval', 'approval event run identity')
+    assertEqual(events[0]?.stepId, 'step-approval', 'approval event step identity')
     assertEqual(
       (events[0]?.data?.target as { preview?: unknown } | undefined)?.preview,
       '/workspace/note.md',
@@ -1993,7 +1802,7 @@ async function testToolApprovalStoreSnapshotsMutableBoundaries(): Promise<void> 
   const recorded: Array<{ type: string; data?: Record<string, unknown> }> = []
   const store = new ToolApprovalStore({
     timeoutMs: 1000,
-    recordAgentEvent: (_conversationId, event) => {
+    recordRunEvent: (_conversationId, event) => {
       recorded.push({ type: event.type, data: event.data })
     },
     onRequest: (payload) => {
@@ -2128,7 +1937,7 @@ async function testToolApprovalStoreRequiresInjectedActivityRecorder(): Promise<
     await store.flushActivity()
 
     assertEqual(
-      (await listAgentEvents(conversation.id)).length,
+      (await listRunEvents(conversation.id)).length,
       0,
       'approval store should not write conversation activity without an injected recorder',
     )
@@ -2141,7 +1950,7 @@ async function testToolApprovalStoreUsesInjectedActivityRecorder(): Promise<void
     const recorded: Array<{ conversationId: string; type: string }> = []
     const store = new ToolApprovalStore({
       timeoutMs: 1000,
-      recordAgentEvent: (conversationId, event) => {
+      recordRunEvent: (conversationId, event) => {
         recorded.push({ conversationId, type: event.type })
       },
     })
@@ -2180,7 +1989,7 @@ async function testToolApprovalStoreUsesInjectedActivityRecorder(): Promise<void
       'custom recorder should receive conversation id',
     )
     assertEqual(
-      (await listAgentEvents(conversation.id)).length,
+      (await listRunEvents(conversation.id)).length,
       0,
       'custom recorder should own any event persistence and fanout',
     )
@@ -2222,7 +2031,7 @@ async function testToolApprovalCancellationClearsConversationRequests(): Promise
     const resolved: ToolApprovalResolvedPayload[] = []
     const store = new ToolApprovalStore({
       timeoutMs: 1000,
-      recordAgentEvent: appendAgentEventAndTouchConversation,
+      recordRunEvent: appendRunEventAndTouchConversation,
       onResolved: (payload) => resolved.push(payload),
     })
 
@@ -2274,7 +2083,7 @@ async function testToolApprovalCancellationClearsConversationRequests(): Promise
     assertEqual(resolved[0]?.reason, 'cancelled', 'cancelled approval resolved reason')
 
     await store.flushActivity()
-    const events = await listAgentEvents(cancelledConversation.id)
+    const events = await listRunEvents(cancelledConversation.id)
     assertEqual(events.at(-1)?.type, 'tool.approval.resolved', 'cancelled approval event type')
     assertEqual(events.at(-1)?.data?.reason, 'cancelled', 'cancelled approval event reason')
 
@@ -2285,7 +2094,7 @@ async function testToolApprovalCancellationClearsConversationRequests(): Promise
     await store.shutdown()
     assertEqual(await otherApproval, false, 'shutdown should clear remaining approval')
 
-    const shutdownEvents = await listAgentEvents(otherConversation.id)
+    const shutdownEvents = await listRunEvents(otherConversation.id)
     assertEqual(
       shutdownEvents.at(-1)?.type,
       'tool.approval.resolved',
@@ -2402,7 +2211,7 @@ function testRendererApprovalHydrationSortsPendingRequests(): void {
 }
 
 async function main(): Promise<void> {
-  await testDocConversationWorkspaceContext()
+  await testWorkspaceConversationContext()
   await testDesktopWorkspaceRoots()
   await testDesktopMainUsesEsmSafeRuntimePaths()
   await testDesktopUsesSharedRuntimeFactory()
@@ -2412,11 +2221,7 @@ async function main(): Promise<void> {
   await testDesktopExposesEmbeddedTerminalApi()
   await testRendererUsesRuntimeHydrationApi()
   await testDesktopExposesMcpIntegrationOAuthApi()
-  await testConversationPartitionContract()
-  await testDocConversationFollowsDocRename()
-  await testDocRenameUsesInjectedConversationRefRewriter()
-  await testDocDeleteSweepsOnlyDeletedDocConversations()
-  await testFolderDeleteSweepsNestedDocConversations()
+  await testConversationListContract()
   await testConversationDeleteCleansActivity()
   await testActivityUpdatesConversationSummary()
   await testActivityDeltaDoesNotTouchConversationSummary()
@@ -2437,8 +2242,6 @@ async function main(): Promise<void> {
   testRendererDropClearsQueueAndBlocksFutureActions()
   testRendererConversationListIgnoresRemovedSummaryUpdates()
   testRendererConversationListGroupsWorkspaceSessions()
-  testRendererDocConversationListIgnoresRemovedSummaryUpdates()
-  testDocsHtmlAllowsDesktopImageProtocolOnlyForImages()
   testRendererFinishAppendsMissingAssistantMessage()
   testRendererRunStartedDoesNotDuplicateFinishedAssistant()
   testRendererToolResultAppendsMissingAssistantMessage()

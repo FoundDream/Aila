@@ -1,24 +1,24 @@
-import type { ModelInfo, ProviderId, RuntimeStreamChat } from '@aila/agent'
+import type { DurableRunExecutor, ModelInfo, ProviderId } from '@aila/agent'
+import { createDurableRunExecutor, createModelInfoResolver } from '../node/durable-run'
 import { createModelRegistry } from '../node/model-registry'
-import { createModelInfoResolver, createProviderStreamChat } from '../node/stream-chat'
 import { getDataDir, getImagesDir } from './paths'
 import { loadSettings } from './settings'
 
 export type {
-  AgentEvent,
-  AgentEventSink,
-  AgentEventType,
   ChatMessage,
   DeltaEvent,
   DoneEvent,
+  DurableRunExecutor,
   ErrorEvent,
   ImageBlockEvent,
   ModelInfo,
   ModelSelection,
+  RunEvent,
+  RunEventSink,
+  RunEventType,
+  RunHandlers,
+  RunRequest,
   RuntimeModelInfoResolver,
-  RuntimeStreamChat,
-  StreamHandlers,
-  StreamRequest,
   ToolCall,
   ToolCallArgsDeltaEvent,
   ToolCallEvent,
@@ -29,21 +29,20 @@ export type {
 
 const modelRegistry = createModelRegistry()
 const resolveModelInfo = createModelInfoResolver(modelRegistry)
-let streamChatInstance: RuntimeStreamChat | null = null
+let runAgentInstance: DurableRunExecutor | null = null
 
 export function getModelInfo(providerId: ProviderId, modelId: string): ModelInfo {
   return resolveModelInfo({ providerId, modelId })
 }
 
-function getStreamChat(): RuntimeStreamChat {
-  streamChatInstance ??= createProviderStreamChat({
+function getRunAgent(): DurableRunExecutor {
+  runAgentInstance ??= createDurableRunExecutor({
     modelRegistry,
     loadSettings,
     dataDir: getDataDir(),
     imageDir: getImagesDir(),
   })
-  return streamChatInstance
+  return runAgentInstance
 }
 
-export const streamChat: RuntimeStreamChat = (request, handlers) =>
-  getStreamChat()(request, handlers)
+export const runAgent: DurableRunExecutor = (request, handlers) => getRunAgent()(request, handlers)

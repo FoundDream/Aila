@@ -1,7 +1,5 @@
 import { randomUUID } from 'node:crypto'
 import {
-  type AgentRuntimeApi,
-  type AgentRuntimeEvent,
   type AilaExecutionMode,
   type ConversationSummary,
   isAilaExecutionMode,
@@ -10,6 +8,8 @@ import {
   providerLabel,
   type ToolApprovalMode,
   type ToolApprovalRequest,
+  type Workbench,
+  type WorkbenchEvent,
 } from '@aila/agent'
 import {
   configureDataDir,
@@ -104,8 +104,7 @@ function extensionReportText(report: Awaited<ReturnType<typeof getExtensionRepor
 
 function conversationText(summary: ConversationSummary): string {
   const usage = summary.usage ? `, ${summary.usage.totalTokens} tokens` : ''
-  const scope = summary.docId ? `doc:${summary.docId}` : 'chat'
-  return `${formatDate(summary.updatedAt)}  ${summary.id}  ${scope}  ${summary.title}${usage}`
+  return `${formatDate(summary.updatedAt)}  ${summary.id}  thread  ${summary.title}${usage}`
 }
 
 export async function runFullScreenTui(argv: string[] = process.argv.slice(2)): Promise<void> {
@@ -145,7 +144,7 @@ class AilaFullScreenApp {
     autocompleteMaxVisible: 8,
     paddingX: 2,
   })
-  private readonly runtime: AgentRuntimeApi
+  private readonly runtime: Workbench
   private readonly frame: AilaFrameComponent
   private readonly completions = new Map<string, () => void>()
   private readonly toolNames = new Map<string, string>()
@@ -840,7 +839,7 @@ class AilaFullScreenApp {
     })
   }
 
-  private handleRuntimeEvent(event: AgentRuntimeEvent): void {
+  private handleRuntimeEvent(event: WorkbenchEvent): void {
     switch (event.type) {
       case 'chat:text-delta':
         this.appendAssistantDelta(event.data.messageId, event.data.delta)
@@ -891,7 +890,7 @@ class AilaFullScreenApp {
         this.setState({ active: false, status: 'error' })
         this.completions.get(event.data.messageId)?.()
         break
-      case 'agent:event':
+      case 'run:event':
         if (event.data.type === 'run.paused') {
           const nextAction = event.data.data?.nextAction
           const nextType =

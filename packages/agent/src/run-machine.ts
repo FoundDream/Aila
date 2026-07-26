@@ -1,27 +1,22 @@
-import type { AgentEvent } from './agent-protocol'
+import type { RunEvent } from './agent-protocol'
 
 type MaybePromise<T> = T | Promise<T>
 
-export type AgentLoopRunMode = 'continuous' | 'step'
-export type AgentLoopRunStatus =
-  | 'idle'
-  | 'running'
-  | 'paused'
-  | 'completed'
-  | 'failed'
-  | 'cancelled'
+export type RunMode = 'continuous' | 'step'
+export type RunStatus = 'idle' | 'running' | 'paused' | 'completed' | 'failed' | 'cancelled'
 
-export type AgentLoopStepKind = 'model' | 'tool_batch' | 'compact'
-export type AgentLoopStepStatus = 'running' | 'completed' | 'failed' | 'cancelled'
-export type AgentLoopContinuationReason =
+export type RunStepKind = 'model' | 'tool_batch' | 'compact'
+export type RunStepStatus = 'running' | 'completed' | 'failed' | 'cancelled'
+export type RunContinuationReason =
   | 'user'
   | 'tool_results'
   | 'retry'
   | 'steer'
+  | 'follow_up'
   | 'resume'
   | 'provider_overflow'
 
-export interface AgentRunIdentity {
+export interface RunIdentity {
   conversationId: string
   turnId: string
   runId: string
@@ -29,170 +24,185 @@ export interface AgentRunIdentity {
   originStepId?: string
 }
 
-export interface AgentLoopStepIdentity {
+export interface RunStep {
   stepId: string
   index: number
   attempt: number
-  kind: AgentLoopStepKind
+  kind: RunStepKind
 }
 
-export type AgentLoopNextAction =
-  | { type: 'model'; reason: AgentLoopContinuationReason }
+export type RunNextAction =
+  | { type: 'model'; reason: RunContinuationReason }
   | { type: 'tools'; toolCallIds: string[] }
   | { type: 'compact'; reason: 'preflight' | 'provider_overflow' }
-  | { type: 'pause'; reason: 'debug' | 'approval' | 'user_input' }
-  | { type: 'complete' }
 
-export interface AgentLoopStepState extends AgentLoopStepIdentity {
-  status: AgentLoopStepStatus
+export type RunWaitReason = 'debug' | 'approval' | 'user_input'
+
+export interface RunWait {
+  reason: RunWaitReason
+  requestId?: string
+  detail?: string
+}
+
+export interface RunStepState extends RunStep {
+  status: RunStepStatus
   startedAt: number
   completedAt?: number
   error?: string
 }
 
-export interface AgentLoopState {
-  identity: AgentRunIdentity
-  mode: AgentLoopRunMode
-  status: AgentLoopRunStatus
+export interface RunState {
+  identity: RunIdentity
+  mode: RunMode
+  status: RunStatus
   startedAt?: number
   completedAt?: number
-  currentStep?: AgentLoopStepState
-  steps: AgentLoopStepState[]
-  nextAction?: AgentLoopNextAction
+  currentStep?: RunStepState
+  steps: RunStepState[]
+  nextAction?: RunNextAction
+  wait?: RunWait
   error?: string
 }
 
-export type AgentLoopTransition =
+export type RunTransition =
   | {
       type: 'run.started'
       timestamp: number
-      identity: AgentRunIdentity
-      mode: AgentLoopRunMode
+      identity: RunIdentity
+      mode: RunMode
     }
   | {
       type: 'run.resumed'
       timestamp: number
-      identity: AgentRunIdentity
-      nextAction: AgentLoopNextAction
+      identity: RunIdentity
+      nextAction: RunNextAction
     }
   | {
       type: 'run.paused'
       timestamp: number
-      identity: AgentRunIdentity
-      nextAction: AgentLoopNextAction
+      identity: RunIdentity
+      nextAction: RunNextAction
+      wait: RunWait
     }
   | {
       type: 'run.completed'
       timestamp: number
-      identity: AgentRunIdentity
+      identity: RunIdentity
     }
   | {
       type: 'run.failed'
       timestamp: number
-      identity: AgentRunIdentity
+      identity: RunIdentity
       error: string
     }
   | {
       type: 'run.cancelled'
       timestamp: number
-      identity: AgentRunIdentity
+      identity: RunIdentity
       reason: string
     }
   | {
       type: 'step.started'
       timestamp: number
-      identity: AgentRunIdentity
-      step: AgentLoopStepIdentity
-      nextAction: AgentLoopNextAction
+      identity: RunIdentity
+      step: RunStep
+      nextAction: RunNextAction
     }
   | {
       type: 'step.completed'
       timestamp: number
-      identity: AgentRunIdentity
-      step: AgentLoopStepIdentity
-      nextAction: AgentLoopNextAction
+      identity: RunIdentity
+      step: RunStep
+      nextAction?: RunNextAction
     }
   | {
       type: 'step.failed'
       timestamp: number
-      identity: AgentRunIdentity
-      step: AgentLoopStepIdentity
+      identity: RunIdentity
+      step: RunStep
       error: string
     }
   | {
       type: 'step.cancelled'
       timestamp: number
-      identity: AgentRunIdentity
-      step: AgentLoopStepIdentity
+      identity: RunIdentity
+      step: RunStep
       reason: string
     }
 
-export interface AgentLoopModelStepResult<TToolCall> {
+export interface RunModelResult<TToolCall> {
   outcome: 'completed' | 'failed' | 'cancelled'
   toolCalls: readonly TToolCall[]
   error?: string
 }
 
-export interface AgentLoopToolBatchResult {
+export interface RunToolBatchResult {
   outcome: 'completed' | 'failed' | 'cancelled'
   error?: string
 }
 
-export type AgentLoopPolicyDecision = 'continue' | 'pause' | 'complete'
+export interface RunCompactResult {
+  outcome: 'completed' | 'failed' | 'cancelled'
+  error?: string
+}
 
-export interface AgentLoopPolicy<TToolCall> {
-  mode: AgentLoopRunMode
+export type RunPolicyDecision = 'continue' | 'pause' | 'complete'
+
+export interface RunPolicy<TToolCall> {
+  mode: RunMode
   afterModel?: (input: {
-    identity: AgentRunIdentity
-    step: AgentLoopStepIdentity
+    identity: RunIdentity
+    step: RunStep
     toolCalls: readonly TToolCall[]
-  }) => MaybePromise<AgentLoopPolicyDecision>
+  }) => MaybePromise<RunPolicyDecision>
   afterTools?: (input: {
-    identity: AgentRunIdentity
-    step: AgentLoopStepIdentity
+    identity: RunIdentity
+    step: RunStep
     toolCalls: readonly TToolCall[]
   }) => MaybePromise<'continue' | 'pause'>
 }
 
-export interface RunAgentLoopOptions<TToolCall> {
-  identity: AgentRunIdentity
+export interface RunMachineOptions<TToolCall> {
+  identity: RunIdentity
   signal: AbortSignal
-  initialSnapshot?: AgentLoopSnapshot<TToolCall>
+  initialSnapshot?: RunCursor<TToolCall>
   /** Maximum number of tool batches before one final tool-free model step. */
   maxToolSteps: number
-  initialReason?: AgentLoopContinuationReason
-  policy?: AgentLoopPolicy<TToolCall>
+  initialReason?: RunContinuationReason
+  policy?: RunPolicy<TToolCall>
   now?: () => number
-  createStepId?: (input: {
-    identity: AgentRunIdentity
-    index: number
-    kind: AgentLoopStepKind
-  }) => string
+  createStepId?: (input: { identity: RunIdentity; index: number; kind: RunStepKind }) => string
   executeModelStep: (input: {
-    identity: AgentRunIdentity
-    step: AgentLoopStepIdentity
+    identity: RunIdentity
+    step: RunStep
     modelStepIndex: number
     toolsEnabled: boolean
-    reason: AgentLoopContinuationReason
+    reason: RunContinuationReason
     signal: AbortSignal
-  }) => Promise<AgentLoopModelStepResult<TToolCall>>
+  }) => Promise<RunModelResult<TToolCall>>
   executeToolBatch: (input: {
-    identity: AgentRunIdentity
-    step: AgentLoopStepIdentity
+    identity: RunIdentity
+    step: RunStep
     toolCalls: readonly TToolCall[]
     signal: AbortSignal
-  }) => Promise<AgentLoopToolBatchResult>
+  }) => Promise<RunToolBatchResult>
+  executeCompactStep?: (input: {
+    identity: RunIdentity
+    step: RunStep
+    reason: 'preflight' | 'provider_overflow'
+    signal: AbortSignal
+  }) => Promise<RunCompactResult>
   handleToolBudgetExhausted?: (input: {
-    identity: AgentRunIdentity
-    step: AgentLoopStepIdentity
+    identity: RunIdentity
+    step: RunStep
     toolCalls: readonly TToolCall[]
   }) => MaybePromise<void>
-  onTransition?: (transition: AgentLoopTransition) => MaybePromise<void>
-  onSnapshot?: (snapshot: AgentLoopSnapshot<TToolCall>) => MaybePromise<void>
+  onTransition?: (transition: RunTransition) => MaybePromise<void>
+  onSnapshot?: (snapshot: RunCursor<TToolCall>) => MaybePromise<void>
 }
 
-export interface AgentLoopResult {
-  state: AgentLoopState
+export interface RunMachineResult {
+  state: RunState
   pendingToolCallIds?: string[]
 }
 
@@ -201,24 +211,24 @@ export interface AgentLoopResult {
  * execution data belongs in a run checkpoint, while this snapshot is enough to
  * decide and execute exactly one next action.
  */
-export interface AgentLoopSnapshot<TToolCall> {
-  state: AgentLoopState
+export interface RunCursor<TToolCall> {
+  state: RunState
   nextStepIndex: number
   modelStepIndex: number
   completedToolBatches: number
   pendingToolCalls: TToolCall[]
 }
 
-export interface AdvanceAgentLoopOptions<TToolCall> extends RunAgentLoopOptions<TToolCall> {
-  snapshot?: AgentLoopSnapshot<TToolCall>
+export interface AdvanceRunOptions<TToolCall> extends RunMachineOptions<TToolCall> {
+  snapshot?: RunCursor<TToolCall>
 }
 
-export interface AgentLoopAdvanceResult<TToolCall> extends AgentLoopResult {
-  snapshot: AgentLoopSnapshot<TToolCall>
-  executedAction?: AgentLoopNextAction
+export interface AdvanceRunResult<TToolCall> extends RunMachineResult {
+  snapshot: RunCursor<TToolCall>
+  executedAction?: RunNextAction
 }
 
-const CONTINUOUS_POLICY: AgentLoopPolicy<unknown> = {
+const CONTINUOUS_POLICY: RunPolicy<unknown> = {
   mode: 'continuous',
   afterModel: () => 'continue',
   afterTools: () => 'continue',
@@ -228,10 +238,7 @@ function cloneValue<T>(value: T): T {
   return structuredClone(value)
 }
 
-export function createAgentLoopState(
-  identity: AgentRunIdentity,
-  mode: AgentLoopRunMode = 'continuous',
-): AgentLoopState {
+export function createRunState(identity: RunIdentity, mode: RunMode = 'continuous'): RunState {
   return {
     identity: cloneValue(identity),
     mode,
@@ -240,12 +247,12 @@ export function createAgentLoopState(
   }
 }
 
-export function createAgentLoopSnapshot<TToolCall>(
-  identity: AgentRunIdentity,
-  mode: AgentLoopRunMode = 'continuous',
-): AgentLoopSnapshot<TToolCall> {
+export function createRunCursor<TToolCall>(
+  identity: RunIdentity,
+  mode: RunMode = 'continuous',
+): RunCursor<TToolCall> {
   return {
-    state: createAgentLoopState(identity, mode),
+    state: createRunState(identity, mode),
     nextStepIndex: 0,
     modelStepIndex: 0,
     completedToolBatches: 0,
@@ -254,17 +261,14 @@ export function createAgentLoopSnapshot<TToolCall>(
 }
 
 function replaceStep(
-  steps: readonly AgentLoopStepState[],
+  steps: readonly RunStepState[],
   stepId: string,
-  update: (step: AgentLoopStepState) => AgentLoopStepState,
-): AgentLoopStepState[] {
+  update: (step: RunStepState) => RunStepState,
+): RunStepState[] {
   return steps.map((step) => (step.stepId === stepId ? update(step) : step))
 }
 
-export function reduceAgentLoopTransition(
-  state: AgentLoopState,
-  transition: AgentLoopTransition,
-): AgentLoopState {
+export function reduceRunTransition(state: RunState, transition: RunTransition): RunState {
   if (transition.identity.runId !== state.identity.runId) return state
 
   switch (transition.type) {
@@ -276,6 +280,7 @@ export function reduceAgentLoopTransition(
         startedAt: transition.timestamp,
         completedAt: undefined,
         nextAction: { type: 'model', reason: 'user' },
+        wait: undefined,
         error: undefined,
       }
     case 'run.resumed':
@@ -285,6 +290,7 @@ export function reduceAgentLoopTransition(
         completedAt: undefined,
         currentStep: undefined,
         nextAction: cloneValue(transition.nextAction),
+        wait: undefined,
         error: undefined,
       }
     case 'run.paused':
@@ -293,6 +299,7 @@ export function reduceAgentLoopTransition(
         status: 'paused',
         currentStep: undefined,
         nextAction: cloneValue(transition.nextAction),
+        wait: cloneValue(transition.wait),
       }
     case 'run.completed':
       return {
@@ -300,7 +307,8 @@ export function reduceAgentLoopTransition(
         status: 'completed',
         completedAt: transition.timestamp,
         currentStep: undefined,
-        nextAction: { type: 'complete' },
+        nextAction: undefined,
+        wait: undefined,
       }
     case 'run.failed':
       return {
@@ -308,6 +316,8 @@ export function reduceAgentLoopTransition(
         status: 'failed',
         completedAt: transition.timestamp,
         currentStep: undefined,
+        nextAction: undefined,
+        wait: undefined,
         error: transition.error,
       }
     case 'run.cancelled':
@@ -316,10 +326,12 @@ export function reduceAgentLoopTransition(
         status: 'cancelled',
         completedAt: transition.timestamp,
         currentStep: undefined,
+        nextAction: undefined,
+        wait: undefined,
         error: transition.reason,
       }
     case 'step.started': {
-      const step: AgentLoopStepState = {
+      const step: RunStepState = {
         ...cloneValue(transition.step),
         status: 'running',
         startedAt: transition.timestamp,
@@ -330,6 +342,7 @@ export function reduceAgentLoopTransition(
         currentStep: step,
         steps: [...state.steps, step],
         nextAction: cloneValue(transition.nextAction),
+        wait: undefined,
       }
     }
     case 'step.completed': {
@@ -340,9 +353,12 @@ export function reduceAgentLoopTransition(
       }))
       return {
         ...state,
+        status: transition.nextAction ? 'running' : 'completed',
+        completedAt: transition.nextAction ? undefined : transition.timestamp,
         currentStep: undefined,
         steps,
-        nextAction: cloneValue(transition.nextAction),
+        nextAction: transition.nextAction ? cloneValue(transition.nextAction) : undefined,
+        wait: undefined,
       }
     }
     case 'step.failed': {
@@ -357,6 +373,8 @@ export function reduceAgentLoopTransition(
         status: 'failed',
         currentStep: undefined,
         steps,
+        nextAction: undefined,
+        wait: undefined,
         error: transition.error,
       }
     }
@@ -372,31 +390,51 @@ export function reduceAgentLoopTransition(
         status: 'cancelled',
         currentStep: undefined,
         steps,
+        nextAction: undefined,
+        wait: undefined,
         error: transition.reason,
       }
     }
   }
 }
 
-function eventString(event: AgentEvent, key: string): string | undefined {
+function eventString(event: RunEvent, key: string): string | undefined {
   const value = event.data?.[key]
   return typeof value === 'string' && value.length > 0 ? value : undefined
 }
 
-function eventNumber(event: AgentEvent, key: string): number | undefined {
+function eventNumber(event: RunEvent, key: string): number | undefined {
   const value = event.data?.[key]
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined
 }
 
-function eventNextAction(event: AgentEvent): AgentLoopNextAction | undefined {
+function eventNextAction(event: RunEvent): RunNextAction | undefined {
   const value = event.data?.nextAction
   if (!value || typeof value !== 'object') return undefined
-  return cloneValue(value as AgentLoopNextAction)
+  const type = (value as { type?: unknown }).type
+  if (type !== 'model' && type !== 'tools' && type !== 'compact') return undefined
+  return cloneValue(value as RunNextAction)
 }
 
-function transitionFromAgentEvent(event: AgentEvent): AgentLoopTransition | null {
+function eventWaitState(event: RunEvent): RunWait {
+  const value = event.data?.wait
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>
+    const reason = record.reason
+    if (reason === 'debug' || reason === 'approval' || reason === 'user_input') {
+      return {
+        reason,
+        ...(typeof record.requestId === 'string' ? { requestId: record.requestId } : {}),
+        ...(typeof record.detail === 'string' ? { detail: record.detail } : {}),
+      }
+    }
+  }
+  return { reason: 'debug' }
+}
+
+function transitionFromRunEvent(event: RunEvent): RunTransition | null {
   if (!event.runId || !event.turnId) return null
-  const identity: AgentRunIdentity = {
+  const identity: RunIdentity = {
     conversationId: event.conversationId,
     turnId: event.turnId,
     runId: event.runId,
@@ -407,7 +445,7 @@ function transitionFromAgentEvent(event: AgentEvent): AgentLoopTransition | null
       ? { originStepId: eventString(event, 'originStepId') }
       : {}),
   }
-  const step = (): AgentLoopStepIdentity | null => {
+  const step = (): RunStep | null => {
     if (!event.stepId) return null
     const kind = eventString(event, 'kind')
     const index = eventNumber(event, 'index')
@@ -442,7 +480,8 @@ function transitionFromAgentEvent(event: AgentEvent): AgentLoopTransition | null
         type: 'run.paused',
         timestamp: event.timestamp,
         identity,
-        nextAction: eventNextAction(event) ?? { type: 'pause', reason: 'debug' },
+        nextAction: eventNextAction(event) ?? { type: 'model', reason: 'resume' },
+        wait: eventWaitState(event),
       }
     case 'run.completed':
       return { type: 'run.completed', timestamp: event.timestamp, identity }
@@ -479,7 +518,7 @@ function transitionFromAgentEvent(event: AgentEvent): AgentLoopTransition | null
         timestamp: event.timestamp,
         identity,
         step: identityStep,
-        nextAction: eventNextAction(event) ?? { type: 'complete' },
+        nextAction: eventNextAction(event),
       }
     }
     case 'step.failed': {
@@ -509,10 +548,7 @@ function transitionFromAgentEvent(event: AgentEvent): AgentLoopTransition | null
   }
 }
 
-export function replayAgentLoopState(
-  events: readonly AgentEvent[],
-  runId?: string,
-): AgentLoopState | null {
+export function replayRunState(events: readonly RunEvent[], runId?: string): RunState | null {
   const relevant = events
     .filter((event) => event.runId && (!runId || event.runId === runId))
     .slice()
@@ -524,7 +560,7 @@ export function replayAgentLoopState(
     })
   const first = relevant.find((event) => event.runId && event.turnId)
   if (!first?.runId || !first.turnId) return null
-  let state = createAgentLoopState({
+  let state = createRunState({
     conversationId: first.conversationId,
     turnId: first.turnId,
     runId: first.runId,
@@ -536,16 +572,16 @@ export function replayAgentLoopState(
       : {}),
   })
   for (const event of relevant) {
-    const transition = transitionFromAgentEvent(event)
-    if (transition) state = reduceAgentLoopTransition(state, transition)
+    const transition = transitionFromRunEvent(event)
+    if (transition) state = reduceRunTransition(state, transition)
   }
   return state
 }
 
 function defaultStepId(_input: {
-  identity: AgentRunIdentity
+  identity: RunIdentity
   index: number
-  kind: AgentLoopStepKind
+  kind: RunStepKind
 }): string {
   return globalThis.crypto.randomUUID()
 }
@@ -558,28 +594,46 @@ function toolCallId(value: unknown, index: number): string {
   return `tool-${index + 1}`
 }
 
-export async function advanceAgentLoop<TToolCall>(
-  options: AdvanceAgentLoopOptions<TToolCall>,
-): Promise<AgentLoopAdvanceResult<TToolCall>> {
+export function assertRunStateInvariant(state: RunState): void {
+  const terminal =
+    state.status === 'completed' || state.status === 'failed' || state.status === 'cancelled'
+  if (terminal && (state.nextAction !== undefined || state.wait !== undefined)) {
+    throw new Error(`terminal agent run "${state.identity.runId}" cannot retain work`)
+  }
+  if (state.status === 'paused' && (!state.nextAction || !state.wait)) {
+    throw new Error(`paused agent run "${state.identity.runId}" requires action and wait state`)
+  }
+  if (state.status === 'running' && !state.nextAction) {
+    throw new Error(`running agent run "${state.identity.runId}" requires a next action`)
+  }
+  if (state.status !== 'paused' && state.wait !== undefined) {
+    throw new Error(`agent run "${state.identity.runId}" can wait only while paused`)
+  }
+}
+
+export async function advanceRun<TToolCall>(
+  options: AdvanceRunOptions<TToolCall>,
+): Promise<AdvanceRunResult<TToolCall>> {
   const now = options.now ?? Date.now
   const createStepId = options.createStepId ?? defaultStepId
-  const policy = (options.policy ?? CONTINUOUS_POLICY) as AgentLoopPolicy<TToolCall>
+  const policy = (options.policy ?? CONTINUOUS_POLICY) as RunPolicy<TToolCall>
   const snapshot = options.snapshot
     ? cloneValue(options.snapshot)
     : options.initialSnapshot
       ? cloneValue(options.initialSnapshot)
-      : createAgentLoopSnapshot<TToolCall>(options.identity, policy.mode)
+      : createRunCursor<TToolCall>(options.identity, policy.mode)
 
   if (snapshot.state.identity.runId !== options.identity.runId) {
-    throw new Error('agent loop snapshot runId does not match the requested run')
+    throw new Error('run cursor runId does not match the requested run')
   }
 
-  const emit = async (transition: AgentLoopTransition): Promise<void> => {
-    snapshot.state = reduceAgentLoopTransition(snapshot.state, transition)
+  const emit = async (transition: RunTransition): Promise<void> => {
+    snapshot.state = reduceRunTransition(snapshot.state, transition)
+    assertRunStateInvariant(snapshot.state)
     await options.onTransition?.(cloneValue(transition))
     await options.onSnapshot?.(cloneValue(snapshot))
   }
-  const result = (executedAction?: AgentLoopNextAction): AgentLoopAdvanceResult<TToolCall> => {
+  const result = (executedAction?: RunNextAction): AdvanceRunResult<TToolCall> => {
     const state = cloneValue(snapshot.state)
     const nextAction = state.nextAction
     return {
@@ -589,7 +643,7 @@ export async function advanceAgentLoop<TToolCall>(
       ...(nextAction?.type === 'tools' ? { pendingToolCallIds: [...nextAction.toolCallIds] } : {}),
     }
   }
-  const createStep = (kind: AgentLoopStepKind): AgentLoopStepIdentity => {
+  const createStep = (kind: RunStepKind): RunStep => {
     const index = snapshot.nextStepIndex
     snapshot.nextStepIndex += 1
     return {
@@ -600,11 +654,11 @@ export async function advanceAgentLoop<TToolCall>(
     }
   }
   const fail = async (
-    step: AgentLoopStepIdentity,
+    step: RunStep,
     outcome: 'failed' | 'cancelled',
     error: string,
-    action: AgentLoopNextAction,
-  ): Promise<AgentLoopAdvanceResult<TToolCall>> => {
+    action: RunNextAction,
+  ): Promise<AdvanceRunResult<TToolCall>> => {
     if (outcome === 'cancelled') {
       await emit({
         type: 'step.cancelled',
@@ -637,14 +691,16 @@ export async function advanceAgentLoop<TToolCall>(
     return result(action)
   }
   const pause = async (
-    nextAction: AgentLoopNextAction,
-    executedAction: AgentLoopNextAction,
-  ): Promise<AgentLoopAdvanceResult<TToolCall>> => {
+    nextAction: RunNextAction,
+    executedAction: RunNextAction,
+    wait: RunWait = { reason: 'debug' },
+  ): Promise<AdvanceRunResult<TToolCall>> => {
     await emit({
       type: 'run.paused',
       timestamp: now(),
       identity: options.identity,
       nextAction,
+      wait,
     })
     return result(executedAction)
   }
@@ -657,11 +713,8 @@ export async function advanceAgentLoop<TToolCall>(
       mode: policy.mode,
     })
   } else if (snapshot.state.status === 'paused') {
-    const nextAction = snapshot.state.nextAction ?? {
-      type: 'model',
-      reason: 'resume',
-    }
-    if (nextAction.type === 'pause') return result()
+    const nextAction = snapshot.state.nextAction
+    if (!nextAction) throw new Error('paused agent run is missing its next action')
     await emit({
       type: 'run.resumed',
       timestamp: now(),
@@ -687,20 +740,9 @@ export async function advanceAgentLoop<TToolCall>(
     return result()
   }
 
-  const action =
-    snapshot.state.nextAction ??
-    ({
-      type: 'model',
-      reason: options.initialReason ?? 'user',
-    } satisfies AgentLoopNextAction)
-
-  if (action.type === 'complete') {
-    await emit({ type: 'run.completed', timestamp: now(), identity: options.identity })
-    return result(action)
-  }
-  if (action.type === 'pause') return pause(action, action)
+  const action = snapshot.state.nextAction
+  if (!action) throw new Error('running agent run is missing its next action')
   if (action.type === 'compact') {
-    const message = `compact action is not configured (${action.reason})`
     const step = createStep('compact')
     await emit({
       type: 'step.started',
@@ -709,7 +751,50 @@ export async function advanceAgentLoop<TToolCall>(
       step,
       nextAction: action,
     })
-    return fail(step, 'failed', message, action)
+    if (!options.executeCompactStep) {
+      return fail(step, 'failed', `compact action is not configured (${action.reason})`, action)
+    }
+    let compactResult: RunCompactResult
+    try {
+      compactResult = await options.executeCompactStep({
+        identity: options.identity,
+        step,
+        reason: action.reason,
+        signal: options.signal,
+      })
+    } catch (error) {
+      return fail(
+        step,
+        options.signal.aborted ? 'cancelled' : 'failed',
+        options.signal.aborted
+          ? 'abort_signal'
+          : error instanceof Error
+            ? error.message
+            : String(error),
+        action,
+      )
+    }
+    if (compactResult.outcome !== 'completed') {
+      return fail(
+        step,
+        compactResult.outcome,
+        compactResult.error ??
+          (compactResult.outcome === 'cancelled' ? 'abort_signal' : 'compact_step_failed'),
+        action,
+      )
+    }
+    const nextAction: RunNextAction = {
+      type: 'model',
+      reason: action.reason === 'provider_overflow' ? 'provider_overflow' : 'resume',
+    }
+    await emit({
+      type: 'step.completed',
+      timestamp: now(),
+      identity: options.identity,
+      step,
+      nextAction,
+    })
+    return policy.mode === 'step' ? pause(nextAction, action) : result(action)
   }
 
   if (action.type === 'model') {
@@ -725,7 +810,7 @@ export async function advanceAgentLoop<TToolCall>(
       nextAction: action,
     })
 
-    let modelResult: AgentLoopModelStepResult<TToolCall>
+    let modelResult: RunModelResult<TToolCall>
     try {
       modelResult = await options.executeModelStep({
         identity: options.identity,
@@ -759,17 +844,23 @@ export async function advanceAgentLoop<TToolCall>(
 
     snapshot.pendingToolCalls = [...modelResult.toolCalls].map(cloneValue)
     const toolCallIds = snapshot.pendingToolCalls.map(toolCallId)
-    const nextAction: AgentLoopNextAction =
-      toolCallIds.length > 0 ? { type: 'tools', toolCallIds } : { type: 'complete' }
-    await emit({
-      type: 'step.completed',
-      timestamp: now(),
-      identity: options.identity,
-      step: modelStep,
-      nextAction,
-    })
-
     if (toolCallIds.length === 0) {
+      const decision =
+        (await policy.afterModel?.({
+          identity: options.identity,
+          step: modelStep,
+          toolCalls: snapshot.pendingToolCalls,
+        })) ?? 'complete'
+      const nextAction: RunNextAction = { type: 'model', reason: 'follow_up' }
+      await emit({
+        type: 'step.completed',
+        timestamp: now(),
+        identity: options.identity,
+        step: modelStep,
+        ...(decision === 'complete' ? {} : { nextAction }),
+      })
+      if (decision === 'pause') return pause(nextAction, action)
+      if (decision === 'continue') return result(action)
       await emit({ type: 'run.completed', timestamp: now(), identity: options.identity })
       return result(action)
     }
@@ -780,10 +871,17 @@ export async function advanceAgentLoop<TToolCall>(
         toolCalls: snapshot.pendingToolCalls,
       })
       snapshot.pendingToolCalls = []
+      await emit({
+        type: 'step.completed',
+        timestamp: now(),
+        identity: options.identity,
+        step: modelStep,
+      })
       await emit({ type: 'run.completed', timestamp: now(), identity: options.identity })
       return result(action)
     }
 
+    const nextAction: RunNextAction = { type: 'tools', toolCallIds }
     const decision =
       (await policy.afterModel?.({
         identity: options.identity,
@@ -791,9 +889,23 @@ export async function advanceAgentLoop<TToolCall>(
         toolCalls: snapshot.pendingToolCalls,
       })) ?? (policy.mode === 'step' ? 'pause' : 'continue')
     if (decision === 'complete') {
+      snapshot.pendingToolCalls = []
+      await emit({
+        type: 'step.completed',
+        timestamp: now(),
+        identity: options.identity,
+        step: modelStep,
+      })
       await emit({ type: 'run.completed', timestamp: now(), identity: options.identity })
       return result(action)
     }
+    await emit({
+      type: 'step.completed',
+      timestamp: now(),
+      identity: options.identity,
+      step: modelStep,
+      nextAction,
+    })
     return decision === 'pause' ? pause(nextAction, action) : result(action)
   }
 
@@ -818,7 +930,7 @@ export async function advanceAgentLoop<TToolCall>(
     step: toolStep,
     nextAction: action,
   })
-  let toolResult: AgentLoopToolBatchResult
+  let toolResult: RunToolBatchResult
   try {
     toolResult = await options.executeToolBatch({
       identity: options.identity,
@@ -850,7 +962,13 @@ export async function advanceAgentLoop<TToolCall>(
 
   snapshot.completedToolBatches += 1
   snapshot.pendingToolCalls = []
-  const nextAction: AgentLoopNextAction = { type: 'model', reason: 'tool_results' }
+  const nextAction: RunNextAction = { type: 'model', reason: 'tool_results' }
+  const decision =
+    (await policy.afterTools?.({
+      identity: options.identity,
+      step: toolStep,
+      toolCalls,
+    })) ?? (policy.mode === 'step' ? 'pause' : 'continue')
   await emit({
     type: 'step.completed',
     timestamp: now(),
@@ -858,24 +976,18 @@ export async function advanceAgentLoop<TToolCall>(
     step: toolStep,
     nextAction,
   })
-  const decision =
-    (await policy.afterTools?.({
-      identity: options.identity,
-      step: toolStep,
-      toolCalls,
-    })) ?? (policy.mode === 'step' ? 'pause' : 'continue')
   return decision === 'pause' ? pause(nextAction, action) : result(action)
 }
 
-export async function runAgentLoop<TToolCall>(
-  options: RunAgentLoopOptions<TToolCall>,
-): Promise<AgentLoopResult> {
+export async function runDurableRun<TToolCall>(
+  options: RunMachineOptions<TToolCall>,
+): Promise<RunMachineResult> {
   let snapshot =
     options.initialSnapshot ??
-    createAgentLoopSnapshot<TToolCall>(options.identity, options.policy?.mode ?? 'continuous')
+    createRunCursor<TToolCall>(options.identity, options.policy?.mode ?? 'continuous')
   snapshot = cloneValue(snapshot)
   for (;;) {
-    const advanced = await advanceAgentLoop({ ...options, snapshot })
+    const advanced = await advanceRun({ ...options, snapshot })
     snapshot = advanced.snapshot
     if (advanced.state.status !== 'running') {
       return {

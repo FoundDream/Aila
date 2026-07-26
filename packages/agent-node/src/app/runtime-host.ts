@@ -1,8 +1,4 @@
 import {
-  AgentRuntime,
-  type AgentRuntimeHost,
-  type AgentRuntimeOptions,
-  type AgentRuntimeStore,
   type ChatMessage,
   createToolPolicy,
   promptNeedsWidget,
@@ -10,6 +6,10 @@ import {
   type RuntimePersistAttachmentInput,
   type RuntimeStableInstructionsInput,
   WIDGET_SYSTEM_PROMPT,
+  type WorkbenchHost,
+  type WorkbenchOptions,
+  WorkbenchRuntime,
+  type WorkbenchStore,
 } from '@aila/agent'
 import { createDefaultNodeRuntimeHost } from '../node/runtime-host'
 import { saveImage } from './image-store'
@@ -22,10 +22,10 @@ import { loadToolPacksFromDir } from './tool-pack-loader'
 import { webSearch } from './web-search'
 import { WIDGET_TOOL_PACK } from './widget-tool-pack'
 
-export interface CreatePersistedAgentRuntimeInput {
-  host?: AgentRuntimeHost
-  options?: Omit<AgentRuntimeOptions, 'host' | 'store'>
-  store?: AgentRuntimeStore
+export interface CreatePersistedWorkbenchInput {
+  host?: WorkbenchHost
+  options?: Omit<WorkbenchOptions, 'host' | 'store'>
+  store?: WorkbenchStore
 }
 
 async function persistRuntimeAttachment(
@@ -47,12 +47,12 @@ function formatLocalDate(date = new Date()): string {
 }
 
 export const AILA_SYSTEM_PROMPT = [
-  'You are Aila, a local-first agent runtime and workbench for code, documents, and personal workflows.',
+  'You are Aila, a local-first agent runtime and workbench for software projects and personal workflows.',
   '',
   'Working style:',
   "- Be direct, practical, and concise. Answer in the user's language unless they ask otherwise.",
   '- Prefer doing the requested work end to end when the intent is clear. Ask a question only when a missing detail blocks safe progress.',
-  '- Before editing code or documents, inspect the relevant files first. Preserve existing style and avoid unrelated rewrites.',
+  '- Before editing files, inspect the relevant content first. Preserve existing style and avoid unrelated rewrites.',
   '- Make the smallest useful change. Do not modify files outside the requested scope unless it is necessary and explain why.',
   '- Use `edit` for targeted replacements and `write` for new files or intentional full-file rewrites.',
   '- Use `bash` for inspection, builds, tests, and verification when useful. Keep commands focused and explain failures plainly.',
@@ -90,12 +90,12 @@ function buildDateContext(): ChatMessage[] {
   return [{ role: 'system', content: `Current date: ${formatLocalDate()}` }]
 }
 
-function resolveToolPackCwd(input: Parameters<NonNullable<AgentRuntimeHost['loadToolPacks']>>[0]) {
+function resolveToolPackCwd(input: Parameters<NonNullable<WorkbenchHost['loadToolPacks']>>[0]) {
   const path = input?.record?.meta.workspace?.path
   return path?.trim() ? path : undefined
 }
 
-export function createDefaultRuntimeHost(overrides: AgentRuntimeHost = {}): AgentRuntimeHost {
+export function createDefaultRuntimeHost(overrides: WorkbenchHost = {}): WorkbenchHost {
   const overrideStableInstructions = overrides.loadStableInstructions
   const overrideTransientContext = overrides.loadTransientContext
   const hostOverrides = { ...overrides }
@@ -139,10 +139,10 @@ export function createDefaultRuntimeHost(overrides: AgentRuntimeHost = {}): Agen
   }
 }
 
-export function createPersistedAgentRuntime(
-  input: CreatePersistedAgentRuntimeInput = {},
-): AgentRuntime {
-  return new AgentRuntime({
+export function createPersistedWorkbench(
+  input: CreatePersistedWorkbenchInput = {},
+): WorkbenchRuntime {
+  return new WorkbenchRuntime({
     ...(input.options ?? {}),
     store: input.store ?? createPersistedRuntimeStore(),
     host: createDefaultRuntimeHost(input.host),

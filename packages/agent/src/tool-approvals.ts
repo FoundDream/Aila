@@ -1,4 +1,4 @@
-import type { AgentEvent } from './agent-protocol'
+import type { RunEvent } from './agent-protocol'
 import { summarizeToolTarget, type ToolApprovalRequest } from './tools'
 
 export type ToolApprovalResolutionReason = 'user' | 'timeout' | 'shutdown' | 'cancelled'
@@ -10,6 +10,9 @@ export interface ToolApprovalRequestPayload {
   metadata: ToolApprovalRequest['metadata']
   conversationId?: string
   messageId?: string
+  turnId?: string
+  runId?: string
+  stepId?: string
   toolCallId?: string
   requestedAt: number
   expiresAt: number
@@ -32,13 +35,13 @@ export type ToolApprovalIdFactory = () => string
 
 export type ToolApprovalActivityRecorder = (
   conversationId: string,
-  event: AgentEvent,
+  event: RunEvent,
 ) => MaybePromise<unknown>
 
 export interface ToolApprovalStoreOptions {
   timeoutMs: number
   createId?: ToolApprovalIdFactory
-  recordAgentEvent?: ToolApprovalActivityRecorder
+  recordRunEvent?: ToolApprovalActivityRecorder
   onRequest?: (payload: ToolApprovalRequestPayload) => void
   onResolved?: (payload: ToolApprovalResolvedPayload) => void
   logger?: Pick<Console, 'warn'>
@@ -48,7 +51,7 @@ export interface ImmediateToolApprovalActivityInput {
   request: ToolApprovalRequest
   approve: (request: ToolApprovalRequest) => MaybePromise<boolean>
   createId?: ToolApprovalIdFactory
-  recordAgentEvent?: ToolApprovalActivityRecorder
+  recordRunEvent?: ToolApprovalActivityRecorder
   logger?: Pick<Console, 'warn'>
 }
 
@@ -109,17 +112,20 @@ async function recordToolApprovalActivity(
   req: ToolApprovalRequest,
   requestId: string,
   state: 'requested' | 'resolved',
-  callbacks: Pick<ToolApprovalStoreOptions, 'recordAgentEvent' | 'logger'>,
+  callbacks: Pick<ToolApprovalStoreOptions, 'recordRunEvent' | 'logger'>,
   approved?: boolean,
   reason?: ToolApprovalResolutionReason,
 ): Promise<void> {
   if (!req.conversationId || !req.messageId) return
   const target = summarizeToolTarget(req.name, req.args)
 
-  const event: AgentEvent = {
+  const event: RunEvent = {
     timestamp: Date.now(),
     conversationId: req.conversationId,
     messageId: req.messageId,
+    ...(req.turnId && { turnId: req.turnId }),
+    ...(req.runId && { runId: req.runId }),
+    ...(req.stepId && { stepId: req.stepId }),
     type: state === 'requested' ? 'tool.approval.requested' : 'tool.approval.resolved',
     data: {
       requestId,
@@ -142,7 +148,7 @@ async function recordToolApprovalActivity(
   }
 
   try {
-    await callbacks.recordAgentEvent?.(req.conversationId, event)
+    await callbacks.recordRunEvent?.(req.conversationId, event)
   } catch (error) {
     callbacks.logger?.warn('[activity] tool approval event append failed:', error)
   }
@@ -182,6 +188,9 @@ export class ToolApprovalStore {
         metadata: cloneApprovalValue(request.metadata),
         ...(request.conversationId && { conversationId: request.conversationId }),
         ...(request.messageId && { messageId: request.messageId }),
+        ...(request.turnId && { turnId: request.turnId }),
+        ...(request.runId && { runId: request.runId }),
+        ...(request.stepId && { stepId: request.stepId }),
         ...(request.toolCallId && { toolCallId: request.toolCallId }),
         requestedAt,
         expiresAt: requestedAt + this.options.timeoutMs,

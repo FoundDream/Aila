@@ -2,12 +2,8 @@ import { randomUUID } from 'node:crypto'
 import { appendFile, mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import {
-  type AgentEvent,
-  type AgentEventAppendResult,
-  type AgentRunArtifact,
-  type AgentRunCheckpoint,
   AILA_CONVERSATION_META_SCHEMA_VERSION,
-  activityFromAgentEvent,
+  activityFromRunEvent,
   appendConversationContextTurnLedgerEntry,
   appendPlanRevisionToPlan,
   type ConversationContextCheckpoint,
@@ -22,19 +18,24 @@ import {
   DEFAULT_CONVERSATION_TITLE,
   deriveConversationTitle,
   interruptedRecoveryEventFromLegacyActivity,
-  normalizeAgentEvent,
   normalizeConversationMeta,
   normalizePersistedMessage,
-  orderedUniqueAgentEvents,
-  type PersistedAgentEvent,
+  normalizeRunCheckpoint,
+  normalizeRunEvent,
+  orderedUniqueRunEvents,
   type PersistedMessage,
+  type PersistedRunEvent,
   type PlanArtifact,
   type PlanRevisionInput,
-  prepareAgentEventAppend,
-  prepareAgentRunArtifact,
-  prepareAgentRunCheckpoint,
   preparePersistedMessage,
   preparePlanArtifact,
+  prepareRunArtifact,
+  prepareRunCheckpoint,
+  prepareRunEventAppend,
+  type RunArtifact,
+  type RunCheckpoint,
+  type RunEvent,
+  type RunEventAppendResult,
   replayConversationActivity,
   type UsageInfo,
   upsertPersistedMessage,
@@ -43,10 +44,9 @@ import { getNodeToolResultsConversationDir } from '../node/tool-result-store'
 import { getConversationsDir, getDataDir, getPlansDir, getRunsDir } from './paths'
 
 export {
-  type AgentEventAppendResult,
-  AILA_AGENT_EVENT_SCHEMA_VERSION,
   AILA_CONVERSATION_META_SCHEMA_VERSION,
   AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+  AILA_RUN_EVENT_SCHEMA_VERSION,
   type ConversationActivity,
   type ConversationActivityState,
   type ConversationCompactArtifact,
@@ -67,14 +67,15 @@ export {
   type ConversationSummary,
   type ConversationUsage,
   createInterruptedConversationRecoveryEvent,
-  orderedUniqueAgentEvents,
-  type PersistedAgentEvent,
+  orderedUniqueRunEvents,
   type PersistedBlock,
   type PersistedFileBlock,
   type PersistedImageBlock,
   type PersistedMessage,
+  type PersistedRunEvent,
   type PersistedTextBlock,
   type PersistedToolCallBlock,
+  type RunEventAppendResult,
   replayConversationActivity,
   replayConversationRuntimeState,
 } from '@aila/agent'
@@ -328,11 +329,6 @@ export async function listConversations(): Promise<ConversationSummary[]> {
     .sort((a, b) => b.updatedAt - a.updatedAt)
 }
 
-export async function listChatConversations(): Promise<ConversationSummary[]> {
-  const list = await listConversations()
-  return list.filter((meta) => !meta.docId)
-}
-
 export async function recoverInterruptedConversationActivities(
   reason = 'runtime restarted before this turn finished',
 ): Promise<ConversationSummary[]> {
@@ -345,12 +341,12 @@ export async function recoverInterruptedConversationActivities(
 
 export async function recoverInterruptedConversationActivityResults(
   reason = 'runtime restarted before this turn finished',
-): Promise<AgentEventAppendResult[]> {
+): Promise<RunEventAppendResult[]> {
   const list = await listConversations()
-  const recovered: AgentEventAppendResult[] = []
+  const recovered: RunEventAppendResult[] = []
   await Promise.all(
     list.map(async (meta) => {
-      const events = await listAgentEvents(meta.id)
+      const events = await listRunEvents(meta.id)
       const replayedActivity = replayConversationActivity(events)
       const activity = replayedActivity ?? meta.activity
       if (!activity) return
@@ -373,7 +369,7 @@ export async function recoverInterruptedConversationActivityResults(
           reason,
         )
       if (!recoveryEvent) return
-      recovered.push(await appendAgentEventAndTouchConversation(meta.id, recoveryEvent))
+      recovered.push(await appendRunEventAndTouchConversation(meta.id, recoveryEvent))
     }),
   )
   return recovered.sort(
@@ -405,7 +401,6 @@ export async function getConversation(id: string): Promise<ConversationRecord> {
 }
 
 export async function createConversation(
-  docId?: string,
   workspace?: ConversationWorkspaceRef | null,
 ): Promise<ConversationSummary> {
   await ensureDir()
@@ -416,20 +411,11 @@ export async function createConversation(
     title: DEFAULT_CONVERSATION_TITLE,
     createdAt: now,
     updatedAt: now,
-    ...(docId ? { docId } : {}),
     ...(workspace ? { workspace: structuredClone(workspace) } : {}),
   }
   await writeMeta(meta)
   await writeFile(logPath(meta.id), '', 'utf-8')
   return meta
-}
-
-// Doc-bound conversations: a doc may have N of them. Title is derived from
-// the first user message (same path as chat-tab conversations); listConversations
-// already sorts by updatedAt desc, so we just filter.
-export async function listDocConversations(docId: string): Promise<ConversationSummary[]> {
-  const list = await listConversations()
-  return list.filter((meta) => meta.docId === docId)
 }
 
 export async function appendMessage(
@@ -503,14 +489,11 @@ function touchMetaAfterMessage(
   })
 }
 
-export async function appendAgentEvent(
-  id: string,
-  event: AgentEvent,
-): Promise<PersistedAgentEvent> {
+export async function appendRunEvent(id: string, event: RunEvent): Promise<PersistedRunEvent> {
   await ensureDir()
   return queueEventWrite(id, async () => {
-    const existing = await listAgentEvents(id)
-    const prepared = prepareAgentEventAppend(existing, event, randomUUID)
+    const existing = await listRunEvents(id)
+    const prepared = prepareRunEventAppend(existing, event, randomUUID)
     if (!prepared.duplicate) {
       await appendFile(eventLogPath(id), `${JSON.stringify(prepared.event)}\n`, 'utf-8')
     }
@@ -518,12 +501,12 @@ export async function appendAgentEvent(
   })
 }
 
-export async function appendAgentEventAndTouchConversation(
+export async function appendRunEventAndTouchConversation(
   id: string,
-  event: AgentEvent,
-): Promise<AgentEventAppendResult> {
-  const persisted = await appendAgentEvent(id, event)
-  const activity = activityFromAgentEvent(persisted)
+  event: RunEvent,
+): Promise<RunEventAppendResult> {
+  const persisted = await appendRunEvent(id, event)
+  const activity = activityFromRunEvent(persisted)
   const summary = activity
     ? await updateMeta(id, (current) =>
         current.activity && current.activity.updatedAt > activity.updatedAt
@@ -538,7 +521,7 @@ export async function appendAgentEventAndTouchConversation(
   return { event: persisted, ...(summary ? { summary } : {}) }
 }
 
-export async function listAgentEvents(id: string): Promise<PersistedAgentEvent[]> {
+export async function listRunEvents(id: string): Promise<PersistedRunEvent[]> {
   await ensureDir()
   let raw = ''
   try {
@@ -547,19 +530,19 @@ export async function listAgentEvents(id: string): Promise<PersistedAgentEvent[]
     return []
   }
 
-  const events: PersistedAgentEvent[] = []
+  const events: PersistedRunEvent[] = []
   for (const line of raw.split('\n')) {
     const trimmed = line.trim()
     if (!trimmed) continue
     try {
-      const event = normalizeAgentEvent(JSON.parse(trimmed) as Partial<PersistedAgentEvent>, id)
+      const event = normalizeRunEvent(JSON.parse(trimmed) as Partial<PersistedRunEvent>, id)
       if (!event) continue
       events.push(event)
     } catch {
       // skip malformed line
     }
   }
-  return orderedUniqueAgentEvents(events)
+  return orderedUniqueRunEvents(events)
 }
 
 function localDateKey(timestamp: number): string {
@@ -645,13 +628,13 @@ export async function getTokenUsageStats(now = Date.now()): Promise<TokenUsageSt
           return
         }
 
-        const events: PersistedAgentEvent[] = []
+        const events: PersistedRunEvent[] = []
         for (const line of raw.split('\n')) {
           const trimmed = line.trim()
           if (!trimmed) continue
           try {
-            const event = normalizeAgentEvent(
-              JSON.parse(trimmed) as Partial<PersistedAgentEvent>,
+            const event = normalizeRunEvent(
+              JSON.parse(trimmed) as Partial<PersistedRunEvent>,
               conversationId,
             )
             if (event) events.push(event)
@@ -660,7 +643,7 @@ export async function getTokenUsageStats(now = Date.now()): Promise<TokenUsageSt
           }
         }
 
-        for (const event of orderedUniqueAgentEvents(events)) {
+        for (const event of orderedUniqueRunEvents(events)) {
           if (event.type !== 'turn.completed') continue
           const data = event.data
           if (!data || typeof data !== 'object' || Array.isArray(data)) continue
@@ -773,29 +756,27 @@ export async function recordConversationContextTurnLedger(
   }))
 }
 
-export async function getAgentRunCheckpoint(
+export async function getRunCheckpoint(
   conversationId: string,
   runId: string,
-): Promise<AgentRunCheckpoint | null> {
+): Promise<RunCheckpoint | null> {
   try {
     const raw = await readFile(runCheckpointPath(conversationId, runId), 'utf-8')
-    return structuredClone(JSON.parse(raw) as AgentRunCheckpoint)
+    return structuredClone(normalizeRunCheckpoint(JSON.parse(raw)))
   } catch (error) {
     if (isErrnoCode(error, 'ENOENT')) return null
     throw error
   }
 }
 
-export async function saveAgentRunCheckpoint(
-  checkpoint: AgentRunCheckpoint,
-): Promise<AgentRunCheckpoint> {
+export async function saveRunCheckpoint(checkpoint: RunCheckpoint): Promise<RunCheckpoint> {
   await readMeta(checkpoint.identity.conversationId)
   return queueRunWrite(checkpoint.identity.conversationId, checkpoint.identity.runId, async () => {
-    const previous = await getAgentRunCheckpoint(
+    const previous = await getRunCheckpoint(
       checkpoint.identity.conversationId,
       checkpoint.identity.runId,
     )
-    const prepared = prepareAgentRunCheckpoint(checkpoint, previous ?? undefined)
+    const prepared = prepareRunCheckpoint(checkpoint, previous ?? undefined)
     const dir = runDir(prepared.identity.conversationId, prepared.identity.runId)
     await mkdir(dir, { recursive: true })
     await writeJsonAtomic(
@@ -806,9 +787,7 @@ export async function saveAgentRunCheckpoint(
   })
 }
 
-export async function listAgentRunCheckpoints(
-  conversationId: string,
-): Promise<AgentRunCheckpoint[]> {
+export async function listRunCheckpoints(conversationId: string): Promise<RunCheckpoint[]> {
   const dir = runConversationDir(conversationId)
   await mkdir(dir, { recursive: true })
   const entries = await readdir(dir, { withFileTypes: true })
@@ -816,25 +795,23 @@ export async function listAgentRunCheckpoints(
     entries
       .filter((entry) => entry.isDirectory())
       .map((entry) =>
-        getAgentRunCheckpoint(conversationId, decodeURIComponent(entry.name)).catch(() => null),
+        getRunCheckpoint(conversationId, decodeURIComponent(entry.name)).catch(() => null),
       ),
   )
   return checkpoints
-    .filter((checkpoint): checkpoint is AgentRunCheckpoint => checkpoint !== null)
+    .filter((checkpoint): checkpoint is RunCheckpoint => checkpoint !== null)
     .sort((left, right) => right.updatedAt - left.updatedAt)
 }
 
-export async function saveAgentRunArtifact(artifact: AgentRunArtifact): Promise<AgentRunArtifact> {
+export async function saveRunArtifact(artifact: RunArtifact): Promise<RunArtifact> {
   await readMeta(artifact.conversationId)
   return queueRunWrite(artifact.conversationId, artifact.runId, async () => {
-    const prepared = prepareAgentRunArtifact(artifact)
+    const prepared = prepareRunArtifact(artifact)
     const dir = runArtifactsDir(prepared.conversationId, prepared.runId)
     const path = join(dir, `${encodeURIComponent(prepared.artifactId)}.json`)
     await mkdir(dir, { recursive: true })
     try {
-      const existing = prepareAgentRunArtifact(
-        JSON.parse(await readFile(path, 'utf-8')) as AgentRunArtifact,
-      )
+      const existing = prepareRunArtifact(JSON.parse(await readFile(path, 'utf-8')) as RunArtifact)
       if (JSON.stringify(existing) !== JSON.stringify(prepared)) {
         throw new Error(`run artifact is immutable: ${prepared.artifactId}`)
       }
@@ -847,10 +824,10 @@ export async function saveAgentRunArtifact(artifact: AgentRunArtifact): Promise<
   })
 }
 
-export async function listAgentRunArtifacts(
+export async function listRunArtifacts(
   conversationId: string,
   runId: string,
-): Promise<AgentRunArtifact[]> {
+): Promise<RunArtifact[]> {
   const dir = runArtifactsDir(conversationId, runId)
   await mkdir(dir, { recursive: true })
   const files = await readdir(dir)
@@ -859,8 +836,8 @@ export async function listAgentRunArtifacts(
       .filter((file) => file.endsWith('.json'))
       .map(async (file) => {
         try {
-          return prepareAgentRunArtifact(
-            JSON.parse(await readFile(join(dir, file), 'utf-8')) as AgentRunArtifact,
+          return prepareRunArtifact(
+            JSON.parse(await readFile(join(dir, file), 'utf-8')) as RunArtifact,
           )
         } catch {
           return null
@@ -868,7 +845,7 @@ export async function listAgentRunArtifacts(
       }),
   )
   return artifacts
-    .filter((artifact): artifact is AgentRunArtifact => artifact !== null)
+    .filter((artifact): artifact is RunArtifact => artifact !== null)
     .sort((left, right) => left.createdAt - right.createdAt)
 }
 
@@ -956,67 +933,4 @@ export async function deleteConversation(id: string): Promise<void> {
   for (const key of runWriteChains.keys()) {
     if (key.startsWith(`${id}:`)) runWriteChains.delete(key)
   }
-}
-
-export interface DocRefRewrite {
-  oldPath: string
-  newPath: string
-  // True for folder renames/moves: matches docIds equal to oldPath or starting
-  // with `${oldPath}/`. False (or omitted) for doc renames: only exact match.
-  isFolder?: boolean
-}
-
-// Cascade-rewrite meta.docId across every doc-bound conversation after a doc
-// or folder is renamed/moved. Mirrors Obsidian's "rename + scan vault and
-// rewrite wikilinks" behaviour. Caller (docs.ts) invokes after fs.rename has
-// already committed; failure here leaves the file rename in place and the
-// affected conversations show broken doc-bindings.
-export async function rewriteDocRefs(rewrites: DocRefRewrite[]): Promise<ConversationSummary[]> {
-  if (rewrites.length === 0) return []
-  await ensureDir()
-  const dir = getConversationsDir()
-  const entries = await readdir(dir)
-  const updated: ConversationSummary[] = []
-  const rewriteDocId = (docId: string): string | null => {
-    for (const r of rewrites) {
-      if (r.isFolder) {
-        if (docId === r.oldPath || docId.startsWith(`${r.oldPath}/`)) {
-          return `${r.newPath}${docId.slice(r.oldPath.length)}`
-        }
-      } else if (docId === r.oldPath) {
-        return r.newPath
-      }
-    }
-    return null
-  }
-  await Promise.all(
-    entries
-      .filter((name) => name.endsWith('.meta.json'))
-      .map(async (name) => {
-        const path = join(dir, name)
-        let raw: string
-        try {
-          raw = await readFile(path, 'utf-8')
-        } catch {
-          return
-        }
-        let meta: ConversationMeta
-        try {
-          meta = normalizeConversationMeta(JSON.parse(raw) as Partial<ConversationMeta>)
-        } catch {
-          return
-        }
-        const docId = meta.docId
-        if (!docId) return
-        if (rewriteDocId(docId) === null) return
-        const next = await updateMeta(meta.id, (current) => {
-          const currentDocId = current.docId
-          if (!currentDocId) return current
-          const nextDocId = rewriteDocId(currentDocId)
-          return nextDocId === null ? current : { ...current, docId: nextDocId }
-        })
-        if (next.docId !== docId) updated.push(next)
-      }),
-  )
-  return updated
 }

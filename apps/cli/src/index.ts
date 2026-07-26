@@ -6,8 +6,6 @@ import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { stdin as input, stdout as output, stderr } from 'node:process'
 import {
-  type AgentRuntimeApi,
-  type AgentRuntimeEvent,
   type AilaExecutionMode,
   type ConversationSummary,
   createToolPolicy,
@@ -23,11 +21,13 @@ import {
   requestToolApprovalWithActivity,
   type ToolApprovalMode,
   type ToolApprovalRequest,
+  type Workbench,
+  type WorkbenchEvent,
 } from '@aila/agent'
 import {
   configureDataDir,
   configuredProviders,
-  createPersistedAgentRuntime,
+  createPersistedWorkbench,
   getDataDir,
   getExtensionReport,
   getToolPacksDir,
@@ -362,8 +362,8 @@ function formatDate(timestamp: number): string {
   return new Date(timestamp).toLocaleString()
 }
 
-function conversationScope(summary: ConversationSummary): string {
-  return summary.docId ? `doc:${summary.docId}` : 'chat'
+function conversationScope(_summary: ConversationSummary): string {
+  return 'thread'
 }
 
 function preview(text: string, max = 600): string {
@@ -372,10 +372,7 @@ function preview(text: string, max = 600): string {
   return `${compact.slice(0, max)}...`
 }
 
-async function printConversationList(
-  runtime: AgentRuntimeApi,
-  input: { limit: number },
-): Promise<void> {
+async function printConversationList(runtime: Workbench, input: { limit: number }): Promise<void> {
   const conversations = await runtime.listConversations()
   const shown = conversations.slice(0, input.limit)
 
@@ -397,7 +394,7 @@ async function printConversationList(
   }
 }
 
-async function printPlanList(runtime: AgentRuntimeApi, conversationId: string): Promise<void> {
+async function printPlanList(runtime: Workbench, conversationId: string): Promise<void> {
   const plans = await runtime.listPlans(conversationId)
 
   output.write('Aila plans\n')
@@ -478,12 +475,12 @@ function createRuntime(input: {
   events: boolean
   json: boolean
   onCompletion?: (state: CompletionState) => void
-}): AgentRuntimeApi {
+}): Workbench {
   let assistantText = ''
   const toolNames = new Map<string, string>()
-  let runtime: AgentRuntimeApi
+  let runtime: Workbench
 
-  runtime = createPersistedAgentRuntime({
+  runtime = createPersistedWorkbench({
     host: {
       onEvent: (event) => {
         if (input.events) output.write(`${JSON.stringify(event)}\n`)
@@ -504,8 +501,8 @@ function createRuntime(input: {
           request,
           approve: (approvalRequest) =>
             approveTool(approvalRequest, input.approvalMode, input.events),
-          recordAgentEvent: async (_conversationId, event) => {
-            await runtime.recordAgentEvent(event)
+          recordRunEvent: async (_conversationId, event) => {
+            await runtime.recordRunEvent(event)
           },
           logger: console,
         }),
@@ -537,7 +534,7 @@ function interruptedReason(data: Record<string, unknown> | undefined): string {
 }
 
 export function handleRuntimeEvent(
-  event: AgentRuntimeEvent,
+  event: WorkbenchEvent,
   state: {
     assistantText: string
     events: boolean
@@ -589,7 +586,7 @@ export function handleRuntimeEvent(
         usage: null,
       })
       break
-    case 'agent:event':
+    case 'run:event':
       if (event.data.type === 'turn.interrupted') {
         const reason = interruptedReason(event.data.data)
         if (!state.events && !state.json) stderr.write(`[interrupted] ${reason}\n`)
@@ -797,7 +794,7 @@ async function main(): Promise<void> {
   if (completed.status === 'error') process.exitCode = 1
 }
 
-async function waitForRunIdle(runtime: AgentRuntimeApi, runId: string): Promise<void> {
+async function waitForRunIdle(runtime: Workbench, runId: string): Promise<void> {
   while (runtime.listActiveTurns().some((turn) => turn.runId === runId)) {
     await new Promise<void>((resolve) => setTimeout(resolve, 10))
   }

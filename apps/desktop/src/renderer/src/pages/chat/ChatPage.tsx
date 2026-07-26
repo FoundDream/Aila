@@ -26,6 +26,7 @@ interface ChatPageProps {
   configuredProviders: ProviderId[]
   onUpdateSettings: (settings: Settings) => Promise<void>
   onOpenSettings: () => void
+  onRunInspectorOpen: () => void
 }
 
 export function ChatPage({
@@ -36,6 +37,7 @@ export function ChatPage({
   configuredProviders,
   onUpdateSettings,
   onOpenSettings,
+  onRunInspectorOpen,
 }: ChatPageProps): ReactElement {
   const { selection, selectionRef, contextLength, handleSelectionChange } = useModelSelection(
     settings,
@@ -192,6 +194,13 @@ export function ChatPage({
     [settings, onUpdateSettings, onOpenSettings],
   )
 
+  const toggleRunInspector = useCallback((): void => {
+    setShowRunInspector((visible) => {
+      if (!visible) onRunInspectorOpen()
+      return !visible
+    })
+  }, [onRunInspectorOpen])
+
   const composer = (
     <Composer
       isStreaming={isStreaming}
@@ -215,27 +224,35 @@ export function ChatPage({
 
   return (
     <div className="flex h-full flex-col text-[var(--text)]">
-      <header className="relative flex h-10 shrink-0 items-center justify-center px-8 [-webkit-app-region:drag]">
-        <span className="min-w-0 max-w-[42%] truncate text-[13px] font-medium text-[var(--text-soft)]">
-          {conversation?.meta.title ?? ''}
-        </span>
+      <header className="relative flex h-12 shrink-0 items-center justify-between border-b border-[var(--border)] px-5 [-webkit-app-region:drag]">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="font-mono text-[9px] uppercase tracking-[0.16em] text-[var(--text-dim)]">
+            {conversation?.meta.workspace?.label ?? 'Local'}
+          </span>
+          <span className="text-[var(--border-strong)]">/</span>
+          <span className="min-w-0 truncate text-[13px] font-semibold tracking-[-0.015em] text-[var(--text)]">
+            {conversation?.meta.title ?? 'New thread'}
+          </span>
+        </div>
         {conversationId && (
-          <div className="absolute right-5 flex items-center gap-1.5 [-webkit-app-region:no-drag]">
+          <div className="flex shrink-0 items-center gap-1.5 [-webkit-app-region:no-drag]">
+            {!showRunInspector && (
+              <button
+                type="button"
+                onClick={() => setStepMode((enabled) => !enabled)}
+                className={`h-6 rounded-sm border px-2 font-mono text-[9px] uppercase tracking-wide transition-colors ${
+                  stepMode
+                    ? 'border-amber-400/50 bg-amber-400/10 text-amber-600'
+                    : 'border-[var(--border)] text-[var(--text-dim)] hover:bg-[var(--surface-hover)]'
+                }`}
+                title="Execution mode for the next message"
+              >
+                {stepMode ? 'Step next run' : 'Continuous next run'}
+              </button>
+            )}
             <button
               type="button"
-              onClick={() => setStepMode((enabled) => !enabled)}
-              className={`h-6 rounded-sm border px-2 font-mono text-[9px] uppercase tracking-wide transition-colors ${
-                stepMode
-                  ? 'border-amber-400/50 bg-amber-400/10 text-amber-600'
-                  : 'border-[var(--border)] text-[var(--text-dim)] hover:bg-[var(--surface-hover)]'
-              }`}
-              title="Pause after each model or tool action"
-            >
-              {stepMode ? 'Step armed' : 'Continuous'}
-            </button>
-            <button
-              type="button"
-              onClick={() => setShowRunInspector((visible) => !visible)}
+              onClick={toggleRunInspector}
               className={`inline-flex h-6 items-center gap-1.5 rounded-sm border px-2 font-mono text-[9px] uppercase tracking-wide transition-colors ${
                 showRunInspector
                   ? 'border-emerald-500/50 bg-emerald-500/10 text-emerald-600'
@@ -248,43 +265,60 @@ export function ChatPage({
           </div>
         )}
       </header>
-      <main className="flex min-h-0 flex-1 flex-col">
-        {showRunInspector && conversationId && (
-          <RunInspector
-            conversationId={conversationId}
-            onClose={() => setShowRunInspector(false)}
-          />
-        )}
-        {activePlan && (
-          <PlanReviewPanel
-            plan={activePlan}
-            mode={executionMode}
-            busy={isStreaming || queuedCount > 0}
-            onSave={handleSavePlanMarkdown}
-            onApprove={handleApprovePlan}
-            onCancel={handleCancelPlan}
-          />
-        )}
-        {messages.length === 0 ? (
-          // New-chat hero: prompt + composer sit together at the vertical
-          // center; pb offsets the h-10 header so it reads optically centered.
-          <div className="flex min-h-0 flex-1 flex-col justify-center pb-20">
-            <p className="mb-4 text-center text-[22px] font-medium text-[var(--text)]">
-              What can I help with?
-            </p>
-            {composer}
-          </div>
-        ) : (
-          <>
-            <Transcript
-              messages={messages}
-              events={events}
-              canRetryLast={canRetryLast}
-              onRetryLast={handleRetryLast}
-              submitScrollKey={submitScrollKey}
+      <main className="flex min-h-0 flex-1 overflow-hidden">
+        <section className="flex min-w-[340px] flex-1 flex-col overflow-hidden">
+          {activePlan && (
+            <PlanReviewPanel
+              plan={activePlan}
+              mode={executionMode}
+              busy={isStreaming || queuedCount > 0}
+              onSave={handleSavePlanMarkdown}
+              onApprove={handleApprovePlan}
+              onCancel={handleCancelPlan}
             />
-            {composer}
-          </>
+          )}
+          {messages.length === 0 ? (
+            <div className="flex min-h-0 flex-1 flex-col justify-center pb-16">
+              <div className="mx-auto mb-6 flex w-full max-w-2xl items-end justify-between px-1">
+                <div>
+                  <div className="mb-3 flex items-center gap-2 font-mono text-[9px] uppercase tracking-[0.18em] text-[var(--text-dim)]">
+                    <span className="size-1.5 rounded-full bg-[var(--signal)] shadow-[0_0_0_4px_var(--signal-glow)]" />
+                    Runtime ready
+                  </div>
+                  <h1 className="font-serif text-[34px] leading-none tracking-[-0.035em] text-[var(--text)]">
+                    Start a thread.
+                  </h1>
+                  <p className="mt-3 max-w-lg text-[13px] leading-relaxed text-[var(--text-soft)]">
+                    Describe the outcome. Aila will inspect the workspace, use tools, and keep the
+                    run observable.
+                  </p>
+                </div>
+                <span className="pb-1 font-mono text-[9px] uppercase tracking-[0.14em] text-[var(--text-dim)]">
+                  Local first
+                </span>
+              </div>
+              {composer}
+            </div>
+          ) : (
+            <>
+              <Transcript
+                messages={messages}
+                events={events}
+                canRetryLast={canRetryLast}
+                onRetryLast={handleRetryLast}
+                submitScrollKey={submitScrollKey}
+              />
+              {composer}
+            </>
+          )}
+        </section>
+        {showRunInspector && conversationId && (
+          <aside className="flex w-[clamp(560px,58vw,920px)] min-w-[560px] shrink-0 border-l border-[var(--border)] bg-[var(--bg)] shadow-[-16px_0_32px_rgba(36,31,22,0.035)]">
+            <RunInspector
+              conversationId={conversationId}
+              onClose={() => setShowRunInspector(false)}
+            />
+          </aside>
         )}
       </main>
     </div>

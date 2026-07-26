@@ -12,7 +12,7 @@ import { Streamdown } from 'streamdown'
 import { useStickToBottom } from 'use-stick-to-bottom'
 import { markdownComponents } from '@/components/markdown/streamdownComponents'
 import { markdownPlugins } from '@/components/markdown/streamdownPlugins'
-import type { PersistedAgentEvent } from '../../types'
+import type { PersistedRunEvent } from '../../types'
 import { ContextCompactionStatus } from './ContextCompactionStatus'
 import type { Block, Message, ToolCallBlock } from './types'
 
@@ -24,7 +24,7 @@ export function Transcript({
   submitScrollKey = 0,
 }: {
   messages: Message[]
-  events?: PersistedAgentEvent[]
+  events?: PersistedRunEvent[]
   canRetryLast?: boolean
   onRetryLast?: () => void
   submitScrollKey?: number
