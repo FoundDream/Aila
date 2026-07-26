@@ -244,7 +244,7 @@ export interface ImageModelEntry {
   displayName: string
 }
 
-// First-class image-generation models. Adapter dispatch (`src/main/image/`) is
+// First-class image-generation models. Adapter dispatch (`@aila/agent-node`) is
 // keyed by providerId; modelId is whatever string the provider expects.
 // Order matters: non-moderated models first, since OpenAI's image moderation
 // rejects many benign prompts (diagrams, people, etc.) with a 403.

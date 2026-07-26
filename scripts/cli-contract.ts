@@ -7,9 +7,13 @@ import {
   AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
   createRuntimeEvent,
 } from '@aila/agent'
-import { handleRuntimeEvent } from '../src/cli/index'
-import { configureDataDir } from '../src/main/agent-host'
-import { appendMessage, createConversation, getConversation } from '../src/main/conversations'
+import {
+  appendMessage,
+  configureDataDir,
+  createConversation,
+  getConversation,
+} from '@aila/agent-node/app'
+import { handleRuntimeEvent } from '../apps/cli/src/index'
 
 interface RunResult {
   code: number
@@ -39,7 +43,7 @@ async function withTempDataDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
 
 function runCli(args: string[], env: Record<string, string | undefined> = {}): Promise<RunResult> {
   return new Promise((resolve, reject) => {
-    const child = spawn('bun', ['src/cli/index.ts', ...args], {
+    const child = spawn('bun', ['apps/cli/src/index.ts', ...args], {
       cwd: process.cwd(),
       env: { ...process.env, ...env },
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -200,10 +204,10 @@ function testInterruptedAgentEventCompletesCliAdapter(): void {
 }
 
 async function testCliUsesSharedRuntimeFactory(): Promise<void> {
-  const source = await readFile(join(process.cwd(), 'src/cli/index.ts'), 'utf-8')
+  const source = await readFile(join(process.cwd(), 'apps/cli/src/index.ts'), 'utf-8')
   assert(
-    source.includes("from '@aila/agent'") && source.includes("from '../main/agent-host'"),
-    'CLI adapter should import agent core from @aila/agent and host adapters from main',
+    source.includes("from '@aila/agent'") && source.includes("from '@aila/agent-node/app'"),
+    'CLI adapter should import agent core and Node host through workspace packages',
   )
   assert(!source.includes("from '../runtime"), 'CLI adapter should not import local runtime paths')
   assert(

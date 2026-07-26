@@ -1,0 +1,17 @@
+{
+  "extends": "@electron-toolkit/tsconfig/tsconfig.node.json",
+  "include": ["electron.vite.config.*", "src/main/**/*", "src/preload/**/*", "src/shared/**/*"],
+  "compilerOptions": {
+    "composite": true,
+    "tsBuildInfoFile": "out/tsconfig.node.tsbuildinfo",
+    "types": ["electron-vite/node"],
+    "baseUrl": ".",
+    "paths": {
+      "@aila/agent/host": ["../../packages/agent/src/host.ts"],
+      "@aila/agent": ["../../packages/agent/src/index.ts"],
+      "@aila/agent-node/app": ["../../packages/agent-node/src/app/index.ts"],
+      "@aila/agent-node": ["../../packages/agent-node/src/index.ts"],
+      "@shared/*": ["./src/shared/*"]
+    }
+  }
+}

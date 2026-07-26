@@ -1,0 +1,17 @@
+{
+  "name": "@aila/tui",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "bun src/index.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json --composite false"
+  },
+  "dependencies": {
+    "@aila/agent": "workspace:*",
+    "@aila/agent-node": "workspace:*",
+    "chalk": "5.4.1",
+    "cli-highlight": "2.1.11",
+    "dotenv": "^16.4.5"
+  }
+}

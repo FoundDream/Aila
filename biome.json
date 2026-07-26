@@ -12,10 +12,10 @@
       "**/*.tsx",
       "**/*.js",
       "**/*.json",
-      "!src/renderer/src/components/ui",
-      "!src/renderer/src/components/editor",
-      "!src/renderer/src/hooks",
-      "!src/renderer/src/lib/utils.ts"
+      "!apps/desktop/src/renderer/src/components/ui",
+      "!apps/desktop/src/renderer/src/components/editor",
+      "!apps/desktop/src/renderer/src/hooks",
+      "!apps/desktop/src/renderer/src/lib/utils.ts"
     ]
   },
   "formatter": {

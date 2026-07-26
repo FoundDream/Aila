@@ -7,9 +7,13 @@ import {
   AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
   createRuntimeEvent,
 } from '@aila/agent'
-import { configureDataDir } from '../src/main/agent-host'
-import { appendMessage, createConversation, getConversation } from '../src/main/conversations'
-import { handleRuntimeEvent } from '../src/tui/line-mode'
+import {
+  appendMessage,
+  configureDataDir,
+  createConversation,
+  getConversation,
+} from '@aila/agent-node/app'
+import { handleRuntimeEvent } from '../apps/tui/src/line-mode'
 
 interface RunResult {
   code: number
@@ -53,7 +57,7 @@ function runTui(
   env: Record<string, string | undefined> = {},
 ): Promise<RunResult> {
   return new Promise((resolve, reject) => {
-    const child = spawn('bun', ['src/tui/index.ts', ...args], {
+    const child = spawn('bun', ['apps/tui/src/index.ts', ...args], {
       cwd: process.cwd(),
       env: { ...process.env, ...env },
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -269,11 +273,16 @@ function testInterruptedAgentEventCompletesLineModeAdapter(): void {
 }
 
 async function testTuiUsesSharedRuntimeFactory(): Promise<void> {
-  const source = await readFile(join(process.cwd(), 'src/tui/line-mode.ts'), 'utf-8')
-  const fullscreenSource = await readFile(join(process.cwd(), 'src/tui/fullscreen.ts'), 'utf-8')
+  const source = await readFile(join(process.cwd(), 'apps/tui/src/line-mode.ts'), 'utf-8')
+  const fullscreenSource = await readFile(
+    join(process.cwd(), 'apps/tui/src/fullscreen.ts'),
+    'utf-8',
+  )
   assert(
-    source.includes("from '@aila/agent'") && source.includes("from '../main/agent-host'"),
-    'TUI adapter should import agent core from @aila/agent and host adapters from main',
+    source.includes("from '@aila/agent'") &&
+      source.includes("from '@aila/agent-node/app'") &&
+      fullscreenSource.includes("from '@aila/agent-node/app'"),
+    'TUI adapters should import agent core and Node host through workspace packages',
   )
   assert(
     !source.includes("from '../runtime") && !fullscreenSource.includes("from '../runtime"),

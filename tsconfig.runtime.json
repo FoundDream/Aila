@@ -9,7 +9,7 @@
     "baseUrl": ".",
     "paths": {
       "@aila/agent": ["./packages/agent/src/index.ts"],
-      "@shared/*": ["./src/shared/*"]
+      "@shared/*": ["./apps/desktop/src/shared/*"]
     }
   },
   "include": ["packages/agent/src/**/*", "scripts/runtime-core-surface-contract.ts"]

@@ -1,10 +1,9 @@
 import * as agent from '@aila/agent'
-import * as agentNode from '@aila/agent/node'
+import * as agentHost from '@aila/agent/host'
+import * as agentNode from '@aila/agent-node'
 
 // @ts-expect-error runtime internals are not package exports.
 export type AgentInternalPackageExportMustNotResolve = typeof import('@aila/agent/internal')
-// @ts-expect-error tool execution helpers are internal, not public package API.
-export const packageExecuteToolMustNotExist = agent.executeTool
 // @ts-expect-error raw persisted conversation helpers are not package API.
 export const packageCreateConversationMustNotExist = agent.createConversation
 // @ts-expect-error Desktop docs APIs are not agent package API.
@@ -48,6 +47,12 @@ export const agentPackageValueContract = {
   isRuntimeEventType: agent.isRuntimeEventType,
   parseSkillDocument: agent.parseSkillDocument,
   requestToolApprovalWithActivity: agent.requestToolApprovalWithActivity,
+} satisfies Record<string, unknown>
+
+export const agentHostPackageValueContract = {
+  createToolRegistry: agentHost.createToolRegistry,
+  executeTool: agentHost.executeTool,
+  getToolDefinitions: agentHost.getToolDefinitions,
 } satisfies Record<string, unknown>
 
 export type AgentNodePackageConsumerContract = {

@@ -6,7 +6,6 @@
  * handler here and feeds the result back as a `role: "tool"` message.
  */
 
-import { basename, isAbsolute, relative, resolve, sep } from 'node:path'
 import type { ProviderId } from './models'
 import type { Settings } from './settings-types'
 
@@ -450,9 +449,9 @@ const BLOCKED_SHELL_PATTERNS: RegExp[] = [
 ]
 
 function truncate(text: string): string {
-  if (Buffer.byteLength(text, 'utf-8') <= MAX_OUTPUT_BYTES) return text
-  const buf = Buffer.from(text, 'utf-8').subarray(0, MAX_OUTPUT_BYTES)
-  return `${buf.toString('utf-8')}\n…[truncated]`
+  const bytes = new TextEncoder().encode(text)
+  if (bytes.byteLength <= MAX_OUTPUT_BYTES) return text
+  return `${new TextDecoder().decode(bytes.subarray(0, MAX_OUTPUT_BYTES))}\n…[truncated]`
 }
 
 function stringArg(args: Record<string, unknown>, key: string): string | null {
@@ -511,28 +510,38 @@ function resolveToolSpec(name: string, registry: ToolRegistry = DEFAULT_TOOL_REG
   return spec
 }
 
-function isInsideRoot(path: string, root: string): boolean {
-  const rel = relative(root, path)
-  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
+function requireToolPath(ctx: ToolContext): ToolPath {
+  if (!ctx.path) throw new Error('path host is not available')
+  return ctx.path
+}
+
+function isInsideRoot(path: string, root: string, pathHost: ToolPath): boolean {
+  const rel = pathHost.relative(root, path)
+  return rel === '' || (!rel.startsWith('..') && !pathHost.isAbsolute(rel))
 }
 
 function normalizeWorkspaceRoots(ctx: ToolContext): string[] {
+  const pathHost = requireToolPath(ctx)
   const roots: string[] = []
   for (const root of ctx.workspaceRoots ?? []) {
     const raw = typeof root === 'string' ? root : root.path
-    if (raw.trim()) roots.push(resolve(raw))
+    if (raw.trim()) roots.push(pathHost.resolve(raw))
   }
   return Array.from(new Set(roots))
 }
 
-function assertNotSensitivePath(path: string, operation: 'read' | 'write'): void {
-  const name = basename(path)
+function assertNotSensitivePath(
+  path: string,
+  operation: 'read' | 'write',
+  pathHost: ToolPath,
+): void {
+  const name = pathHost.basename(path)
   if (SENSITIVE_EXEMPTIONS.has(name)) return
   if (SENSITIVE_BASENAMES.has(name) || name.startsWith('.env.')) {
     throw new Error(`${operation} denied for sensitive file: ${name}`)
   }
 
-  const segments = path.split(sep)
+  const segments = path.split(pathHost.separator)
   for (const segment of segments) {
     if (SENSITIVE_SEGMENTS.has(segment)) {
       throw new Error(`${operation} denied for sensitive path segment: ${segment}`)
@@ -545,21 +554,22 @@ function resolveWorkspacePath(
   operation: 'read' | 'write',
   ctx: ToolContext,
 ): string {
+  const pathHost = requireToolPath(ctx)
   if (typeof path !== 'string') throw new Error('`path` must be a string')
-  if (!isAbsolute(path)) throw new Error('`path` must be absolute')
-  const normalized = resolve(path)
+  if (!pathHost.isAbsolute(path)) throw new Error('`path` must be absolute')
+  const normalized = pathHost.resolve(path)
   const roots = normalizeWorkspaceRoots(ctx)
   if (roots.length === 0) {
     throw new Error(`${operation} denied: no workspace roots configured`)
   }
-  if (!roots.some((root) => isInsideRoot(normalized, root))) {
+  if (!roots.some((root) => isInsideRoot(normalized, root, pathHost))) {
     throw new Error(
       `${operation} denied outside workspace roots: ${normalized} (allowed roots: ${roots.join(
         ', ',
       )})`,
     )
   }
-  assertNotSensitivePath(normalized, operation)
+  assertNotSensitivePath(normalized, operation, pathHost)
   return normalized
 }
 
@@ -593,7 +603,7 @@ async function runWrite(
     throw new Error('filesystem host is not available')
   }
   await ctx.fileSystem.writeTextFile(path, content)
-  return `Wrote ${Buffer.byteLength(content, 'utf-8')} bytes to ${path}`
+  return `Wrote ${new TextEncoder().encode(content).byteLength} bytes to ${path}`
 }
 
 async function runEdit(
@@ -775,6 +785,14 @@ export interface ToolFileSystem {
   writeTextFile(path: string, content: string): Promise<void>
 }
 
+export interface ToolPath {
+  basename(path: string): string
+  isAbsolute(path: string): boolean
+  relative(from: string, to: string): string
+  resolve(path: string): string
+  separator: string
+}
+
 export interface ToolApprovalRequest {
   name: string
   args: Record<string, unknown>
@@ -865,6 +883,7 @@ export interface ToolContext {
   saveImage?: ToolImageSaver
   runShell?: ToolShellRunner
   fileSystem?: ToolFileSystem
+  path?: ToolPath
   onImage?: (block: ImageSideChannelBlock) => void
 }
 
@@ -918,7 +937,7 @@ async function runBash(args: { command?: unknown }, ctx: ToolContext): Promise<s
 
   const result = await ctx.runShell({
     command,
-    ...(ctx.shellCwd && { cwd: resolve(ctx.shellCwd) }),
+    ...(ctx.shellCwd && { cwd: requireToolPath(ctx).resolve(ctx.shellCwd) }),
     timeoutMs: BASH_TIMEOUT_MS,
     maxBufferBytes: BASH_MAX_BUFFER_BYTES,
     ...(ctx.signal && { signal: ctx.signal }),

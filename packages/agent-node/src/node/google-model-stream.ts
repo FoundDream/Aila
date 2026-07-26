@@ -1,0 +1,336 @@
+import { readFile } from 'node:fs/promises'
+import { join } from 'node:path'
+import type { ChatMessage, ToolCall, UserContentPart } from '@aila/agent'
+import type {
+  ModelStreamClient,
+  ModelStreamEvent,
+  ModelStreamRequest,
+  ModelStreamToolDefinition,
+  ModelStreamUsage,
+} from './model-stream'
+import { parseSseJson } from './sse'
+
+const AILA_IMAGE_URL_PREFIX = 'aila-image://i/'
+const GOOGLE_GENERATIVE_LANGUAGE_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta'
+
+type Fetch = typeof fetch
+
+type GooglePart =
+  | { text: string }
+  | { inlineData: { mimeType: string; data: string } }
+  | { functionCall: { name: string; args?: Record<string, unknown> } }
+  | { functionResponse: { name: string; response: Record<string, unknown> } }
+
+interface GoogleContent {
+  role: 'user' | 'model'
+  parts: GooglePart[]
+}
+
+interface GoogleStreamChunk {
+  candidates?: Array<{
+    content?: {
+      parts?: GooglePart[]
+    }
+    finishReason?: string
+  }>
+  usageMetadata?: {
+    promptTokenCount?: number
+    candidatesTokenCount?: number
+    totalTokenCount?: number
+    cachedContentTokenCount?: number
+    thoughtsTokenCount?: number
+  }
+  error?: { message?: string }
+}
+
+interface PendingGoogleToolCall {
+  id: string
+  name: string
+  args: Record<string, unknown>
+}
+
+export interface GoogleModelStreamClientOptions {
+  imageDir?: string
+  fetch?: Fetch
+}
+
+export function createGoogleModelStreamClient(
+  options: GoogleModelStreamClientOptions = {},
+): ModelStreamClient {
+  const fetchImpl = options.fetch ?? fetch
+
+  return {
+    async *stream(input: ModelStreamRequest): AsyncIterable<ModelStreamEvent> {
+      if (input.descriptor.api !== 'google-generative-ai') {
+        throw new Error(`Native Google client cannot handle api "${input.descriptor.api}"`)
+      }
+
+      const conversation = await toGoogleConversation(input.messages, options.imageDir, input)
+      const toolCalls: PendingGoogleToolCall[] = []
+      let stepUsage: ModelStreamUsage | undefined
+
+      for await (const chunk of await streamGoogle(input, conversation, fetchImpl)) {
+        if (chunk.error) throw new Error(chunk.error.message ?? 'Google stream error')
+        if (chunk.usageMetadata) stepUsage = normalizeGoogleUsage(chunk.usageMetadata)
+
+        for (const candidate of chunk.candidates ?? []) {
+          for (const part of candidate.content?.parts ?? []) {
+            if ('text' in part && part.text) {
+              yield { type: 'text-delta', text: part.text }
+              continue
+            }
+            if ('functionCall' in part) {
+              const toolCall: PendingGoogleToolCall = {
+                id: `google-tool-${input.step ?? 0}-${toolCalls.length}`,
+                name: part.functionCall.name,
+                args: part.functionCall.args ?? {},
+              }
+              toolCalls.push(toolCall)
+              const args = JSON.stringify(toolCall.args)
+              yield { type: 'tool-input-start', id: toolCall.id, toolName: toolCall.name }
+              if (args && args !== '{}') {
+                yield { type: 'tool-input-delta', id: toolCall.id, delta: args }
+              }
+            }
+          }
+        }
+      }
+
+      yield { type: 'finish-step', usage: stepUsage }
+
+      for (const toolCall of toolCalls) {
+        yield {
+          type: 'tool-call',
+          toolCallId: toolCall.id,
+          toolName: toolCall.name,
+          input: toolCall.args,
+        }
+      }
+    },
+  }
+}
+
+async function streamGoogle(
+  input: ModelStreamRequest,
+  conversation: GoogleConversation,
+  fetchImpl: Fetch,
+): Promise<AsyncIterable<GoogleStreamChunk>> {
+  const response = await fetchImpl(resolveGoogleEndpoint(input), {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-goog-api-key': input.apiKey,
+      ...(input.descriptor.headers ?? {}),
+    },
+    body: JSON.stringify({
+      contents: conversation.contents,
+      ...(conversation.systemInstruction
+        ? { systemInstruction: conversation.systemInstruction }
+        : {}),
+      ...(input.tools.length > 0
+        ? {
+            tools: [
+              {
+                functionDeclarations: input.tools.map(toGoogleFunctionDeclaration),
+              },
+            ],
+          }
+        : {}),
+    }),
+    signal: input.signal,
+  })
+
+  if (!response.ok) throw new Error(await readErrorResponse(response, 'Google'))
+  if (!response.body) throw new Error('Google response body is empty')
+  return parseSseJson(response.body)
+}
+
+interface GoogleConversation {
+  systemInstruction: { parts: Array<{ text: string }> } | null
+  contents: GoogleContent[]
+}
+
+async function toGoogleConversation(
+  messages: ChatMessage[],
+  imageDir?: string,
+  input?: ModelStreamRequest,
+): Promise<GoogleConversation> {
+  const system: string[] = []
+  const contents: GoogleContent[] = []
+  const toolNameById = new Map<string, string>()
+
+  for (const msg of messages) {
+    if (msg.role === 'system') {
+      system.push(msg.content)
+      continue
+    }
+    if (msg.role === 'user') {
+      contents.push({
+        role: 'user',
+        parts:
+          typeof msg.content === 'string'
+            ? [{ text: msg.content }]
+            : await resolveGoogleUserContent(msg.content, imageDir, {
+                requireImages: input?.requireImages ?? false,
+              }),
+      })
+      continue
+    }
+    if (msg.role === 'assistant') {
+      const parts: GooglePart[] = []
+      if (msg.content) parts.push({ text: msg.content })
+      for (const toolCall of msg.tool_calls ?? []) {
+        toolNameById.set(toolCall.id, toolCall.function.name)
+        parts.push(toGoogleFunctionCall(toolCall))
+      }
+      if (parts.length > 0) contents.push({ role: 'model', parts })
+      continue
+    }
+    if (msg.role === 'tool') {
+      contents.push({
+        role: 'user',
+        parts: [
+          toGoogleFunctionResponse(toolNameById.get(msg.tool_call_id) ?? 'unknown', msg.content),
+        ],
+      })
+    }
+  }
+
+  return {
+    systemInstruction: system.length > 0 ? { parts: [{ text: system.join('\n\n') }] } : null,
+    contents,
+  }
+}
+
+async function resolveGoogleUserContent(
+  parts: UserContentPart[],
+  imageDir?: string,
+  options: { requireImages?: boolean } = {},
+): Promise<GooglePart[]> {
+  const out: GooglePart[] = []
+  for (const part of parts) {
+    if (part.type === 'text') {
+      out.push({ text: part.text })
+      continue
+    }
+    const name = imageNameFromUrl(part.url)
+    try {
+      if (!name || !imageDir) throw new Error('unrecognized image url')
+      const bytes = await readFile(join(imageDir, name))
+      out.push({
+        inlineData: {
+          mimeType: part.mime,
+          data: Buffer.from(bytes).toString('base64'),
+        },
+      })
+    } catch (err) {
+      if (options.requireImages) throw imageLoadError(part.url, err)
+      out.push({ text: '[attached image is no longer available]' })
+    }
+  }
+  return out
+}
+
+function imageLoadError(url: string, err: unknown): Error {
+  const detail = err instanceof Error ? err.message : String(err)
+  return new Error(`Unable to load attached image ${url}: ${detail}`)
+}
+
+function toGoogleFunctionDeclaration(tool: ModelStreamToolDefinition) {
+  return {
+    name: tool.name,
+    description: tool.description,
+    parameters: tool.parameters,
+  }
+}
+
+function toGoogleFunctionCall(toolCall: ToolCall): GooglePart {
+  return {
+    functionCall: {
+      name: toolCall.function.name,
+      args: parseToolArguments(toolCall.function.arguments),
+    },
+  }
+}
+
+function toGoogleFunctionResponse(name: string, output: string, isError = false): GooglePart {
+  return {
+    functionResponse: {
+      name,
+      response: isError ? { error: output } : { content: output },
+    },
+  }
+}
+
+function resolveGoogleEndpoint(input: ModelStreamRequest): string {
+  const baseUrl = input.descriptor.baseUrl
+    ? input.descriptor.baseUrl.replace(/\/+$/, '')
+    : GOOGLE_GENERATIVE_LANGUAGE_ENDPOINT
+  return `${baseUrl}/models/${encodeURIComponent(input.descriptor.modelId)}:streamGenerateContent?alt=sse`
+}
+
+function normalizeGoogleUsage(
+  usage: NonNullable<GoogleStreamChunk['usageMetadata']>,
+): ModelStreamUsage {
+  const inputTokens = usage.promptTokenCount ?? 0
+  const outputTokens = usage.candidatesTokenCount ?? 0
+  const cacheReadTokens = finiteUsageToken(usage.cachedContentTokenCount)
+  const reasoningTokens = finiteUsageToken(usage.thoughtsTokenCount)
+  return {
+    inputTokens,
+    outputTokens,
+    totalTokens: usage.totalTokenCount ?? inputTokens + outputTokens,
+    ...(cacheReadTokens !== undefined ? { cacheReadTokens } : {}),
+    ...(cacheReadTokens !== undefined
+      ? { cacheMissTokens: Math.max(inputTokens - cacheReadTokens, 0) }
+      : {}),
+    ...(reasoningTokens !== undefined ? { reasoningTokens } : {}),
+    rawProviderUsage: usage,
+  }
+}
+
+function finiteUsageToken(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0
+    ? Math.round(value)
+    : undefined
+}
+
+async function readErrorResponse(response: Response, provider: string): Promise<string> {
+  const fallback = `${provider} request failed with HTTP ${response.status}`
+  try {
+    const body = (await response.text()).trim()
+    if (!body) return fallback
+    try {
+      const parsed = JSON.parse(body) as unknown
+      if (isRecord(parsed)) {
+        const error = parsed.error
+        if (isRecord(error) && typeof error.message === 'string') return error.message
+      }
+    } catch {
+      // Preserve the original body below.
+    }
+    return body.length > 500 ? `${body.slice(0, 500)}...` : body
+  } catch {
+    return fallback
+  }
+}
+
+function parseToolArguments(args: string): Record<string, unknown> {
+  try {
+    const parsed = args ? (JSON.parse(args) as unknown) : {}
+    return isRecord(parsed) ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+function imageNameFromUrl(url: string): string | null {
+  if (!url.startsWith(AILA_IMAGE_URL_PREFIX)) return null
+  const name = url.slice(AILA_IMAGE_URL_PREFIX.length)
+  if (!name || name.includes('/') || name.includes('\\') || name.includes('..')) return null
+  return name
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}

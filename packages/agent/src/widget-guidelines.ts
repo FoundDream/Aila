@@ -9,9 +9,9 @@
  *  - CJK-first typography + an accessibility/state baseline.
  *
  * The wire format MUST stay in sync with the renderer parser in
- * `src/shared/widget/wire-format.ts` (the `show-widget` fence + `widget_code`
+ * `apps/desktop/src/shared/widget/wire-format.ts` (the `show-widget` fence + `widget_code`
  * field are the contract). The diagram/utility class names referenced below
- * MUST stay in sync with `src/shared/widget/styles.ts`.
+ * MUST stay in sync with `apps/desktop/src/shared/widget/styles.ts`.
  *
  * Self-contained on purpose: also consumed by the CLI/TUI, so no `@shared`.
  */

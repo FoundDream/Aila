@@ -12,16 +12,18 @@ import {
   appendAgentEvent,
   appendAgentEventAndTouchConversation,
   appendMessage,
+  configureDataDir,
   createConversation,
   deleteConversation,
   getConversation,
+  getDocumentsDir,
   listAgentEvents,
   listChatConversations,
   listConversations,
   listDocConversations,
   recoverInterruptedConversationActivities,
-} from '../src/main/conversations'
-import { sweepOrphanedDocConversations } from '../src/main/doc-conversation-cleanup'
+} from '@aila/agent-node/app'
+import { sweepOrphanedDocConversations } from '../apps/desktop/src/main/doc-conversation-cleanup'
 import {
   configureDocConversationRefRewriter,
   createDoc,
@@ -30,33 +32,32 @@ import {
   deleteFolder,
   getDocFilePath,
   updateDoc,
-} from '../src/main/docs'
-import { configureDataDir, getDocumentsDir } from '../src/main/paths'
+} from '../apps/desktop/src/main/docs'
 import {
   buildDesktopWorkspaceContextFromRecord,
   getDesktopWorkspaceRoots,
-} from '../src/main/workspace-context'
-import type { ConversationSummary, ConversationWorkspaceRef } from '../src/preload'
+} from '../apps/desktop/src/main/workspace-context'
+import type { ConversationSummary, ConversationWorkspaceRef } from '../apps/desktop/src/preload'
 import {
   buildConversationSidebarSections,
   groupConversationsByWorkspace,
-} from '../src/renderer/src/pages/chat/ConversationList'
+} from '../apps/desktop/src/renderer/src/pages/chat/ConversationList'
 import {
   createChatStreamsStateForTest,
   reduceChatStreamsForTest,
-} from '../src/renderer/src/pages/chat/useChatStreams'
-import { mergeConversationSummaryUpdate } from '../src/renderer/src/pages/chat/useConversations'
+} from '../apps/desktop/src/renderer/src/pages/chat/useChatStreams'
+import { mergeConversationSummaryUpdate } from '../apps/desktop/src/renderer/src/pages/chat/useConversations'
 import {
   docsHtmlSanitizeSchema,
   isSafeDocsUrl,
-} from '../src/renderer/src/pages/docs/docHtmlRendering'
-import { mergeDocConversationSummaryUpdate } from '../src/renderer/src/pages/docs/useDocConversation'
+} from '../apps/desktop/src/renderer/src/pages/docs/docHtmlRendering'
+import { mergeDocConversationSummaryUpdate } from '../apps/desktop/src/renderer/src/pages/docs/useDocConversation'
 import {
   createToolApprovalsState,
   mergeToolApprovals,
   resolveToolApproval,
   resolveToolApprovalsForConversation,
-} from '../src/renderer/src/toolApprovalsState'
+} from '../apps/desktop/src/renderer/src/toolApprovalsState'
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message)
@@ -133,9 +134,9 @@ async function testDesktopWorkspaceRoots(): Promise<void> {
 }
 
 async function testDesktopUsesSharedRuntimeFactory(): Promise<void> {
-  const source = await readFile(join(process.cwd(), 'src/main/index.ts'), 'utf-8')
+  const source = await readFile(join(process.cwd(), 'apps/desktop/src/main/index.ts'), 'utf-8')
   const workbenchSource = await readFile(
-    join(process.cwd(), 'src/main/runtime-workbench.ts'),
+    join(process.cwd(), 'apps/desktop/src/main/runtime-workbench.ts'),
     'utf-8',
   )
   assert(
@@ -186,12 +187,15 @@ async function testDesktopUsesSharedRuntimeFactory(): Promise<void> {
 }
 
 async function testDesktopExposesRuntimeStateApi(): Promise<void> {
-  const mainSource = await readFile(join(process.cwd(), 'src/main/index.ts'), 'utf-8')
+  const mainSource = await readFile(join(process.cwd(), 'apps/desktop/src/main/index.ts'), 'utf-8')
   const workbenchSource = await readFile(
-    join(process.cwd(), 'src/main/runtime-workbench.ts'),
+    join(process.cwd(), 'apps/desktop/src/main/runtime-workbench.ts'),
     'utf-8',
   )
-  const preloadSource = await readFile(join(process.cwd(), 'src/preload/index.ts'), 'utf-8')
+  const preloadSource = await readFile(
+    join(process.cwd(), 'apps/desktop/src/preload/index.ts'),
+    'utf-8',
+  )
   assert(
     mainSource.includes('registerRuntimeWorkbenchIpcHandlers(ipcMain, runtimeWorkbench)') &&
       !mainSource.includes("'conversations:get-runtime-state'") &&
@@ -229,20 +233,23 @@ async function testDesktopExposesRuntimeStateApi(): Promise<void> {
 
 async function testDesktopExposesPlanRuntimeApi(): Promise<void> {
   const workbenchSource = await readFile(
-    join(process.cwd(), 'src/main/runtime-workbench.ts'),
+    join(process.cwd(), 'apps/desktop/src/main/runtime-workbench.ts'),
     'utf-8',
   )
-  const preloadSource = await readFile(join(process.cwd(), 'src/preload/index.ts'), 'utf-8')
+  const preloadSource = await readFile(
+    join(process.cwd(), 'apps/desktop/src/preload/index.ts'),
+    'utf-8',
+  )
   const chatPageSource = await readFile(
-    join(process.cwd(), 'src/renderer/src/pages/chat/ChatPage.tsx'),
+    join(process.cwd(), 'apps/desktop/src/renderer/src/pages/chat/ChatPage.tsx'),
     'utf-8',
   )
   const composerSource = await readFile(
-    join(process.cwd(), 'src/renderer/src/pages/chat/Composer.tsx'),
+    join(process.cwd(), 'apps/desktop/src/renderer/src/pages/chat/Composer.tsx'),
     'utf-8',
   )
   const streamsSource = await readFile(
-    join(process.cwd(), 'src/renderer/src/pages/chat/useChatStreams.ts'),
+    join(process.cwd(), 'apps/desktop/src/renderer/src/pages/chat/useChatStreams.ts'),
     'utf-8',
   )
 
@@ -313,16 +320,28 @@ async function testDesktopExposesPlanRuntimeApi(): Promise<void> {
 }
 
 async function testDesktopExposesEmbeddedTerminalApi(): Promise<void> {
-  const mainSource = await readFile(join(process.cwd(), 'src/main/index.ts'), 'utf-8')
-  const preloadSource = await readFile(join(process.cwd(), 'src/preload/index.ts'), 'utf-8')
-  const terminalSource = await readFile(join(process.cwd(), 'src/main/terminal.ts'), 'utf-8')
-  const appSource = await readFile(join(process.cwd(), 'src/renderer/src/App.tsx'), 'utf-8')
+  const mainSource = await readFile(join(process.cwd(), 'apps/desktop/src/main/index.ts'), 'utf-8')
+  const preloadSource = await readFile(
+    join(process.cwd(), 'apps/desktop/src/preload/index.ts'),
+    'utf-8',
+  )
+  const terminalSource = await readFile(
+    join(process.cwd(), 'apps/desktop/src/main/terminal.ts'),
+    'utf-8',
+  )
+  const appSource = await readFile(
+    join(process.cwd(), 'apps/desktop/src/renderer/src/App.tsx'),
+    'utf-8',
+  )
   const sidebarSource = await readFile(
-    join(process.cwd(), 'src/renderer/src/pages/chat/ConversationList.tsx'),
+    join(process.cwd(), 'apps/desktop/src/renderer/src/pages/chat/ConversationList.tsx'),
     'utf-8',
   )
   const panelSource = await readFile(
-    join(process.cwd(), 'src/renderer/src/components/terminal/WorkspaceTerminalPanel.tsx'),
+    join(
+      process.cwd(),
+      'apps/desktop/src/renderer/src/components/terminal/WorkspaceTerminalPanel.tsx',
+    ),
     'utf-8',
   )
 
@@ -368,7 +387,7 @@ async function testDesktopExposesEmbeddedTerminalApi(): Promise<void> {
 
 async function testRendererUsesRuntimeHydrationApi(): Promise<void> {
   const streamSource = await readFile(
-    join(process.cwd(), 'src/renderer/src/pages/chat/useChatStreams.ts'),
+    join(process.cwd(), 'apps/desktop/src/renderer/src/pages/chat/useChatStreams.ts'),
     'utf-8',
   )
   assert(
@@ -389,13 +408,19 @@ async function testRendererUsesRuntimeHydrationApi(): Promise<void> {
 }
 
 async function testDesktopExposesMcpIntegrationOAuthApi(): Promise<void> {
-  const mainSource = await readFile(join(process.cwd(), 'src/main/index.ts'), 'utf-8')
-  const preloadSource = await readFile(join(process.cwd(), 'src/preload/index.ts'), 'utf-8')
-  const settingsSource = await readFile(
-    join(process.cwd(), 'src/renderer/src/components/SettingsModal.tsx'),
+  const mainSource = await readFile(join(process.cwd(), 'apps/desktop/src/main/index.ts'), 'utf-8')
+  const preloadSource = await readFile(
+    join(process.cwd(), 'apps/desktop/src/preload/index.ts'),
     'utf-8',
   )
-  const integrationSource = await readFile(join(process.cwd(), 'src/main/integrations.ts'), 'utf-8')
+  const settingsSource = await readFile(
+    join(process.cwd(), 'apps/desktop/src/renderer/src/components/SettingsModal.tsx'),
+    'utf-8',
+  )
+  const integrationSource = await readFile(
+    join(process.cwd(), 'packages/agent-node/src/app/integrations.ts'),
+    'utf-8',
+  )
 
   assert(
     mainSource.includes("'extensions:integration-save'") &&

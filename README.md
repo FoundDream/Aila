@@ -7,9 +7,10 @@ documents, and personal workflows. `AgentRuntime` is the core agent engine;
 Desktop owns workspace features such as docs, while TUI/CLI are lightweight
 adapters over the shared runtime, tools, storage, and event contract.
 
-The public runtime SDK entrypoint is `src/runtime`; see
-[`docs/runtime-sdk.md`](docs/runtime-sdk.md) before building new adapters or
-tooling on top of Aila.
+The public runtime SDK entrypoint is `@aila/agent`; Node adapters live in
+`@aila/agent-node`, and product-level persistence helpers live in
+`@aila/agent-node/app`. Consumers should use these exported entrypoints instead
+of importing workspace source files directly.
 
 ## Interfaces
 
@@ -22,7 +23,7 @@ persisted user message and no assistant response. TUI and CLI expose the same
 runtime path through `--retry-last`.
 
 The TUI is a full-screen Aila-tui adapter over the shared `AgentRuntime`.
-Aila-tui is implemented in this repository under `src/tui/aila-tui`: it owns the
+Aila-tui is implemented in this repository under `apps/tui/src/aila-tui`: it owns the
 terminal abstraction, component tree, overlays, editor, picker, markdown text
 rendering, and key handling. It streams assistant output into a transcript,
 shows tool calls, opens approval and selection overlays, persists conversations,

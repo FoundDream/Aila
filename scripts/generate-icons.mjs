@@ -5,9 +5,10 @@ import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+const desktopDir = resolve(rootDir, 'apps/desktop')
 const chromePath = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
-const sourceSvg = resolve(rootDir, 'build/icon.svg')
-const buildDir = resolve(rootDir, 'build')
+const sourceSvg = resolve(desktopDir, 'build/icon.svg')
+const buildDir = resolve(desktopDir, 'build')
 const iconsetDir = resolve(buildDir, 'icon.iconset')
 const pngDir = resolve(buildDir, 'icons')
 const pngSizes = [16, 24, 32, 48, 64, 128, 256, 512, 1024]

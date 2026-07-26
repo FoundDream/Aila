@@ -441,6 +441,7 @@ export interface AgentRuntimeHost {
   saveImage?: ToolContext['saveImage']
   runShell?: ToolContext['runShell']
   fileSystem?: ToolContext['fileSystem']
+  path?: ToolContext['path']
   workspaceRoots?: ToolContext['workspaceRoots'] | (() => ToolContext['workspaceRoots'])
   shellCwd?: ToolContext['shellCwd'] | (() => ToolContext['shellCwd'])
   getModelInfo?: RuntimeModelInfoResolver
@@ -822,6 +823,7 @@ function normalizeRuntimeHost(options: AgentRuntimeOptions): AgentRuntimeHost {
   if (options.saveImage) host.saveImage = options.saveImage
   if (options.runShell) host.runShell = options.runShell
   if (options.fileSystem) host.fileSystem = options.fileSystem
+  if (options.path) host.path = options.path
   if (options.workspaceRoots !== undefined) host.workspaceRoots = options.workspaceRoots
   if (options.shellCwd !== undefined) host.shellCwd = options.shellCwd
   if (options.getModelInfo) host.getModelInfo = options.getModelInfo
@@ -857,6 +859,7 @@ function normalizeRuntimeHost(options: AgentRuntimeOptions): AgentRuntimeHost {
   if (options.host.saveImage) host.saveImage = options.host.saveImage
   if (options.host.runShell) host.runShell = options.host.runShell
   if (options.host.fileSystem) host.fileSystem = options.host.fileSystem
+  if (options.host.path) host.path = options.host.path
   if (options.host.workspaceRoots !== undefined) host.workspaceRoots = options.host.workspaceRoots
   if (options.host.shellCwd !== undefined) host.shellCwd = options.host.shellCwd
   if (options.host.getModelInfo) host.getModelInfo = options.host.getModelInfo
@@ -2735,6 +2738,7 @@ export class AgentRuntime implements AgentRuntimeApi {
       saveImage: this.host.saveImage,
       runShell: this.host.runShell,
       fileSystem: this.host.fileSystem,
+      path: this.host.path,
     }
   }
 

@@ -1,0 +1,29 @@
+{
+  "name": "@aila/agent-node",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Node.js host adapters for the Aila agent runtime.",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./app": {
+      "types": "./dist/app/index.d.ts",
+      "default": "./dist/app/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit -p tsconfig.json --composite false"
+  },
+  "dependencies": {
+    "@aila/agent": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.29.0"
+  },
+  "sideEffects": false
+}

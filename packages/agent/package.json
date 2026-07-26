@@ -4,16 +4,26 @@
   "private": true,
   "type": "module",
   "description": "Aila agent runtime core.",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "types": "./src/index.ts",
-      "default": "./src/index.ts"
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
     },
-    "./node": {
-      "types": "./src/node.ts",
-      "default": "./src/node.ts"
+    "./host": {
+      "types": "./dist/host.d.ts",
+      "default": "./dist/host.js"
     }
   },
-  "dependencies": {},
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit -p tsconfig.json --composite false",
+    "test": "bun ../../scripts/runtime-core-surface-contract.ts"
+  },
+  "dependencies": {
+    "gray-matter": "^4.0.3"
+  },
   "sideEffects": false
 }
