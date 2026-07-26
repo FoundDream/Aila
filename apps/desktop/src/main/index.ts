@@ -90,9 +90,9 @@ function getDevelopmentAppIcon(): NativeImage | undefined {
 }
 
 function createWindow(): void {
-  // The renderer is light-only; pin the native appearance so the sidebar
-  // vibrancy material stays light when the OS switches to dark mode.
-  nativeTheme.themeSource = 'light'
+  // The workbench uses a dark, low-chrome shell. Pin the native appearance so
+  // traffic lights, menus, and macOS vibrancy agree with the renderer.
+  nativeTheme.themeSource = 'dark'
   const appIcon = getDevelopmentAppIcon()
 
   if (process.platform === 'darwin' && app.dock && appIcon) app.dock.setIcon(appIcon)
@@ -104,12 +104,10 @@ function createWindow(): void {
     minHeight: 620,
     show: false,
     titleBarStyle: 'hiddenInset',
-    // macOS: the renderer leaves the window background transparent so the
-    // sidebar shows the native translucent material; the content pane paints
-    // its own opaque white. Elsewhere fall back to a solid background.
+    // macOS keeps a restrained native material beneath the dark task rail.
     ...(process.platform === 'darwin'
       ? { vibrancy: 'sidebar' as const }
-      : { backgroundColor: '#f7f7f7' }),
+      : { backgroundColor: '#202124' }),
     ...(appIcon ? { icon: appIcon } : {}),
     trafficLightPosition: { x: 6, y: 10 },
     webPreferences: {

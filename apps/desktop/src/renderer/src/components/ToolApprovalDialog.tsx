@@ -38,12 +38,12 @@ export function ToolApprovalDialog({ request, pendingCount = 0, onResolve }: Pro
       }}
     >
       <DialogPrimitive.Portal>
-        <DialogPrimitive.Overlay className="fixed inset-0 z-[900] bg-black/30 data-[state=open]:animate-in data-[state=open]:fade-in-0" />
+        <DialogPrimitive.Overlay className="fixed inset-0 z-[900] bg-black/60 data-[state=open]:animate-in data-[state=open]:fade-in-0" />
         <DialogPrimitive.Content className="fixed top-1/2 left-1/2 z-[1000] w-[560px] max-w-[92vw] -translate-x-1/2 -translate-y-1/2 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-5 shadow-2xl outline-none data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95">
           {request && (
             <>
               <div className="mb-4 flex items-center gap-2">
-                <span className="grid size-7 shrink-0 place-items-center rounded-md bg-amber-100 text-amber-700">
+                <span className="grid size-7 shrink-0 place-items-center rounded-md bg-[var(--warning-soft)] text-[var(--warning)]">
                   <AlertTriangleIcon className="size-4" />
                 </span>
                 <div className="min-w-0">
@@ -57,11 +57,11 @@ export function ToolApprovalDialog({ request, pendingCount = 0, onResolve }: Pro
               </div>
 
               <div className="mb-3 flex flex-wrap items-center gap-1.5">
-                <span className="rounded-md bg-amber-100 px-2 py-0.5 text-[11px] text-amber-700">
+                <span className="rounded-md bg-[var(--warning-soft)] px-2 py-0.5 text-[11px] text-[var(--warning)]">
                   pending
                 </span>
                 {request.metadata.destructive && (
-                  <span className="rounded-md bg-red-100 px-2 py-0.5 text-[11px] text-red-700">
+                  <span className="rounded-md bg-[var(--error-soft)] px-2 py-0.5 text-[11px] text-[var(--error)]">
                     destructive
                   </span>
                 )}

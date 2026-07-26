@@ -7,7 +7,6 @@ import {
   RefreshCwIcon,
   RouteIcon,
   SquareIcon,
-  XIcon,
 } from 'lucide-react'
 import {
   type ReactElement,
@@ -43,19 +42,13 @@ const TRACE_KINDS = new Set([
 const MODEL_KINDS = new Set(['model_request', 'model_response', 'model_call'])
 const TOOL_KINDS = new Set(['tool_request', 'tool_result', 'tool_batch'])
 
-export function RunInspector({
-  conversationId,
-  onClose,
-}: {
-  conversationId: string
-  onClose: () => void
-}): ReactElement {
+export function RunInspector({ conversationId }: { conversationId: string }): ReactElement {
   const [runs, setRuns] = useState<RuntimeRunSummary[]>([])
   const [scope, setScopeState] = useState<InspectionScope | null>(null)
   const scopeRef = useRef<InspectionScope | null>(null)
   const [inspection, setInspection] = useState<RuntimeRunInspection | null>(null)
   const [artifactCache, setArtifactCache] = useState<Record<string, RunArtifact>>({})
-  const [tab, setTab] = useState<DetailTab>('overview')
+  const [tab, setTab] = useState<DetailTab>('trace')
   const [traceFilter, setTraceFilter] = useState<TraceFilter>('all')
   const [busy, setBusy] = useState(false)
   const [loading, setLoading] = useState(true)
@@ -100,7 +93,7 @@ export function RunInspector({
   useEffect(() => {
     setArtifactCache({})
     setScope(null)
-    setTab('overview')
+    setTab('trace')
     setTraceFilter('all')
     setError(null)
     setLoading(true)
@@ -175,7 +168,7 @@ export function RunInspector({
       const sameRun = runId === scopeRef.current?.runId
       setScope({ type: 'run', runId })
       setArtifactCache({})
-      setTab('overview')
+      setTab('trace')
       setTraceFilter('all')
       if (sameRun) return
       setLoading(true)
@@ -221,7 +214,7 @@ export function RunInspector({
             ...(currentScope.type === 'step' ? { originStepId: currentScope.stepId } : {}),
           })
           setArtifactCache({})
-          setTab('overview')
+          setTab('trace')
           setTraceFilter('all')
           await refresh({ type: 'run', runId: forked.identity.runId })
           return
@@ -249,36 +242,29 @@ export function RunInspector({
 
   return (
     <section
-      className="flex min-h-0 flex-1 flex-col overflow-hidden border-t border-[var(--border)] bg-[var(--bg)]"
+      className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-[var(--bg)]"
       aria-label="Agent run debugger"
     >
-      <header className="flex h-14 shrink-0 items-center justify-between border-b border-[var(--border)] bg-[var(--surface)] px-5">
-        <div className="flex min-w-0 items-center gap-3">
-          <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-[var(--text)] text-[var(--surface)]">
-            <RouteIcon className="size-4" />
-          </span>
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <h2 className="text-[14px] font-semibold tracking-[-0.01em] text-[var(--text)]">
-                {selectedRunLabel}
-                {selectedStep ? ` / ${stepTitle(selectedStep.kind)}` : ''}
-              </h2>
-              {checkpoint && <StatusBadge status={checkpoint.loop.state.status} />}
-            </div>
-            <p className="mt-0.5 truncate text-[11.5px] text-[var(--text-dim)]">
-              {checkpoint
-                ? `Run debugger · ${titleCase(checkpoint.loop.state.mode)} · ${actionLabel(
-                    checkpoint.loop.state.nextAction,
-                  )}`
-                : 'Inspect model calls, tools, and durable state'}
-            </p>
-          </div>
+      <header className="flex h-12 shrink-0 items-center justify-between border-b border-[var(--border)] bg-[var(--bg)] px-3">
+        <div className="flex min-w-0 items-center gap-2.5">
+          <RouteIcon className="size-3.5 shrink-0 text-[var(--signal)]" />
+          <h2 className="truncate text-[13px] font-semibold tracking-[-0.01em]">
+            {selectedStep
+              ? stepRailTitle(selectedStep, inspection?.artifacts ?? [])
+              : selectedRunLabel}
+          </h2>
+          {checkpoint && <StatusBadge status={checkpoint.loop.state.status} />}
+          {selectedStep && (
+            <span className="truncate font-mono text-[9px] text-[var(--text-dim)]">
+              {shortId(selectedStep.stepId)}
+            </span>
+          )}
         </div>
 
         <div className="flex items-center gap-1.5">
           {controls?.step && (
             <ControlButton
-              label="Step once"
+              label="Step"
               icon={<PlayIcon className="size-3.5" />}
               disabled={busy}
               onClick={() => void control('step')}
@@ -295,11 +281,10 @@ export function RunInspector({
           )}
           {controls?.fork && !hasResumeControls && (
             <ControlButton
-              label={scope?.type === 'step' ? 'Fork here' : 'Fork run'}
+              label={scope?.type === 'step' ? 'Replay from here' : 'Replay run'}
               icon={<CopyPlusIcon className="size-3.5" />}
               disabled={busy}
               onClick={() => void control('fork')}
-              primary
             />
           )}
           {controls?.abort && (
@@ -315,14 +300,11 @@ export function RunInspector({
           <IconButton label="Refresh runs" onClick={() => void refresh()}>
             <RefreshCwIcon className={`size-4 ${loading ? 'animate-spin' : ''}`} />
           </IconButton>
-          <IconButton label="Close debugger" onClick={onClose}>
-            <XIcon className="size-4" />
-          </IconButton>
         </div>
       </header>
 
       {error && (
-        <div className="flex shrink-0 items-center justify-between border-b border-[#f0c9c2] bg-[#fff7f5] px-5 py-2 text-[12px] text-[var(--error)]">
+        <div className="flex shrink-0 items-center justify-between border-b border-[var(--error-border)] bg-[var(--error-soft)] px-5 py-2 text-[12px] text-[var(--error)]">
           <span className="truncate">{error}</span>
           <button type="button" onClick={() => setError(null)} className="ml-4 font-medium">
             Dismiss
@@ -330,8 +312,8 @@ export function RunInspector({
         </div>
       )}
 
-      <div className="grid min-h-0 flex-1 grid-cols-[272px_minmax(0,1fr)] overflow-hidden">
-        <aside className="flex min-h-0 flex-col border-r border-[var(--border)] bg-[var(--bg-soft)]">
+      <div className="grid min-h-0 flex-1 grid-cols-[clamp(210px,25%,270px)_minmax(0,1fr)] overflow-hidden">
+        <aside className="flex min-h-0 flex-col border-r border-[var(--border)] bg-[var(--surface)]">
           <ExecutionTree
             runs={runs}
             inspection={inspection}
@@ -348,8 +330,8 @@ export function RunInspector({
             eventCount={events.length}
             onSelect={setTab}
           />
-          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-6 py-5 scrollbar-thin">
-            <div className="mx-auto w-full max-w-[1040px]">
+          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 py-3 scrollbar-thin">
+            <div className="mx-auto w-full max-w-[1080px]">
               {loading && !inspection ? (
                 <EmptyState title="Loading run history" detail="Reading durable execution state…" />
               ) : !checkpoint ? (
@@ -395,7 +377,7 @@ function ExecutionTree({
   const steps = inspection?.checkpoint.loop.state.steps ?? []
   return (
     <section className="flex min-h-0 flex-1 flex-col">
-      <PanelHeader title="Runs" count={runs.length} />
+      <PanelHeader title="Trace" count={steps.length} />
       <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3 scrollbar-thin">
         {runs.length === 0 ? (
           <EmptyRail label="No recorded runs" />
@@ -409,12 +391,12 @@ function ExecutionTree({
                   <button
                     type="button"
                     onClick={() => void onSelectRun(run.identity.runId)}
-                    className={`group flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left transition-colors ${
+                    className={`group flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors ${
                       selected
-                        ? 'bg-[var(--surface)] text-[var(--text)] shadow-[0_1px_5px_rgba(0,0,0,0.04)]'
+                        ? 'bg-[var(--surface-hover)] text-[var(--text)]'
                         : expanded
                           ? 'text-[var(--text)]'
-                          : 'text-[var(--text-soft)] hover:bg-[var(--surface)]/65'
+                          : 'text-[var(--text-soft)] hover:bg-[var(--surface-hover)]'
                     }`}
                   >
                     <ChevronRightIcon
@@ -455,10 +437,10 @@ function ExecutionTree({
                               key={step.stepId}
                               type="button"
                               onClick={() => onSelectStep(step.stepId)}
-                              className={`flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors ${
+                              className={`flex w-full items-center gap-2.5 rounded-md border px-2 py-1.5 text-left transition-colors ${
                                 stepSelected
-                                  ? 'bg-[var(--surface-hover)] text-[var(--text)]'
-                                  : 'text-[var(--text-soft)] hover:bg-[var(--surface)]/65'
+                                  ? 'border-[var(--border-strong)] bg-[var(--bg)] text-[var(--text)]'
+                                  : 'border-transparent text-[var(--text-soft)] hover:bg-[var(--surface-hover)]'
                               }`}
                             >
                               <StepDot status={step.status} />
@@ -503,19 +485,19 @@ function DetailTabs({
   onSelect: (tab: DetailTab) => void
 }): ReactElement {
   const tabs: Array<{ id: DetailTab; label: string; count?: number }> = [
-    { id: 'overview', label: 'Overview' },
-    { id: 'trace', label: 'Trace', count: traceCount },
+    { id: 'overview', label: 'Metadata' },
+    { id: 'trace', label: 'Input / Output', count: traceCount },
     { id: 'events', label: 'Events', count: eventCount },
     { id: 'raw', label: 'Raw' },
   ]
   return (
-    <nav className="flex h-11 shrink-0 items-end gap-5 border-b border-[var(--border)] bg-[var(--surface)] px-6">
+    <nav className="flex h-10 shrink-0 items-end gap-5 border-b border-[var(--border)] bg-[var(--bg)] px-4">
       {tabs.map((item) => (
         <button
           key={item.id}
           type="button"
           onClick={() => onSelect(item.id)}
-          className={`relative flex h-11 items-center gap-1.5 text-[12px] font-medium transition-colors ${
+          className={`relative flex h-10 items-center gap-1.5 text-[11.5px] font-medium transition-colors ${
             item.id === 'events' ? 'ml-auto' : ''
           } ${
             selected === item.id
@@ -528,7 +510,7 @@ function DetailTabs({
             <span className="font-mono text-[9px] text-[var(--text-dim)]">{item.count}</span>
           )}
           {selected === item.id && (
-            <span className="absolute inset-x-0 bottom-0 h-0.5 rounded-full bg-[var(--text)]" />
+            <span className="absolute inset-x-0 bottom-0 h-0.5 rounded-full bg-[var(--signal)]" />
           )}
         </button>
       ))}
@@ -818,7 +800,7 @@ function Overview({
           </span>
         </div>
         {descriptors.length === 0 ? (
-          <div className="rounded-xl border border-dashed border-[var(--border-strong)] px-4 py-8 text-center text-[12px] text-[var(--text-dim)]">
+          <div className="rounded-lg border border-dashed border-[var(--border-strong)] px-4 py-8 text-center text-[12px] text-[var(--text-dim)]">
             No artifacts for this step.
           </div>
         ) : (
@@ -974,13 +956,13 @@ function ArtifactFrame({
 }): ReactElement {
   if (flat) {
     return (
-      <section className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4">
+      <section className="border border-[var(--border)] bg-[var(--bg-soft)] p-4">
         {children}
       </section>
     )
   }
   return (
-    <section className="overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface)]">
+    <section className="overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--bg-soft)]">
       <header className="flex items-center justify-between gap-4 border-b border-[var(--border)] px-4 py-3">
         <div className="min-w-0">
           <h3 className="truncate text-[13px] font-semibold text-[var(--text)]">
@@ -1017,7 +999,7 @@ function EventList({
         <span>{scope?.type === 'step' ? 'Selected step events' : 'Entire run events'}</span>
         <span>{events.length} recorded</span>
       </div>
-      <div className="overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface)]">
+      <div className="overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--textarea)]">
         {events.map((event) => (
           <div
             key={event.eventId ?? `${event.seq}-${event.timestamp}-${event.type}`}
@@ -1056,7 +1038,7 @@ function JsonDocument({
 }): ReactElement {
   return (
     <section
-      className={`overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--bg-soft)] ${
+      className={`overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--bg-soft)] ${
         compact ? 'mt-3' : ''
       }`}
     >
@@ -1117,12 +1099,12 @@ function PanelHeader({ title, count }: { title: string; count: number }): ReactE
 function StatusBadge({ status }: { status: RuntimeRunSummary['status'] }): ReactElement {
   const styles =
     status === 'completed'
-      ? 'bg-[#edf8f1] text-[#237449]'
+      ? 'bg-[var(--success-soft)] text-[var(--success)]'
       : status === 'failed' || status === 'cancelled'
-        ? 'bg-[#fff0ed] text-[#b54834]'
+        ? 'bg-[var(--error-soft)] text-[var(--error)]'
         : status === 'paused'
-          ? 'bg-[#fff6df] text-[#996913]'
-          : 'bg-[#eef5ff] text-[#2567a8]'
+          ? 'bg-[var(--warning-soft)] text-[var(--warning)]'
+          : 'bg-[var(--signal-soft)] text-[var(--blue)]'
   return (
     <span
       className={`inline-flex w-fit rounded-full px-2 py-0.5 text-[9.5px] font-medium ${styles}`}
@@ -1151,12 +1133,12 @@ function StepDot({
 }): ReactElement {
   const color =
     status === 'completed'
-      ? 'bg-[#4ba773]'
+      ? 'bg-[var(--success)]'
       : status === 'running'
-        ? 'animate-pulse bg-[#4e8bc7]'
+        ? 'animate-pulse bg-[var(--signal)]'
         : status === 'failed'
-          ? 'bg-[#c85a46]'
-          : 'bg-[#c39135]'
+          ? 'bg-[var(--error)]'
+          : 'bg-[var(--warning)]'
   return <span className={`size-2 shrink-0 rounded-full ${color}`} />
 }
 
@@ -1176,9 +1158,9 @@ function ControlButton({
   danger?: boolean
 }): ReactElement {
   const style = primary
-    ? 'border-[var(--text)] bg-[var(--text)] text-[var(--surface)] hover:opacity-85'
+    ? 'border-[var(--signal)] bg-[var(--signal)] text-white hover:brightness-110'
     : danger
-      ? 'border-[var(--border)] bg-[var(--surface)] text-[var(--text-soft)] hover:border-[#e2b4ab] hover:bg-[#fff7f5] hover:text-[var(--error)]'
+      ? 'border-[var(--border)] bg-transparent text-[var(--text-soft)] hover:border-[var(--error-border)] hover:bg-[var(--error-soft)] hover:text-[var(--error)]'
       : 'border-[var(--border)] bg-[var(--surface)] text-[var(--text-soft)] hover:border-[var(--border-strong)] hover:bg-[var(--bg-soft)] hover:text-[var(--text)]'
   return (
     <button
@@ -1254,9 +1236,9 @@ function ArtifactSkeleton({
   descriptor: RuntimeRunArtifactDescriptor
 }): ReactElement {
   return (
-    <div className="animate-pulse rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4">
+    <div className="animate-pulse rounded-lg border border-[var(--border)] bg-[var(--surface)] p-4">
       <div className="h-3 w-32 rounded bg-[var(--surface-hover)]" />
-      <div className="mt-4 h-24 rounded-xl bg-[var(--bg-soft)]" />
+      <div className="mt-4 h-24 rounded-md bg-[var(--bg-soft)]" />
       <span className="sr-only">Loading {descriptor.label}</span>
     </div>
   )
@@ -1264,7 +1246,7 @@ function ArtifactSkeleton({
 
 function EmptyRail({ label }: { label: string }): ReactElement {
   return (
-    <div className="flex h-24 items-center justify-center rounded-xl border border-dashed border-[var(--border-strong)] text-[11px] text-[var(--text-dim)]">
+    <div className="flex h-24 items-center justify-center rounded-lg border border-dashed border-[var(--border-strong)] text-[11px] text-[var(--text-dim)]">
       {label}
     </div>
   )
@@ -1272,8 +1254,8 @@ function EmptyRail({ label }: { label: string }): ReactElement {
 
 function EmptyState({ title, detail }: { title: string; detail: string }): ReactElement {
   return (
-    <div className="flex min-h-64 flex-col items-center justify-center rounded-2xl border border-dashed border-[var(--border-strong)] bg-[var(--surface)] px-6 text-center">
-      <span className="mb-3 grid size-9 place-items-center rounded-xl bg-[var(--bg-soft)] text-[var(--text-dim)]">
+    <div className="flex min-h-64 flex-col items-center justify-center rounded-lg border border-dashed border-[var(--border-strong)] bg-[var(--surface)] px-6 text-center">
+      <span className="mb-3 grid size-9 place-items-center rounded-md bg-[var(--bg-soft)] text-[var(--text-dim)]">
         <BracesIcon className="size-4" />
       </span>
       <p className="text-[13px] font-semibold text-[var(--text)]">{title}</p>

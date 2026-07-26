@@ -1,4 +1,4 @@
-import { BugIcon, CheckIcon, ListChecksIcon, SaveIcon, XIcon } from 'lucide-react'
+import { CheckIcon, ListChecksIcon, SaveIcon, XIcon } from 'lucide-react'
 import { type ReactElement, useCallback, useEffect, useMemo, useState } from 'react'
 import type {
   AilaExecutionMode,
@@ -26,8 +26,11 @@ interface ChatPageProps {
   configuredProviders: ProviderId[]
   onUpdateSettings: (settings: Settings) => Promise<void>
   onOpenSettings: () => void
-  onRunInspectorOpen: () => void
+  displayMode: WorkbenchDisplayMode
+  onDisplayModeChange: (mode: WorkbenchDisplayMode) => void
 }
+
+export type WorkbenchDisplayMode = 'agent' | 'debug'
 
 export function ChatPage({
   conversation,
@@ -37,7 +40,8 @@ export function ChatPage({
   configuredProviders,
   onUpdateSettings,
   onOpenSettings,
-  onRunInspectorOpen,
+  displayMode,
+  onDisplayModeChange,
 }: ChatPageProps): ReactElement {
   const { selection, selectionRef, contextLength, handleSelectionChange } = useModelSelection(
     settings,
@@ -47,7 +51,6 @@ export function ChatPage({
   const [submitScrollKey, setSubmitScrollKey] = useState(0)
   const [executionMode, setExecutionMode] = useState<AilaExecutionMode>('agent')
   const [stepMode, setStepMode] = useState(false)
-  const [showRunInspector, setShowRunInspector] = useState(false)
 
   const conversationId = conversation?.meta.id ?? null
 
@@ -194,13 +197,6 @@ export function ChatPage({
     [settings, onUpdateSettings, onOpenSettings],
   )
 
-  const toggleRunInspector = useCallback((): void => {
-    setShowRunInspector((visible) => {
-      if (!visible) onRunInspectorOpen()
-      return !visible
-    })
-  }, [onRunInspectorOpen])
-
   const composer = (
     <Composer
       isStreaming={isStreaming}
@@ -219,54 +215,62 @@ export function ChatPage({
       onApprovalModeChange={handleApprovalModeChange}
       executionMode={executionMode}
       onExecutionModeChange={setExecutionMode}
+      compact={displayMode === 'debug'}
     />
   )
 
   return (
-    <div className="flex h-full flex-col text-[var(--text)]">
-      <header className="relative flex h-12 shrink-0 items-center justify-between border-b border-[var(--border)] px-5 [-webkit-app-region:drag]">
-        <div className="flex min-w-0 items-center gap-2">
-          <span className="font-mono text-[9px] uppercase tracking-[0.16em] text-[var(--text-dim)]">
-            {conversation?.meta.workspace?.label ?? 'Local'}
+    <div className="flex h-full flex-col bg-[var(--bg)] text-[var(--text)]">
+      <header className="relative grid h-12 shrink-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center border-b border-[var(--border)] bg-[var(--bg)] px-4 [-webkit-app-region:drag]">
+        <div className="flex min-w-0 items-center gap-2.5">
+          <span className="min-w-0 truncate text-[13px] font-medium">
+            {conversation?.meta.title ?? 'New task'}
           </span>
-          <span className="text-[var(--border-strong)]">/</span>
-          <span className="min-w-0 truncate text-[13px] font-semibold tracking-[-0.015em] text-[var(--text)]">
-            {conversation?.meta.title ?? 'New thread'}
-          </span>
+          {conversation?.meta.workspace?.label && (
+            <span className="hidden truncate text-[10.5px] text-[var(--text-dim)] xl:inline">
+              ·{conversation.meta.workspace.label}
+            </span>
+          )}
         </div>
-        {conversationId && (
-          <div className="flex shrink-0 items-center gap-1.5 [-webkit-app-region:no-drag]">
-            {!showRunInspector && (
-              <button
-                type="button"
-                onClick={() => setStepMode((enabled) => !enabled)}
-                className={`h-6 rounded-sm border px-2 font-mono text-[9px] uppercase tracking-wide transition-colors ${
-                  stepMode
-                    ? 'border-amber-400/50 bg-amber-400/10 text-amber-600'
-                    : 'border-[var(--border)] text-[var(--text-dim)] hover:bg-[var(--surface-hover)]'
-                }`}
-                title="Execution mode for the next message"
-              >
-                {stepMode ? 'Step next run' : 'Continuous next run'}
-              </button>
-            )}
+
+        <ModeSwitch value={displayMode} onChange={onDisplayModeChange} />
+
+        <div className="flex min-w-0 items-center justify-end gap-2 [-webkit-app-region:no-drag]">
+          {displayMode === 'debug' && conversationId && (
             <button
               type="button"
-              onClick={toggleRunInspector}
-              className={`inline-flex h-6 items-center gap-1.5 rounded-sm border px-2 font-mono text-[9px] uppercase tracking-wide transition-colors ${
-                showRunInspector
-                  ? 'border-emerald-500/50 bg-emerald-500/10 text-emerald-600'
+              onClick={() => setStepMode((enabled) => !enabled)}
+              className={`h-7 rounded-md border px-2.5 font-mono text-[9px] uppercase tracking-[0.06em] transition-colors ${
+                stepMode
+                  ? 'border-[var(--warning-border)] bg-[var(--warning-soft)] text-[var(--warning)]'
                   : 'border-[var(--border)] text-[var(--text-dim)] hover:bg-[var(--surface-hover)]'
               }`}
+              title="Execution mode for the next message"
             >
-              <BugIcon className="size-3" />
-              Runs
+              {stepMode ? 'Step next' : 'Continuous next'}
             </button>
-          </div>
-        )}
+          )}
+          <span
+            className="max-w-44 truncate rounded-md bg-[var(--surface-hover)] px-2 py-1 font-mono text-[9.5px] text-[var(--text-dim)]"
+            title={selection ? `${selection.providerId}:${selection.modelId}` : 'No model selected'}
+          >
+            {selection?.modelId ?? 'Select model'}
+          </span>
+        </div>
       </header>
-      <main className="flex min-h-0 flex-1 overflow-hidden">
-        <section className="flex min-w-[340px] flex-1 flex-col overflow-hidden">
+
+      <main
+        className={`grid min-h-0 flex-1 overflow-hidden ${
+          displayMode === 'debug' && conversationId
+            ? 'grid-cols-[minmax(320px,38%)_minmax(0,1fr)]'
+            : 'grid-cols-1'
+        }`}
+      >
+        <section
+          className={`flex min-w-0 flex-col overflow-hidden ${
+            displayMode === 'debug' && conversationId ? 'border-r border-[var(--border)]' : ''
+          }`}
+        >
           {activePlan && (
             <PlanReviewPanel
               plan={activePlan}
@@ -278,24 +282,25 @@ export function ChatPage({
             />
           )}
           {messages.length === 0 ? (
-            <div className="flex min-h-0 flex-1 flex-col justify-center pb-16">
-              <div className="mx-auto mb-6 flex w-full max-w-2xl items-end justify-between px-1">
+            <div className="flex min-h-0 flex-1 flex-col justify-center pb-10">
+              <div
+                className={`mx-auto mb-7 flex w-full items-end justify-between px-1 ${
+                  displayMode === 'debug' ? 'max-w-[560px] px-4' : 'max-w-[820px]'
+                }`}
+              >
                 <div>
-                  <div className="mb-3 flex items-center gap-2 font-mono text-[9px] uppercase tracking-[0.18em] text-[var(--text-dim)]">
-                    <span className="size-1.5 rounded-full bg-[var(--signal)] shadow-[0_0_0_4px_var(--signal-glow)]" />
-                    Runtime ready
+                  <div className="mb-4 flex items-center gap-2 font-mono text-[9px] uppercase tracking-[0.17em] text-[var(--text-dim)]">
+                    <span className="size-1.5 rounded-full bg-[var(--success)] shadow-[0_0_0_4px_var(--success-soft)]" />
+                    Ready
                   </div>
-                  <h1 className="font-serif text-[34px] leading-none tracking-[-0.035em] text-[var(--text)]">
-                    Start a thread.
+                  <h1 className="text-[26px] font-normal leading-none tracking-[-0.035em]">
+                    What are we building?
                   </h1>
-                  <p className="mt-3 max-w-lg text-[13px] leading-relaxed text-[var(--text-soft)]">
-                    Describe the outcome. Aila will inspect the workspace, use tools, and keep the
-                    run observable.
+                  <p className="mt-3 max-w-lg text-[13px] leading-relaxed text-[var(--text-dim)]">
+                    Describe the outcome. Aila will inspect the workspace and use the tools it
+                    needs.
                   </p>
                 </div>
-                <span className="pb-1 font-mono text-[9px] uppercase tracking-[0.14em] text-[var(--text-dim)]">
-                  Local first
-                </span>
               </div>
               {composer}
             </div>
@@ -307,20 +312,44 @@ export function ChatPage({
                 canRetryLast={canRetryLast}
                 onRetryLast={handleRetryLast}
                 submitScrollKey={submitScrollKey}
+                compact={displayMode === 'debug'}
               />
               {composer}
             </>
           )}
         </section>
-        {showRunInspector && conversationId && (
-          <aside className="flex w-[clamp(560px,58vw,920px)] min-w-[560px] shrink-0 border-l border-[var(--border)] bg-[var(--bg)] shadow-[-16px_0_32px_rgba(36,31,22,0.035)]">
-            <RunInspector
-              conversationId={conversationId}
-              onClose={() => setShowRunInspector(false)}
-            />
-          </aside>
+        {displayMode === 'debug' && conversationId && (
+          <RunInspector conversationId={conversationId} />
         )}
       </main>
+    </div>
+  )
+}
+
+function ModeSwitch({
+  value,
+  onChange,
+}: {
+  value: WorkbenchDisplayMode
+  onChange: (mode: WorkbenchDisplayMode) => void
+}): ReactElement {
+  return (
+    <div className="flex h-7 items-center rounded-md bg-[var(--surface-hover)] p-0.5 [-webkit-app-region:no-drag]">
+      {(['agent', 'debug'] as const).map((mode) => (
+        <button
+          key={mode}
+          type="button"
+          aria-pressed={value === mode}
+          onClick={() => onChange(mode)}
+          className={`h-6 min-w-[68px] rounded-[5px] px-3 text-[11.5px] font-medium capitalize transition-colors ${
+            value === mode
+              ? 'bg-[var(--surface)] text-[var(--text)] shadow-[0_1px_4px_rgba(0,0,0,0.25)]'
+              : 'text-[var(--text-dim)] hover:text-[var(--text-soft)]'
+          }`}
+        >
+          {mode}
+        </button>
+      ))}
     </div>
   )
 }
@@ -477,12 +506,12 @@ function PlanReviewPanel({
 function PlanStatusPill({ status }: { status: PlanArtifact['status'] }): ReactElement {
   const tone =
     status === 'ready'
-      ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+      ? 'border-[var(--success-border)] bg-[var(--success-soft)] text-[var(--success)]'
       : status === 'implementing' || status === 'approved'
-        ? 'border-blue-200 bg-blue-50 text-blue-700'
+        ? 'border-[var(--signal-border)] bg-[var(--signal-soft)] text-[var(--blue)]'
         : status === 'cancelled' || status === 'superseded'
           ? 'border-[var(--border)] bg-[var(--bg-soft)] text-[var(--text-dim)]'
-          : 'border-amber-200 bg-amber-50 text-amber-700'
+          : 'border-[var(--warning-border)] bg-[var(--warning-soft)] text-[var(--warning)]'
 
   return (
     <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-medium ${tone}`}>

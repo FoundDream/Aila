@@ -7,29 +7,41 @@
 @source "../../../../node_modules/streamdown/dist/*.js";
 
 @theme {
-  --font-sans: "Avenir Next", Avenir, "Helvetica Neue", system-ui, sans-serif;
+  --font-sans: "Geist Variable", "SF Pro Text", "Helvetica Neue", sans-serif;
   --font-serif: "Iowan Old Style", "Palatino Linotype", Palatino, serif;
   --font-mono: "Berkeley Mono", "SF Mono", "JetBrains Mono", Menlo, monospace;
 }
 
 :root {
-  --bg: #fbfaf6;
-  --bg-soft: #f3f0e8;
-  --surface: #fffefa;
-  --surface-hover: rgba(41, 37, 31, 0.065);
-  --text: #211f1b;
-  --text-soft: #625e55;
-  --text-dim: #969086;
-  --sidebar-text-soft: #514d45;
-  --sidebar-text-dim: #8b857b;
-  --border: #e7e1d6;
-  --border-strong: #d7cfc2;
-  --brand-ink: #25231f;
+  color-scheme: dark;
+  --bg: #202124;
+  --bg-soft: #252629;
+  --surface: #292a2d;
+  --textarea: #26272a;
+  --surface-hover: rgba(255, 255, 255, 0.065);
+  --text: #f1f3f4;
+  --text-soft: #bdc1c6;
+  --text-dim: #8a9099;
+  --sidebar-text-soft: #bdc1c6;
+  --sidebar-text-dim: #8a9099;
+  --border: rgba(255, 255, 255, 0.1);
+  --border-strong: rgba(255, 255, 255, 0.17);
+  --brand-ink: #7289f8;
   --brand-ink-fg: #ffffff;
-  --signal: #e85d2a;
-  --signal-glow: rgba(232, 93, 42, 0.22);
-  --blue: #2567b2;
-  --error: #b8402e;
+  --signal: #7289f8;
+  --signal-soft: rgba(114, 137, 248, 0.14);
+  --signal-border: rgba(128, 150, 255, 0.4);
+  --signal-glow: rgba(88, 112, 240, 0.22);
+  --blue: #8096ff;
+  --success: #55c982;
+  --success-soft: rgba(85, 201, 130, 0.13);
+  --success-border: rgba(85, 201, 130, 0.38);
+  --warning: #e4b34c;
+  --warning-soft: rgba(228, 179, 76, 0.12);
+  --warning-border: rgba(228, 179, 76, 0.34);
+  --error: #f07868;
+  --error-soft: rgba(240, 120, 104, 0.12);
+  --error-border: rgba(240, 120, 104, 0.35);
 
   /* shadcn tokens (consumed by streamdown). */
   --background: var(--bg);
@@ -42,22 +54,18 @@
   --primary-foreground: var(--brand-ink-fg);
   --secondary: var(--surface-hover);
   --secondary-foreground: var(--text);
-  --muted: var(--bg-soft);
+  --muted: var(--surface);
   --muted-foreground: var(--text-soft);
   --accent: var(--surface-hover);
   --accent-foreground: var(--text);
   --destructive: var(--error);
   --destructive-foreground: #ffffff;
-  --input: var(--border-strong);
+  --input: var(--border);
   --ring: var(--border-strong);
-  --radius: 0.75rem;
+  --radius: 0.625rem;
 
   --highlight: oklch(0.852 0.199 91.936);
   --brand: var(--text);
-}
-
-.dark {
-  --highlight: oklch(0.852 0.199 91.936);
 }
 
 @theme inline {
@@ -96,13 +104,12 @@ body,
 
 body {
   margin: 0;
-  /* Transparent so the macOS sidebar vibrancy shows through; opaque panes
-     (main content, popovers) paint their own background. */
   background: transparent;
   color: var(--text);
   font-family: var(--font-sans);
-  font-size: 15px;
+  font-size: 14px;
   line-height: 1.6;
+  font-weight: 300;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -126,8 +133,16 @@ body {
 }
 
 ::selection {
-  background: rgba(2, 133, 255, 0.18);
+  background: rgba(114, 137, 248, 0.32);
   color: var(--text);
+}
+
+.aila-shell {
+  background: var(--bg);
+}
+
+.aila-sidebar {
+  background: var(--surface);
 }
 
 .aila-terminal .xterm {
@@ -135,16 +150,16 @@ body {
 }
 
 .aila-terminal .xterm-viewport {
-  scrollbar-color: rgba(0, 0, 0, 0.16) transparent;
+  scrollbar-color: rgba(255, 255, 255, 0.16) transparent;
 }
 
 .aila-terminal .xterm-viewport::-webkit-scrollbar-thumb {
-  background: rgba(0, 0, 0, 0.16);
+  background: rgba(255, 255, 255, 0.16);
 }
 
 ::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 8px;
+  height: 8px;
 }
 
 ::-webkit-scrollbar-track {
@@ -152,17 +167,19 @@ body {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: transparent;
+  background: color-mix(in srgb, var(--text-dim) 25%, transparent);
   border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
 }
 
 *:hover > ::-webkit-scrollbar-thumb,
 *:focus-within > ::-webkit-scrollbar-thumb {
-  background: var(--border-strong);
+  background-color: color-mix(in srgb, var(--text-dim) 42%, transparent);
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--text-dim);
+  background-color: color-mix(in srgb, var(--text-dim) 68%, transparent);
 }
 
 @keyframes pulse-dot {

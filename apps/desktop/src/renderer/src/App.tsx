@@ -1,25 +1,16 @@
 import {
-  CommandIcon,
+  MessageSquareIcon,
   PanelLeftCloseIcon,
   PanelLeftOpenIcon,
   PlusIcon,
   SettingsIcon,
+  TerminalIcon,
 } from 'lucide-react'
-import {
-  lazy,
-  type ReactElement,
-  type ReactNode,
-  type PointerEvent as ReactPointerEvent,
-  Suspense,
-  useCallback,
-  useEffect,
-  useMemo,
-  useState,
-} from 'react'
+import { lazy, type ReactElement, Suspense, useCallback, useEffect, useMemo, useState } from 'react'
 import { SettingsModal } from '@/components/SettingsModal'
 import { ToolApprovalDialog } from '@/components/ToolApprovalDialog'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
-import { ChatPage } from '@/pages/chat/ChatPage'
+import { ChatPage, type WorkbenchDisplayMode } from '@/pages/chat/ChatPage'
 import { ConversationList } from '@/pages/chat/ConversationList'
 import { useChatStreams } from '@/pages/chat/useChatStreams'
 import { useConversations } from '@/pages/chat/useConversations'
@@ -43,33 +34,19 @@ const WorkspaceTerminalPanel = lazy(() =>
   })),
 )
 
-const SIDEBAR_DEFAULT_WIDTH = 240
-const SIDEBAR_MIN_WIDTH = 180
-const SIDEBAR_MAX_WIDTH = 320
-// Dragging the handle below this raw width snaps the sidebar closed.
-const SIDEBAR_COLLAPSE_THRESHOLD = 120
-const SIDEBAR_WIDTH_STORAGE_KEY = 'app.sidebar.width'
+const SIDEBAR_EXPANDED_STORAGE_KEY = 'app.sidebar.expanded'
 
-function readStoredSidebarWidth(): number {
+function readSidebarExpanded(): boolean {
   try {
-    const raw = localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY)
-    if (raw === null) return SIDEBAR_DEFAULT_WIDTH
-    const parsed = Number(raw)
-    if (!Number.isFinite(parsed)) return SIDEBAR_DEFAULT_WIDTH
-    return Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, parsed))
+    return localStorage.getItem(SIDEBAR_EXPANDED_STORAGE_KEY) !== 'false'
   } catch {
-    return SIDEBAR_DEFAULT_WIDTH
+    return true
   }
 }
 
 export default function App(): ReactElement {
-  const [collapsed, setCollapsed] = useState(false)
-  const [sidebarWidth, setSidebarWidth] = useState(readStoredSidebarWidth)
-  const [resizingSidebar, setResizingSidebar] = useState(false)
-  // Hover-peek: with the sidebar collapsed, hovering the window's left edge
-  // floats it over the content without un-collapsing.
-  const [peeking, setPeeking] = useState(false)
-  const showPeek = collapsed && peeking
+  const [displayMode, setDisplayMode] = useState<WorkbenchDisplayMode>('agent')
+  const [sidebarExpanded, setSidebarExpanded] = useState(readSidebarExpanded)
   const conversationsState = useConversations()
   const chatStreams = useChatStreams(
     useMemo(
@@ -81,6 +58,8 @@ export default function App(): ReactElement {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [terminalWorkspace, setTerminalWorkspace] = useState<ConversationWorkspaceRef | null>(null)
   const [toolApprovalsState, setToolApprovalsState] = useState(createToolApprovalsState)
+
+  const sidebarIsExpanded = sidebarExpanded
   const toolApprovals = toolApprovalsState.pending
   const pendingApprovalConversationIds = useMemo(
     () =>
@@ -99,20 +78,23 @@ export default function App(): ReactElement {
     })
   }, [])
 
-  const updateSettings = useCallback(async (next: Settings) => {
-    const saved = await window.api.settings.set(next)
-    setSettingsState(saved)
-  }, [])
+  useEffect(() => {
+    try {
+      localStorage.setItem(SIDEBAR_EXPANDED_STORAGE_KEY, String(sidebarExpanded))
+    } catch {
+      // Storage is an enhancement; private windows may reject it.
+    }
+  }, [sidebarExpanded])
 
-  const openSettings = useCallback(() => setSettingsOpen(true), [])
-
-  const openWorkspaceTerminal = useCallback((workspace: ConversationWorkspaceRef) => {
-    setTerminalWorkspace(workspace)
-  }, [])
-
-  const handleRunInspectorOpen = useCallback((): void => {
-    setPeeking(false)
-    setCollapsed(true)
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if ((event.metaKey || event.ctrlKey) && event.key === '\\') {
+        event.preventDefault()
+        setSidebarExpanded((expanded) => !expanded)
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
   }, [])
 
   useEffect(() => {
@@ -146,6 +128,15 @@ export default function App(): ReactElement {
     }
   }, [])
 
+  const updateSettings = useCallback(async (next: Settings) => {
+    const saved = await window.api.settings.set(next)
+    setSettingsState(saved)
+  }, [])
+
+  const openWorkspaceTerminal = useCallback((workspace: ConversationWorkspaceRef) => {
+    setTerminalWorkspace(workspace)
+  }, [])
+
   const resolveToolApproval = useCallback((requestId: string, approved: boolean): void => {
     window.api.tools.sendApprovalResponse({ requestId, approved })
     setToolApprovalsState((current) => resolveToolApprovalState(current, requestId))
@@ -155,214 +146,152 @@ export default function App(): ReactElement {
     setToolApprovalsState((current) => resolveToolApprovalsForConversation(current, conversationId))
   }, [])
 
-  // Leaving the peeked sidebar (or expanding it for real) ends the peek.
-  useEffect(() => {
-    if (!collapsed) setPeeking(false)
-  }, [collapsed])
-
-  // Persist width as it changes. Drag emits many updates; localStorage writes
-  // are cheap enough that debouncing isn't worth the complexity.
-  useEffect(() => {
-    try {
-      localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(Math.round(sidebarWidth)))
-    } catch {
-      // ignore quota / privacy-mode errors
-    }
-  }, [sidebarWidth])
-
-  const onSidebarResizeStart = useCallback(
-    (event: ReactPointerEvent<HTMLDivElement>) => {
-      event.preventDefault()
-      const startX = event.clientX
-      const startWidth = sidebarWidth
-      setResizingSidebar(true)
-      document.body.style.cursor = 'col-resize'
-      document.body.style.userSelect = 'none'
-
-      const onMove = (ev: PointerEvent): void => {
-        const next = startWidth + (ev.clientX - startX)
-        if (next < SIDEBAR_COLLAPSE_THRESHOLD) {
-          // Dragged far enough in: snap closed. Dragging back out within the
-          // same gesture re-opens at the minimum width.
-          setCollapsed(true)
-          return
-        }
-        setCollapsed(false)
-        setSidebarWidth(Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, next)))
-      }
-
-      const onUp = (): void => {
-        setResizingSidebar(false)
-        document.body.style.cursor = ''
-        document.body.style.userSelect = ''
-        window.removeEventListener('pointermove', onMove)
-        window.removeEventListener('pointerup', onUp)
-      }
-
-      window.addEventListener('pointermove', onMove)
-      window.addEventListener('pointerup', onUp)
-    },
-    [sidebarWidth],
-  )
-
-  // ⌘\ toggles the sidebar. preventDefault so a stray backslash doesn't reach
-  // a focused input/editor.
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent): void => {
-      if ((e.metaKey || e.ctrlKey) && e.key === '\\') {
-        e.preventDefault()
-        setCollapsed((c) => !c)
-      }
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
+  const handleDisplayModeChange = useCallback((mode: WorkbenchDisplayMode): void => {
+    setDisplayMode(mode)
   }, [])
 
+  const activeWorkspace = conversationsState.activeRecord?.meta.workspace ?? null
+
   return (
-    <TooltipProvider delayDuration={300}>
-      <div className="flex h-full bg-transparent text-[var(--text)]">
+    <TooltipProvider delayDuration={220}>
+      <div className="aila-shell flex h-full overflow-hidden text-[var(--text)]">
         <aside
-          className={`flex shrink-0 flex-col overflow-hidden ${
-            resizingSidebar ? '' : 'transition-[width] duration-200 ease-out'
-          }`}
-          style={{ width: collapsed ? 0 : sidebarWidth }}
-        >
-          {/* Full-width inner wrapper so collapsing clips the sidebar instead
-              of squashing its content. While peeking, the same element floats
-              over the content as a fixed overlay (position: fixed escapes the
-              aside's overflow-hidden), so scroll state is preserved. */}
-          <div
-            className={`flex flex-col ${
-              showPeek
-                ? 'fixed inset-y-0 left-0 z-40 border-r border-[var(--border)] bg-[var(--surface)] shadow-xl animate-in fade-in-0 slide-in-from-left-2 duration-150'
-                : 'h-full'
-            }`}
-            style={{ width: sidebarWidth }}
-            onMouseLeave={showPeek ? () => setPeeking(false) : undefined}
-          >
-            {/* Keep the h-11 spacer in peek mode too so content clears the
-                traffic lights; drag region only when docked. */}
-            <div className={`h-11 shrink-0 ${showPeek ? '' : '[-webkit-app-region:drag]'}`} />
-            <div className="flex shrink-0 items-center justify-between px-4 pb-3">
-              <div className="flex min-w-0 items-center gap-2.5">
-                <span className="grid size-6 shrink-0 place-items-center rounded-md bg-[var(--signal)] font-mono text-[10px] font-bold text-white shadow-[0_3px_12px_var(--signal-glow)]">
-                  A
-                </span>
-                <div className="min-w-0">
-                  <div className="truncate text-[13px] font-semibold tracking-[-0.02em] text-[var(--text)]">
-                    Aila
-                  </div>
-                  <div className="font-mono text-[8px] uppercase tracking-[0.18em] text-[var(--sidebar-text-dim)]">
-                    Agent workbench
-                  </div>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => conversationsState.deselect()}
-                aria-label="New thread"
-                title="New thread"
-                className="grid size-7 place-items-center rounded-md border border-[var(--border)] bg-[var(--surface)] text-[var(--text-soft)] shadow-[0_1px_1px_rgba(0,0,0,0.04)] transition hover:border-[var(--border-strong)] hover:text-[var(--text)]"
-              >
-                <PlusIcon className="size-3.5" />
-              </button>
-            </div>
-            <div className="mx-3 mb-3 h-px bg-[var(--border)]" />
-            <div className="flex min-h-0 flex-1 flex-col" aria-hidden={collapsed && !showPeek}>
-              <ConversationList
-                conversations={conversationsState.conversations}
-                activeId={conversationsState.activeId}
-                busyIds={chatStreams.busyIds}
-                pendingApprovalIds={pendingApprovalConversationIds}
-                onSelect={conversationsState.select}
-                onCreate={(workspace) => {
-                  void conversationsState.create(workspace)
-                }}
-                onCreateWorkspaceChat={() => {
-                  void conversationsState.createWorkspaceChat()
-                }}
-                onOpenTerminal={openWorkspaceTerminal}
-                onRename={(id, title) => {
-                  void conversationsState.rename(id, title)
-                }}
-                onDelete={(id) => {
-                  void (async () => {
-                    try {
-                      await conversationsState.remove(id)
-                      clearConversationApprovals(id)
-                      chatStreams.drop(id)
-                    } catch (error) {
-                      console.warn('[conversations] delete failed:', error)
-                    }
-                  })()
-                }}
-              />
-            </div>
-            <div className="mx-3 mt-2 h-px bg-[var(--border)]" />
-            <div className="flex shrink-0 flex-col gap-1 px-2 pb-3 pt-2">
-              <SidebarButton
-                onClick={openSettings}
-                label="Settings"
-                icon={<SettingsIcon className="size-4" />}
-              />
-              <div className="flex h-7 items-center gap-2 px-2 font-mono text-[9px] uppercase tracking-[0.12em] text-[var(--sidebar-text-dim)]">
-                <CommandIcon className="size-3" />
-                <span>⌘ \ toggles rail</span>
-              </div>
-            </div>
-          </div>
-        </aside>
-        {collapsed && !resizingSidebar && (
-          // Invisible strip along the left edge that triggers the hover-peek.
-          // Skipped below the title bar so the traffic lights stay clear, and
-          // while resizing so a collapse-drag doesn't immediately pop it open.
-          <div
-            aria-hidden="true"
-            onMouseEnter={() => setPeeking(true)}
-            className="fixed bottom-0 left-0 top-11 z-30 w-2"
-          />
-        )}
-        {!collapsed && (
-          <div className="relative z-40 w-0 shrink-0">
-            <div
-              aria-hidden="true"
-              title="Drag to resize"
-              onPointerDown={onSidebarResizeStart}
-              className="group absolute inset-y-0 -left-[2px] w-1 cursor-col-resize [-webkit-app-region:no-drag]"
-            >
-              <div className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-transparent transition-colors group-hover:bg-[var(--border-strong)] group-active:bg-[var(--border-strong)]" />
-            </div>
-          </div>
-        )}
-        <main
-          className={`min-w-0 flex-1 bg-[var(--bg)] ${
-            collapsed
-              ? ''
-              : 'overflow-hidden rounded-tl-[18px] border-t border-l border-[var(--border)] shadow-[-8px_0_28px_rgba(36,31,22,0.035)]'
+          className={`aila-sidebar flex shrink-0 flex-col border-r border-[var(--border)] transition-[width] duration-200 ease-out ${
+            sidebarIsExpanded ? 'w-[240px]' : 'w-12'
           }`}
         >
-          <div className="flex h-full min-h-0 flex-col">
-            <div className="min-h-0 flex-1">
-              <div className="h-full">
-                <ChatPage
-                  conversation={conversationsState.activeRecord}
-                  onCreateConversation={conversationsState.create}
-                  streams={chatStreams}
-                  settings={settingsState?.settings ?? null}
-                  configuredProviders={settingsState?.configuredProviders ?? ([] as ProviderId[])}
-                  onUpdateSettings={updateSettings}
-                  onOpenSettings={openSettings}
-                  onRunInspectorOpen={handleRunInspectorOpen}
+          <div className="h-10 shrink-0 [-webkit-app-region:drag]" />
+
+          {sidebarIsExpanded ? (
+            <>
+              <div className="flex h-10 shrink-0 items-center justify-between px-3">
+                <button
+                  type="button"
+                  onClick={() => conversationsState.deselect()}
+                  className="flex min-w-0 items-center gap-2.5 text-left"
+                >
+                  <span className="grid size-6 shrink-0 place-items-center rounded-md bg-[var(--signal)] font-mono text-[10px] font-bold text-white">
+                    A
+                  </span>
+                  <span className="truncate text-[13px] font-medium">Aila</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => conversationsState.deselect()}
+                  aria-label="New task"
+                  title="New task"
+                  className="grid size-7 place-items-center rounded-md text-[var(--text-dim)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
+                >
+                  <PlusIcon className="size-3.5" />
+                </button>
+              </div>
+              <div className="mx-3 my-1.5 h-px bg-[var(--border)]" />
+              <div className="min-h-0 flex-1">
+                <ConversationList
+                  conversations={conversationsState.conversations}
+                  activeId={conversationsState.activeId}
+                  busyIds={chatStreams.busyIds}
+                  pendingApprovalIds={pendingApprovalConversationIds}
+                  onSelect={conversationsState.select}
+                  onCreate={(workspace) => {
+                    void conversationsState.create(workspace)
+                  }}
+                  onCreateWorkspaceChat={() => {
+                    void conversationsState.createWorkspaceChat()
+                  }}
+                  onOpenTerminal={openWorkspaceTerminal}
+                  onRename={(id, title) => {
+                    void conversationsState.rename(id, title)
+                  }}
+                  onDelete={(id) => {
+                    void (async () => {
+                      try {
+                        await conversationsState.remove(id)
+                        clearConversationApprovals(id)
+                        chatStreams.drop(id)
+                      } catch (error) {
+                        console.warn('[conversations] delete failed:', error)
+                      }
+                    })()
+                  }}
                 />
               </div>
+            </>
+          ) : (
+            <nav className="flex min-h-0 flex-1 flex-col items-center gap-1 px-1.5 pt-3">
+              <RailButton
+                active
+                label="Tasks"
+                icon={<MessageSquareIcon className="size-[17px]" />}
+                onClick={() => {
+                  setDisplayMode('agent')
+                  setSidebarExpanded(true)
+                }}
+              />
+              <RailButton
+                label="New task"
+                icon={<PlusIcon className="size-[17px]" />}
+                onClick={() => {
+                  conversationsState.deselect()
+                  setDisplayMode('agent')
+                  setSidebarExpanded(true)
+                }}
+              />
+              <RailButton
+                label="Terminal"
+                disabled={!activeWorkspace}
+                icon={<TerminalIcon className="size-[17px]" />}
+                onClick={() => {
+                  if (activeWorkspace) openWorkspaceTerminal(activeWorkspace)
+                }}
+              />
+            </nav>
+          )}
+
+          <div className="shrink-0 px-1.5 pb-2">
+            {sidebarIsExpanded ? (
+              <div className="space-y-1 border-t border-[var(--border)] px-1 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setSettingsOpen(true)}
+                  className="flex h-8 w-full items-center gap-2 rounded-md px-2 text-[12px] text-[var(--sidebar-text-soft)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
+                >
+                  <SettingsIcon className="size-4 text-[var(--sidebar-text-dim)]" />
+                  Settings
+                </button>
+              </div>
+            ) : (
+              <RailButton
+                label="Settings"
+                icon={<SettingsIcon className="size-[17px]" />}
+                onClick={() => setSettingsOpen(true)}
+              />
+            )}
+          </div>
+        </aside>
+
+        <main className="min-w-0 flex-1 bg-[var(--bg)]">
+          <div className="flex h-full min-h-0 flex-col">
+            <div className="min-h-0 flex-1">
+              <ChatPage
+                conversation={conversationsState.activeRecord}
+                onCreateConversation={conversationsState.create}
+                streams={chatStreams}
+                settings={settingsState?.settings ?? null}
+                configuredProviders={settingsState?.configuredProviders ?? ([] as ProviderId[])}
+                onUpdateSettings={updateSettings}
+                onOpenSettings={() => setSettingsOpen(true)}
+                displayMode={displayMode}
+                onDisplayModeChange={handleDisplayModeChange}
+              />
             </div>
             {terminalWorkspace && (
               <Suspense
                 fallback={
                   <section className="flex h-[min(34vh,340px)] min-h-[220px] shrink-0 flex-col border-t border-[var(--border)] bg-[var(--surface)]">
                     <header className="flex h-9 shrink-0 items-center gap-2 border-b border-[var(--border)] px-3 text-[12px]">
-                      <span className="font-medium text-[var(--text)]">Terminal</span>
-                      <span className="text-[var(--text-dim)]">Loading...</span>
+                      <span className="font-medium">Terminal</span>
+                      <span className="text-[var(--text-dim)]">Loading…</span>
                     </header>
                     <div className="min-h-0 flex-1 bg-[var(--bg-soft)]" />
                   </section>
@@ -377,30 +306,30 @@ export default function App(): ReactElement {
             )}
           </div>
         </main>
-        {/* Rendered last on purpose: Electron folds -webkit-app-region rects
-            into the draggable region in document order, so this button's
-            no-drag carve-out must come after the drag strips it overlaps —
-            otherwise clicks on it get treated as window drags. */}
+
         <Tooltip>
           <TooltipTrigger asChild>
             <button
               type="button"
-              onClick={() => setCollapsed((c) => !c)}
-              aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-              className="fixed top-[6px] left-[88px] z-50 grid size-7 place-items-center rounded-lg text-[var(--sidebar-text-dim)] transition-colors [-webkit-app-region:no-drag] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
+              onClick={() => setSidebarExpanded((expanded) => !expanded)}
+              aria-label={sidebarIsExpanded ? 'Collapse sidebar' : 'Expand sidebar'}
+              className={`fixed top-[7px] z-50 grid size-7 place-items-center rounded-md text-[var(--sidebar-text-dim)] transition-colors [-webkit-app-region:no-drag] hover:bg-[var(--surface-hover)] hover:text-[var(--text)] ${
+                sidebarIsExpanded ? 'left-[202px]' : 'left-[10px]'
+              }`}
             >
-              {collapsed ? (
-                <PanelLeftOpenIcon className="size-4" />
+              {sidebarIsExpanded ? (
+                <PanelLeftCloseIcon className="size-3.5" />
               ) : (
-                <PanelLeftCloseIcon className="size-4" />
+                <PanelLeftOpenIcon className="size-3.5" />
               )}
             </button>
           </TooltipTrigger>
-          <TooltipContent side="bottom" sideOffset={6}>
-            <span>{collapsed ? 'Expand sidebar' : 'Collapse sidebar'}</span>
+          <TooltipContent side="bottom">
+            {sidebarIsExpanded ? 'Collapse sidebar' : 'Expand sidebar'}
             <span className="ml-2 opacity-60">{'⌘\\'}</span>
           </TooltipContent>
         </Tooltip>
+
         {settingsState && (
           <SettingsModal
             open={settingsOpen}
@@ -419,29 +348,37 @@ export default function App(): ReactElement {
   )
 }
 
-interface SidebarButtonProps {
+function RailButton({
+  active = false,
+  disabled = false,
+  label,
+  icon,
+  onClick,
+}: {
   active?: boolean
-  onClick: () => void
+  disabled?: boolean
   label: string
-  icon: ReactNode
-}
-
-function SidebarButton({ active = false, onClick, label, icon }: SidebarButtonProps): ReactElement {
+  icon: ReactElement
+  onClick: () => void
+}): ReactElement {
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-label={label}
-      className={`flex h-7 cursor-pointer items-center gap-2 rounded-lg px-2 text-[13px] transition-colors ${
-        active
-          ? 'bg-[var(--surface-hover)] text-[var(--text)]'
-          : 'text-[var(--sidebar-text-soft)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]'
-      }`}
-    >
-      <span className="flex h-4 w-4 shrink-0 items-center justify-center text-[var(--sidebar-text-dim)]">
-        {icon}
-      </span>
-      <span className="min-w-0 flex-1 truncate text-left">{label}</span>
-    </button>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={onClick}
+          aria-label={label}
+          className={`grid size-9 place-items-center rounded-md border transition-colors disabled:cursor-not-allowed disabled:opacity-25 ${
+            active
+              ? 'border-[var(--signal-border)] bg-[var(--signal-soft)] text-[var(--signal)]'
+              : 'border-transparent text-[var(--sidebar-text-dim)] hover:border-[var(--border)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]'
+          }`}
+        >
+          {icon}
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="right">{label}</TooltipContent>
+    </Tooltip>
   )
 }

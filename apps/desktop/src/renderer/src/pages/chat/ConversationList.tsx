@@ -89,12 +89,12 @@ export function buildConversationSidebarSections(
 }
 
 function statusClassName(tone: ConversationStatusTone): string {
-  if (tone === 'approval') return 'bg-amber-50 text-amber-600'
-  if (tone === 'paused') return 'bg-amber-50 text-amber-600'
-  if (tone === 'failed') return 'bg-red-50 text-red-600'
-  if (tone === 'cancelled') return 'bg-zinc-100 text-zinc-500'
-  if (tone === 'interrupted') return 'bg-amber-50 text-amber-600'
-  return 'bg-blue-50 text-blue-600'
+  if (tone === 'approval') return 'bg-[var(--warning-soft)] text-[var(--warning)]'
+  if (tone === 'paused') return 'bg-[var(--warning-soft)] text-[var(--warning)]'
+  if (tone === 'failed') return 'bg-[var(--error-soft)] text-[var(--error)]'
+  if (tone === 'cancelled') return 'bg-[var(--surface-hover)] text-[var(--text-dim)]'
+  if (tone === 'interrupted') return 'bg-[var(--warning-soft)] text-[var(--warning)]'
+  return 'bg-[var(--signal-soft)] text-[var(--blue)]'
 }
 
 export function formatConversationListRelativeTime(updatedAt: number, now = Date.now()): string {

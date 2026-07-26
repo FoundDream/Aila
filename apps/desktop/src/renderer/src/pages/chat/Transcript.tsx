@@ -22,12 +22,14 @@ export function Transcript({
   canRetryLast = false,
   onRetryLast,
   submitScrollKey = 0,
+  compact = false,
 }: {
   messages: Message[]
   events?: PersistedRunEvent[]
   canRetryLast?: boolean
   onRetryLast?: () => void
   submitScrollKey?: number
+  compact?: boolean
 }): ReactElement {
   const { scrollRef, contentRef, isAtBottom, scrollToBottom } = useStickToBottom({
     initial: 'instant',
@@ -42,17 +44,23 @@ export function Transcript({
   if (messages.length === 0) {
     return (
       <div className="flex flex-1 items-center justify-center">
-        <p className="text-[22px] font-medium text-[var(--text)]">What can I help with?</p>
+        <p className="text-[18px] font-normal text-[var(--text-soft)]">What can I help with?</p>
       </div>
     )
   }
 
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
-      <div ref={scrollRef} className="flex-1 overflow-y-auto px-8 py-8">
-        <div ref={contentRef} className="mx-auto flex max-w-[680px] flex-col gap-7">
+      <div
+        ref={scrollRef}
+        className={`flex-1 overflow-y-auto ${compact ? 'px-3 py-3' : 'px-6 py-6'}`}
+      >
+        <div
+          ref={contentRef}
+          className={`mx-auto flex flex-col ${compact ? 'max-w-none gap-3' : 'max-w-[820px] gap-4'}`}
+        >
           {messages.map((message) => (
-            <MessageRow key={message.id} message={message} />
+            <MessageRow key={message.id} message={message} compact={compact} />
           ))}
           <ContextCompactionStatus events={events} />
           {canRetryLast && onRetryLast && <RetryLastTurn onRetryLast={onRetryLast} />}
@@ -87,35 +95,43 @@ function RetryLastTurn({ onRetryLast }: { onRetryLast: () => void }): ReactEleme
   )
 }
 
-function MessageRow({ message }: { message: Message }): ReactElement {
+function MessageRow({ message, compact }: { message: Message; compact: boolean }): ReactElement {
   const isUser = message.role === 'user'
   const isStreaming = message.status === 'streaming'
   const isQueued = message.status === 'queued'
   const canCopy = !isStreaming && messageToPlainText(message).length > 0
+  const toolStepCount = message.blocks.filter((block) => block.type === 'tool_call').length
+  const visibleBlocks = compact
+    ? message.blocks.filter((block) => block.type !== 'tool_call')
+    : message.blocks
 
   if (isUser) {
     return (
-      <article className="group flex flex-col items-end gap-1">
+      <article className="group relative flex flex-col gap-2 rounded-lg border border-[var(--border)] bg-[var(--textarea)] px-3 py-3">
+        <div className="self-start rounded-md border border-[var(--border)] bg-[var(--surface-hover)] px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.08em] text-[var(--text-dim)]">
+          You
+        </div>
         <div
-          className={`max-w-[85%] rounded-[18px] px-4 py-2.5 ${
+          className={
             isQueued
-              ? 'border border-dashed border-[var(--border-strong)] bg-transparent text-[var(--text-soft)]'
-              : 'bg-[var(--bg-soft)]'
-          }`}
+              ? 'pr-7 text-[13.5px] text-[var(--text-soft)] opacity-70'
+              : 'pr-7 text-[13.5px] text-[var(--text)]'
+          }
         >
           <div className="flex flex-col gap-3">
-            {message.blocks.map((block, index) => (
+            {visibleBlocks.map((block, index) => (
               <BlockView
                 // biome-ignore lint/suspicious/noArrayIndexKey: blocks are append-only per message
                 key={index}
                 block={block}
                 isStreaming={isStreaming}
+                compact={compact}
               />
             ))}
           </div>
         </div>
         {isQueued && (
-          <div className="mr-1 flex items-center gap-1 text-[11px] text-[var(--text-dim)]">
+          <div className="flex items-center gap-1 text-[11px] text-[var(--text-dim)]">
             <LoaderCircleIcon className="size-3 animate-spin" />
             Queued
           </div>
@@ -126,17 +142,21 @@ function MessageRow({ message }: { message: Message }): ReactElement {
   }
 
   return (
-    <article className="group flex flex-col gap-1">
-      <div className="flex flex-col gap-3">
-        {message.blocks.length === 0 && isStreaming ? (
+    <article className="group relative flex flex-col gap-2 rounded-lg border border-[var(--border)] bg-[var(--textarea)] px-3 py-3">
+      <div className="self-start rounded-md border border-[var(--signal-border)] bg-[var(--signal-soft)] px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.08em] text-[var(--signal)]">
+        Aila
+      </div>
+      <div className="flex flex-col gap-3 pr-7 text-[13.5px]">
+        {visibleBlocks.length === 0 && isStreaming ? (
           <StreamingDots />
         ) : (
-          message.blocks.map((block, index) => (
+          visibleBlocks.map((block, index) => (
             <BlockView
               // biome-ignore lint/suspicious/noArrayIndexKey: blocks are append-only per message
               key={index}
               block={block}
               isStreaming={isStreaming}
+              compact={compact}
             />
           ))
         )}
@@ -144,6 +164,19 @@ function MessageRow({ message }: { message: Message }): ReactElement {
           <p className="text-sm text-[var(--error)]">Error: {message.error}</p>
         )}
       </div>
+      {compact && toolStepCount > 0 && (
+        <div className="mt-1 flex items-center gap-2 border-t border-[var(--border)] pt-2 font-mono text-[9.5px] text-[var(--text-dim)]">
+          {isStreaming ? (
+            <LoaderCircleIcon className="size-3 animate-spin text-[var(--signal)]" />
+          ) : (
+            <CheckIcon className="size-3 text-[var(--success)]" />
+          )}
+          <span>
+            {toolStepCount} {toolStepCount === 1 ? 'step' : 'steps'} ·{' '}
+            {isStreaming ? 'Running' : message.status === 'error' ? 'Failed' : 'Completed'}
+          </span>
+        </div>
+      )}
       {canCopy && <CopyButton message={message} />}
     </article>
   )
@@ -168,7 +201,7 @@ function CopyButton({ message }: { message: Message }): ReactElement {
       onClick={onCopy}
       aria-label={copied ? 'Copied' : 'Copy message'}
       title={copied ? 'Copied' : 'Copy'}
-      className={`grid size-6 place-items-center rounded-md text-[var(--text-dim)] transition-opacity hover:bg-[var(--surface-hover)] hover:text-[var(--text)] ${
+      className={`absolute right-2 top-2 grid size-6 place-items-center rounded-md text-[var(--text-dim)] transition-opacity hover:bg-[var(--surface-hover)] hover:text-[var(--text)] ${
         copied ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 focus:opacity-100'
       }`}
     >
@@ -185,7 +218,15 @@ function messageToPlainText(message: Message): string {
     .trim()
 }
 
-function BlockView({ block, isStreaming }: { block: Block; isStreaming: boolean }): ReactElement {
+function BlockView({
+  block,
+  isStreaming,
+  compact,
+}: {
+  block: Block
+  isStreaming: boolean
+  compact: boolean
+}): ReactElement {
   if (block.type === 'reasoning') {
     return <ReasoningView content={block.content} isStreaming={isStreaming} />
   }
@@ -223,7 +264,7 @@ function BlockView({ block, isStreaming }: { block: Block; isStreaming: boolean 
       lineNumbers={false}
       parseIncompleteMarkdown
       plugins={markdownPlugins}
-      className="aila-md text-[15px] leading-[1.7]"
+      className={`aila-md leading-[1.7] ${compact ? 'text-[13.5px]' : 'text-[15px]'}`}
     >
       {block.content}
     </Streamdown>

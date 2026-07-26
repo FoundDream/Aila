@@ -274,7 +274,7 @@ function OpenRouterView({
 
       <div className="flex-1 overflow-auto p-1">
         {error && (
-          <div className="px-2 py-3 text-[12px] text-red-600">
+          <div className="px-2 py-3 text-[12px] text-[var(--error)]">
             Failed to load OpenRouter models: {error}
           </div>
         )}

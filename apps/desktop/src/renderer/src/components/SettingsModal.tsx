@@ -187,8 +187,8 @@ function TokenActivityGrid({ stats }: { stats: TokenUsageStats }): ReactElement 
   const peakTokens = Math.max(0, ...stats.days.map((day) => day.totalTokens))
   const firstDay = stats.days[0]
   const leadingCells = firstDay ? new Date(`${firstDay.date}T00:00:00`).getDay() : 0
-  const cells: Array<TokenUsageDay | null> = [
-    ...Array.from({ length: leadingCells }, () => null),
+  const cells: Array<TokenUsageDay | { emptyWeekday: number }> = [
+    ...Array.from({ length: leadingCells }, (_, emptyWeekday) => ({ emptyWeekday })),
     ...stats.days,
   ]
 
@@ -198,24 +198,24 @@ function TokenActivityGrid({ stats }: { stats: TokenUsageStats }): ReactElement 
         className="grid w-max grid-flow-col gap-1"
         style={{ gridTemplateRows: 'repeat(7, minmax(0, 10px))' }}
       >
-        {cells.map((day, index) =>
-          day ? (
-            <Tooltip key={day.date}>
+        {cells.map((cell) =>
+          'date' in cell ? (
+            <Tooltip key={cell.date}>
               <TooltipTrigger asChild>
                 <span
                   role="img"
-                  aria-label={`${formatUsageDate(day.date)} · ${formatTokenStat(day.totalTokens)} tokens`}
-                  className={`block size-2.5 rounded-[3px] transition-transform hover:scale-125 ${activityColor(day, peakTokens)}`}
+                  aria-label={`${formatUsageDate(cell.date)} · ${formatTokenStat(cell.totalTokens)} tokens`}
+                  className={`block size-2.5 rounded-[3px] transition-transform hover:scale-125 ${activityColor(cell, peakTokens)}`}
                 />
               </TooltipTrigger>
               <TooltipContent side="top" sideOffset={8} className="z-[1100] px-3 py-2">
-                <TokenActivityTooltipBody day={day} />
+                <TokenActivityTooltipBody day={cell} />
               </TooltipContent>
             </Tooltip>
           ) : (
             <span
-              key={`empty-${index}`}
-              className={`block size-2.5 rounded-[3px] ${activityColor(day, peakTokens)}`}
+              key={`empty-weekday-${cell.emptyWeekday}`}
+              className={`block size-2.5 rounded-[3px] ${activityColor(null, peakTokens)}`}
             />
           ),
         )}
@@ -784,7 +784,7 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
   return (
     <DialogPrimitive.Root open={open} onOpenChange={onOpenChange}>
       <DialogPrimitive.Portal>
-        <DialogPrimitive.Overlay className="fixed inset-0 z-[900] bg-black/30 data-[state=open]:animate-in data-[state=open]:fade-in-0" />
+        <DialogPrimitive.Overlay className="fixed inset-0 z-[900] bg-black/60 data-[state=open]:animate-in data-[state=open]:fade-in-0" />
         <DialogPrimitive.Content className="fixed left-1/2 top-1/2 z-[1000] flex h-[560px] max-h-[88vh] w-[820px] max-w-[94vw] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface)] shadow-2xl outline-none data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95">
           {/* Left tab rail */}
           <nav className="flex w-44 shrink-0 flex-col gap-0.5 border-r border-[var(--border)] bg-[var(--bg-soft)] p-3">
@@ -850,7 +850,7 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
                         <span
                           title={configured ? 'Configured' : 'Not configured'}
                           className={`size-1.5 shrink-0 rounded-full ${
-                            configured ? 'bg-emerald-500' : 'bg-[var(--border-strong)]'
+                            configured ? 'bg-[var(--success)]' : 'bg-[var(--border-strong)]'
                           }`}
                         />
                       </button>
@@ -868,7 +868,7 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
                     <span
                       className={`rounded-full px-2 py-0.5 text-[10.5px] font-medium ${
                         providerConfigured
-                          ? 'bg-emerald-500/10 text-emerald-600'
+                          ? 'bg-[var(--success-soft)] text-[var(--success)]'
                           : 'bg-[var(--surface-hover)] text-[var(--text-dim)]'
                       }`}
                     >
@@ -1049,7 +1049,7 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
             {tab === 'models' && (
               <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
                 {configuredInDraft.length === 0 && (
-                  <p className="mb-3 text-[12px] text-amber-600">
+                  <p className="mb-3 text-[12px] text-[var(--warning)]">
                     Add at least one API key in the Provider tab to pick defaults.
                   </p>
                 )}
@@ -1317,7 +1317,7 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
                     </div>
 
                     {usageStatsError && (
-                      <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-[12px] text-red-700">
+                      <div className="rounded-md border border-[var(--error-border)] bg-[var(--error-soft)] px-3 py-2 text-[12px] text-[var(--error)]">
                         {usageStatsError}
                       </div>
                     )}
@@ -1564,14 +1564,14 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
                 </div>
 
                 {extensionsError && (
-                  <p className="mb-3 flex items-start gap-2 rounded-md border border-red-200 bg-red-50 px-2.5 py-2 text-[12px] text-red-700">
+                  <p className="mb-3 flex items-start gap-2 rounded-md border border-[var(--error-border)] bg-[var(--error-soft)] px-2.5 py-2 text-[12px] text-[var(--error)]">
                     <TriangleAlertIcon className="mt-0.5 size-3.5 shrink-0" />
                     <span className="min-w-0 break-words">{extensionsError}</span>
                   </p>
                 )}
 
                 {extensionsNotice && (
-                  <p className="mb-3 rounded-md border border-emerald-200 bg-emerald-50 px-2.5 py-2 text-[12px] text-emerald-700">
+                  <p className="mb-3 rounded-md border border-[var(--success-border)] bg-[var(--success-soft)] px-2.5 py-2 text-[12px] text-[var(--success)]">
                     {extensionsNotice}
                   </p>
                 )}
@@ -1692,9 +1692,9 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
                               <span
                                 className={`rounded px-1.5 py-0.5 text-[10px] ${
                                   gmailAuth?.authorized
-                                    ? 'bg-emerald-50 text-emerald-700'
+                                    ? 'bg-[var(--success-soft)] text-[var(--success)]'
                                     : gmailServer
-                                      ? 'bg-amber-50 text-amber-700'
+                                      ? 'bg-[var(--warning-soft)] text-[var(--warning)]'
                                       : 'bg-[var(--surface-hover)] text-[var(--text-dim)]'
                                 }`}
                               >
@@ -1734,7 +1734,7 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
                               title="Clear Gmail OAuth"
                               onClick={() => void handleClearGmailOAuth()}
                               disabled={extensionsBusy !== null || !gmailServer}
-                              className="grid size-6 place-items-center rounded-md text-[var(--text-dim)] hover:bg-red-50 hover:text-red-700 disabled:opacity-50"
+                              className="grid size-6 place-items-center rounded-md text-[var(--text-dim)] hover:bg-[var(--error-soft)] hover:text-[var(--error)] disabled:opacity-50"
                             >
                               <LogOutIcon className="size-3.5" />
                             </button>
@@ -1783,12 +1783,12 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
                             </span>
                             <span className="shrink-0">{gmailServer.status}</span>
                             {gmailAuth?.hasRefreshToken && (
-                              <span className="shrink-0 text-emerald-700">refresh token</span>
+                              <span className="shrink-0 text-[var(--success)]">refresh token</span>
                             )}
                           </div>
                         )}
                         {gmailServer?.error && (
-                          <div className="mt-1 break-words text-[11px] text-red-700">
+                          <div className="mt-1 break-words text-[11px] text-[var(--error)]">
                             {gmailServer.error}
                           </div>
                         )}
@@ -1880,7 +1880,7 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
                                     title="Delete server"
                                     onClick={() => void handleDeleteMcpServer(server.name)}
                                     disabled={extensionsBusy !== null}
-                                    className="grid size-6 place-items-center rounded-md text-[var(--text-dim)] hover:bg-red-50 hover:text-red-700 disabled:opacity-50"
+                                    className="grid size-6 place-items-center rounded-md text-[var(--text-dim)] hover:bg-[var(--error-soft)] hover:text-[var(--error)] disabled:opacity-50"
                                   >
                                     <Trash2Icon className="size-3.5" />
                                   </button>
@@ -1888,9 +1888,9 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
                                 <span
                                   className={`rounded px-1.5 py-0.5 text-[10px] ${
                                     server.status === 'connected'
-                                      ? 'bg-emerald-50 text-emerald-700'
+                                      ? 'bg-[var(--success-soft)] text-[var(--success)]'
                                       : server.status === 'failed'
-                                        ? 'bg-red-50 text-red-700'
+                                        ? 'bg-[var(--error-soft)] text-[var(--error)]'
                                         : 'bg-[var(--surface-hover)] text-[var(--text-dim)]'
                                   }`}
                                 >
@@ -1915,7 +1915,7 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
                               </div>
                             )}
                             {server.error && (
-                              <div className="mt-1 break-words text-[11px] text-red-700">
+                              <div className="mt-1 break-words text-[11px] text-[var(--error)]">
                                 {server.error}
                               </div>
                             )}
@@ -1943,7 +1943,7 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
                               key={`${error.kind}:${error.message}`}
                               className="flex items-start gap-2 px-2.5 py-2 text-[12px]"
                             >
-                              <TriangleAlertIcon className="mt-0.5 size-3.5 shrink-0 text-amber-600" />
+                              <TriangleAlertIcon className="mt-0.5 size-3.5 shrink-0 text-[var(--warning)]" />
                               <span className="rounded bg-[var(--surface-hover)] px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-[var(--text-dim)]">
                                 {error.kind}
                               </span>

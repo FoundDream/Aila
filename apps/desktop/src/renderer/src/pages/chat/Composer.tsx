@@ -54,6 +54,7 @@ interface ComposerProps {
   onApprovalModeChange: (mode: ApprovalMode) => Promise<void> | void
   executionMode?: AilaExecutionMode
   onExecutionModeChange?: (mode: AilaExecutionMode) => void
+  compact?: boolean
 }
 
 // image-store enforces 10MB on disk; stay below it so base64 inflation and
@@ -478,6 +479,7 @@ export function Composer({
   onApprovalModeChange,
   executionMode,
   onExecutionModeChange,
+  compact = false,
 }: ComposerProps): ReactElement {
   const [value, setValue] = useState('')
   const [attachments, setAttachments] = useState<PendingAttachment[]>([])
@@ -822,20 +824,24 @@ export function Composer({
   const contextSummary = contextWindowSummary(contextMeterTokens, contextLength, ratio)
   const usageBuckets = usageTokenBuckets(usage)
   const meterColor =
-    ratio >= 0.9 ? 'text-red-500' : ratio >= 0.75 ? 'text-amber-500' : 'text-[var(--text-dim)]'
+    ratio >= 0.9
+      ? 'text-[var(--error)]'
+      : ratio >= 0.75
+        ? 'text-[var(--warning)]'
+        : 'text-[var(--text-dim)]'
 
   return (
-    <div className="shrink-0 px-6 pb-6 pt-2">
-      <div className="mx-auto max-w-[680px]">
+    <div className={`shrink-0 ${compact ? 'px-3 pb-3 pt-2' : 'px-6 pb-6 pt-2'}`}>
+      <div className={`mx-auto ${compact ? 'max-w-none' : 'max-w-[820px]'}`}>
         <div
           onDragOver={(e) => e.preventDefault()}
           onDrop={handleDrop}
-          className="relative rounded-[24px] border border-[var(--border)] bg-[var(--surface)] shadow-[0_2px_14px_rgba(0,0,0,0.035)] transition-shadow focus-within:shadow-[0_3px_18px_rgba(0,0,0,0.055)]"
+          className="relative rounded-lg border border-[var(--border)] bg-[var(--textarea)] shadow-[0_8px_24px_rgba(0,0,0,0.16)] transition-[border-color,box-shadow] focus-within:border-[var(--border-strong)] focus-within:shadow-[0_10px_28px_rgba(0,0,0,0.22)]"
         >
           {slashState && (
             <div
               ref={slashMenuRef}
-              className="absolute bottom-full left-4 z-40 mb-2 w-[min(28rem,calc(100%-2rem))] overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--surface)] p-1 shadow-[0_14px_48px_rgba(0,0,0,0.14)]"
+              className="absolute bottom-full left-4 z-40 mb-2 w-[min(28rem,calc(100%-2rem))] overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--surface)] p-1 shadow-[0_14px_48px_rgba(0,0,0,0.3)]"
             >
               <SlashCommandMenu
                 commands={filteredSlashCommands}
@@ -891,7 +897,7 @@ export function Composer({
             </div>
           )}
 
-          <div className="px-4 pb-1 pt-3">
+          <div className="px-3.5 pb-1 pt-3">
             <textarea
               ref={textareaRef}
               value={value}
@@ -906,13 +912,13 @@ export function Composer({
               }
               onKeyDown={handleKeyDown}
               onPaste={handlePaste}
-              placeholder={isStreaming ? 'Queue a follow-up' : 'Ask Aila anything'}
+              placeholder={isStreaming ? 'Queue a follow-up…' : 'Ask Aila anything…'}
               rows={1}
-              className="block min-h-7 max-h-[180px] w-full resize-none overflow-y-auto bg-transparent text-[15px] leading-[1.6] text-[var(--text)] outline-none placeholder:text-[var(--text-dim)]"
+              className="block min-h-7 max-h-[180px] w-full resize-none overflow-y-auto bg-transparent text-[14px] leading-[1.55] text-[var(--text)] outline-none placeholder:text-[var(--text-dim)]"
             />
           </div>
 
-          <div className="flex min-h-12 items-center justify-between gap-2 px-2.5 pb-2.5 pt-1">
+          <div className="flex min-h-10 items-center justify-between gap-2 px-2 pb-2 pt-1">
             <div className="flex min-w-0 items-center gap-1.5">
               <input
                 ref={imageInputRef}
@@ -946,9 +952,9 @@ export function Composer({
                   <button
                     type="button"
                     aria-label="Add attachment"
-                    className="grid size-8 shrink-0 place-items-center rounded-full text-[var(--text-soft)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
+                    className="grid size-7 shrink-0 place-items-center rounded-md text-[var(--text-soft)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
                   >
-                    <PlusIcon className="size-[18px]" />
+                    <PlusIcon className="size-4" />
                   </button>
                 </PopoverTrigger>
                 <PopoverContent side="top" align="start" className="w-56 border-0 p-1">
@@ -983,7 +989,7 @@ export function Composer({
                     className={`inline-flex h-8 shrink-0 items-center px-1 text-[12px] outline-none transition-colors ${
                       activeApprovalMode === 'safe'
                         ? 'text-[var(--text-soft)] hover:text-[var(--text)] focus-visible:text-[var(--text)]'
-                        : 'text-amber-600 hover:text-amber-700 focus-visible:text-amber-700'
+                        : 'text-[var(--warning)] hover:brightness-110 focus-visible:brightness-110'
                     }`}
                   >
                     <span>{activeApprovalModeMeta?.label ?? 'Safe'}</span>
@@ -1061,7 +1067,7 @@ export function Composer({
                     aria-label={primaryActionLabel}
                     onClick={handlePrimaryAction}
                     disabled={primaryActionDisabled}
-                    className={`grid size-8 shrink-0 place-items-center rounded-full transition disabled:cursor-not-allowed ${
+                    className={`grid size-7 shrink-0 place-items-center rounded-md transition disabled:cursor-not-allowed ${
                       primaryActionIsAbort
                         ? 'border border-[var(--border)] bg-[var(--surface)] text-[var(--text-soft)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]'
                         : 'bg-[var(--brand-ink)] text-[var(--brand-ink-fg)] hover:opacity-85 disabled:bg-[var(--surface-hover)] disabled:text-[var(--text-dim)]'

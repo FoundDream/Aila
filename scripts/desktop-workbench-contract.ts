@@ -278,10 +278,10 @@ async function testDesktopExposesRunInspectorApi(): Promise<void> {
   )
   assert(
     chatPageSource.includes('loopMode: stepMode') &&
-      chatPageSource.includes('showRunInspector && conversationId &&') &&
+      chatPageSource.includes("displayMode === 'debug' && conversationId") &&
       chatPageSource.includes('<RunInspector') &&
       inspectorSource.includes('ExecutionTree') &&
-      inspectorSource.includes('PanelHeader title="Runs"') &&
+      inspectorSource.includes('PanelHeader title="Trace"') &&
       inspectorSource.includes('Run debugger') &&
       inspectorSource.includes('type InspectionScope') &&
       inspectorSource.includes("{ type: 'run'; runId: string }") &&
@@ -289,7 +289,7 @@ async function testDesktopExposesRunInspectorApi(): Promise<void> {
       inspectorSource.includes("setScope({ type: 'run', runId })") &&
       inspectorSource.includes("setScope({ type: 'step', runId, stepId })") &&
       inspectorSource.includes("type DetailTab = 'overview' | 'trace' | 'events' | 'raw'") &&
-      inspectorSource.includes("{ id: 'trace', label: 'Trace'") &&
+      inspectorSource.includes("{ id: 'trace', label: 'Input / Output'") &&
       inspectorSource.includes("type TraceFilter = 'all' | 'model' | 'tools'") &&
       inspectorSource.includes('ArtifactChain') &&
       inspectorSource.includes('Entire run events') &&
@@ -297,9 +297,11 @@ async function testDesktopExposesRunInspectorApi(): Promise<void> {
       inspectorSource.includes('modelResponseTokenUsage') &&
       inspectorSource.includes('Checkpoint') &&
       inspectorSource.includes('MessageBlock') &&
-      chatPageSource.includes('onRunInspectorOpen') &&
-      chatPageSource.includes('Continuous next run') &&
-      appSource.includes('onRunInspectorOpen={handleRunInspectorOpen}') &&
+      chatPageSource.includes("export type WorkbenchDisplayMode = 'agent' | 'debug'") &&
+      chatPageSource.includes('<ModeSwitch value={displayMode}') &&
+      chatPageSource.includes('Continuous next') &&
+      appSource.includes('displayMode={displayMode}') &&
+      appSource.includes('onDisplayModeChange={handleDisplayModeChange}') &&
       inspectorSource.includes('getRunArtifact') &&
       inspectorSource.includes('onRunEvent') &&
       inspectorSource.includes("control('step')") &&
