@@ -1,4 +1,10 @@
 export {
+  AgentRuntime,
+  type AgentRuntimeInputQueue,
+  type AgentRuntimeRunOptions,
+  defaultAgentRuntime,
+} from './agent-runtime'
+export {
   applyFindReplace,
   type FindReplaceEdit,
   type FindReplaceFailure,
@@ -35,6 +41,8 @@ export {
   type RunStepState,
   type RunStepStatus,
   type RunToolBatchResult,
+  type RunToolPreparation,
+  type RunToolStepResult,
   type RunTransition,
   type RunWait,
   type RunWaitReason,
@@ -43,10 +51,12 @@ export {
   runDurableRun,
 } from './run-machine'
 export {
+  authorizeTool,
   BUILTIN_TOOL_PACKS,
   createDefaultToolRegistry,
   createToolRegistry,
   evaluateToolPolicy,
+  executeAuthorizedTool,
   executeTool,
   getToolDefinitions,
   summarizeToolTarget,

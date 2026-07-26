@@ -19,18 +19,24 @@ import {
   type RunIdentity,
   runRecoveryFromCursor,
   type ToolActivityTarget,
+  type ToolAuthorization,
   type ToolCall,
   type ToolContext,
   type ToolRegistry,
   type UsageInfo,
 } from '@aila/agent'
-import { executeTool, getToolDefinitions, summarizeToolTarget } from '@aila/agent/host'
+import {
+  authorizeTool,
+  executeAuthorizedTool,
+  getToolDefinitions,
+  summarizeToolTarget,
+} from '@aila/agent/host'
 import {
   createRunCursor,
+  defaultAgentRuntime,
   type RunCursor,
   type RunTransition,
   reduceRunTransition,
-  runDurableRun,
 } from '@aila/agent/internal'
 import { AssistantMessageBuilder } from './assistant-message-builder'
 import { MissingApiKeyError, type NodeAuthInput, requireApiKey } from './auth'
@@ -69,6 +75,13 @@ const TOOL_BUDGET_EXHAUSTED_NOTICE =
   'Do not request any more tools. Using the results you already have, give the ' +
   'user a clear final answer: what you did, the current state, and any remaining ' +
   'next steps they should take.'
+
+function isProviderContextOverflow(error: string | undefined): boolean {
+  if (!error) return false
+  return /context.{0,20}(length|window|limit)|too many tokens|maximum.{0,12}tokens|token.{0,12}limit/i.test(
+    error,
+  )
+}
 
 export interface DurableRunExecutorOptions extends NodeAuthInput {
   modelRegistry?: ModelRegistry
@@ -127,6 +140,7 @@ export function createDurableRunExecutor(
       runCheckpoint,
       messages: requestMessages,
       contextPlan: requestContextPlan,
+      prepareModelStep,
       selection: requestSelection,
       signal,
       onRunEvent,
@@ -147,7 +161,7 @@ export function createDurableRunExecutor(
 
     const messages = cloneAgentMessages(runCheckpoint?.messages ?? requestMessages)
     const selection = cloneAgentValue(requestSelection)
-    const contextPlan = cloneAgentValue(runCheckpoint?.contextPlan ?? requestContextPlan)
+    let contextPlan = cloneAgentValue(runCheckpoint?.contextPlan ?? requestContextPlan)
     const workspaceRoots = cloneAgentWorkspaceRoots(requestWorkspaceRoots)
     const builder = new AssistantMessageBuilder(runCheckpoint?.assistantMessage.blocks)
     let lastUsage: UsageInfo | null = runCheckpoint?.usage
@@ -330,7 +344,7 @@ export function createDurableRunExecutor(
         lastUsage = usageInfo(totalUsage)
       }
 
-      const toolContext: Parameters<typeof executeTool>[2] = {
+      const toolContext: ToolContext = {
         settings,
         conversationId,
         messageId: assistantMessageId,
@@ -410,7 +424,28 @@ export function createDurableRunExecutor(
       }
       const initialSnapshot = runCheckpoint?.loop ? cloneAgentValue(runCheckpoint.loop) : undefined
       if (initialSnapshot) initialSnapshot.state.mode = loopMode
-      const loopResult = await runDurableRun<ParsedModelToolCall>({
+      const toolCallsByModelStep = new Map<number, ParsedModelToolCall[]>()
+      const toolResultsByModelStep = new Map<
+        number,
+        Array<{
+          toolCallId: string
+          toolName: string
+          result: string
+          isError: boolean
+        }>
+      >()
+      if (runCheckpoint) {
+        const checkpointCalls =
+          runCheckpoint.loop.toolBatchCalls ?? runCheckpoint.loop.pendingToolCalls
+        if (checkpointCalls.length > 0) {
+          toolCallsByModelStep.set(
+            Math.max(0, runCheckpoint.loop.modelStepIndex - 1),
+            cloneAgentValue(checkpointCalls),
+          )
+        }
+      }
+
+      const loopResult = await defaultAgentRuntime.run<ParsedModelToolCall>({
         identity: run,
         signal,
         maxToolSteps,
@@ -439,6 +474,63 @@ export function createDurableRunExecutor(
           ) {
             activeStepId = undefined
           }
+        },
+        prepareModelStep: async ({ modelStepIndex, toolsEnabled, reason }) => {
+          const prepared = await prepareModelStep?.({
+            conversationId,
+            run: cloneAgentValue(run),
+            modelStepIndex,
+            reason,
+            toolsEnabled,
+            messages: cloneAgentMessages(modelMessages),
+            ...(contextPlan ? { contextPlan: cloneAgentValue(contextPlan) } : {}),
+          })
+          if (prepared?.messages) {
+            modelMessages.splice(0, modelMessages.length, ...cloneAgentMessages(prepared.messages))
+          }
+          if (prepared?.contextPlan) contextPlan = cloneAgentValue(prepared.contextPlan)
+        },
+        executeCompactStep: async ({ step, reason, signal: compactSignal }) => {
+          activeStepId = step.stepId
+          const beforeChars = JSON.stringify(modelMessages).length
+          const toolMessageIndexes = modelMessages.flatMap((message, index) =>
+            message.role === 'tool' ? [index] : [],
+          )
+          const compactable = toolMessageIndexes.slice(
+            0,
+            Math.max(0, toolMessageIndexes.length - 2),
+          )
+          for (const index of compactable) {
+            const message = modelMessages[index]
+            if (message?.role !== 'tool') continue
+            modelMessages[index] = {
+              role: 'tool',
+              tool_call_id: message.tool_call_id,
+              content:
+                '[Tool result compacted after provider context overflow; rerun the tool if needed.]',
+            }
+          }
+          const afterChars = JSON.stringify(modelMessages).length
+          await persistRunArtifact({
+            schemaVersion: AILA_RUN_ARTIFACT_SCHEMA_VERSION,
+            artifactId: `${run.runId}:${step.stepId}:compaction`,
+            conversationId,
+            turnId: run.turnId,
+            runId: run.runId,
+            stepId: step.stepId,
+            kind: 'compaction',
+            createdAt: Date.now(),
+            contentType: 'application/json',
+            data: {
+              reason,
+              beforeChars,
+              afterChars,
+              compactedToolResultCount: compactable.length,
+            },
+          })
+          return compactSignal.aborted
+            ? { outcome: 'cancelled', error: 'abort_signal' }
+            : { outcome: 'completed' }
         },
         executeModelStep: async ({ step, modelStepIndex, toolsEnabled, reason }) => {
           activeStepId = step.stepId
@@ -636,102 +728,184 @@ export function createDurableRunExecutor(
               ...(result.error ? { error: result.error } : {}),
             },
           })
+          const pendingToolCalls =
+            result.outcome === 'completed'
+              ? result.toolCalls.filter(
+                  (toolCall) =>
+                    !result.resolvedToolResults.some(
+                      (resolved) => resolved.toolCallId === toolCall.id,
+                    ),
+                )
+              : []
+          toolCallsByModelStep.set(modelStepIndex, cloneAgentValue(pendingToolCalls))
           return {
             outcome: result.outcome,
-            toolCalls:
-              result.outcome === 'completed'
-                ? result.toolCalls.filter(
-                    (toolCall) =>
-                      !result.resolvedToolResults.some(
-                        (resolved) => resolved.toolCallId === toolCall.id,
-                      ),
-                  )
-                : [],
+            toolCalls: pendingToolCalls,
             ...(result.error ? { error: result.error } : {}),
+            ...(result.outcome === 'failed' && isProviderContextOverflow(result.error)
+              ? {
+                  nextAction: {
+                    type: 'compact' as const,
+                    reason: 'provider_overflow' as const,
+                  },
+                }
+              : {}),
           }
         },
-        executeToolBatch: async ({ step, toolCalls }) => {
+        prepareToolStep: async ({ toolCall, waitFor }) => {
+          const definitionPresent = tools.some((definition) => definition.name === toolCall.name)
+          if (!definitionPresent) {
+            return { outcome: 'rejected', error: `Unknown tool "${toolCall.name}"` }
+          }
+          let authorization: ToolAuthorization
+          try {
+            authorization = await authorizeTool(
+              toolCall.name,
+              cloneAgentToolArgs(toolCall.args),
+              { ...toolContext, toolCallId: toolCall.id },
+              toolRegistry,
+            )
+          } catch (error) {
+            return {
+              outcome: 'rejected',
+              error: error instanceof Error ? error.message : String(error),
+            }
+          }
+          if (authorization.decision.action === 'deny') {
+            return {
+              outcome: 'rejected',
+              error:
+                authorization.decision.reason ?? `tool "${toolCall.name}" was denied by policy`,
+            }
+          }
+          if (authorization.decision.action === 'ask') {
+            if (!onToolApproval) {
+              return {
+                outcome: 'rejected',
+                error: `tool "${toolCall.name}" requires approval but no approval host is available`,
+              }
+            }
+            const approved = await waitFor(
+              {
+                reason: 'approval',
+                requestId: `approval:${run.runId}:${toolCall.id}`,
+                detail: `Approval required for ${toolCall.name}`,
+              },
+              () => onToolApproval(cloneAgentValue(authorization.request)),
+            )
+            if (!approved) {
+              return {
+                outcome: 'rejected',
+                error: `tool "${toolCall.name}" was rejected by user`,
+              }
+            }
+          }
+          return { outcome: 'ready' }
+        },
+        executeToolStep: async ({
+          step,
+          toolCall,
+          toolCallIndex,
+          toolCallCount,
+          modelStepIndex,
+          preparation,
+          signal: toolSignal,
+        }) => {
           activeStepId = step.stepId
-          const modelStepIndex = Math.max(0, Math.floor(step.index / 2))
-          const toolResults: Array<{
-            toolCallId: string
-            toolName: string
-            result: string
-            isError: boolean
-          }> = []
-          modelMessages.push({
-            role: 'assistant',
-            content: assistantTextByModelStep.get(modelStepIndex) ?? '',
-            tool_calls: toolCalls.map(toChatToolCall),
+          const batchCalls = toolCallsByModelStep.get(modelStepIndex) ?? [toolCall]
+          if (toolCallIndex === 0) {
+            modelMessages.push({
+              role: 'assistant',
+              content: assistantTextByModelStep.get(modelStepIndex) ?? '',
+              tool_calls: batchCalls.map(toChatToolCall),
+            })
+          }
+          let toolResults = toolResultsByModelStep.get(modelStepIndex)
+          if (!toolResults) {
+            toolResults = batchCalls.flatMap((call) => {
+              const existing = modelMessages.find(
+                (message) => message.role === 'tool' && message.tool_call_id === call.id,
+              )
+              return existing?.role === 'tool'
+                ? [
+                    {
+                      toolCallId: call.id,
+                      toolName: call.name,
+                      result: existing.content,
+                      isError: false,
+                    },
+                  ]
+                : []
+            })
+            toolResultsByModelStep.set(modelStepIndex, toolResults)
+          }
+
+          const toolStartedAt = Date.now()
+          const target = summarizeToolTarget(toolCall.name, toolCall.args)
+          if (target) toolTargets.set(toolCall.id, target)
+          const definitionPresent = tools.some((definition) => definition.name === toolCall.name)
+          await persistRunArtifact({
+            schemaVersion: AILA_RUN_ARTIFACT_SCHEMA_VERSION,
+            artifactId: `${run.runId}:${step.stepId}:tool_request:${toolCall.id}`,
+            conversationId,
+            turnId: run.turnId,
+            runId: run.runId,
+            stepId: step.stepId,
+            kind: 'tool_request',
+            createdAt: toolStartedAt,
+            contentType: 'application/json',
+            data: {
+              toolCallId: toolCall.id,
+              toolName: toolCall.name,
+              args: cloneAgentValue(toolCall.args),
+              definitionPresent,
+              authorization: preparation.outcome,
+              ...(preparation.error ? { authorizationError: preparation.error } : {}),
+              ...(target ? { target } : {}),
+            },
           })
 
-          for (const toolCall of toolCalls) {
-            const toolStartedAt = Date.now()
-            const target = summarizeToolTarget(toolCall.name, toolCall.args)
-            if (target) toolTargets.set(toolCall.id, target)
-            const definitionPresent = tools.some((definition) => definition.name === toolCall.name)
+          if (preparation.outcome === 'rejected') {
+            const message = preparation.error ?? `tool "${toolCall.name}" was rejected`
+            recordToolResult({
+              toolCallId: toolCall.id,
+              toolName: toolCall.name,
+              result: message,
+              isError: true,
+              builder,
+              toolTargets,
+              emitRunEvent,
+              handlers,
+              conversationId,
+              assistantMessageId,
+            })
+            modelMessages.push({ role: 'tool', tool_call_id: toolCall.id, content: message })
+            toolResults.push({
+              toolCallId: toolCall.id,
+              toolName: toolCall.name,
+              result: message,
+              isError: true,
+            })
             await persistRunArtifact({
               schemaVersion: AILA_RUN_ARTIFACT_SCHEMA_VERSION,
-              artifactId: `${run.runId}:${step.stepId}:tool_request:${toolCall.id}`,
+              artifactId: `${run.runId}:${step.stepId}:tool_result:${toolCall.id}`,
               conversationId,
               turnId: run.turnId,
               runId: run.runId,
               stepId: step.stepId,
-              kind: 'tool_request',
-              createdAt: toolStartedAt,
+              kind: 'tool_result',
+              createdAt: Date.now(),
               contentType: 'application/json',
               data: {
                 toolCallId: toolCall.id,
                 toolName: toolCall.name,
-                args: cloneAgentValue(toolCall.args),
-                definitionPresent,
-                ...(target ? { target } : {}),
+                outcome: 'failed',
+                error: message,
+                startedAt: toolStartedAt,
+                completedAt: Date.now(),
               },
             })
-
-            if (!definitionPresent) {
-              const message = `Unknown tool "${toolCall.name}"`
-              recordToolResult({
-                toolCallId: toolCall.id,
-                toolName: toolCall.name,
-                result: message,
-                isError: true,
-                builder,
-                toolTargets,
-                emitRunEvent,
-                handlers,
-                conversationId,
-                assistantMessageId,
-              })
-              modelMessages.push({ role: 'tool', tool_call_id: toolCall.id, content: message })
-              toolResults.push({
-                toolCallId: toolCall.id,
-                toolName: toolCall.name,
-                result: message,
-                isError: true,
-              })
-              await persistRunArtifact({
-                schemaVersion: AILA_RUN_ARTIFACT_SCHEMA_VERSION,
-                artifactId: `${run.runId}:${step.stepId}:tool_result:${toolCall.id}`,
-                conversationId,
-                turnId: run.turnId,
-                runId: run.runId,
-                stepId: step.stepId,
-                kind: 'tool_result',
-                createdAt: Date.now(),
-                contentType: 'application/json',
-                data: {
-                  toolCallId: toolCall.id,
-                  toolName: toolCall.name,
-                  outcome: 'failed',
-                  error: message,
-                  startedAt: toolStartedAt,
-                  completedAt: Date.now(),
-                },
-              })
-              continue
-            }
-
+          } else {
             emitRunEvent('tool.execution.started', {
               toolCallId: toolCall.id,
               toolName: toolCall.name,
@@ -740,7 +914,7 @@ export function createDurableRunExecutor(
             })
             let output: unknown
             try {
-              output = await executeTool(
+              output = await executeAuthorizedTool(
                 toolCall.name,
                 cloneAgentToolArgs(toolCall.args),
                 { ...toolContext, stepId: step.stepId, toolCallId: toolCall.id },
@@ -797,98 +971,99 @@ export function createDurableRunExecutor(
                   durationMs: Math.max(0, toolCompletedAt - toolStartedAt),
                 },
               })
-              continue
             }
 
-            const outputText = stringifyToolOutput(output)
-            emitRunEvent('tool.execution.completed', {
-              toolCallId: toolCall.id,
-              toolName: toolCall.name,
-              result: previewEventValue(output),
-              ...(toolTargets.get(toolCall.id) && {
-                target: toolTargets.get(toolCall.id),
-              }),
-            })
-            const toolResult = await prepareToolResultForModel({
-              store: toolResultStore,
-              content: outputText,
-              conversationId,
-              messageId: assistantMessageId,
-              toolCallId: toolCall.id,
-              toolName: toolCall.name,
-              maxInlineChars: maxInlineToolResultChars,
-              previewChars: toolResultPreviewChars,
-            })
-            recordToolResult({
-              toolCallId: toolCall.id,
-              toolName: toolCall.name,
-              result: toolResult.content,
-              ...(toolResult.resultRef && { resultRef: toolResult.resultRef }),
-              isError: false,
-              builder,
-              toolTargets,
-              emitRunEvent,
-              handlers,
-              conversationId,
-              assistantMessageId,
-            })
-            modelMessages.push({
-              role: 'tool',
-              tool_call_id: toolCall.id,
-              content: toolResult.content,
-            })
-            toolResults.push({
-              toolCallId: toolCall.id,
-              toolName: toolCall.name,
-              result: toolResult.content,
-              isError: false,
-            })
-            const toolCompletedAt = Date.now()
+            if (output !== undefined) {
+              const outputText = stringifyToolOutput(output)
+              emitRunEvent('tool.execution.completed', {
+                toolCallId: toolCall.id,
+                toolName: toolCall.name,
+                result: previewEventValue(output),
+                ...(toolTargets.get(toolCall.id) ? { target: toolTargets.get(toolCall.id) } : {}),
+              })
+              const toolResult = await prepareToolResultForModel({
+                store: toolResultStore,
+                content: outputText,
+                conversationId,
+                messageId: assistantMessageId,
+                toolCallId: toolCall.id,
+                toolName: toolCall.name,
+                maxInlineChars: maxInlineToolResultChars,
+                previewChars: toolResultPreviewChars,
+              })
+              recordToolResult({
+                toolCallId: toolCall.id,
+                toolName: toolCall.name,
+                result: toolResult.content,
+                ...(toolResult.resultRef && { resultRef: toolResult.resultRef }),
+                isError: false,
+                builder,
+                toolTargets,
+                emitRunEvent,
+                handlers,
+                conversationId,
+                assistantMessageId,
+              })
+              modelMessages.push({
+                role: 'tool',
+                tool_call_id: toolCall.id,
+                content: toolResult.content,
+              })
+              toolResults.push({
+                toolCallId: toolCall.id,
+                toolName: toolCall.name,
+                result: toolResult.content,
+                isError: false,
+              })
+              const toolCompletedAt = Date.now()
+              await persistRunArtifact({
+                schemaVersion: AILA_RUN_ARTIFACT_SCHEMA_VERSION,
+                artifactId: `${run.runId}:${step.stepId}:tool_result:${toolCall.id}`,
+                conversationId,
+                turnId: run.turnId,
+                runId: run.runId,
+                stepId: step.stepId,
+                kind: 'tool_result',
+                createdAt: toolCompletedAt,
+                contentType: 'application/json',
+                data: {
+                  toolCallId: toolCall.id,
+                  toolName: toolCall.name,
+                  outcome: 'completed',
+                  output: outputText,
+                  modelContent: toolResult.content,
+                  ...(toolResult.resultRef
+                    ? { resultRef: cloneAgentValue(toolResult.resultRef) }
+                    : {}),
+                  ...(toolTargets.get(toolCall.id) ? { target: toolTargets.get(toolCall.id) } : {}),
+                  startedAt: toolStartedAt,
+                  completedAt: toolCompletedAt,
+                  durationMs: Math.max(0, toolCompletedAt - toolStartedAt),
+                },
+              })
+            }
+          }
+
+          if (toolCallIndex === toolCallCount - 1) {
             await persistRunArtifact({
               schemaVersion: AILA_RUN_ARTIFACT_SCHEMA_VERSION,
-              artifactId: `${run.runId}:${step.stepId}:tool_result:${toolCall.id}`,
+              artifactId: `${run.runId}:${step.stepId}:tool_batch`,
               conversationId,
               turnId: run.turnId,
               runId: run.runId,
               stepId: step.stepId,
-              kind: 'tool_result',
-              createdAt: toolCompletedAt,
+              kind: 'tool_batch',
+              createdAt: Date.now(),
               contentType: 'application/json',
               data: {
-                toolCallId: toolCall.id,
-                toolName: toolCall.name,
-                outcome: 'completed',
-                output: outputText,
-                modelContent: toolResult.content,
-                ...(toolResult.resultRef
-                  ? { resultRef: cloneAgentValue(toolResult.resultRef) }
-                  : {}),
-                ...(toolTargets.get(toolCall.id) ? { target: toolTargets.get(toolCall.id) } : {}),
-                startedAt: toolStartedAt,
-                completedAt: toolCompletedAt,
-                durationMs: Math.max(0, toolCompletedAt - toolStartedAt),
+                toolCallIds: batchCalls.map((call) => call.id),
+                completedCount: toolResults.length,
+                errorCount: toolResults.filter((result) => result.isError).length,
+                aborted: toolSignal.aborted,
               },
             })
           }
-
-          await persistRunArtifact({
-            schemaVersion: AILA_RUN_ARTIFACT_SCHEMA_VERSION,
-            artifactId: `${run.runId}:${step.stepId}:tool_batch`,
-            conversationId,
-            turnId: run.turnId,
-            runId: run.runId,
-            stepId: step.stepId,
-            kind: 'tool_batch',
-            createdAt: Date.now(),
-            contentType: 'application/json',
-            data: {
-              toolCallIds: toolCalls.map((toolCall) => toolCall.id),
-              completedCount: toolResults.length,
-              errorCount: toolResults.filter((result) => result.isError).length,
-              aborted: signal.aborted,
-            },
-          })
-          return signal.aborted
+          return toolSignal.aborted
             ? { outcome: 'cancelled', error: 'abort_signal' }
             : { outcome: 'completed' }
         },
@@ -998,6 +1173,7 @@ function runTransitionData(transition: RunTransition): Record<string, unknown> |
         kind: transition.step.kind,
         index: transition.step.index,
         attempt: transition.step.attempt,
+        ...(transition.step.toolCallId ? { toolCallId: transition.step.toolCallId } : {}),
         ...(transition.nextAction ? { nextAction: transition.nextAction } : {}),
       }
     case 'step.failed':
@@ -1006,7 +1182,9 @@ function runTransitionData(transition: RunTransition): Record<string, unknown> |
         kind: transition.step.kind,
         index: transition.step.index,
         attempt: transition.step.attempt,
+        ...(transition.step.toolCallId ? { toolCallId: transition.step.toolCallId } : {}),
         error: transition.error,
+        ...(transition.nextAction ? { nextAction: transition.nextAction } : {}),
       }
     case 'step.cancelled':
       return {
@@ -1014,6 +1192,7 @@ function runTransitionData(transition: RunTransition): Record<string, unknown> |
         kind: transition.step.kind,
         index: transition.step.index,
         attempt: transition.step.attempt,
+        ...(transition.step.toolCallId ? { toolCallId: transition.step.toolCallId } : {}),
         reason: transition.reason,
       }
   }

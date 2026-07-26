@@ -26,6 +26,8 @@ export type {
   RunEventSink,
   RunEventType,
   RunHandlers,
+  RunModelStepPreparationInput,
+  RunModelStepPreparationResult,
   RunRequest,
   RuntimeModelInfoResolver,
   ToolCall,
@@ -35,6 +37,11 @@ export type {
   UsageInfo,
   UserContentPart,
 } from './agent-protocol'
+export {
+  AgentRuntime,
+  type AgentRuntimeInputQueue,
+  type AgentRuntimeRunOptions,
+} from './agent-runtime'
 export {
   type AgentContextAutoCompactReason,
   type AgentContextBudgetPlan,
@@ -319,6 +326,7 @@ export type {
   ToolAccess,
   ToolActivityTarget,
   ToolApprovalRequest,
+  ToolAuthorization,
   ToolContext,
   ToolDefinition,
   ToolFileSystem,

@@ -125,7 +125,6 @@ async function main(): Promise<void> {
   for (const forbidden of [
     'conversation-core',
     'run-persistence',
-    'runtime',
     'plan-core',
     '@aila/agent-node',
   ]) {
@@ -135,8 +134,15 @@ async function main(): Promise<void> {
     )
   }
   assert(
-    agentKernel.includes("from '../run-machine'") && agentKernel.includes('runDurableRun'),
-    'minimal Agent and durable Workbench execution must share the pure Run Machine',
+    agentKernel.includes("from '../agent-runtime'") &&
+      agentKernel.includes('defaultAgentRuntime') &&
+      !agentKernel.includes('runDurableRun'),
+    'minimal Agent must delegate orchestration to the shared AgentRuntime',
+  )
+  const agentRuntime = await readFile(join(root, 'packages/agent/src/agent-runtime.ts'), 'utf-8')
+  assert(
+    agentRuntime.includes("from './run-machine'") && agentRuntime.includes('runDurableRun'),
+    'AgentRuntime must be the sole model/tool run orchestrator over the pure Run Machine',
   )
   const durableExecutor = await readFile(
     join(root, 'packages/agent-node/src/node/durable-run.ts'),
@@ -144,8 +150,9 @@ async function main(): Promise<void> {
   )
   assert(
     durableExecutor.includes("from '@aila/agent/internal'") &&
-      durableExecutor.includes('runDurableRun'),
-    'durable executor must schedule work through the shared Run Machine',
+      durableExecutor.includes('defaultAgentRuntime') &&
+      !durableExecutor.includes('runDurableRun'),
+    'durable executor must delegate orchestration to the shared AgentRuntime',
   )
 
   const publicCore = await readFile(join(root, 'packages/agent/src/core.ts'), 'utf-8')

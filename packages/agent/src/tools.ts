@@ -815,6 +815,11 @@ export interface ToolPolicyDecision {
 
 export type ToolPolicyRequest = ToolApprovalRequest
 
+export interface ToolAuthorization {
+  request: ToolPolicyRequest
+  decision: ToolPolicyDecision
+}
+
 export type ToolPolicyEvaluator = (
   request: ToolPolicyRequest,
 ) => ToolPolicyDecision | undefined | Promise<ToolPolicyDecision | undefined>
@@ -965,6 +970,27 @@ export async function executeTool(
   ctx: ToolContext,
   registry: ToolRegistry = DEFAULT_TOOL_REGISTRY,
 ): Promise<string> {
+  const { decision, request } = await authorizeTool(name, args, ctx, registry)
+  if (decision.action === 'deny') {
+    throw new Error(decision.reason ?? `tool "${name}" was denied by policy`)
+  }
+  if (decision.action === 'ask') {
+    if (!ctx.onToolApproval) {
+      throw new Error(`tool "${name}" requires approval but no approval host is available`)
+    }
+    const approved = await ctx.onToolApproval(cloneToolPolicyRequest(request))
+    if (approved !== true) throw new Error(`tool "${name}" was rejected by user`)
+  }
+  return executeAuthorizedTool(name, args, ctx, registry)
+}
+
+/** Evaluate policy without executing a tool or waiting for user approval. */
+export async function authorizeTool(
+  name: string,
+  args: Record<string, unknown>,
+  ctx: ToolContext,
+  registry: ToolRegistry = DEFAULT_TOOL_REGISTRY,
+): Promise<ToolAuthorization> {
   const spec = resolveToolSpec(name, registry)
   const toolArgs = cloneToolArgs(args)
   const toolContext = cloneToolContext(ctx)
@@ -981,16 +1007,22 @@ export async function executeTool(
     ...(ctx.toolCallId && { toolCallId: ctx.toolCallId }),
   }
   const decision = await evaluateToolPolicy(request, toolContext)
-  if (decision.action === 'deny') {
-    throw new Error(decision.reason ?? `tool "${name}" was denied by policy`)
+  return {
+    request: cloneToolPolicyRequest(request),
+    decision: cloneToolValue(decision),
   }
-  if (decision.action === 'ask') {
-    if (!toolContext.onToolApproval) {
-      throw new Error(`tool "${name}" requires approval but no approval host is available`)
-    }
-    const approved = await toolContext.onToolApproval(cloneToolPolicyRequest(request))
-    if (approved !== true) throw new Error(`tool "${name}" was rejected by user`)
-  }
+}
+
+/** Execute a tool after the runtime has resolved policy and approval. */
+export async function executeAuthorizedTool(
+  name: string,
+  args: Record<string, unknown>,
+  ctx: ToolContext,
+  registry: ToolRegistry = DEFAULT_TOOL_REGISTRY,
+): Promise<string> {
+  resolveToolSpec(name, registry)
+  const toolArgs = cloneToolArgs(args)
+  const toolContext = cloneToolContext(ctx)
   const runner = registry.runnersByName.get(name)
   if (!runner) throw new Error(`unknown tool: ${name}`)
   return runner(cloneToolArgs(toolArgs), toolContext)

@@ -58,6 +58,7 @@ function normalizeNextAction(value: unknown): RunNextAction | undefined {
       record.reason === 'tool_results' ||
       record.reason === 'retry' ||
       record.reason === 'steer' ||
+      record.reason === 'follow_up' ||
       record.reason === 'resume' ||
       record.reason === 'provider_overflow')
   ) {
@@ -107,6 +108,9 @@ export function normalizeRunCheckpoint(value: unknown): RunCheckpoint {
 
   const state = checkpoint.loop?.state
   if (!state || !checkpoint.identity) throw new Error('invalid agent run checkpoint state')
+  checkpoint.loop.toolBatchCalls ??= checkpoint.loop.pendingToolCalls.map((call) =>
+    structuredClone(call),
+  )
   const legacyAction = state.nextAction as
     | { type?: unknown; reason?: unknown; toolCallIds?: unknown }
     | undefined
@@ -134,7 +138,7 @@ export function normalizeRunCheckpoint(value: unknown): RunCheckpoint {
   } else if (state.status === 'running') {
     if (!nextAction) {
       const currentStep = state.currentStep
-      if (currentStep?.kind === 'tool_batch') {
+      if (currentStep?.kind === 'tool' || currentStep?.kind === 'tool_batch') {
         nextAction = {
           type: 'tools',
           toolCallIds: checkpoint.loop.pendingToolCalls.map(
@@ -186,12 +190,12 @@ export interface RunArtifact {
 
 export function runRecoveryFromCursor(loop: RunCursor<ModelCallToolCall>): RunRecovery {
   if (
-    loop.state.currentStep?.kind === 'tool_batch' &&
+    (loop.state.currentStep?.kind === 'tool' || loop.state.currentStep?.kind === 'tool_batch') &&
     loop.state.currentStep.status === 'running'
   ) {
     return {
       strategy: 'manual_review',
-      reason: 'process stopped while a tool batch was running; side effects may have occurred',
+      reason: 'process stopped while a tool was running; side effects may have occurred',
     }
   }
   return { strategy: 'automatic' }

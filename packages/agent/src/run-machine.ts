@@ -5,7 +5,7 @@ type MaybePromise<T> = T | Promise<T>
 export type RunMode = 'continuous' | 'step'
 export type RunStatus = 'idle' | 'running' | 'paused' | 'completed' | 'failed' | 'cancelled'
 
-export type RunStepKind = 'model' | 'tool_batch' | 'compact'
+export type RunStepKind = 'model' | 'tool' | 'tool_batch' | 'compact'
 export type RunStepStatus = 'running' | 'completed' | 'failed' | 'cancelled'
 export type RunContinuationReason =
   | 'user'
@@ -29,6 +29,7 @@ export interface RunStep {
   index: number
   attempt: number
   kind: RunStepKind
+  toolCallId?: string
 }
 
 export type RunNextAction =
@@ -121,6 +122,7 @@ export type RunTransition =
       identity: RunIdentity
       step: RunStep
       error: string
+      nextAction?: RunNextAction
     }
   | {
       type: 'step.cancelled'
@@ -134,10 +136,19 @@ export interface RunModelResult<TToolCall> {
   outcome: 'completed' | 'failed' | 'cancelled'
   toolCalls: readonly TToolCall[]
   error?: string
+  nextAction?: Extract<RunNextAction, { type: 'compact' }>
 }
 
-export interface RunToolBatchResult {
+export interface RunToolStepResult {
   outcome: 'completed' | 'failed' | 'cancelled'
+  error?: string
+}
+
+/** @deprecated Legacy type alias; execution is always per tool call. */
+export type RunToolBatchResult = RunToolStepResult
+
+export interface RunToolPreparation {
+  outcome: 'ready' | 'rejected'
   error?: string
 }
 
@@ -172,6 +183,13 @@ export interface RunMachineOptions<TToolCall> {
   policy?: RunPolicy<TToolCall>
   now?: () => number
   createStepId?: (input: { identity: RunIdentity; index: number; kind: RunStepKind }) => string
+  prepareModelStep?: (input: {
+    identity: RunIdentity
+    modelStepIndex: number
+    toolsEnabled: boolean
+    reason: RunContinuationReason
+    signal: AbortSignal
+  }) => MaybePromise<void>
   executeModelStep: (input: {
     identity: RunIdentity
     step: RunStep
@@ -180,12 +198,25 @@ export interface RunMachineOptions<TToolCall> {
     reason: RunContinuationReason
     signal: AbortSignal
   }) => Promise<RunModelResult<TToolCall>>
-  executeToolBatch: (input: {
+  prepareToolStep?: (input: {
+    identity: RunIdentity
+    toolCall: TToolCall
+    toolCallIndex: number
+    toolCallCount: number
+    modelStepIndex: number
+    signal: AbortSignal
+    waitFor<T>(wait: RunWait, operation: () => Promise<T>): Promise<T>
+  }) => Promise<RunToolPreparation>
+  executeToolStep: (input: {
     identity: RunIdentity
     step: RunStep
-    toolCalls: readonly TToolCall[]
+    toolCall: TToolCall
+    toolCallIndex: number
+    toolCallCount: number
+    modelStepIndex: number
+    preparation: RunToolPreparation
     signal: AbortSignal
-  }) => Promise<RunToolBatchResult>
+  }) => Promise<RunToolStepResult>
   executeCompactStep?: (input: {
     identity: RunIdentity
     step: RunStep
@@ -217,6 +248,8 @@ export interface RunCursor<TToolCall> {
   modelStepIndex: number
   completedToolBatches: number
   pendingToolCalls: TToolCall[]
+  /** Original calls for the active model response; retained while calls complete one by one. */
+  toolBatchCalls?: TToolCall[]
 }
 
 export interface AdvanceRunOptions<TToolCall> extends RunMachineOptions<TToolCall> {
@@ -257,6 +290,7 @@ export function createRunCursor<TToolCall>(
     modelStepIndex: 0,
     completedToolBatches: 0,
     pendingToolCalls: [],
+    toolBatchCalls: [],
   }
 }
 
@@ -370,12 +404,12 @@ export function reduceRunTransition(state: RunState, transition: RunTransition):
       }))
       return {
         ...state,
-        status: 'failed',
+        status: transition.nextAction ? 'running' : 'failed',
         currentStep: undefined,
         steps,
-        nextAction: undefined,
+        nextAction: transition.nextAction ? cloneValue(transition.nextAction) : undefined,
         wait: undefined,
-        error: transition.error,
+        error: transition.nextAction ? undefined : transition.error,
       }
     }
     case 'step.cancelled': {
@@ -449,7 +483,10 @@ function transitionFromRunEvent(event: RunEvent): RunTransition | null {
     if (!event.stepId) return null
     const kind = eventString(event, 'kind')
     const index = eventNumber(event, 'index')
-    if ((kind !== 'model' && kind !== 'tool_batch' && kind !== 'compact') || index === undefined) {
+    if (
+      (kind !== 'model' && kind !== 'tool' && kind !== 'tool_batch' && kind !== 'compact') ||
+      index === undefined
+    ) {
       return null
     }
     return {
@@ -457,6 +494,7 @@ function transitionFromRunEvent(event: RunEvent): RunTransition | null {
       index,
       attempt: eventNumber(event, 'attempt') ?? 1,
       kind,
+      ...(eventString(event, 'toolCallId') ? { toolCallId: eventString(event, 'toolCallId') } : {}),
     }
   }
 
@@ -530,6 +568,7 @@ function transitionFromRunEvent(event: RunEvent): RunTransition | null {
         identity,
         step: identityStep,
         error: eventString(event, 'error') ?? 'Agent step failed',
+        nextAction: eventNextAction(event),
       }
     }
     case 'step.cancelled': {
@@ -643,7 +682,8 @@ export async function advanceRun<TToolCall>(
       ...(nextAction?.type === 'tools' ? { pendingToolCallIds: [...nextAction.toolCallIds] } : {}),
     }
   }
-  const createStep = (kind: RunStepKind): RunStep => {
+  snapshot.toolBatchCalls ??= snapshot.pendingToolCalls.map(cloneValue)
+  const createStep = (kind: RunStepKind, toolCallIdentity?: string): RunStep => {
     const index = snapshot.nextStepIndex
     snapshot.nextStepIndex += 1
     return {
@@ -651,6 +691,7 @@ export async function advanceRun<TToolCall>(
       index,
       attempt: 1,
       kind,
+      ...(toolCallIdentity ? { toolCallId: toolCallIdentity } : {}),
     }
   }
   const fail = async (
@@ -812,6 +853,13 @@ export async function advanceRun<TToolCall>(
 
     let modelResult: RunModelResult<TToolCall>
     try {
+      await options.prepareModelStep?.({
+        identity: options.identity,
+        modelStepIndex,
+        toolsEnabled,
+        reason: action.reason,
+        signal: options.signal,
+      })
       modelResult = await options.executeModelStep({
         identity: options.identity,
         step: modelStep,
@@ -833,6 +881,21 @@ export async function advanceRun<TToolCall>(
       )
     }
     if (modelResult.outcome !== 'completed') {
+      if (
+        modelResult.outcome === 'failed' &&
+        modelResult.nextAction?.type === 'compact' &&
+        !snapshot.state.steps.some((step) => step.kind === 'compact')
+      ) {
+        await emit({
+          type: 'step.failed',
+          timestamp: now(),
+          identity: options.identity,
+          step: modelStep,
+          error: modelResult.error ?? 'model context overflow',
+          nextAction: modelResult.nextAction,
+        })
+        return result(action)
+      }
       return fail(
         modelStep,
         modelResult.outcome,
@@ -843,6 +906,7 @@ export async function advanceRun<TToolCall>(
     }
 
     snapshot.pendingToolCalls = [...modelResult.toolCalls].map(cloneValue)
+    snapshot.toolBatchCalls = snapshot.pendingToolCalls.map(cloneValue)
     const toolCallIds = snapshot.pendingToolCalls.map(toolCallId)
     if (toolCallIds.length === 0) {
       const decision =
@@ -871,6 +935,7 @@ export async function advanceRun<TToolCall>(
         toolCalls: snapshot.pendingToolCalls,
       })
       snapshot.pendingToolCalls = []
+      snapshot.toolBatchCalls = []
       await emit({
         type: 'step.completed',
         timestamp: now(),
@@ -909,20 +974,79 @@ export async function advanceRun<TToolCall>(
     return decision === 'pause' ? pause(nextAction, action) : result(action)
   }
 
-  const toolStep = createStep('tool_batch')
   const toolCalls = snapshot.pendingToolCalls.map(cloneValue)
-  if (toolCalls.length === 0) {
+  const toolCall = toolCalls[0]
+  if (!toolCall) {
+    const step = createStep('tool')
     const message = `tool action has no persisted calls: ${action.toolCallIds.join(', ')}`
     await emit({
       type: 'step.started',
       timestamp: now(),
       identity: options.identity,
-      step: toolStep,
+      step,
       nextAction: action,
     })
-    return fail(toolStep, 'failed', message, action)
+    return fail(step, 'failed', message, action)
   }
 
+  const batchCalls =
+    snapshot.toolBatchCalls.length > 0
+      ? snapshot.toolBatchCalls.map(cloneValue)
+      : toolCalls.map(cloneValue)
+  const callId = toolCallId(toolCall, 0)
+  const toolCallIndex = Math.max(
+    0,
+    batchCalls.findIndex((candidate, index) => toolCallId(candidate, index) === callId),
+  )
+  const modelStepIndex = Math.max(0, snapshot.modelStepIndex - 1)
+  const waitFor = async <T>(wait: RunWait, operation: () => Promise<T>): Promise<T> => {
+    await emit({
+      type: 'run.paused',
+      timestamp: now(),
+      identity: options.identity,
+      nextAction: action,
+      wait,
+    })
+    try {
+      const value = await operation()
+      await emit({
+        type: 'run.resumed',
+        timestamp: now(),
+        identity: options.identity,
+        nextAction: action,
+      })
+      return value
+    } catch (error) {
+      await emit({
+        type: 'run.resumed',
+        timestamp: now(),
+        identity: options.identity,
+        nextAction: action,
+      })
+      throw error
+    }
+  }
+
+  let preparation: RunToolPreparation = { outcome: 'ready' }
+  try {
+    preparation =
+      (await options.prepareToolStep?.({
+        identity: options.identity,
+        toolCall: cloneValue(toolCall),
+        toolCallIndex,
+        toolCallCount: batchCalls.length,
+        modelStepIndex,
+        signal: options.signal,
+        waitFor,
+      })) ?? preparation
+  } catch (error) {
+    preparation = {
+      outcome: 'rejected',
+      error: error instanceof Error ? error.message : String(error),
+    }
+  }
+
+  const toolStep = createStep('tool', callId)
   await emit({
     type: 'step.started',
     timestamp: now(),
@@ -930,12 +1054,16 @@ export async function advanceRun<TToolCall>(
     step: toolStep,
     nextAction: action,
   })
-  let toolResult: RunToolBatchResult
+  let toolResult: RunToolStepResult
   try {
-    toolResult = await options.executeToolBatch({
+    toolResult = await options.executeToolStep({
       identity: options.identity,
       step: toolStep,
-      toolCalls,
+      toolCall: cloneValue(toolCall),
+      toolCallIndex,
+      toolCallCount: batchCalls.length,
+      modelStepIndex,
+      preparation,
       signal: options.signal,
     })
   } catch (error) {
@@ -955,19 +1083,35 @@ export async function advanceRun<TToolCall>(
       toolStep,
       toolResult.outcome,
       toolResult.error ??
-        (toolResult.outcome === 'cancelled' ? 'abort_signal' : 'tool_batch_failed'),
+        (toolResult.outcome === 'cancelled' ? 'abort_signal' : 'tool_step_failed'),
       action,
     )
   }
 
+  snapshot.pendingToolCalls = snapshot.pendingToolCalls.slice(1)
+  if (snapshot.pendingToolCalls.length > 0) {
+    const nextAction: RunNextAction = {
+      type: 'tools',
+      toolCallIds: snapshot.pendingToolCalls.map(toolCallId),
+    }
+    await emit({
+      type: 'step.completed',
+      timestamp: now(),
+      identity: options.identity,
+      step: toolStep,
+      nextAction,
+    })
+    return policy.mode === 'step' ? pause(nextAction, action) : result(action)
+  }
+
   snapshot.completedToolBatches += 1
-  snapshot.pendingToolCalls = []
+  snapshot.toolBatchCalls = []
   const nextAction: RunNextAction = { type: 'model', reason: 'tool_results' }
   const decision =
     (await policy.afterTools?.({
       identity: options.identity,
       step: toolStep,
-      toolCalls,
+      toolCalls: batchCalls,
     })) ?? (policy.mode === 'step' ? 'pause' : 'continue')
   await emit({
     type: 'step.completed',

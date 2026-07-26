@@ -2,6 +2,7 @@ import {
   Agent,
   type AgentEvent,
   type AgentModel,
+  AgentRuntime,
   type AgentTool,
   type ChatMessage,
   type ModelCallResult,
@@ -187,10 +188,93 @@ async function testIdleQueueAndReset(): Promise<void> {
   assertEqual(agent.state.messages.length, 0, 'reset should clear the transcript')
 }
 
+async function testSharedRuntimeUsesIndividualToolSteps(): Promise<void> {
+  const runtime = new AgentRuntime()
+  const toolStepIds: string[] = []
+  const executed: string[] = []
+  let modelCalls = 0
+  let preparations = 0
+
+  const result = await runtime.run<{ id: string }>({
+    identity: {
+      conversationId: 'runtime-contract-conversation',
+      turnId: 'runtime-contract-turn',
+      runId: 'runtime-contract-run',
+    },
+    signal: new AbortController().signal,
+    maxToolSteps: 2,
+    prepareModelStep: () => {
+      preparations += 1
+    },
+    executeModelStep: async () => {
+      modelCalls += 1
+      return {
+        outcome: 'completed',
+        toolCalls: modelCalls === 1 ? [{ id: 'first-tool' }, { id: 'second-tool' }] : [],
+      }
+    },
+    executeToolStep: async ({ step, toolCall }) => {
+      toolStepIds.push(`${step.toolCallId}:${step.kind}`)
+      executed.push(toolCall.id)
+      return { outcome: 'completed' }
+    },
+  })
+
+  assertEqual(result.state.status, 'completed', 'shared runtime should complete')
+  assertEqual(preparations, 2, 'shared runtime should prepare every model step')
+  assertEqual(executed.join(','), 'first-tool,second-tool', 'shared runtime tool order')
+  assertEqual(
+    toolStepIds.join(','),
+    'first-tool:tool,second-tool:tool',
+    'each tool call should own a durable step identity',
+  )
+}
+
+async function testSharedRuntimeCompactsAndRetriesOverflow(): Promise<void> {
+  const runtime = new AgentRuntime()
+  let modelCalls = 0
+  let compactions = 0
+  const result = await runtime.run<{ id: string }>({
+    identity: {
+      conversationId: 'overflow-contract-conversation',
+      turnId: 'overflow-contract-turn',
+      runId: 'overflow-contract-run',
+    },
+    signal: new AbortController().signal,
+    maxToolSteps: 1,
+    executeModelStep: async () => {
+      modelCalls += 1
+      return modelCalls === 1
+        ? {
+            outcome: 'failed',
+            error: 'maximum context length exceeded',
+            toolCalls: [],
+            nextAction: { type: 'compact', reason: 'provider_overflow' },
+          }
+        : { outcome: 'completed', toolCalls: [] }
+    },
+    executeCompactStep: async () => {
+      compactions += 1
+      return { outcome: 'completed' }
+    },
+    executeToolStep: async () => ({ outcome: 'completed' }),
+  })
+  assertEqual(result.state.status, 'completed', 'overflow retry should complete')
+  assertEqual(compactions, 1, 'overflow retry should compact exactly once')
+  assertEqual(modelCalls, 2, 'overflow retry should call the model after compaction')
+  assertEqual(
+    result.state.steps.map((step) => `${step.kind}:${step.status}`).join(','),
+    'model:failed,compact:completed,model:completed',
+    'overflow retry should preserve inspectable step outcomes',
+  )
+}
+
 await testTextTurn()
 await testToolTurn()
 await testSteerAndFollowUp()
 await testAbort()
 await testIdleQueueAndReset()
+await testSharedRuntimeUsesIndividualToolSteps()
+await testSharedRuntimeCompactsAndRetriesOverflow()
 
 console.log('agent contract: ok')

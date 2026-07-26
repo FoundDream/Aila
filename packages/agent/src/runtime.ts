@@ -763,6 +763,32 @@ function cloneRuntimeChatMessages(
   return messages === undefined ? undefined : cloneRuntimeValue([...messages])
 }
 
+const IN_RUN_TOOL_RESULT_COMPACTED =
+  '[Earlier tool result compacted during this run; rerun the tool if the full output is required.]'
+
+function prepareRuntimeModelStepMessages(
+  messages: readonly ChatMessage[],
+  contextPlan: AgentContextPlan | undefined,
+): ChatMessage[] {
+  const prepared = cloneRuntimeChatMessages(messages) ?? []
+  const budgetChars = contextPlan?.budget.budgetChars
+  if (!budgetChars || JSON.stringify(prepared).length <= budgetChars) return prepared
+
+  const toolIndexes = prepared.flatMap((message, index) => (message.role === 'tool' ? [index] : []))
+  const compactable = toolIndexes.slice(0, Math.max(0, toolIndexes.length - 6))
+  for (const index of compactable) {
+    const message = prepared[index]
+    if (message?.role !== 'tool') continue
+    prepared[index] = {
+      role: 'tool',
+      tool_call_id: message.tool_call_id,
+      content: IN_RUN_TOOL_RESULT_COMPACTED,
+    }
+    if (JSON.stringify(prepared).length <= budgetChars) break
+  }
+  return prepared
+}
+
 function cloneRuntimeConversationRecord(record: ConversationRecord): ConversationRecord {
   return cloneRuntimeValue(record)
 }
@@ -2926,6 +2952,9 @@ export class WorkbenchRuntime implements Workbench {
           ...(runCheckpoint ? { runCheckpoint: cloneRuntimeValue(runCheckpoint) } : {}),
           messages: cloneRuntimeChatMessages(messages) ?? [],
           contextPlan: cloneRuntimeValue(contextPlan),
+          prepareModelStep: ({ messages: currentMessages, contextPlan: currentPlan }) => ({
+            messages: prepareRuntimeModelStepMessages(currentMessages, currentPlan),
+          }),
           mode,
           ...(plan ? { plan: cloneRuntimeValue(plan) } : {}),
           ...(planOperation ? { planOperation } : {}),

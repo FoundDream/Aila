@@ -1,4 +1,5 @@
 import type { ChatMessage, ToolCall } from '../agent-protocol'
+import { defaultAgentRuntime } from '../agent-runtime'
 import type {
   ModelCallResult,
   ModelCallStreamEvent,
@@ -7,7 +8,6 @@ import type {
   ModelCallToolDefinition,
   ModelCallUsage,
 } from '../model-call'
-import { runDurableRun } from '../run-machine'
 
 type MaybePromise<T> = T | Promise<T>
 
@@ -89,6 +89,7 @@ export interface AgentOptions {
   messages?: readonly ChatMessage[]
   systemPrompt?: string
   maxTurns?: number
+  /** @deprecated Tool calls are serialized as individually recoverable runtime steps. */
   toolExecution?: 'sequential' | 'parallel'
 }
 
@@ -139,10 +140,11 @@ function stringifyToolResult(value: unknown): string {
 }
 
 /**
- * Minimal, in-memory agent loop.
+ * Minimal, in-memory facade over the shared AgentRuntime.
  *
- * Agent owns messages and turn sequencing. Durable sessions, checkpoints,
- * approvals, plans and workspace services wrap this class from the outside.
+ * Agent owns the convenient transcript and event API. AgentRuntime owns model,
+ * tool and queued-input sequencing; durable products provide different ports
+ * and storage to that same runtime.
  */
 export class Agent {
   readonly state: AgentState
@@ -151,7 +153,6 @@ export class Agent {
   private tools: AgentTool[]
   private readonly listeners = new Set<AgentEventListener>()
   private readonly maxTurns: number
-  private readonly toolExecution: 'sequential' | 'parallel'
   private readonly steering: UserMessage[] = []
   private readonly followUps: UserMessage[] = []
   private controller: AbortController | null = null
@@ -161,7 +162,6 @@ export class Agent {
     this.model = options.model
     this.tools = [...(options.tools ?? [])]
     this.maxTurns = Math.max(1, Math.floor(options.maxTurns ?? 50))
-    this.toolExecution = options.toolExecution ?? 'sequential'
     const messages: ChatMessage[] = (options.messages ?? []).map((message) => clone(message))
     if (options.systemPrompt) {
       messages.unshift({ role: 'system', content: options.systemPrompt })
@@ -269,12 +269,13 @@ export class Agent {
     let turns = 0
     let result: AgentResult
     let pendingTurn: PendingTurn | null = null
+    let pendingToolResults: ToolExecutionResult[] = []
     try {
       await this.emit({ type: 'agent_start' })
       if (prompt) await this.appendMessage(prompt)
 
       const runId = `agent-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
-      const completed = await runDurableRun<ModelCallToolCall>({
+      const completed = await defaultAgentRuntime.run<ModelCallToolCall, UserMessage>({
         identity: {
           conversationId: 'memory',
           turnId: runId,
@@ -282,19 +283,10 @@ export class Agent {
         },
         signal: controller.signal,
         maxToolSteps: this.maxTurns,
-        policy: {
-          mode: 'continuous',
-          afterModel: async ({ toolCalls }) => {
-            if (toolCalls.length > 0) return 'continue'
-            const queued = this.steering.shift() ?? this.followUps.shift()
-            if (!queued) return 'complete'
-            await this.appendMessage(queued)
-            return 'continue'
-          },
-          afterTools: async () => {
-            await this.drainSteering()
-            return 'continue' as const
-          },
+        inputQueue: {
+          dequeueSteering: () => this.steering.shift(),
+          dequeueFollowUp: () => this.followUps.shift(),
+          apply: (message) => this.appendMessage(message),
         },
         executeModelStep: async ({ modelStepIndex, signal }) => {
           if (modelStepIndex >= this.maxTurns) {
@@ -305,6 +297,7 @@ export class Agent {
             }
           }
           pendingTurn = await this.runModelTurn(modelStepIndex, signal)
+          pendingToolResults = []
           turns += 1
           if (pendingTurn.calls.length === 0) {
             await this.finishTurn(pendingTurn, [])
@@ -315,31 +308,31 @@ export class Agent {
             toolCalls: pendingTurn?.calls ?? [],
           }
         },
-        executeToolBatch: async ({ toolCalls, signal }) => {
+        executeToolStep: async ({ toolCall, toolCallIndex, toolCallCount, signal }) => {
           const turn = pendingTurn
           if (!turn) {
             return {
               outcome: 'failed',
-              error: 'agent tool batch is missing its model turn',
+              error: 'agent tool step is missing its model turn',
             }
           }
-          const executions =
-            this.toolExecution === 'parallel'
-              ? await Promise.all(
-                  toolCalls.map((call) =>
-                    this.executeTool(turn.index, call, signal, turn.resolved.get(call.id)),
-                  ),
-                )
-              : await this.executeToolsSequentially(turn.index, toolCalls, signal, turn.resolved)
-          for (const execution of executions) {
-            this.state.messages.push(clone(execution.message))
-            await this.emit({ type: 'message_end', message: clone(execution.message) })
-          }
-          await this.finishTurn(
-            turn,
-            executions.map((execution) => execution.message),
+          const execution = await this.executeTool(
+            turn.index,
+            toolCall,
+            signal,
+            turn.resolved.get(toolCall.id),
           )
-          pendingTurn = null
+          pendingToolResults.push(execution)
+          this.state.messages.push(clone(execution.message))
+          await this.emit({ type: 'message_end', message: clone(execution.message) })
+          if (toolCallIndex === toolCallCount - 1) {
+            await this.finishTurn(
+              turn,
+              pendingToolResults.map((entry) => entry.message),
+            )
+            pendingTurn = null
+            pendingToolResults = []
+          }
           return { outcome: 'completed' }
         },
       })
@@ -475,19 +468,6 @@ export class Agent {
     return text
   }
 
-  private async executeToolsSequentially(
-    turn: number,
-    calls: readonly ModelCallToolCall[],
-    signal: AbortSignal,
-    resolved: Map<string, ModelCallResult['resolvedToolResults'][number]>,
-  ): Promise<ToolExecutionResult[]> {
-    const results: ToolExecutionResult[] = []
-    for (const call of calls) {
-      results.push(await this.executeTool(turn, call, signal, resolved.get(call.id)))
-    }
-    return results
-  }
-
   private async executeTool(
     turn: number,
     call: ModelCallToolCall,
@@ -535,11 +515,6 @@ export class Agent {
       isError,
     })
     return { call, message, result, isError }
-  }
-
-  private async drainSteering(): Promise<void> {
-    const steer = this.steering.shift()
-    if (steer) await this.appendMessage(steer)
   }
 
   private async appendMessage(message: ChatMessage): Promise<void> {

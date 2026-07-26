@@ -110,10 +110,10 @@ async function withTempDataDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
   }
 }
 
-async function testRunMachineStepModePausesBeforeToolBatch(): Promise<void> {
+async function testRunMachineStepModePausesBeforeToolStep(): Promise<void> {
   const transitions: RunTransition[] = []
   let modelStepCount = 0
-  let toolBatchCount = 0
+  let toolStepCount = 0
 
   const result = await runDurableRun<{ id: string }>({
     identity: {
@@ -128,8 +128,8 @@ async function testRunMachineStepModePausesBeforeToolBatch(): Promise<void> {
       modelStepCount += 1
       return { outcome: 'completed', toolCalls: [{ id: 'pending-tool' }] }
     },
-    executeToolBatch: async () => {
-      toolBatchCount += 1
+    executeToolStep: async () => {
+      toolStepCount += 1
       return { outcome: 'completed' }
     },
     onTransition: (transition) => {
@@ -139,7 +139,7 @@ async function testRunMachineStepModePausesBeforeToolBatch(): Promise<void> {
 
   assertEqual(result.state.status, 'paused', 'step mode should pause after one model step')
   assertEqual(modelStepCount, 1, 'step mode should execute exactly one model step')
-  assertEqual(toolBatchCount, 0, 'step mode should pause before executing the tool batch')
+  assertEqual(toolStepCount, 0, 'step mode should pause before executing the tool step')
   assertEqual(result.state.steps.length, 1, 'step mode should record the completed model step')
   assertEqual(result.state.steps[0]?.kind, 'model', 'step mode should identify the model step')
   assertEqual(
@@ -162,15 +162,15 @@ async function testRunCursorResumesOneActionAtATime(): Promise<void> {
   }
   const transitions: RunTransition[] = []
   let modelCalls = 0
-  let toolBatches = 0
+  let toolSteps = 0
   const executeModelStep = async () => {
     modelCalls += 1
     return modelCalls === 1
       ? { outcome: 'completed' as const, toolCalls: [{ id: 'resume-tool' }] }
       : { outcome: 'completed' as const, toolCalls: [] }
   }
-  const executeToolBatch = async () => {
-    toolBatches += 1
+  const executeToolStep = async () => {
+    toolSteps += 1
     return { outcome: 'completed' as const }
   }
   const common = {
@@ -179,7 +179,7 @@ async function testRunCursorResumesOneActionAtATime(): Promise<void> {
     maxToolSteps: 2,
     policy: { mode: 'step' as const },
     executeModelStep,
-    executeToolBatch,
+    executeToolStep,
     onTransition: (transition: RunTransition) => {
       transitions.push(transition)
     },
@@ -188,20 +188,20 @@ async function testRunCursorResumesOneActionAtATime(): Promise<void> {
   const first = await advanceRun(common)
   assertEqual(first.state.status, 'paused', 'first action should pause after the model')
   assertEqual(modelCalls, 1, 'first advance should execute one model action')
-  assertEqual(toolBatches, 0, 'first advance should not execute pending tools')
+  assertEqual(toolSteps, 0, 'first advance should not execute pending tools')
 
   const second = await advanceRun({ ...common, snapshot: first.snapshot })
   assertEqual(second.state.status, 'paused', 'second action should pause after tools')
   assertEqual(modelCalls, 1, 'second advance should not call the model')
-  assertEqual(toolBatches, 1, 'second advance should execute one tool batch')
+  assertEqual(toolSteps, 1, 'second advance should execute one tool step')
 
   const third = await advanceRun({ ...common, snapshot: second.snapshot })
   assertEqual(third.state.status, 'completed', 'third action should complete the run')
   assertEqual(modelCalls, 2, 'third advance should execute the final model action')
-  assertEqual(toolBatches, 1, 'third advance should not replay tools')
+  assertEqual(toolSteps, 1, 'third advance should not replay tools')
   assertEqual(
     third.snapshot.state.steps.map((step) => step.kind).join(','),
-    'model,tool_batch,model',
+    'model,tool,model',
     'resumed snapshot should preserve the full step history',
   )
   assertEqual(
@@ -388,7 +388,8 @@ function testRunCheckpointRecoverySafetyContract(): void {
     stepId: 'recovery-tool-step',
     index: 1,
     attempt: 1,
-    kind: 'tool_batch' as const,
+    kind: 'tool' as const,
+    toolCallId: 'unsafe-call',
     status: 'running' as const,
     startedAt: 20,
   }
@@ -400,7 +401,7 @@ function testRunCheckpointRecoverySafetyContract(): void {
   assertEqual(
     preparedTool.recovery.strategy,
     'manual_review',
-    'interrupted tool batches should never be marked for automatic replay',
+    'interrupted tool calls should never be marked for automatic replay',
   )
   let manualReviewError = ''
   try {
@@ -410,7 +411,7 @@ function testRunCheckpointRecoverySafetyContract(): void {
   }
   assert(
     manualReviewError.includes('side effects may have occurred'),
-    'automatic resume should refuse an interrupted tool batch',
+    'automatic resume should refuse an interrupted tool call',
   )
 
   const modelCheckpoint = createRunCheckpointFixture('recovery-conversation', 'recovery-model-run')
@@ -9536,11 +9537,11 @@ async function testProviderStreamChatOwnsToolLoopContract(): Promise<void> {
   )
   const completedToolEvent = agentEvents.find((event) => event.type === 'tool.execution.completed')
   const toolStepEvent = agentEvents.find(
-    (event) => event.type === 'step.started' && event.data?.kind === 'tool_batch',
+    (event) => event.type === 'step.started' && event.data?.kind === 'tool',
   )
   assert(
     completedToolEvent?.stepId !== undefined && completedToolEvent.stepId === toolStepEvent?.stepId,
-    'tool execution events should belong to the tool batch step',
+    'tool execution events should belong to the individual tool step',
   )
   const replayed = replayRunState(agentEvents, 'provider-loop-run')
   assertEqual(replayed?.status, 'completed', 'run state should replay from emitted events')
@@ -9550,8 +9551,142 @@ async function testProviderStreamChatOwnsToolLoopContract(): Promise<void> {
     'replayed run should contain model, tools, and final model',
   )
   assertEqual(replayed?.steps[0]?.kind, 'model', 'replayed first step should be the model')
-  assertEqual(replayed?.steps[1]?.kind, 'tool_batch', 'replayed second step should be tools')
+  assertEqual(replayed?.steps[1]?.kind, 'tool', 'replayed second step should be one tool call')
   assertEqual(replayed?.steps[2]?.kind, 'model', 'replayed final step should be the model')
+}
+
+async function testProviderToolApprovalPausesBeforeSideEffectContract(): Promise<void> {
+  let modelCallCount = 0
+  let toolRunCount = 0
+  let resolveApproval: ((approved: boolean) => void) | undefined
+  const checkpoints: runtimeSdk.RunCheckpoint[] = []
+  const events: RunEvent[] = []
+
+  const modelStreamClient: runtimePackageNodeSdk.ModelStreamClient = {
+    async *stream() {
+      modelCallCount += 1
+      if (modelCallCount === 1) {
+        yield {
+          type: 'tool-call',
+          toolCallId: 'approval-tool',
+          toolName: 'approval_contract_tool',
+          input: {},
+        }
+        yield {
+          type: 'finish-step',
+          usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+        }
+        return
+      }
+      yield { type: 'text-delta', text: 'approved' }
+      yield {
+        type: 'finish-step',
+        usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+      }
+    },
+  }
+  const toolPack: ToolPack = {
+    id: 'approval-runtime-contract',
+    name: 'Approval Runtime Contract',
+    tools: [
+      {
+        spec: {
+          type: 'function',
+          function: {
+            name: 'approval_contract_tool',
+            description: 'Exercise durable approval.',
+            parameters: { type: 'object', additionalProperties: false },
+          },
+          metadata: {
+            name: 'approval_contract_tool',
+            readOnly: false,
+            destructive: true,
+            requiresApproval: true,
+            access: ['write'],
+            scope: ['workspace'],
+          },
+        },
+        async run() {
+          toolRunCount += 1
+          return 'approved-result'
+        },
+      },
+    ],
+  }
+  const runAgent = runtimePackageNodeSdk.createDurableRunExecutor({
+    modelStreamClient,
+    settings: { apiKeys: { openrouter: 'contract-key' }, defaultModel: null },
+  })
+  const running = runAgent(
+    {
+      conversationId: 'approval-runtime-conversation',
+      assistantMessageId: 'approval-runtime-assistant',
+      run: {
+        conversationId: 'approval-runtime-conversation',
+        turnId: 'approval-runtime-turn',
+        runId: 'approval-runtime-run',
+      },
+      messages: [{ role: 'user', content: 'approve it' }],
+      selection: { providerId: 'openrouter', modelId: 'contract/mock' },
+      signal: new AbortController().signal,
+      toolRegistry: createDefaultToolRegistry([toolPack]),
+      onToolApproval: () =>
+        new Promise<boolean>((resolve) => {
+          resolveApproval = resolve
+        }),
+      onRunEvent: (event) => events.push(structuredClone(event)),
+      saveRunCheckpoint: (checkpoint) => {
+        checkpoints.push(structuredClone(checkpoint))
+        return checkpoint
+      },
+    },
+    {
+      onTextDelta() {},
+      onReasoningDelta() {},
+      onToolCallStart() {},
+      onToolCallArgsDelta() {},
+      onToolCallResult() {},
+      onImageBlock() {},
+      onDone() {},
+      onError(event) {
+        throw new Error(event.error)
+      },
+    },
+  )
+
+  await waitFor(
+    () =>
+      resolveApproval !== undefined &&
+      checkpoints.some(
+        (checkpoint) =>
+          checkpoint.loop.state.status === 'paused' &&
+          checkpoint.loop.state.wait?.reason === 'approval',
+      ),
+    'approval should persist a paused checkpoint',
+  )
+  assertEqual(toolRunCount, 0, 'approval pause must happen before the tool side effect')
+  const paused = checkpoints.find(
+    (checkpoint) =>
+      checkpoint.loop.state.status === 'paused' &&
+      checkpoint.loop.state.wait?.reason === 'approval',
+  )
+  assertEqual(
+    paused?.loop.state.steps.filter((step) => step.kind === 'tool').length,
+    0,
+    'approval checkpoint should not mark the tool as started',
+  )
+
+  resolveApproval?.(true)
+  await running
+  assertEqual(toolRunCount, 1, 'approved tool should execute exactly once')
+  const pauseIndex = events.findIndex((event) => event.type === 'run.paused')
+  const toolStartIndex = events.findIndex(
+    (event) => event.type === 'step.started' && event.data?.kind === 'tool',
+  )
+  assert(
+    pauseIndex >= 0 && toolStartIndex > pauseIndex,
+    'durable approval pause should precede the tool step',
+  )
 }
 
 function chatMessagesContainImage(messages: ChatMessage[]): boolean {
@@ -11612,7 +11747,7 @@ async function testSkillExtensionReportContract(): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  await testRunMachineStepModePausesBeforeToolBatch()
+  await testRunMachineStepModePausesBeforeToolStep()
   await testRunCursorResumesOneActionAtATime()
   await testRunCheckpointAndArtifactStoreContract()
   await testRuntimeRunInspectionForkAndAbortContract()
@@ -11718,6 +11853,7 @@ async function main(): Promise<void> {
   await testNativeAnthropicModelStreamContract()
   await testNativeGoogleModelStreamContract()
   await testProviderStreamChatOwnsToolLoopContract()
+  await testProviderToolApprovalPausesBeforeSideEffectContract()
   await testProviderStreamChatVisionFallbackContract()
   await testProviderStreamChatVisionFallbackUsesLatestImageContract()
   await testProviderStreamChatVisionFallbackCachesAnalysisContract()

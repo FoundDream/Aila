@@ -2,7 +2,7 @@ import type { AgentContextPlan } from './context'
 import type { PersistedImageBlock, PersistedMessage } from './conversation-core'
 import type { ModelDescriptor, ProviderId } from './models'
 import type { PlanArtifact } from './plan-core'
-import type { RunIdentity } from './run-machine'
+import type { RunContinuationReason, RunIdentity } from './run-machine'
 import type { RunArtifact, RunCheckpoint } from './run-persistence'
 import type { Settings } from './settings-types'
 import type { AilaExecutionMode } from './tool-policy'
@@ -199,6 +199,9 @@ export interface RunRequest {
   runCheckpoint?: RunCheckpoint
   messages: ChatMessage[]
   contextPlan?: AgentContextPlan
+  prepareModelStep?: (
+    input: RunModelStepPreparationInput,
+  ) => MaybePromise<RunModelStepPreparationResult | undefined>
   mode?: AilaExecutionMode
   plan?: PlanArtifact
   planOperation?: 'create' | 'revise' | 'implement'
@@ -218,6 +221,21 @@ export interface RunRequest {
   runShell?: ToolContext['runShell']
   fileSystem?: ToolContext['fileSystem']
   toolRegistry?: ToolRegistry
+}
+
+export interface RunModelStepPreparationInput {
+  conversationId: string
+  run: RunIdentity
+  modelStepIndex: number
+  reason: RunContinuationReason
+  toolsEnabled: boolean
+  messages: ChatMessage[]
+  contextPlan?: AgentContextPlan
+}
+
+export interface RunModelStepPreparationResult {
+  messages?: ChatMessage[]
+  contextPlan?: AgentContextPlan
 }
 
 /**
