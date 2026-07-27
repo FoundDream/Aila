@@ -58,7 +58,6 @@ export interface RuntimeWorkbenchCreateConversationInput {
 }
 
 export interface RuntimeWorkbenchReloadResult {
-  toolPackCount: number
   toolCount: number
 }
 
@@ -173,7 +172,6 @@ export function createDesktopRuntimeWorkbench(
     async reloadExtensions() {
       const registry = await runtime.reloadToolPacks()
       return {
-        toolPackCount: registry.toolPacks.length,
         toolCount: registry.specs.length,
       }
     },

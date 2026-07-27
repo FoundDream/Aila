@@ -18,7 +18,6 @@ import { getDataDir, getImagesDir } from './paths'
 import { createPersistedRuntimeStore } from './runtime-store'
 import { loadSettings } from './settings'
 import { loadSkillsFromDir } from './skill-loader'
-import { loadToolPacksFromDir } from './tool-pack-loader'
 import { webSearch } from './web-search'
 import { WIDGET_TOOL_PACK } from './widget-tool-pack'
 
@@ -113,15 +112,8 @@ export function createDefaultRuntimeHost(overrides: WorkbenchHost = {}): Workben
     onToolPolicy: (request) => createToolPolicy(loadSettings().approvalMode)(request),
     loadToolPacks: async (input) => {
       const cwd = resolveToolPackCwd(input)
-      const [toolPacks, mcpToolPack] = await Promise.all([
-        loadToolPacksFromDir(),
-        loadMcpToolPack({ cwd }),
-      ])
-      return [
-        WIDGET_TOOL_PACK,
-        ...toolPacks.map((pack) => pack.toolPack),
-        ...(mcpToolPack ? [mcpToolPack] : []),
-      ]
+      const mcpToolPack = await loadMcpToolPack({ cwd })
+      return [WIDGET_TOOL_PACK, ...(mcpToolPack ? [mcpToolPack] : [])]
     },
     loadSkills: async () => (await loadSkillsFromDir()).skills,
     persistAttachment: persistRuntimeAttachment,

@@ -265,7 +265,7 @@ export interface SettingsState {
   configuredProviders: ProviderId[]
 }
 
-export type ExtensionReportErrorKind = 'toolPacks' | 'skills' | 'mcp'
+export type ExtensionReportErrorKind = 'skills' | 'mcp'
 
 export interface ExtensionReportError {
   kind: ExtensionReportErrorKind
@@ -277,14 +277,6 @@ export interface ExtensionSkillReport {
   description: string
   directory: string
   skillPath: string
-}
-
-export interface ExtensionToolPackReport {
-  id: string
-  name: string
-  directory: string
-  manifestPath: string
-  tools: string[]
 }
 
 export interface ExtensionMcpServerReport {
@@ -330,11 +322,9 @@ export interface ExtensionIntegrationReport {
 export interface ExtensionReport {
   ok: boolean
   dataDir: string
-  toolPacksDir: string
   skillsDir: string
   mcpConfigPath: string
   projectMcpConfigPath: string
-  toolPacks: ExtensionToolPackReport[]
   skills: ExtensionSkillReport[]
   integrations: ExtensionIntegrationReport[]
   mcpServers: ExtensionMcpServerReport[]

@@ -1,8 +1,10 @@
 import type { AgentContextPlan } from './context'
 import type { PersistedImageBlock, PersistedMessage } from './conversation-core'
+import type { ModelCallToolCall } from './model-call'
 import type { ModelDescriptor, ProviderId } from './models'
 import type { RunContinuationReason, RunIdentity } from './run-machine'
-import type { RunArtifact, RunCheckpoint } from './run-persistence'
+import type { RunSnapshot } from './run-persistence'
+import type { BlobRef, SessionEntry, SessionEntryInput } from './session-journal'
 import type { Settings } from './settings-types'
 import type { AilaExecutionMode } from './tool-policy'
 import type { ToolContext, ToolRegistry } from './tools'
@@ -122,7 +124,6 @@ export type RunEventType =
   | 'context:compacting'
   | 'context:compacted'
   | 'tool.requested'
-  | 'tool.input.delta'
   | 'tool.input.completed'
   | 'tool.execution.started'
   | 'tool.execution.completed'
@@ -180,7 +181,15 @@ export interface RunRequest {
   assistantMessageId: string
   run?: RunIdentity
   loopMode?: 'continuous' | 'step'
-  runCheckpoint?: RunCheckpoint
+  runSnapshot?: RunSnapshot
+  runContextRef: BlobRef
+  resumeState?: {
+    messages: ChatMessage[]
+    contextPlan: AgentContextPlan
+    assistantMessage?: PersistedMessage
+    modelStepOutputs?: Record<string, string>
+    pendingToolCalls?: ModelCallToolCall[]
+  }
   messages: ChatMessage[]
   contextPlan?: AgentContextPlan
   prepareModelStep?: (
@@ -190,8 +199,14 @@ export interface RunRequest {
   selection: ModelSelection
   signal: AbortSignal
   onRunEvent?: RunEventSink
-  saveRunCheckpoint?: (checkpoint: RunCheckpoint) => MaybePromise<RunCheckpoint>
-  saveRunArtifact?: (artifact: RunArtifact) => MaybePromise<RunArtifact>
+  saveRunSnapshot?: (snapshot: RunSnapshot) => MaybePromise<RunSnapshot>
+  appendSessionEntry?: (entry: SessionEntryInput) => MaybePromise<SessionEntry>
+  putBlob?: (input: {
+    contentType: string
+    data: unknown
+    preview?: string
+    blobId?: string
+  }) => MaybePromise<BlobRef>
   workspaceRoots?: ToolContext['workspaceRoots']
   shellCwd?: ToolContext['shellCwd']
   onToolPolicy?: ToolContext['onToolPolicy']

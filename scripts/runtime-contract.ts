@@ -5,6 +5,7 @@ import * as runtimeSdk from '@aila/agent'
 import * as runtimeCoreSdk from '@aila/agent'
 import {
   type AgentContextPlan,
+  WorkbenchRuntime as AgentWorkbenchRuntime,
   AILA_EXECUTION_MODES,
   AILA_SKILL_FILE,
   AILA_WORKBENCH_EVENT_SCHEMA_VERSION,
@@ -34,7 +35,6 @@ import {
   type ToolWebSearchRequest,
   type WorkbenchEvent,
   type WorkbenchHost,
-  WorkbenchRuntime,
   type WorkbenchStore,
 } from '@aila/agent'
 import * as runtimePackageNodeSdk from '@aila/agent-node'
@@ -43,8 +43,6 @@ import {
   AILA_CONVERSATION_META_SCHEMA_VERSION,
   AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
   AILA_RUN_EVENT_SCHEMA_VERSION,
-  AILA_TOOL_PACK_MANIFEST_FILE,
-  AILA_TOOL_PACK_MANIFEST_SCHEMA_VERSION,
   appendMessage,
   appendRunEvent,
   appendRunEventAndTouchConversation,
@@ -59,12 +57,10 @@ import {
   getExtensionReport,
   getImagesDir,
   getSkillsDir,
-  getToolPacksDir,
   listConversations,
   listRunEvents,
   loadSkillFromDir,
   loadSkillsFromDir,
-  loadToolPacksFromDir,
   type PersistedMessage,
   type PersistedRunEvent,
   recoverInterruptedConversationActivities,
@@ -94,6 +90,155 @@ function assertEqual<T>(actual: T, expected: T, message: string): void {
   }
 }
 
+interface LegacyWorkbenchStoreFixture {
+  createConversation?: WorkbenchStore['createConversation']
+  getConversation: WorkbenchStore['getConversation']
+  listConversations?: WorkbenchStore['listConversations']
+  renameConversation?: (conversationId: string, title: string) => Promise<ConversationSummary>
+  saveMessage?: (conversationId: string, message: PersistedMessage) => Promise<ConversationSummary>
+  recordRunEvent?: (
+    conversationId: string,
+    event: RunEvent,
+  ) => Promise<{ event: RunEvent; summary: ConversationSummary }>
+  listRunEvents?: (conversationId: string) => Promise<RunEvent[]>
+  recordUsage?: (
+    conversationId: string,
+    usage: runtimeSdk.UsageInfo,
+  ) => Promise<ConversationSummary>
+  deleteConversation?: WorkbenchStore['deleteConversation']
+  recoverInterruptedActivities?: WorkbenchStore['recoverInterruptedActivities']
+}
+
+function normalizeFixtureStore(
+  store: WorkbenchStore | LegacyWorkbenchStoreFixture | undefined,
+): WorkbenchStore | undefined {
+  if (!store || 'appendSessionEntry' in store) return store as WorkbenchStore | undefined
+
+  const entries = new Map<string, runtimeSdk.SessionEntry[]>()
+  const snapshots = new Map<string, runtimeSdk.RunSnapshot>()
+  const blobs = new Map<string, runtimeSdk.StoredBlob>()
+  let generatedId = 0
+  const nextId = () => `fixture-${++generatedId}`
+  const runKey = (conversationId: string, runId: string) => `${conversationId}:${runId}`
+  const blobKey = (conversationId: string, blobId: string) => `${conversationId}:${blobId}`
+
+  const adapted: WorkbenchStore = {
+    createConversation:
+      store.createConversation ??
+      (async () => {
+        throw new Error('fixture store does not support conversation creation')
+      }),
+    getConversation: store.getConversation,
+    listConversations: store.listConversations ?? (async () => []),
+    async appendSessionEntry(conversationId, input) {
+      let summary: ConversationSummary | undefined
+      if (input.type === 'conversation.renamed' && store.renameConversation) {
+        summary = await store.renameConversation(conversationId, input.data.title)
+      } else if (input.type === 'message.committed' && store.saveMessage) {
+        summary = await store.saveMessage(conversationId, input.data.message)
+      } else if (input.type === 'run.event' && store.recordRunEvent) {
+        summary = (await store.recordRunEvent(conversationId, input.data.event)).summary
+      } else if (input.type === 'usage.recorded' && store.recordUsage) {
+        summary = await store.recordUsage(conversationId, input.data.usage)
+      }
+      summary ??= (await store.getConversation(conversationId)).meta
+      const journal = entries.get(conversationId) ?? []
+      const prepared = runtimeSdk.prepareSessionEntry(conversationId, journal, input, nextId)
+      if (!prepared.duplicate) journal.push(prepared.entry)
+      entries.set(conversationId, journal)
+      return {
+        entry: prepared.entry,
+        summary,
+        ...(prepared.duplicate ? { duplicate: true } : {}),
+      }
+    },
+    async listSessionEntries(conversationId) {
+      const journal = entries.get(conversationId) ?? []
+      if (!journal.some((entry) => entry.type === 'run.event') && store.listRunEvents) {
+        const legacyEvents = await store.listRunEvents(conversationId)
+        const projected = [...journal]
+        for (const [index, event] of legacyEvents.entries()) {
+          const prepared = runtimeSdk.prepareSessionEntry(
+            conversationId,
+            projected,
+            {
+              type: 'run.event',
+              entryId: event.eventId ?? `fixture-event-${index}`,
+              timestamp: event.timestamp,
+              turnId: event.turnId,
+              runId: event.runId,
+              stepId: event.stepId,
+              data: { event },
+            },
+            nextId,
+          )
+          if (!prepared.duplicate) projected.push(prepared.entry)
+        }
+        return runtimeSdk.orderedSessionEntries(projected)
+      }
+      return runtimeSdk.orderedSessionEntries(journal)
+    },
+    deleteConversation: store.deleteConversation ?? (async () => {}),
+    recoverInterruptedActivities: store.recoverInterruptedActivities,
+    async saveRunSnapshot(snapshot) {
+      const key = runKey(snapshot.identity.conversationId, snapshot.identity.runId)
+      const saved = runtimeSdk.prepareRunSnapshot(snapshot, snapshots.get(key))
+      snapshots.set(key, saved)
+      return structuredClone(saved)
+    },
+    async getRunSnapshot(conversationId, runId) {
+      const snapshot = snapshots.get(runKey(conversationId, runId))
+      return snapshot ? structuredClone(snapshot) : null
+    },
+    async listRunSnapshots(conversationId) {
+      return [...snapshots.values()]
+        .filter((snapshot) => snapshot.identity.conversationId === conversationId)
+        .map((snapshot) => structuredClone(snapshot))
+    },
+    async putBlob(conversationId, input) {
+      const data = structuredClone(input.data)
+      const sizeBytes = new TextEncoder().encode(
+        typeof data === 'string' ? data : JSON.stringify(data),
+      ).byteLength
+      const stored: runtimeSdk.StoredBlob = {
+        ref: {
+          schemaVersion: runtimeSdk.AILA_BLOB_SCHEMA_VERSION,
+          blobId: input.blobId ?? nextId(),
+          contentType: input.contentType,
+          sizeBytes,
+          ...(input.preview ? { preview: input.preview } : {}),
+        },
+        data,
+      }
+      const key = blobKey(conversationId, stored.ref.blobId)
+      const current = blobs.get(key)
+      if (current && JSON.stringify(current) !== JSON.stringify(stored)) {
+        throw new Error(`blob is immutable: ${stored.ref.blobId}`)
+      }
+      blobs.set(key, stored)
+      return structuredClone(stored.ref)
+    },
+    async getBlob(conversationId, blobId) {
+      const blob = blobs.get(blobKey(conversationId, blobId))
+      return blob ? structuredClone(blob) : null
+    },
+  }
+  return adapted
+}
+
+type WorkbenchOptions = ConstructorParameters<typeof AgentWorkbenchRuntime>[0]
+
+class WorkbenchRuntime extends AgentWorkbenchRuntime {
+  constructor(options: WorkbenchOptions = {}) {
+    super({
+      ...options,
+      store: normalizeFixtureStore(
+        options.store as WorkbenchStore | LegacyWorkbenchStoreFixture | undefined,
+      ),
+    })
+  }
+}
+
 async function withTempDataDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
   const dir = await mkdtemp(join(tmpdir(), 'aila-runtime-contract-'))
   try {
@@ -101,6 +246,15 @@ async function withTempDataDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
     return await fn(dir)
   } finally {
     await rm(dir, { recursive: true, force: true })
+  }
+}
+
+async function assertSessionJournalMissing(conversationId: string, message: string): Promise<void> {
+  try {
+    await listRunEvents(conversationId)
+    throw new Error(`${message}: deleted journal unexpectedly remained readable`)
+  } catch (error) {
+    assert(error instanceof Error && 'code' in error && error.code === 'ENOENT', message)
   }
 }
 
@@ -216,71 +370,67 @@ async function testRunCheckpointAndArtifactStoreContract(): Promise<void> {
     turnId: 'run-store-turn',
     runId: 'run-store-run',
   }
-  const checkpoint: runtimeSdk.RunCheckpoint = {
-    schemaVersion: runtimeSdk.AILA_RUN_CHECKPOINT_SCHEMA_VERSION,
+  const contextRef = await store.putBlob(conversation.id, {
+    blobId: 'run-store-context',
+    contentType: 'application/json',
+    data: { messages: [{ role: 'user', content: 'persist this run' }], contextPlan: {} },
+  })
+  const checkpoint: runtimeSdk.RunSnapshot = {
+    schemaVersion: runtimeSdk.AILA_RUN_SNAPSHOT_SCHEMA_VERSION,
     identity,
     assistantMessageId: 'run-store-assistant',
     selection: { providerId: 'openrouter', modelId: 'contract/mock' },
     executionMode: 'agent',
     maxToolSteps: 2,
     loop: createRunCursor(identity, 'step'),
-    messages: [{ role: 'user', content: 'persist this run' }],
-    modelStepOutputs: {},
-    assistantMessage: {
-      schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
-      id: 'run-store-assistant',
-      role: 'assistant',
-      blocks: [],
-      status: 'streaming',
-      model: { providerId: 'openrouter', modelId: 'contract/mock' },
-    },
+    contextRef,
     recovery: { strategy: 'automatic' },
     revision: 1,
     createdAt: 10,
     updatedAt: 10,
+    throughSeq: 1,
   }
-  assert(store.saveRunCheckpoint, 'run persistence store should save checkpoints')
-  assert(store.getRunCheckpoint, 'run persistence store should load checkpoints')
-  assert(store.listRunCheckpoints, 'run persistence store should list checkpoints')
-  assert(store.saveRunArtifact, 'run persistence store should save artifacts')
-  assert(store.listRunArtifacts, 'run persistence store should list artifacts')
-
-  const first = await store.saveRunCheckpoint(checkpoint)
-  const second = await store.saveRunCheckpoint({ ...first, updatedAt: 20 })
+  const first = await store.saveRunSnapshot(checkpoint)
+  const second = await store.saveRunSnapshot({ ...first, updatedAt: 20 })
   assertEqual(first.revision, 1, 'first checkpoint revision')
   assertEqual(second.revision, 2, 'checkpoint revisions should increase monotonically')
-  const loaded = await store.getRunCheckpoint(conversation.id, identity.runId)
+  const loaded = await store.getRunSnapshot(conversation.id, identity.runId)
   assertEqual(loaded?.updatedAt, 20, 'checkpoint should load the latest cursor')
 
-  const artifact: runtimeSdk.RunArtifact = {
-    schemaVersion: runtimeSdk.AILA_RUN_ARTIFACT_SCHEMA_VERSION,
-    artifactId: 'run-store-artifact',
-    conversationId: conversation.id,
+  const payloadRef = await store.putBlob(conversation.id, {
+    blobId: 'run-store-payload',
+    contentType: 'application/json',
+    data: { value: 1 },
+  })
+  const payloadEntry: runtimeSdk.SessionEntryInput<'run.payload'> = {
+    type: 'run.payload',
+    entryId: 'run-store-entry',
+    timestamp: 30,
     turnId: identity.turnId,
     runId: identity.runId,
     stepId: 'run-store-step',
-    kind: 'inspection',
-    createdAt: 30,
-    contentType: 'application/json',
-    data: { value: 1 },
+    payloadRef,
+    data: { kind: 'inspection', label: 'Inspection' },
   }
-  await store.saveRunArtifact(artifact)
-  await store.saveRunArtifact(artifact)
+  await store.appendSessionEntry(conversation.id, payloadEntry)
+  await store.appendSessionEntry(conversation.id, payloadEntry)
+  const entries = await store.listSessionEntries(conversation.id)
   assertEqual(
-    (await store.listRunArtifacts(conversation.id, identity.runId)).length,
+    runtimeSdk.sessionRunPayloads(entries, identity.runId).length,
     1,
-    'identical artifact writes should be idempotent',
+    'identical journal writes should be idempotent',
   )
   let immutableError = ''
   try {
-    await store.saveRunArtifact({ ...artifact, data: { value: 2 } })
+    await store.putBlob(conversation.id, {
+      blobId: payloadRef.blobId,
+      contentType: 'application/json',
+      data: { value: 2 },
+    })
   } catch (error) {
     immutableError = error instanceof Error ? error.message : String(error)
   }
-  assert(
-    immutableError.includes('immutable'),
-    'artifact ids should reject conflicting payload overwrites',
-  )
+  assert(immutableError.includes('immutable'), 'blob ids should reject conflicting overwrites')
 }
 
 async function testRuntimeRunInspectionForkAndAbortContract(): Promise<void> {
@@ -307,22 +457,28 @@ async function testRuntimeRunInspectionForkAndAbortContract(): Promise<void> {
   source.loop.state.identity.turnId = userMessage.id
   source.loop.state.status = 'paused'
   source.loop.state.nextAction = { type: 'model', reason: 'resume' }
+  source.loop.state.wait = { reason: 'operator' }
   source.assistantMessageId = 'run-control-source-assistant'
-  source.assistantMessage.id = source.assistantMessageId
-  assert(store.saveRunCheckpoint, 'run control contract requires checkpoint persistence')
-  assert(store.saveRunArtifact, 'run control contract requires artifact persistence')
-  await store.saveRunCheckpoint(source)
-  await store.saveRunArtifact({
-    schemaVersion: runtimeSdk.AILA_RUN_ARTIFACT_SCHEMA_VERSION,
-    artifactId: 'run-control-source-artifact',
-    conversationId: conversation.id,
+  source.contextRef = await store.putBlob(conversation.id, {
+    blobId: 'run-control-context',
+    contentType: 'application/json',
+    data: { messages: [], contextPlan: {} },
+  })
+  await store.saveRunSnapshot(source)
+  const payloadRef = await store.putBlob(conversation.id, {
+    blobId: 'run-control-payload',
+    contentType: 'application/json',
+    data: { inspected: true },
+  })
+  await store.appendSessionEntry(conversation.id, {
+    type: 'run.payload',
+    entryId: 'run-control-source-payload',
+    timestamp: timestamp++,
     turnId: userMessage.id,
     runId: source.identity.runId,
     stepId: 'run-control-source-step',
-    kind: 'inspection',
-    createdAt: timestamp++,
-    contentType: 'application/json',
-    data: { inspected: true },
+    payloadRef,
+    data: { kind: 'inspection', label: 'Inspection' },
   })
   await runtime.recordRunEvent({
     timestamp: timestamp++,
@@ -452,27 +608,20 @@ function testRunCheckpointV1MigrationContract(): void {
       }
     }
   }
-  legacy.schemaVersion = 1
+  legacy.schemaVersion = 2
   legacy.loop.state.status = 'paused'
   legacy.loop.state.nextAction = { type: 'tools', toolCallIds: ['legacy-tool'] }
   delete legacy.loop.state.wait
 
-  const migrated = runtimeSdk.normalizeRunCheckpoint(legacy)
-  assertEqual(
-    migrated.schemaVersion,
-    runtimeSdk.AILA_RUN_CHECKPOINT_SCHEMA_VERSION,
-    'legacy checkpoints should upgrade to the current schema',
-  )
-  assertEqual(migrated.loop.state.status, 'paused', 'legacy paused runs should stay resumable')
-  assertEqual(
-    migrated.loop.state.wait?.reason,
-    'operator',
-    'legacy paused runs should receive an explicit operator wait state',
-  )
-  assertEqual(
-    migrated.loop.state.nextAction?.type,
-    'tools',
-    'legacy executable actions should survive migration',
+  let error = ''
+  try {
+    runtimeSdk.normalizeRunSnapshot(legacy)
+  } catch (cause) {
+    error = cause instanceof Error ? cause.message : String(cause)
+  }
+  assert(
+    error.includes('unsupported agent run snapshot schema'),
+    'legacy snapshots must be rejected',
   )
 }
 
@@ -545,8 +694,9 @@ async function testProviderModelCallExecutesExactlyOneRequest(): Promise<void> {
 async function testProviderStreamStepCheckpointResumeContract(): Promise<void> {
   let modelRequestCount = 0
   let toolRunCount = 0
-  let checkpoint: runtimeSdk.RunCheckpoint | undefined
-  const artifacts = new Map<string, runtimeSdk.RunArtifact>()
+  let checkpoint: runtimeSdk.RunSnapshot | undefined
+  const entries: runtimeSdk.SessionEntry[] = []
+  const blobs = new Map<string, runtimeSdk.StoredBlob>()
   const events: RunEvent[] = []
   const doneMessages: PersistedMessage[] = []
   const modelStreamClient: runtimePackageNodeSdk.ModelStreamClient = {
@@ -619,17 +769,39 @@ async function testProviderStreamStepCheckpointResumeContract(): Promise<void> {
     modelStreamClient,
     settings: { apiKeys: { openrouter: 'contract-key' }, defaultModel: null },
   })
-  const saveRunCheckpoint = (input: runtimeSdk.RunCheckpoint) => {
-    checkpoint = runtimeSdk.prepareRunCheckpoint(input, checkpoint)
+  const saveRunSnapshot = (input: runtimeSdk.RunSnapshot) => {
+    checkpoint = runtimeSdk.prepareRunSnapshot(
+      { ...input, throughSeq: entries.at(-1)?.seq ?? 0 },
+      checkpoint,
+    )
     return structuredClone(checkpoint)
   }
-  const saveRunArtifact = (artifact: runtimeSdk.RunArtifact) => {
-    const existing = artifacts.get(artifact.artifactId)
-    if (existing && JSON.stringify(existing) !== JSON.stringify(artifact)) {
-      throw new Error(`artifact overwrite: ${artifact.artifactId}`)
+  const appendSessionEntry = (input: runtimeSdk.SessionEntryInput) => {
+    const prepared = runtimeSdk.prepareSessionEntry(
+      'step-resume-conversation',
+      entries,
+      input,
+      () => `entry-${entries.length + 1}`,
+    )
+    if (!prepared.duplicate) entries.push(prepared.entry)
+    return structuredClone(prepared.entry)
+  }
+  const putBlob = (input: {
+    contentType: string
+    data: unknown
+    preview?: string
+    blobId?: string
+  }) => {
+    const blobId = input.blobId ?? `blob-${blobs.size + 1}`
+    const ref: runtimeSdk.BlobRef = {
+      schemaVersion: runtimeSdk.AILA_BLOB_SCHEMA_VERSION,
+      blobId,
+      contentType: input.contentType,
+      sizeBytes: JSON.stringify(input.data).length,
+      ...(input.preview ? { preview: input.preview } : {}),
     }
-    artifacts.set(artifact.artifactId, structuredClone(artifact))
-    return structuredClone(artifact)
+    blobs.set(blobId, { ref, data: structuredClone(input.data) })
+    return structuredClone(ref)
   }
   const handlers = {
     onTextDelta() {},
@@ -653,12 +825,19 @@ async function testProviderStreamStepCheckpointResumeContract(): Promise<void> {
       turnId: 'step-resume-turn',
       runId: 'step-resume-run',
     },
+    runContextRef: {
+      schemaVersion: runtimeSdk.AILA_BLOB_SCHEMA_VERSION,
+      blobId: 'step-resume-context',
+      contentType: 'application/json',
+      sizeBytes: 0,
+    },
     messages: [{ role: 'user' as const, content: 'start' }],
     selection: { providerId: 'openrouter' as const, modelId: 'contract/mock' },
     signal: new AbortController().signal,
     onRunEvent: (event: RunEvent) => events.push(event),
-    saveRunCheckpoint,
-    saveRunArtifact,
+    saveRunSnapshot,
+    appendSessionEntry,
+    putBlob,
     toolRegistry: createDefaultToolRegistry([toolPack]),
   }
 
@@ -696,8 +875,25 @@ async function testProviderStreamStepCheckpointResumeContract(): Promise<void> {
     {
       ...baseRequest,
       loopMode: 'continuous',
-      runCheckpoint: structuredClone(checkpoint),
-      messages: structuredClone(checkpoint.messages),
+      runSnapshot: structuredClone(checkpoint),
+      resumeState: {
+        messages: [
+          ...structuredClone(baseRequest.messages),
+          ...entries.flatMap((entry) =>
+            entry.type === 'run.payload' && entry.data.modelMessage
+              ? [structuredClone(entry.data.modelMessage)]
+              : [],
+          ),
+        ],
+        contextPlan: {} as AgentContextPlan,
+        assistantMessage: entries
+          .filter(
+            (entry): entry is runtimeSdk.SessionEntry<'run.payload'> =>
+              entry.type === 'run.payload',
+          )
+          .at(-1)?.data.assistantMessage,
+        modelStepOutputs: { '0': 'first' },
+      },
     },
     handlers,
   )
@@ -705,30 +901,32 @@ async function testProviderStreamStepCheckpointResumeContract(): Promise<void> {
   assertEqual(modelRequestCount, 2, 'resumed stream should make only the remaining model request')
   assertEqual(doneMessages.length, 1, 'continued stream should finalize once')
   assertEqual(checkpoint.loop.state.status, 'completed', 'continued checkpoint should be terminal')
-  assertEqual(checkpoint.assistantMessage.status, 'done', 'terminal checkpoint message status')
   assertEqual(
-    artifacts.size,
+    runtimeSdk.sessionRunPayloads(entries).length,
     7,
-    'run should persist model request/response and per-tool request/result artifacts',
+    'run should journal every provider and tool payload boundary',
   )
   assertEqual(
-    [...artifacts.values()]
-      .map((artifact) => artifact.kind)
+    runtimeSdk
+      .sessionRunPayloads(entries)
+      .map((entry) => entry.data.kind)
       .sort()
       .join(','),
-    'model_request,model_request,model_response,model_response,tool_batch,tool_request,tool_result',
-    'execution artifacts should expose every provider and tool boundary',
+    'provider_request,provider_request,provider_response,provider_response,tool_batch,tool_request,tool_result',
+    'journal payload entries should expose every provider and tool boundary',
   )
   assert(
-    !JSON.stringify([...artifacts.values()]).includes('contract-key'),
-    'execution artifacts must never persist provider credentials',
+    !JSON.stringify([...blobs.values()]).includes('contract-key'),
+    'payload blobs must never persist provider credentials',
   )
-  const toolResultArtifact = [...artifacts.values()].find(
-    (artifact) => artifact.kind === 'tool_result',
-  )
+  const toolResultEntry = runtimeSdk
+    .sessionRunPayloads(entries)
+    .find((entry) => entry.data.kind === 'tool_result')
   assert(
-    JSON.stringify(toolResultArtifact?.data).includes('echo:ok'),
-    'tool result artifact should preserve the inspectable tool output',
+    JSON.stringify(
+      toolResultEntry?.payloadRef && blobs.get(toolResultEntry.payloadRef.blobId)?.data,
+    ).includes('echo:ok'),
+    'tool result payload should preserve inspectable output in its blob',
   )
   assert(
     events.some((event) => event.type === 'run.resumed'),
@@ -738,7 +936,7 @@ async function testProviderStreamStepCheckpointResumeContract(): Promise<void> {
 
 async function testProviderStreamPreflightFailureCheckpointContract(): Promise<void> {
   let modelRequestCount = 0
-  let checkpoint: runtimeSdk.RunCheckpoint | undefined
+  let checkpoint: runtimeSdk.RunSnapshot | undefined
   const events: RunEvent[] = []
   const errors: string[] = []
   const runAgent = runtimePackageNodeSdk.createDurableRunExecutor({
@@ -760,12 +958,18 @@ async function testProviderStreamPreflightFailureCheckpointContract(): Promise<v
         turnId: 'preflight-failure-turn',
         runId: 'preflight-failure-run',
       },
+      runContextRef: {
+        schemaVersion: runtimeSdk.AILA_BLOB_SCHEMA_VERSION,
+        blobId: 'preflight-context',
+        contentType: 'application/json',
+        sizeBytes: 0,
+      },
       messages: [{ role: 'user', content: 'start' }],
       selection: { providerId: 'openrouter', modelId: 'contract/mock' },
       signal: new AbortController().signal,
       onRunEvent: (event) => events.push(event),
-      saveRunCheckpoint(input) {
-        checkpoint = runtimeSdk.prepareRunCheckpoint(input, checkpoint)
+      saveRunSnapshot(input) {
+        checkpoint = runtimeSdk.prepareRunSnapshot(input, checkpoint)
         return structuredClone(checkpoint)
       },
     },
@@ -792,11 +996,6 @@ async function testProviderStreamPreflightFailureCheckpointContract(): Promise<v
     checkpoint.identity.runId,
     'preflight-failure-run',
     'preflight checkpoint should preserve run identity',
-  )
-  assertEqual(
-    checkpoint.assistantMessage.status,
-    'error',
-    'preflight checkpoint should preserve the assistant error snapshot',
   )
   assert(
     errors[0]?.includes('No API key for openrouter'),
@@ -1927,27 +2126,39 @@ async function testConversationUsageAccumulatorContract(): Promise<void> {
   const store = runtimeSdk.createInMemoryRuntimeStore()
   const conversation = await store.createConversation?.()
   assert(conversation, 'in-memory store should create a conversation for usage accumulation')
-  await store.recordUsage(conversation.id, {
-    promptTokens: 3,
-    completionTokens: 5,
-    totalTokens: 8,
-    modelCallCount: 2,
-    maxInputTokens: 7,
-    lastInputTokens: 3,
-    lastOutputTokens: 2,
-    lastCacheReadTokens: 1,
-    lastCacheMissTokens: 2,
+  await store.appendSessionEntry(conversation.id, {
+    type: 'usage.recorded',
+    timestamp: 1,
+    data: {
+      usage: {
+        promptTokens: 3,
+        completionTokens: 5,
+        totalTokens: 8,
+        modelCallCount: 2,
+        maxInputTokens: 7,
+        lastInputTokens: 3,
+        lastOutputTokens: 2,
+        lastCacheReadTokens: 1,
+        lastCacheMissTokens: 2,
+      },
+    },
   })
-  await store.recordUsage(conversation.id, {
-    promptTokens: 2,
-    completionTokens: 4,
-    totalTokens: 6,
-    modelCallCount: 1,
-    maxInputTokens: 2,
-    lastInputTokens: 2,
-    lastOutputTokens: 4,
-    lastCacheReadTokens: 1,
-    lastCacheMissTokens: 1,
+  await store.appendSessionEntry(conversation.id, {
+    type: 'usage.recorded',
+    timestamp: 2,
+    data: {
+      usage: {
+        promptTokens: 2,
+        completionTokens: 4,
+        totalTokens: 6,
+        modelCallCount: 1,
+        maxInputTokens: 2,
+        lastInputTokens: 2,
+        lastOutputTokens: 4,
+        lastCacheReadTokens: 1,
+        lastCacheMissTokens: 1,
+      },
+    },
   })
   const record = await store.getConversation(conversation.id)
   assertEqual(record.meta.usage?.totalTokens, 6, 'usage snapshot should keep the latest turn total')
@@ -1995,37 +2206,31 @@ async function testConversationUsageAccumulatorContract(): Promise<void> {
   )
 }
 
-function createRunCheckpointFixture(
-  conversationId: string,
-  runId: string,
-): runtimeSdk.RunCheckpoint {
+function createRunCheckpointFixture(conversationId: string, runId: string): runtimeSdk.RunSnapshot {
   const identity = {
     conversationId,
     turnId: `${runId}-turn`,
     runId,
   }
   return {
-    schemaVersion: runtimeSdk.AILA_RUN_CHECKPOINT_SCHEMA_VERSION,
+    schemaVersion: runtimeSdk.AILA_RUN_SNAPSHOT_SCHEMA_VERSION,
     identity,
     assistantMessageId: `${runId}-assistant`,
     selection: { providerId: 'openrouter', modelId: 'contract/mock' },
     executionMode: 'agent',
     maxToolSteps: 3,
     loop: createRunCursor(identity, 'step'),
-    messages: [{ role: 'user', content: 'restart-safe run' }],
-    modelStepOutputs: {},
-    assistantMessage: {
-      schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
-      id: `${runId}-assistant`,
-      role: 'assistant',
-      blocks: [],
-      status: 'streaming',
-      model: { providerId: 'openrouter', modelId: 'contract/mock' },
+    contextRef: {
+      schemaVersion: runtimeSdk.AILA_BLOB_SCHEMA_VERSION,
+      blobId: `${runId}-context`,
+      contentType: 'application/json',
+      sizeBytes: 0,
     },
     recovery: { strategy: 'automatic' },
     revision: 1,
     createdAt: 10,
     updatedAt: 10,
+    throughSeq: 1,
   }
 }
 
@@ -2037,36 +2242,44 @@ async function testFileRunPersistenceSurvivesRestart(): Promise<void> {
     })
     const conversation = await store.createConversation?.()
     assert(conversation, 'file run store should create a conversation')
-    assert(store.saveRunCheckpoint, 'file run store should save checkpoints')
-    assert(store.saveRunArtifact, 'file run store should save artifacts')
     const checkpoint = createRunCheckpointFixture(conversation.id, 'run-file-id')
-    await store.saveRunCheckpoint(checkpoint)
-    await store.saveRunArtifact({
-      schemaVersion: runtimeSdk.AILA_RUN_ARTIFACT_SCHEMA_VERSION,
-      artifactId: 'run-file-artifact',
-      conversationId: conversation.id,
-      turnId: checkpoint.identity.turnId,
-      runId: checkpoint.identity.runId,
-      stepId: 'run-file-step',
-      kind: 'inspection',
-      createdAt: 11,
+    checkpoint.contextRef = await store.putBlob(conversation.id, {
+      blobId: checkpoint.contextRef.blobId,
+      contentType: 'application/json',
+      data: { messages: [], contextPlan: {} },
+    })
+    await store.saveRunSnapshot(checkpoint)
+    const payloadRef = await store.putBlob(conversation.id, {
+      blobId: 'run-file-payload',
       contentType: 'application/json',
       data: { persisted: true },
     })
+    await store.appendSessionEntry(conversation.id, {
+      type: 'run.payload',
+      entryId: 'run-file-payload-entry',
+      timestamp: 11,
+      turnId: checkpoint.identity.turnId,
+      runId: checkpoint.identity.runId,
+      stepId: 'run-file-step',
+      payloadRef,
+      data: { kind: 'inspection', label: 'Inspection' },
+    })
 
     const reopened = runtimePackageNodeSdk.createFileRuntimeStore({ dataDir: dir })
-    const loaded = await reopened.getRunCheckpoint?.(conversation.id, checkpoint.identity.runId)
+    const loaded = await reopened.getRunSnapshot(conversation.id, checkpoint.identity.runId)
     assert(loaded, 'reopened file run store should load its checkpoint')
     assertEqual(loaded.revision, 1, 'reopened checkpoint revision')
     assertEqual(
-      (await reopened.listRunArtifacts?.(conversation.id, checkpoint.identity.runId))?.length,
+      runtimeSdk.sessionRunPayloads(
+        await reopened.listSessionEntries(conversation.id),
+        checkpoint.identity.runId,
+      ).length,
       1,
-      'reopened file run store should load immutable artifacts',
+      'reopened file run store should load payload entries',
     )
-    assert(reopened.saveRunCheckpoint, 'reopened file run store should save checkpoints')
     const concurrent = await Promise.all([
-      reopened.saveRunCheckpoint({ ...loaded, updatedAt: 20 }),
-      reopened.saveRunCheckpoint({ ...loaded, updatedAt: 21 }),
+      reopened.saveRunSnapshot({ ...loaded, updatedAt: 20 }),
+      reopened.saveRunSnapshot({ ...loaded, updatedAt: 21 }),
     ])
     assertEqual(
       concurrent.map((entry) => entry.revision).join(','),
@@ -2074,11 +2287,15 @@ async function testFileRunPersistenceSurvivesRestart(): Promise<void> {
       'concurrent file checkpoint writes should serialize monotonic revisions',
     )
     await reopened.deleteConversation(conversation.id)
-    assertEqual(
-      (await reopened.listRunCheckpoints?.(conversation.id))?.length,
-      0,
-      'conversation deletion should remove file-backed runs',
-    )
+    try {
+      await reopened.listRunSnapshots(conversation.id)
+      throw new Error('deleted file-backed run snapshots unexpectedly remained readable')
+    } catch (error) {
+      assert(
+        error instanceof Error && 'code' in error && error.code === 'ENOENT',
+        'conversation deletion should remove file-backed runs',
+      )
+    }
   })
 }
 
@@ -2087,32 +2304,40 @@ async function testDesktopRunPersistenceSurvivesRestart(): Promise<void> {
     const store = createPersistedRuntimeStore()
     const conversation = await store.createConversation?.()
     assert(conversation, 'desktop run store should create a conversation')
-    assert(store.saveRunCheckpoint, 'desktop run store should save checkpoints')
-    assert(store.saveRunArtifact, 'desktop run store should save artifacts')
     const checkpoint = createRunCheckpointFixture(conversation.id, 'run-desktop-id')
-    await store.saveRunCheckpoint(checkpoint)
-    await store.saveRunArtifact({
-      schemaVersion: runtimeSdk.AILA_RUN_ARTIFACT_SCHEMA_VERSION,
-      artifactId: 'run-desktop-artifact',
-      conversationId: conversation.id,
+    checkpoint.contextRef = await store.putBlob(conversation.id, {
+      blobId: checkpoint.contextRef.blobId,
+      contentType: 'application/json',
+      data: { messages: [], contextPlan: {} },
+    })
+    await store.saveRunSnapshot(checkpoint)
+    const payloadRef = await store.putBlob(conversation.id, {
+      blobId: 'run-desktop-payload',
+      contentType: 'application/json',
+      data: { persisted: true },
+    })
+    await store.appendSessionEntry(conversation.id, {
+      type: 'run.payload',
+      entryId: 'run-desktop-payload-entry',
+      timestamp: 11,
       turnId: checkpoint.identity.turnId,
       runId: checkpoint.identity.runId,
       stepId: 'run-desktop-step',
-      kind: 'inspection',
-      createdAt: 11,
-      contentType: 'application/json',
-      data: { persisted: true },
+      payloadRef,
+      data: { kind: 'inspection', label: 'Inspection' },
     })
 
     const reopened = createPersistedRuntimeStore()
     assertEqual(
-      (await reopened.getRunCheckpoint?.(conversation.id, checkpoint.identity.runId))?.identity
-        .runId,
+      (await reopened.getRunSnapshot(conversation.id, checkpoint.identity.runId))?.identity.runId,
       checkpoint.identity.runId,
       'desktop run checkpoint should survive a store restart',
     )
     assertEqual(
-      (await reopened.listRunArtifacts?.(conversation.id, checkpoint.identity.runId))?.length,
+      runtimeSdk.sessionRunPayloads(
+        await reopened.listSessionEntries(conversation.id),
+        checkpoint.identity.runId,
+      ).length,
       1,
       'desktop run artifacts should survive a store restart',
     )
@@ -2731,12 +2956,18 @@ async function testRuntimePersistsAutoContextCheckpoint(): Promise<void> {
   const conversation = await store.createConversation?.()
   assert(conversation, 'in-memory store should create a conversation')
   for (let index = 0; index < 16; index += 1) {
-    await store.saveMessage(conversation.id, {
-      schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
-      id: `auto-compact-history-${index}`,
-      role: 'user',
-      blocks: [{ type: 'text', content: `history ${index} ${'x'.repeat(1200)}` }],
-      status: 'done',
+    await store.appendSessionEntry(conversation.id, {
+      type: 'message.committed',
+      timestamp: index + 1,
+      data: {
+        message: {
+          schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+          id: `auto-compact-history-${index}`,
+          role: 'user',
+          blocks: [{ type: 'text', content: `history ${index} ${'x'.repeat(1200)}` }],
+          status: 'done',
+        },
+      },
     })
   }
 
@@ -2875,7 +3106,7 @@ async function testRuntimePersistsAutoContextCheckpoint(): Promise<void> {
     streamedPlan?.compaction.recommendedCheckpoint?.id,
     'context turn ledger should link the turn to the recommended checkpoint',
   )
-  const agentEvents = [...((await store.listRunEvents?.(conversation.id)) ?? [])]
+  const agentEvents = runtimeSdk.sessionRunEvents(await store.listSessionEntries(conversation.id))
   const compactingEvent = agentEvents.find((event) => event.type === 'context:compacting')
   const compactedEvent = agentEvents.find((event) => event.type === 'context:compacted')
   assert(compactingEvent, 'runtime should record a context compacting activity event')
@@ -2939,12 +3170,18 @@ async function testRuntimeManualCompactConversation(): Promise<void> {
   const conversation = await store.createConversation?.()
   assert(conversation, 'in-memory store should create a conversation')
   for (let index = 0; index < 6; index += 1) {
-    await store.saveMessage(conversation.id, {
-      schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
-      id: `manual-compact-history-${index}`,
-      role: 'user',
-      blocks: [{ type: 'text', content: `manual compact history ${index}` }],
-      status: 'done',
+    await store.appendSessionEntry(conversation.id, {
+      type: 'message.committed',
+      timestamp: index + 1,
+      data: {
+        message: {
+          schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+          id: `manual-compact-history-${index}`,
+          role: 'user',
+          blocks: [{ type: 'text', content: `manual compact history ${index}` }],
+          status: 'done',
+        },
+      },
     })
   }
 
@@ -3000,7 +3237,7 @@ async function testRuntimeManualCompactConversation(): Promise<void> {
     'manual compact should update conversation context metadata',
   )
 
-  const agentEvents = [...((await store.listRunEvents?.(conversation.id)) ?? [])]
+  const agentEvents = runtimeSdk.sessionRunEvents(await store.listSessionEntries(conversation.id))
   const compactingEvent = agentEvents.find((event) => event.type === 'context:compacting')
   const compactedEvent = agentEvents.find((event) => event.type === 'context:compacted')
   assert(compactingEvent, 'manual compact should record a compacting event')
@@ -3349,6 +3586,7 @@ async function testRuntimeConversationRuntimeStateApiUsesEventReplay(): Promise<
     },
   })
   await runtime.recordRunEvent({
+    eventId: 'runtime-state-approval',
     timestamp: 20,
     conversationId: chat.id,
     messageId: 'assistant-runtime-state',
@@ -3360,6 +3598,7 @@ async function testRuntimeConversationRuntimeStateApiUsesEventReplay(): Promise<
     },
   })
   await runtime.recordRunEvent({
+    eventId: 'runtime-state-approval',
     timestamp: 20,
     conversationId: chat.id,
     messageId: 'assistant-runtime-state',
@@ -3471,80 +3710,25 @@ async function testRuntimeConversationRuntimeStateApiUsesEventReplay(): Promise<
 }
 
 async function testRuntimeOptionalStoreCapabilitiesFailClosed(): Promise<void> {
-  const summary: ConversationSummary = {
-    schemaVersion: AILA_CONVERSATION_META_SCHEMA_VERSION,
-    id: 'minimal-store-conversation',
-    title: 'minimal store',
-    createdAt: 1,
-    updatedAt: 1,
-  }
-  const record: ConversationRecord = { meta: summary, messages: [] }
-  const store: WorkbenchStore = {
-    getConversation: async () => record,
-    saveMessage: async () => summary,
-    recordRunEvent: async (_conversationId, event) => ({
-      event: { ...event, schemaVersion: AILA_RUN_EVENT_SCHEMA_VERSION },
-    }),
-    recordUsage: async () => summary,
-    deleteConversation: async () => {},
-  }
+  const store = createInMemoryRuntimeStore()
   const runtime = new WorkbenchRuntime({ store, logger: { warn() {}, error() {} } })
-
-  async function expectCapabilityError(
-    label: string,
-    operation: () => Promise<unknown>,
-    expectedMessage: string,
-  ): Promise<void> {
-    try {
-      await operation()
-      throw new Error(`${label} unexpectedly succeeded`)
-    } catch (error) {
-      assert(
-        error instanceof Error && error.message.includes(expectedMessage),
-        `${label} should fail closed with: ${expectedMessage}`,
-      )
-    }
-  }
-
-  await expectCapabilityError(
-    'create without store capability',
-    () => runtime.createConversation(),
-    'runtime store cannot create conversations',
+  const summary = await runtime.createConversation()
+  await runtime.renameConversation(summary.id, 'required journal store')
+  assertEqual(
+    (await runtime.listConversations())[0]?.title,
+    'required journal store',
+    'runtime store should expose the complete conversation contract',
   )
-  await expectCapabilityError(
-    'list without store capability',
-    () => runtime.listConversations(),
-    'runtime store cannot list conversations',
-  )
-  await expectCapabilityError(
-    'event list without store capability',
-    () => runtime.listRunEvents(summary.id),
-    'runtime store cannot list agent events',
-  )
-  await expectCapabilityError(
-    'runtime state without event store capability',
-    () => runtime.getConversationRuntimeState(summary.id),
-    'runtime store cannot list agent events',
-  )
-  const listOnlyRuntime = new WorkbenchRuntime({
-    store: { ...store, listConversations: async () => [summary] },
-    logger: { warn() {}, error() {} },
-  })
-  await expectCapabilityError(
-    'runtime state list without event store capability',
-    () => listOnlyRuntime.listConversationRuntimeStates(),
-    'runtime store cannot list agent events',
-  )
-  await expectCapabilityError(
-    'rename without store capability',
-    () => runtime.renameConversation(summary.id, 'renamed'),
-    'runtime store cannot rename conversations',
+  assertEqual(
+    (await runtime.listRunEvents(summary.id)).length,
+    0,
+    'new conversations should begin without run events',
   )
   const recovered = await runtime.recoverInterruptedActivities('minimal store restart')
   assertEqual(
     recovered.length,
     0,
-    'recovery without list/replay store capabilities should be a no-op',
+    'complete store recovery should be a no-op when no run is interrupted',
   )
 }
 
@@ -3587,19 +3771,34 @@ async function testInMemoryRuntimeStoreEventListContract(): Promise<void> {
     data: { providerId: 'openrouter', modelId: 'contract/mock' },
   }
 
-  await store.recordRunEvent(summary.id, laterEvent)
-  await store.recordRunEvent(summary.id, earlierEvent)
-  await store.recordRunEvent(summary.id, earlierEvent)
+  await store.appendSessionEntry(summary.id, {
+    type: 'run.event',
+    entryId: 'memory-event-later',
+    timestamp: laterEvent.timestamp,
+    data: { event: laterEvent },
+  })
+  await store.appendSessionEntry(summary.id, {
+    type: 'run.event',
+    entryId: 'memory-event-earlier',
+    timestamp: earlierEvent.timestamp,
+    data: { event: earlierEvent },
+  })
+  await store.appendSessionEntry(summary.id, {
+    type: 'run.event',
+    entryId: 'memory-event-earlier',
+    timestamp: earlierEvent.timestamp,
+    data: { event: earlierEvent },
+  })
 
-  const listed = [...((await store.listRunEvents?.(summary.id)) ?? [])]
+  const listed = runtimeSdk.sessionRunEvents(await store.listSessionEntries(summary.id))
   assertEqual(listed.length, 2, 'in-memory event list should deduplicate replay events')
   assertEqual(listed[0]?.timestamp, 20, 'durable journal order should follow allocated sequence')
-  assertEqual(listed[0]?.seq, 1, 'first append should own the first journal sequence')
+  assertEqual(listed[0]?.seq, 2, 'first event follows the session-created journal entry')
   assertEqual(listed[1]?.timestamp, 10, 'timestamps should not reorder durable journal entries')
-  assertEqual(listed[1]?.seq, 2, 'second append should own the next journal sequence')
+  assertEqual(listed[1]?.seq, 3, 'second event should own the next journal sequence')
 
   if (listed[1]?.data) listed[1].data.modelId = 'mutated'
-  const relisted = [...((await store.listRunEvents?.(summary.id)) ?? [])]
+  const relisted = runtimeSdk.sessionRunEvents(await store.listSessionEntries(summary.id))
   assertEqual(
     relisted[1]?.data?.modelId,
     'contract/mock',
@@ -3607,11 +3806,15 @@ async function testInMemoryRuntimeStoreEventListContract(): Promise<void> {
   )
 
   await store.deleteConversation(summary.id)
-  assertEqual(
-    ((await store.listRunEvents?.(summary.id)) ?? []).length,
-    0,
-    'in-memory event list should match persisted store after delete',
-  )
+  try {
+    await store.listSessionEntries(summary.id)
+    throw new Error('deleted session journal unexpectedly remained readable')
+  } catch (error) {
+    assert(
+      error instanceof Error && error.message.includes('conversation not found'),
+      'deleted session journal should no longer exist',
+    )
+  }
 }
 
 async function testRuntimeEnvironmentContract(): Promise<void> {
@@ -5216,9 +5419,8 @@ async function testRuntimeSetupFailureRejectsWhenConversationDeleted(): Promise<
       !(await listConversations()).some((record) => record.id === conversation.id),
       'setup failure delete should remove conversation',
     )
-    assertEqual(
-      (await listRunEvents(conversation.id)).length,
-      0,
+    await assertSessionJournalMissing(
+      conversation.id,
       'deleted setup failure should not recreate event log',
     )
   })
@@ -5278,9 +5480,8 @@ async function testRuntimeSetupFailureSuppressesChatErrorAfterDelete(): Promise<
       !(await listConversations()).some((record) => record.id === conversation.id),
       'setup failure activity delete should remove conversation',
     )
-    assertEqual(
-      (await listRunEvents(conversation.id)).length,
-      0,
+    await assertSessionJournalMissing(
+      conversation.id,
       'setup failure activity delete should remove event log',
     )
   })
@@ -5534,9 +5735,8 @@ async function testRuntimeDeleteTimesOutStuckStreamAndSuppressesLateEvents(): Pr
       !(await listConversations()).some((record) => record.id === conversation.id),
       'late stream should not recreate deleted conversation',
     )
-    assertEqual(
-      (await listRunEvents(conversation.id)).length,
-      0,
+    await assertSessionJournalMissing(
+      conversation.id,
       'late stream should not recreate deleted event log',
     )
     assert(
@@ -5797,7 +5997,7 @@ async function testRuntimeDeleteFailureRecordsCancellationForReopenedTurn(): Pro
   assert(deleteFailed, 'active delete failure should reject')
   assertEqual(runtime.listActiveStreams().length, 0, 'failed active delete should clear stream')
 
-  const events = [...((await store.listRunEvents?.(conversation.id)) ?? [])]
+  const events = runtimeSdk.sessionRunEvents(await store.listSessionEntries(conversation.id))
   assert(
     events.some(
       (event) =>
@@ -6269,22 +6469,28 @@ async function testPersistenceContract(): Promise<void> {
       'read persisted message version',
     )
 
-    const dir = getConversationsDir()
-    const rawMeta = JSON.parse(
-      await readFile(join(dir, `${conversation.id}.meta.json`), 'utf-8'),
-    ) as { schemaVersion?: number }
-    const rawMessage = JSON.parse(
-      (await readFile(join(dir, `${conversation.id}.jsonl`), 'utf-8')).trim(),
-    ) as { schemaVersion?: number }
+    const journalPath = join(
+      getConversationsDir(),
+      encodeURIComponent(conversation.id),
+      'entries.jsonl',
+    )
+    const rawEntries = (await readFile(journalPath, 'utf-8'))
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as runtimeSdk.SessionEntry)
+    const createdEntry = rawEntries.find((entry) => entry.type === 'session.created')
+    const messageEntry = rawEntries.find((entry) => entry.type === 'message.committed')
+    assert(createdEntry?.type === 'session.created', 'journal should contain session creation')
+    assert(messageEntry?.type === 'message.committed', 'journal should contain committed message')
     assertEqual(
-      rawMeta.schemaVersion,
+      createdEntry.data.summary.schemaVersion,
       AILA_CONVERSATION_META_SCHEMA_VERSION,
-      'written meta version',
+      'journal session meta version',
     )
     assertEqual(
-      rawMessage.schemaVersion,
+      messageEntry.data.message.schemaVersion,
       AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
-      'written message version',
+      'journal message version',
     )
 
     await appendRunEvent(conversation.id, {
@@ -6300,13 +6506,16 @@ async function testPersistenceContract(): Promise<void> {
     assert(event, 'listed agent event should exist')
     assertEqual(event.schemaVersion, AILA_RUN_EVENT_SCHEMA_VERSION, 'listed event version')
     assertEqual(event.type, 'tool.approval.requested', 'listed event type')
-    const rawRunEvent = JSON.parse(
-      (await readFile(join(dir, `${conversation.id}.events.jsonl`), 'utf-8')).trim(),
-    ) as { schemaVersion?: number }
+    const runEventEntry = (await readFile(journalPath, 'utf-8'))
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as runtimeSdk.SessionEntry)
+      .find((entry) => entry.type === 'run.event')
+    assert(runEventEntry?.type === 'run.event', 'journal should contain the run event')
     assertEqual(
-      rawRunEvent.schemaVersion,
+      runEventEntry.data.event.schemaVersion,
       AILA_RUN_EVENT_SCHEMA_VERSION,
-      'written agent event version',
+      'journal run event version',
     )
 
     const runtimeEvent = createWorkbenchEvent('run:event', event)
@@ -6342,12 +6551,17 @@ async function testMessageUpsertPreventsDuplicatePersistedMessages(): Promise<vo
     assertEqual(record.messages[0]?.error, 'replacement error', 'upserted message error')
 
     const rawMessages = (
-      await readFile(join(getConversationsDir(), `${conversation.id}.jsonl`), 'utf-8')
+      await readFile(
+        join(getConversationsDir(), encodeURIComponent(conversation.id), 'entries.jsonl'),
+        'utf-8',
+      )
     )
       .trim()
       .split('\n')
       .filter(Boolean)
-    assertEqual(rawMessages.length, 1, 'upsert should rewrite duplicate jsonl lines')
+      .map((line) => JSON.parse(line) as runtimeSdk.SessionEntry)
+      .filter((entry) => entry.type === 'message.committed')
+    assertEqual(rawMessages.length, 2, 'message updates should remain as immutable journal facts')
   })
 }
 
@@ -6355,6 +6569,7 @@ async function testRunEventReplayDeduplicatesExactDuplicates(): Promise<void> {
   await withTempDataDir(async () => {
     const conversation = await createConversation()
     const event = {
+      eventId: 'deduplicated-run-event',
       timestamp: 42,
       conversationId: conversation.id,
       messageId: 'assistant-message',
@@ -6369,19 +6584,24 @@ async function testRunEventReplayDeduplicatesExactDuplicates(): Promise<void> {
     assertEqual(events.length, 1, 'duplicate agent events should collapse during replay')
     assertEqual(events[0]?.type, 'tool.execution.started', 'deduped event type')
     assertEqual(events[0]?.data?.toolName, 'read_file', 'deduped event data')
-    assertEqual(events[0]?.seq, 1, 'journal should allocate the first durable sequence')
+    assertEqual(events[0]?.seq, 2, 'run event should follow the session-created entry')
     assert(
       typeof events[0]?.eventId === 'string' && events[0].eventId.length > 0,
       'journal should allocate an event id for legacy producers',
     )
 
     const rawEvents = (
-      await readFile(join(getConversationsDir(), `${conversation.id}.events.jsonl`), 'utf-8')
+      await readFile(
+        join(getConversationsDir(), encodeURIComponent(conversation.id), 'entries.jsonl'),
+        'utf-8',
+      )
     )
       .trim()
       .split('\n')
       .filter(Boolean)
-    assertEqual(rawEvents.length, 1, 'idempotent append should not duplicate durable event lines')
+      .map((line) => JSON.parse(line) as runtimeSdk.SessionEntry)
+      .filter((entry) => entry.type === 'run.event')
+    assertEqual(rawEvents.length, 1, 'idempotent append should not duplicate durable event entries')
   })
 }
 
@@ -6391,6 +6611,7 @@ async function testRunEventReplayPreservesAppendOrderForSameTimestamp(): Promise
     const timestamp = 100
     const events: RunEvent[] = [
       {
+        eventId: 'same-timestamp-started',
         timestamp,
         conversationId: conversation.id,
         messageId: 'assistant-same-timestamp',
@@ -6398,6 +6619,7 @@ async function testRunEventReplayPreservesAppendOrderForSameTimestamp(): Promise
         data: { providerId: 'openrouter', modelId: 'contract/mock' },
       },
       {
+        eventId: 'same-timestamp-approval',
         timestamp,
         conversationId: conversation.id,
         messageId: 'assistant-same-timestamp',
@@ -6409,6 +6631,7 @@ async function testRunEventReplayPreservesAppendOrderForSameTimestamp(): Promise
         },
       },
       {
+        eventId: 'same-timestamp-approval',
         timestamp,
         conversationId: conversation.id,
         messageId: 'assistant-same-timestamp',
@@ -6420,6 +6643,7 @@ async function testRunEventReplayPreservesAppendOrderForSameTimestamp(): Promise
         },
       },
       {
+        eventId: 'same-timestamp-resolved',
         timestamp,
         conversationId: conversation.id,
         messageId: 'assistant-same-timestamp',
@@ -6427,6 +6651,7 @@ async function testRunEventReplayPreservesAppendOrderForSameTimestamp(): Promise
         data: { requestId: 'approval-same-timestamp', approved: true, reason: 'user' },
       },
       {
+        eventId: 'same-timestamp-completed',
         timestamp,
         conversationId: conversation.id,
         messageId: 'assistant-same-timestamp',
@@ -6469,45 +6694,6 @@ async function testRunEventReplayPreservesAppendOrderForSameTimestamp(): Promise
       'same-timestamp completed replay should not append interrupted recovery',
     )
   })
-}
-
-function testRunEventSequenceMigratesLegacyJournalOrder(): void {
-  const legacy: PersistedRunEvent[] = [
-    {
-      schemaVersion: AILA_RUN_EVENT_SCHEMA_VERSION,
-      timestamp: 100,
-      conversationId: 'legacy-sequence-conversation',
-      messageId: 'legacy-sequence-assistant',
-      type: 'turn.started',
-    },
-    {
-      schemaVersion: AILA_RUN_EVENT_SCHEMA_VERSION,
-      timestamp: 200,
-      conversationId: 'legacy-sequence-conversation',
-      messageId: 'legacy-sequence-assistant',
-      type: 'tool.execution.started',
-    },
-  ]
-  const appended = runtimeSdk.prepareRunEventAppend(
-    legacy,
-    {
-      timestamp: 50,
-      conversationId: 'legacy-sequence-conversation',
-      messageId: 'legacy-sequence-assistant',
-      type: 'turn.completed',
-    },
-    () => 'legacy-sequence-event',
-  )
-
-  assertEqual(appended.event.seq, 3, 'v2 sequence should continue after legacy journal entries')
-  assertEqual(
-    runtimeSdk
-      .orderedUniqueRunEvents([...legacy, appended.event])
-      .map((event) => event.type)
-      .join(','),
-    'turn.started,tool.execution.started,turn.completed',
-    'mixed v1/v2 replay should preserve durable journal order instead of wall-clock order',
-  )
 }
 
 function testRunEventReplayDerivesLatestActivity(): void {
@@ -6788,7 +6974,11 @@ async function testInterruptedRecoveryUsesEventReplayOverStaleMeta(): Promise<vo
     })
 
     const before = await getConversation(conversation.id)
-    assertEqual(before.meta.activity?.state, 'running', 'fixture should start with stale meta')
+    assertEqual(
+      before.meta.activity?.state,
+      'completed',
+      'journal projection should never expose stale activity meta',
+    )
 
     const recovered = await recoverInterruptedConversationActivities('contract restart')
     assertEqual(
@@ -6803,61 +6993,15 @@ async function testInterruptedRecoveryUsesEventReplayOverStaleMeta(): Promise<vo
       'completed replay should not append interrupted event',
     )
     const after = await getConversation(conversation.id)
-    assertEqual(after.meta.activity?.state, 'completed', 'recovery should repair stale activity')
+    assertEqual(
+      after.meta.activity?.state,
+      'completed',
+      'recovery should preserve terminal activity',
+    )
     assertEqual(
       after.meta.activity?.eventType,
       'turn.completed',
-      'recovery should repair activity event type from replay',
-    )
-  })
-}
-
-async function testInterruptedRecoveryFallsBackToLegacyMetaActivity(): Promise<void> {
-  await withTempDataDir(async () => {
-    const dir = getConversationsDir()
-    await mkdir(dir, { recursive: true })
-    const id = 'legacy-running-activity'
-    await writeFile(
-      join(dir, `${id}.meta.json`),
-      `${JSON.stringify(
-        {
-          schemaVersion: AILA_CONVERSATION_META_SCHEMA_VERSION,
-          id,
-          title: 'legacy activity',
-          createdAt: 1,
-          updatedAt: 2,
-          activity: {
-            state: 'running',
-            title: 'Model streaming',
-            updatedAt: 2,
-            eventType: 'turn.started',
-            messageId: 'legacy-assistant',
-          },
-        },
-        null,
-        2,
-      )}\n`,
-      'utf-8',
-    )
-
-    const recovered = await recoverInterruptedConversationActivities('contract restart')
-    assert(
-      recovered.some((summary) => summary.id === id),
-      'legacy running meta activity should recover as interrupted',
-    )
-
-    const events = await listRunEvents(id)
-    const interrupted = events.find((event) => event.type === 'turn.interrupted')
-    assert(interrupted, 'legacy meta fallback should append interrupted event')
-    assertEqual(
-      interrupted.data?.previousState,
-      'running',
-      'legacy recovery should preserve previous state',
-    )
-    assertEqual(
-      interrupted.data?.previousEventType,
-      'turn.started',
-      'legacy recovery should preserve previous event type',
+      'recovery should preserve activity projected from replay',
     )
   })
 }
@@ -6910,58 +7054,6 @@ async function testInterruptedRecoveryUsesRuntimeReplayForNonTerminalToolFailure
       interrupted.data?.modelId,
       'contract/mock',
       'runtime replay recovery should preserve model id',
-    )
-  })
-}
-
-async function testLegacyPersistenceNormalization(): Promise<void> {
-  await withTempDataDir(async () => {
-    const dir = getConversationsDir()
-    await mkdir(dir, { recursive: true })
-    const id = 'legacy-conversation'
-    await writeFile(
-      join(dir, `${id}.meta.json`),
-      JSON.stringify({ id, title: 'legacy', createdAt: 1, updatedAt: 2 }),
-      'utf-8',
-    )
-    await writeFile(
-      join(dir, `${id}.jsonl`),
-      `${JSON.stringify({
-        id: 'legacy-message',
-        role: 'user',
-        blocks: [{ type: 'text', content: 'old format' }],
-        status: 'done',
-      })}\n${JSON.stringify({
-        id: 'legacy-message',
-        role: 'user',
-        blocks: [{ type: 'text', content: 'old format updated' }],
-        status: 'done',
-      })}\n`,
-      'utf-8',
-    )
-
-    const record = await getConversation(id)
-    const [summary] = await listConversations()
-    assertEqual(
-      record.meta.schemaVersion,
-      AILA_CONVERSATION_META_SCHEMA_VERSION,
-      'legacy meta normalized',
-    )
-    assertEqual(
-      summary?.schemaVersion,
-      AILA_CONVERSATION_META_SCHEMA_VERSION,
-      'legacy summary normalized',
-    )
-    assertEqual(
-      record.messages[0]?.schemaVersion,
-      AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
-      'legacy message normalized',
-    )
-    assertEqual(record.messages.length, 1, 'duplicate legacy message ids should be collapsed')
-    assertEqual(
-      record.messages[0]?.blocks[0]?.type === 'text' ? record.messages[0].blocks[0].content : '',
-      'old format updated',
-      'duplicate legacy message should keep latest content',
     )
   })
 }
@@ -8868,7 +8960,8 @@ async function testProviderToolApprovalPausesBeforeSideEffectContract(): Promise
   let modelCallCount = 0
   let toolRunCount = 0
   let resolveApproval: ((approved: boolean) => void) | undefined
-  const checkpoints: runtimeSdk.RunCheckpoint[] = []
+  const snapshots: runtimeSdk.RunSnapshot[] = []
+  const sessionEntries: runtimeSdk.SessionEntry[] = []
   const events: RunEvent[] = []
 
   const modelStreamClient: runtimePackageNodeSdk.ModelStreamClient = {
@@ -8935,6 +9028,12 @@ async function testProviderToolApprovalPausesBeforeSideEffectContract(): Promise
         turnId: 'approval-runtime-turn',
         runId: 'approval-runtime-run',
       },
+      runContextRef: {
+        schemaVersion: runtimeSdk.AILA_BLOB_SCHEMA_VERSION,
+        blobId: 'approval-runtime-context',
+        contentType: 'application/json',
+        sizeBytes: 0,
+      },
       messages: [{ role: 'user', content: 'approve it' }],
       selection: { providerId: 'openrouter', modelId: 'contract/mock' },
       signal: new AbortController().signal,
@@ -8944,9 +9043,29 @@ async function testProviderToolApprovalPausesBeforeSideEffectContract(): Promise
           resolveApproval = resolve
         }),
       onRunEvent: (event) => events.push(structuredClone(event)),
-      saveRunCheckpoint: (checkpoint) => {
-        checkpoints.push(structuredClone(checkpoint))
-        return checkpoint
+      saveRunSnapshot: (snapshot) => {
+        snapshots.push(structuredClone(snapshot))
+        return snapshot
+      },
+      appendSessionEntry: (entry) => {
+        const prepared = runtimeSdk.prepareSessionEntry(
+          'approval-runtime-conversation',
+          sessionEntries,
+          entry,
+          () => `approval-entry-${sessionEntries.length + 1}`,
+        )
+        if (!prepared.duplicate) sessionEntries.push(prepared.entry)
+        return prepared.entry
+      },
+      putBlob: (blob) => {
+        const data = structuredClone(blob.data)
+        return {
+          schemaVersion: runtimeSdk.AILA_BLOB_SCHEMA_VERSION,
+          blobId: blob.blobId ?? `approval-blob-${sessionEntries.length + 1}`,
+          contentType: blob.contentType,
+          sizeBytes: new TextEncoder().encode(JSON.stringify(data)).byteLength,
+          ...(blob.preview ? { preview: blob.preview } : {}),
+        }
       },
     },
     {
@@ -8966,18 +9085,17 @@ async function testProviderToolApprovalPausesBeforeSideEffectContract(): Promise
   await waitFor(
     () =>
       resolveApproval !== undefined &&
-      checkpoints.some(
-        (checkpoint) =>
-          checkpoint.loop.state.status === 'paused' &&
-          checkpoint.loop.state.wait?.reason === 'approval',
+      snapshots.some(
+        (snapshot) =>
+          snapshot.loop.state.status === 'paused' &&
+          snapshot.loop.state.wait?.reason === 'approval',
       ),
     'approval should persist a paused checkpoint',
   )
   assertEqual(toolRunCount, 0, 'approval pause must happen before the tool side effect')
-  const paused = checkpoints.find(
-    (checkpoint) =>
-      checkpoint.loop.state.status === 'paused' &&
-      checkpoint.loop.state.wait?.reason === 'approval',
+  const paused = snapshots.find(
+    (snapshot) =>
+      snapshot.loop.state.status === 'paused' && snapshot.loop.state.wait?.reason === 'approval',
   )
   assertEqual(
     paused?.loop.state.steps.filter((step) => step.kind === 'tool').length,
@@ -10082,33 +10200,33 @@ async function testRuntimeSdkDoesNotExportDocsContract(): Promise<void> {
   )
   const store = runtimeNodeSdk.createPersistedRuntimeStore()
   assertEqual(typeof store.getConversation, 'function', 'persisted store should read records')
-  assertEqual(typeof store.saveMessage, 'function', 'persisted store should persist messages')
-  assert(
-    !('upsertMessage' in store),
-    'persisted runtime store adapter should not expose raw persisted message helper names',
-  )
   assertEqual(
-    typeof store.recordRunEvent,
+    typeof store.appendSessionEntry,
     'function',
-    'persisted store should persist agent events',
+    'persisted store should append session journal entries',
   )
   assert(
-    !('appendRunEventAndTouchConversation' in store),
-    'persisted runtime store adapter should not expose raw persisted event helper names',
+    !('saveMessage' in store) && !('recordRunEvent' in store) && !('recordUsage' in store),
+    'persisted store should not expose split legacy write repositories',
   )
   assertEqual(
-    typeof store.recoverInterruptedActivities,
+    typeof store.listSessionEntries,
     'function',
-    'persisted store should expose runtime-facing interrupted recovery',
+    'persisted store should replay session journal entries',
+  )
+  assertEqual(typeof store.saveRunSnapshot, 'function', 'persisted store should save run snapshots')
+  assertEqual(typeof store.getRunSnapshot, 'function', 'persisted store should load run snapshots')
+  assertEqual(typeof store.putBlob, 'function', 'persisted store should write immutable blobs')
+  assertEqual(typeof store.getBlob, 'function', 'persisted store should read immutable blobs')
+  assert(
+    !('upsertMessage' in store) &&
+      !('appendRunEventAndTouchConversation' in store) &&
+      !('setConversationUsage' in store),
+    'persisted store should not expose raw persistence helper names',
   )
   assert(
     !('recoverInterruptedConversationActivities' in store),
     'persisted runtime store adapter should not expose raw persisted recovery helper names',
-  )
-  assertEqual(typeof store.recordUsage, 'function', 'persisted store should persist usage')
-  assert(
-    !('setConversationUsage' in store),
-    'persisted runtime store adapter should not expose raw persisted usage helper names',
   )
 
   assertEqual(
@@ -10138,7 +10256,6 @@ async function testRuntimeSdkDoesNotExportDocsContract(): Promise<void> {
     'createDefaultRuntimeHost',
     'createPersistedWorkbench',
     'loadSkillsFromDir',
-    'loadToolPacksFromDir',
     'getExtensionReport',
     'getModelInfo',
   ]) {
@@ -10286,10 +10403,12 @@ async function testRuntimeSdkDoesNotExportDocsContract(): Promise<void> {
     'createDefaultRuntimeHost',
     'createPersistedWorkbench',
     'loadSkillsFromDir',
-    'loadToolPacksFromDir',
     'getExtensionReport',
   ]) {
     assert(name in nodeSdk, `runtime node SDK should export node adapter API: ${name}`)
+  }
+  for (const name of ['getToolPacksDir', 'loadToolPacksFromDir']) {
+    assert(!(name in nodeSdk), `runtime node SDK must not export local tool pack API: ${name}`)
   }
 
   const packageNodeSdk = runtimePackageNodeSdk as Record<string, unknown>
@@ -10406,58 +10525,6 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
 
 async function testPersistedWorkbenchFactoryContract(): Promise<void> {
   await withTempDataDir(async () => {
-    const toolPacksDir = getToolPacksDir()
-    const factoryToolPackDir = join(toolPacksDir, 'factory-pack')
-    await mkdir(factoryToolPackDir, { recursive: true })
-
-    await writeFile(
-      join(factoryToolPackDir, AILA_TOOL_PACK_MANIFEST_FILE),
-      `${JSON.stringify(
-        {
-          schemaVersion: AILA_TOOL_PACK_MANIFEST_SCHEMA_VERSION,
-          id: 'factory-pack',
-          name: 'Factory Pack',
-          entry: 'index.mjs',
-        },
-        null,
-        2,
-      )}\n`,
-      'utf-8',
-    )
-    await writeFile(
-      join(factoryToolPackDir, 'index.mjs'),
-      `
-export default {
-  id: 'factory-pack',
-  name: 'Factory Pack',
-  tools: [
-    {
-      spec: {
-        type: 'function',
-        function: {
-          name: 'factory_tool',
-          description: 'Factory runtime host fixture.',
-          parameters: { type: 'object', properties: {}, additionalProperties: false },
-        },
-        metadata: {
-          name: 'factory_tool',
-          readOnly: true,
-          destructive: false,
-          requiresApproval: false,
-          access: ['read'],
-          scope: ['workspace'],
-        },
-      },
-      async run() {
-        return 'factory'
-      },
-    },
-  ],
-}
-`.trimStart(),
-      'utf-8',
-    )
-
     const emitted: WorkbenchEvent[] = []
     const runtime = runtimeNodeSdk.createPersistedWorkbench({
       host: {
@@ -10465,10 +10532,6 @@ export default {
       },
     })
 
-    assert(
-      (await runtime.getToolRegistry()).specsByName.has('factory_tool'),
-      'persisted runtime factory should load manifest tool packs through the default host',
-    )
     const conversation = await runtime.createConversation()
     const record = await runtime.getConversation(conversation.id)
     assertEqual(
@@ -10539,264 +10602,31 @@ async function testPersistedRuntimeFactoryPersistsImageAttachmentsThroughDefault
   })
 }
 
-async function testToolPackManifestLoader(): Promise<void> {
-  await withTempDataDir(async () => {
-    const toolPacksDir = getToolPacksDir()
-    const echoDir = join(toolPacksDir, 'echo')
-    const disabledDir = join(toolPacksDir, 'disabled')
-    await mkdir(echoDir, { recursive: true })
-    await mkdir(disabledDir, { recursive: true })
-
-    await writeFile(
-      join(echoDir, AILA_TOOL_PACK_MANIFEST_FILE),
-      `${JSON.stringify(
-        {
-          schemaVersion: AILA_TOOL_PACK_MANIFEST_SCHEMA_VERSION,
-          id: 'echo',
-          name: 'Echo',
-          entry: 'index.mjs',
-        },
-        null,
-        2,
-      )}\n`,
-      'utf-8',
-    )
-    await writeFile(
-      join(echoDir, 'index.mjs'),
-      `
-export default {
-  id: 'echo',
-  name: 'Echo',
-  tools: [
-    {
-      spec: {
-        type: 'function',
-        function: {
-          name: 'manifest_echo',
-          description: 'Echo a value loaded from a manifest tool pack.',
-          parameters: {
-            type: 'object',
-            properties: { value: { type: 'string' } },
-            required: ['value'],
-            additionalProperties: false,
-          },
-        },
-        metadata: {
-          name: 'manifest_echo',
-          readOnly: true,
-          destructive: false,
-          requiresApproval: false,
-          access: ['read'],
-          scope: ['workspace'],
-        },
-      },
-      async run(args) {
-        return JSON.stringify({ value: args.value })
-      },
-    },
-  ],
-}
-`.trimStart(),
-      'utf-8',
-    )
-    await writeFile(
-      join(disabledDir, AILA_TOOL_PACK_MANIFEST_FILE),
-      `${JSON.stringify(
-        {
-          schemaVersion: AILA_TOOL_PACK_MANIFEST_SCHEMA_VERSION,
-          id: 'disabled',
-          name: 'Disabled',
-          entry: 'index.mjs',
-          enabled: false,
-        },
-        null,
-        2,
-      )}\n`,
-      'utf-8',
-    )
-
-    const loaded = await loadToolPacksFromDir()
-    assertEqual(loaded.length, 1, 'disabled manifest tool pack should be skipped')
-    assertEqual(loaded[0]?.manifest.id, 'echo', 'manifest id')
-    assertEqual(loaded[0]?.toolPack.id, 'echo', 'loaded tool pack id')
-
-    const registry = createDefaultToolRegistry(loaded.map((pack) => pack.toolPack))
-    const result = await executeTool(
-      'manifest_echo',
-      { value: 'from manifest' },
-      { settings: { apiKeys: {}, defaultModel: null } },
-      registry,
-    )
-    assertEqual(JSON.parse(result).value, 'from manifest', 'manifest tool result')
-
-    const runtime = new WorkbenchRuntime({
-      loadToolPacks: async () => (await loadToolPacksFromDir()).map((pack) => pack.toolPack),
-      logger: { warn() {}, error() {} },
-    })
-    const runtimeRegistry = await runtime.getToolRegistry()
-    assert(
-      runtimeRegistry.specsByName.has('manifest_echo'),
-      'WorkbenchRuntime should load manifest tool packs',
-    )
-  })
-}
-
-async function testToolPackReloadsChangedEntry(): Promise<void> {
-  await withTempDataDir(async () => {
-    const toolPacksDir = getToolPacksDir()
-    const reloadDir = join(toolPacksDir, 'reloadable')
-    const entryPath = join(reloadDir, 'index.mjs')
-    const valuePath = join(reloadDir, 'value.mjs')
-    await mkdir(reloadDir, { recursive: true })
-
-    await writeFile(
-      join(reloadDir, AILA_TOOL_PACK_MANIFEST_FILE),
-      `${JSON.stringify(
-        {
-          schemaVersion: AILA_TOOL_PACK_MANIFEST_SCHEMA_VERSION,
-          id: 'reloadable',
-          name: 'Reloadable',
-          entry: 'index.mjs',
-        },
-        null,
-        2,
-      )}\n`,
-      'utf-8',
-    )
-
-    const writeReloadableToolPack = async (value: string) => {
-      await writeFile(
-        entryPath,
-        `
-import { reloadValue } from './value.mjs'
-
-export default {
-  id: 'reloadable',
-  name: 'Reloadable',
-  tools: [
-    {
-      spec: {
-        type: 'function',
-        function: {
-          name: 'reload_value',
-          description: 'Return the current reload test value.',
-          parameters: {
-            type: 'object',
-            properties: {},
-            additionalProperties: false,
-          },
-        },
-        metadata: {
-          name: 'reload_value',
-          readOnly: true,
-          destructive: false,
-          requiresApproval: false,
-          access: ['read'],
-          scope: ['workspace'],
-        },
-      },
-      async run() {
-        return reloadValue
-      },
-    },
-  ],
-}
-`.trimStart(),
-        'utf-8',
-      )
-      await writeFile(valuePath, `export const reloadValue = ${JSON.stringify(value)}\n`, 'utf-8')
-    }
-
-    const runtime = new WorkbenchRuntime({
-      loadToolPacks: async () => (await loadToolPacksFromDir()).map((pack) => pack.toolPack),
-      logger: { warn() {}, error() {} },
-    })
-    const context = {
-      settings: { apiKeys: {}, defaultModel: null } satisfies Settings,
-    }
-
-    await writeReloadableToolPack('one')
-    let registry = await runtime.getToolRegistry()
-    assertEqual(
-      await executeTool('reload_value', {}, context, registry),
-      'one',
-      'runtime should execute initial manifest tool pack entry',
-    )
-
-    await writeReloadableToolPack('version-two')
-    registry = await runtime.reloadToolPacks()
-    assertEqual(
-      await executeTool('reload_value', {}, context, registry),
-      'version-two',
-      'runtime should execute changed manifest tool pack source after reload',
-    )
-  })
-}
-
 async function testExtensionReportContract(): Promise<void> {
   await withTempDataDir(async (dataDir) => {
-    const toolPackDir = join(dataDir, 'tool-packs', 'contract-inspector')
-    await mkdir(toolPackDir, { recursive: true })
+    const legacyToolPackDir = join(dataDir, 'tool-packs', 'legacy')
+    await mkdir(legacyToolPackDir, { recursive: true })
     await writeFile(
-      join(toolPackDir, AILA_TOOL_PACK_MANIFEST_FILE),
-      `${JSON.stringify(
-        {
-          schemaVersion: AILA_TOOL_PACK_MANIFEST_SCHEMA_VERSION,
-          id: 'contract-inspector',
-          name: 'Contract Inspector',
-          entry: 'index.mjs',
-        },
-        null,
-        2,
-      )}\n`,
+      join(legacyToolPackDir, 'aila-tool-pack.json'),
+      `${JSON.stringify({
+        schemaVersion: 1,
+        id: 'legacy',
+        name: 'Legacy',
+        entry: 'index.mjs',
+      })}\n`,
       'utf-8',
     )
     await writeFile(
-      join(toolPackDir, 'index.mjs'),
-      `
-export default {
-  id: 'contract-inspector',
-  name: 'Contract Inspector',
-  tools: [
-    {
-      spec: {
-        type: 'function',
-        function: {
-          name: 'contract_context',
-          description: 'Return contract fixture context.',
-          parameters: {
-            type: 'object',
-            properties: {},
-            additionalProperties: false,
-          },
-        },
-        metadata: {
-          name: 'contract_context',
-          readOnly: true,
-          destructive: false,
-          requiresApproval: false,
-          access: ['read'],
-          scope: ['workspace'],
-        },
-      },
-      async run() {
-        return JSON.stringify({ ok: true })
-      },
-    },
-  ],
-}
-`.trimStart(),
+      join(legacyToolPackDir, 'index.mjs'),
+      "throw new Error('legacy tool pack must not be loaded')\n",
       'utf-8',
     )
 
     const report = await getExtensionReport()
     assertEqual(report.ok, true, 'extension report should be ok')
     assertEqual(report.dataDir, dataDir, 'extension report data dir')
-    assertEqual(report.toolPacks[0]?.id, 'contract-inspector', 'extension report tool pack id')
-    assert(
-      report.toolPacks[0]?.tools.includes('contract_context'),
-      'extension report should include tool names',
-    )
+    assert(!('toolPacks' in report), 'extension report must not expose local tool packs')
+    assert(!('toolPacksDir' in report), 'extension report must not expose a tool packs directory')
     assertEqual(report.errors.length, 0, 'extension report should not include errors')
   })
 }
@@ -11120,15 +10950,12 @@ async function main(): Promise<void> {
   await testMessageUpsertPreventsDuplicatePersistedMessages()
   await testRunEventReplayDeduplicatesExactDuplicates()
   await testRunEventReplayPreservesAppendOrderForSameTimestamp()
-  testRunEventSequenceMigratesLegacyJournalOrder()
   testRunEventReplayDerivesLatestActivity()
   testRunEventReplayDerivesRuntimeState()
   testRunEventReplayKeepsToolFailureActive()
   testInterruptedRecoveryEventHelper()
   await testInterruptedRecoveryUsesEventReplayOverStaleMeta()
-  await testInterruptedRecoveryFallsBackToLegacyMetaActivity()
   await testInterruptedRecoveryUsesRuntimeReplayForNonTerminalToolFailure()
-  await testLegacyPersistenceNormalization()
   await testImmediateToolApprovalActivityHelper()
   await testExecutionModeToolPolicyContract()
   await testToolRegistryContract()
@@ -11166,8 +10993,6 @@ async function main(): Promise<void> {
   await testRuntimeCoreHostBoundarySourceContract()
   await testPersistedWorkbenchFactoryContract()
   await testPersistedRuntimeFactoryPersistsImageAttachmentsThroughDefaultHost()
-  await testToolPackManifestLoader()
-  await testToolPackReloadsChangedEntry()
   await testExtensionReportContract()
   testSkillDocumentParsingContract()
   await testSkillLoaderGracefulErrorsContract()

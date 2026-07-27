@@ -1,47 +1,56 @@
-import type { RunEvent, UsageInfo } from '../agent-protocol'
 import type {
-  ConversationContextCheckpoint,
-  ConversationContextTurnLedgerEntry,
   ConversationRecord,
   ConversationSummary,
   ConversationWorkspaceRef,
-  PersistedMessage,
-  PersistedRunEvent,
   RunEventAppendResult,
 } from '../conversation-core'
-import type { RunArtifact, RunCheckpoint } from '../run-persistence'
+import type { RunSnapshot } from '../run-persistence'
+import type {
+  BlobRef,
+  SessionEntry,
+  SessionEntryAppendResult,
+  SessionEntryInput,
+  StoredBlob,
+} from '../session-journal'
 
 export interface SessionRepository {
   createConversation?: (workspace?: ConversationWorkspaceRef | null) => Promise<ConversationSummary>
   getConversation: (conversationId: string) => Promise<ConversationRecord>
   listConversations?: () => Promise<readonly ConversationSummary[]>
-  saveMessage: (conversationId: string, message: PersistedMessage) => Promise<ConversationSummary>
-  renameConversation?: (conversationId: string, title: string) => Promise<ConversationSummary>
-  recordUsage: (conversationId: string, usage: UsageInfo) => Promise<ConversationSummary>
-  saveContextCheckpoint?: (
+  appendSessionEntry: (
     conversationId: string,
-    checkpoint: ConversationContextCheckpoint,
-  ) => Promise<ConversationSummary>
-  recordContextTurnLedger?: (
-    conversationId: string,
-    entry: ConversationContextTurnLedgerEntry,
-  ) => Promise<ConversationSummary>
+    entry: SessionEntryInput,
+  ) => Promise<SessionEntryAppendResult>
+  listSessionEntries: (conversationId: string) => Promise<readonly SessionEntry[]>
   deleteConversation: (conversationId: string) => Promise<void>
 }
 
-export interface EventRepository {
-  recordRunEvent: (conversationId: string, event: RunEvent) => Promise<RunEventAppendResult>
-  listRunEvents?: (conversationId: string) => Promise<readonly PersistedRunEvent[]>
+export interface RecoveryRepository {
   recoverInterruptedActivities?: (reason?: string) => Promise<readonly RunEventAppendResult[]>
 }
 
-export interface RunRepository {
-  saveRunCheckpoint?: (checkpoint: RunCheckpoint) => Promise<RunCheckpoint>
-  getRunCheckpoint?: (conversationId: string, runId: string) => Promise<RunCheckpoint | null>
-  listRunCheckpoints?: (conversationId: string) => Promise<readonly RunCheckpoint[]>
-  saveRunArtifact?: (artifact: RunArtifact) => Promise<RunArtifact>
-  listRunArtifacts?: (conversationId: string, runId: string) => Promise<readonly RunArtifact[]>
+export interface RunSnapshotRepository {
+  saveRunSnapshot: (snapshot: RunSnapshot) => Promise<RunSnapshot>
+  getRunSnapshot: (conversationId: string, runId: string) => Promise<RunSnapshot | null>
+  listRunSnapshots: (conversationId: string) => Promise<readonly RunSnapshot[]>
 }
 
-/** Store composition consumed by the Workbench product layer. */
-export interface WorkbenchStore extends SessionRepository, EventRepository, RunRepository {}
+export interface BlobRepository {
+  putBlob: (
+    conversationId: string,
+    input: { contentType: string; data: unknown; preview?: string; blobId?: string },
+  ) => Promise<BlobRef>
+  getBlob: (conversationId: string, blobId: string) => Promise<StoredBlob | null>
+}
+
+/** One journal plus rebuildable snapshots and referenced blobs. */
+export interface WorkbenchStore
+  extends SessionRepository,
+    RecoveryRepository,
+    RunSnapshotRepository,
+    BlobRepository {}
+
+/** @deprecated Use RecoveryRepository. */
+export type EventRepository = RecoveryRepository
+/** @deprecated Use RunSnapshotRepository and BlobRepository. */
+export type RunRepository = RunSnapshotRepository & BlobRepository

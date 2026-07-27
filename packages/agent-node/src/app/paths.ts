@@ -11,23 +11,15 @@ export function getDataDir(): string {
 }
 
 export function getConversationsDir(): string {
-  return join(getDataDir(), 'conversations')
+  return join(getDataDir(), 'sessions')
 }
 
 export function getImagesDir(): string {
   return join(getDataDir(), 'images')
 }
 
-export function getRunsDir(): string {
-  return join(getDataDir(), 'runs')
-}
-
 export function getSettingsPath(): string {
   return join(getDataDir(), 'settings.json')
-}
-
-export function getToolPacksDir(): string {
-  return join(getDataDir(), 'tool-packs')
 }
 
 export function getSkillsDir(): string {

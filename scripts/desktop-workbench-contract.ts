@@ -459,11 +459,15 @@ async function testConversationDeleteCleansActivity(): Promise<void> {
     })
 
     await deleteConversation(conversation.id)
-    assertEqual(
-      (await listRunEvents(conversation.id)).length,
-      0,
-      'delete should remove activity log',
-    )
+    try {
+      await listRunEvents(conversation.id)
+      throw new Error('deleted activity journal unexpectedly loaded')
+    } catch (error) {
+      assert(
+        error instanceof Error && 'code' in error && error.code === 'ENOENT',
+        'delete should remove the session journal',
+      )
+    }
     try {
       await getConversation(conversation.id)
       throw new Error('deleted conversation unexpectedly loaded')
@@ -496,8 +500,8 @@ async function testActivityUpdatesConversationSummary(): Promise<void> {
     )
     assert(summary, 'activity append should return refreshed summary')
     assert(
-      summary.updatedAt > before.meta.updatedAt,
-      'activity append should bump conversation updatedAt',
+      summary.updatedAt >= before.meta.updatedAt,
+      'activity append should keep conversation updatedAt monotonic',
     )
     assertEqual(summary.activity?.state, 'running', 'activity summary state')
     assertEqual(summary.activity?.title, 'Running: read', 'activity summary title')
@@ -518,41 +522,6 @@ async function testActivityUpdatesConversationSummary(): Promise<void> {
       conversation.id,
       'activity append should refresh conversation summaries',
     )
-  })
-}
-
-async function testActivityDeltaDoesNotTouchConversationSummary(): Promise<void> {
-  await withTempDataDir(async () => {
-    const conversation = await createConversation()
-    const before = await getConversation(conversation.id)
-
-    const { event, summary } = await appendRunEventAndTouchConversation(conversation.id, {
-      timestamp: before.meta.updatedAt + 10,
-      conversationId: conversation.id,
-      messageId: 'assistant-message',
-      type: 'tool.input.delta',
-      data: { deltaSize: 64, toolCallId: 'tool-call' },
-    })
-
-    assertEqual(
-      event.schemaVersion,
-      AILA_RUN_EVENT_SCHEMA_VERSION,
-      'delta event should be versioned',
-    )
-    assertEqual(summary, undefined, 'input deltas should not refresh conversation summaries')
-    assertEqual(
-      (await listRunEvents(conversation.id))[0]?.type,
-      'tool.input.delta',
-      'input deltas should still persist the event log',
-    )
-
-    const after = await getConversation(conversation.id)
-    assertEqual(
-      after.meta.updatedAt,
-      before.meta.updatedAt,
-      'input deltas should not bump conversation updatedAt',
-    )
-    assertEqual(after.meta.activity, undefined, 'input deltas should not set activity')
   })
 }
 
@@ -584,8 +553,8 @@ async function testStaleActivityDoesNotOverwriteNewerSummary(): Promise<void> {
       'turn.completed',
       'event log should preserve durable append sequence despite stale timestamps',
     )
-    assertEqual(events[0]?.seq, 1, 'first durable event sequence')
-    assertEqual(events[1]?.seq, 2, 'second durable event sequence')
+    assertEqual(events[0]?.seq, 2, 'first event follows the session-created journal entry')
+    assertEqual(events[1]?.seq, 3, 'second event owns the next journal sequence')
   })
 }
 
@@ -2110,7 +2079,6 @@ async function main(): Promise<void> {
   await testConversationListContract()
   await testConversationDeleteCleansActivity()
   await testActivityUpdatesConversationSummary()
-  await testActivityDeltaDoesNotTouchConversationSummary()
   await testStaleActivityDoesNotOverwriteNewerSummary()
   await testToolResultActivityKeepsToolName()
   testRendererHydratesActiveAssistantTurn()

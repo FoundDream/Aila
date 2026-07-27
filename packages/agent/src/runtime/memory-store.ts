@@ -1,30 +1,22 @@
-import type { RunEvent, UsageInfo } from '../agent-protocol'
+import type { RunEvent } from '../agent-protocol'
 import {
   AILA_CONVERSATION_META_SCHEMA_VERSION,
-  appendConversationContextTurnLedgerEntry,
-  type ConversationRecord,
-  type ConversationSummary,
-  type ConversationWorkspaceRef,
-  createConversationUsageSnapshot,
   createInterruptedConversationRecoveryEvent,
-  orderedUniqueRunEvents,
-  type PersistedMessage,
-  type PersistedRunEvent,
-  type PersistedTextBlock,
-  prepareRunEventAppend,
+  DEFAULT_CONVERSATION_TITLE,
   type RunEventAppendResult,
-  replayConversationActivity,
 } from '../conversation-core'
+import { prepareRunSnapshot, type RunSnapshot } from '../run-persistence'
 import {
-  prepareRunArtifact,
-  prepareRunCheckpoint,
-  type RunArtifact,
-  type RunCheckpoint,
-} from '../run-persistence'
+  AILA_BLOB_SCHEMA_VERSION,
+  type BlobRef,
+  prepareSessionEntry,
+  projectConversation,
+  type SessionEntry,
+  type SessionEntryInput,
+  type StoredBlob,
+  sessionRunEvents,
+} from '../session-journal'
 import type { WorkbenchStore } from './repositories'
-
-const DEFAULT_SESSION_TITLE = '新对话'
-const SESSION_TITLE_MAX = 40
 
 export interface RuntimeEnvironment {
   createId?: () => string
@@ -55,166 +47,120 @@ function clone<T>(value: T): T {
   return structuredClone(value)
 }
 
-function messageText(message: PersistedMessage): string {
-  return message.blocks
-    .filter((block): block is PersistedTextBlock => block.type === 'text')
-    .map((block) => block.content)
-    .join('\n')
+function blobSize(data: unknown): number {
+  return new TextEncoder().encode(typeof data === 'string' ? data : JSON.stringify(data)).byteLength
 }
 
-function nextUpdatedAt(current: ConversationSummary, timestamp: number): number {
-  return Math.max(current.updatedAt + 1, timestamp)
-}
-
-function deriveTitle(message: PersistedMessage): string | null {
-  if (message.role !== 'user') return null
-  const title = messageText(message).replace(/\s+/g, ' ').trim()
-  if (!title) return null
-  if (title.length <= SESSION_TITLE_MAX) return title
-  return `${title.slice(0, SESSION_TITLE_MAX - 3)}...`
-}
-
-function sameActivity(
-  left: ConversationSummary['activity'],
-  right: ConversationSummary['activity'],
-): boolean {
-  return (
-    left?.state === right?.state &&
-    left?.title === right?.title &&
-    left?.updatedAt === right?.updatedAt &&
-    left?.eventType === right?.eventType &&
-    left?.messageId === right?.messageId &&
-    left?.detail === right?.detail &&
-    left?.toolName === right?.toolName
-  )
-}
-
-/** In-memory implementation of the split Session, Event and Run repositories. */
+/** In-memory implementation of the journal/snapshot/blob runtime store. */
 export function createInMemoryRuntimeStore(input: InMemoryStoreOptions = {}): WorkbenchStore {
   const createId = input.createId ?? createIdDefault
   const createEventId = input.createEventId ?? createIdDefault
   const now = input.now ?? nowDefault
-  const records = new Map<string, ConversationRecord>()
-  const runEvents = new Map<string, PersistedRunEvent[]>()
-  const checkpoints = new Map<string, RunCheckpoint>()
-  const artifacts = new Map<string, RunArtifact>()
+  const journals = new Map<string, SessionEntry[]>()
+  const snapshots = new Map<string, RunSnapshot>()
+  const blobs = new Map<string, StoredBlob>()
 
-  function requireRecord(sessionId: string): ConversationRecord {
-    const record = records.get(sessionId)
-    if (!record) throw new Error(`conversation not found: ${sessionId}`)
-    return record
+  function requireJournal(sessionId: string): SessionEntry[] {
+    const journal = journals.get(sessionId)
+    if (!journal) throw new Error(`conversation not found: ${sessionId}`)
+    return journal
   }
 
   function runKey(sessionId: string, runId: string): string {
     return `${sessionId}:${runId}`
   }
 
-  function summary(record: ConversationRecord): ConversationSummary {
-    return clone(record.meta)
+  function blobKey(sessionId: string, blobId: string): string {
+    return `${sessionId}:${blobId}`
   }
 
-  function updateMeta(
+  async function appendSessionEntry(
     sessionId: string,
-    updater: (current: ConversationSummary) => ConversationSummary,
-  ): ConversationSummary {
-    const record = requireRecord(sessionId)
-    record.meta = clone(updater(record.meta))
-    return summary(record)
+    inputEntry: SessionEntryInput,
+  ): Promise<{
+    entry: SessionEntry
+    summary: ReturnType<typeof projectConversation>['meta']
+    duplicate?: boolean
+  }> {
+    const journal = requireJournal(sessionId)
+    const prepared = prepareSessionEntry(sessionId, journal, clone(inputEntry), createEventId)
+    if (!prepared.duplicate) journal.push(clone(prepared.entry))
+    return {
+      entry: clone(prepared.entry),
+      summary: clone(projectConversation(journal).meta),
+      ...(prepared.duplicate ? { duplicate: true } : {}),
+    }
   }
 
-  async function recordRunEvent(sessionId: string, event: RunEvent): Promise<RunEventAppendResult> {
-    const record = requireRecord(sessionId)
-    const events = runEvents.get(sessionId) ?? []
-    const previousActivity = replayConversationActivity(events)
-    const prepared = prepareRunEventAppend(events, clone(event), createEventId)
-    const persisted = prepared.event
-    if (!prepared.duplicate) events.push(persisted)
-    runEvents.set(sessionId, events)
-
-    const activity = replayConversationActivity(events)
-    if (!activity || sameActivity(previousActivity, activity)) {
-      return { event: clone(persisted) }
+  async function appendRecoveryEvent(
+    sessionId: string,
+    event: RunEvent,
+  ): Promise<RunEventAppendResult> {
+    const result = await appendSessionEntry(sessionId, {
+      type: 'run.event',
+      timestamp: event.timestamp,
+      entryId: event.eventId,
+      turnId: event.turnId,
+      runId: event.runId,
+      stepId: event.stepId,
+      data: { event },
+    })
+    if (result.entry.type !== 'run.event') throw new Error('invalid recovery journal entry')
+    return {
+      event: clone(result.entry.data.event) as RunEventAppendResult['event'],
+      summary: clone(result.summary),
     }
-    if (record.meta.activity && record.meta.activity.updatedAt > activity.updatedAt) {
-      return { event: clone(persisted) }
-    }
-
-    const updated = updateMeta(sessionId, (current) => ({
-      ...current,
-      updatedAt: nextUpdatedAt(current, persisted.timestamp),
-      activity,
-    }))
-    return { event: clone(persisted), summary: updated }
   }
 
   return {
-    async createConversation(
-      workspace?: ConversationWorkspaceRef | null,
-    ): Promise<ConversationSummary> {
+    async createConversation(workspace) {
       const createdAt = now()
-      const meta: ConversationSummary = {
+      const id = createId()
+      const summary: ReturnType<typeof projectConversation>['meta'] = {
         schemaVersion: AILA_CONVERSATION_META_SCHEMA_VERSION,
-        id: createId(),
-        title: DEFAULT_SESSION_TITLE,
+        id,
+        title: DEFAULT_CONVERSATION_TITLE,
         createdAt,
         updatedAt: createdAt,
         ...(workspace ? { workspace: clone(workspace) } : {}),
       }
-      records.set(meta.id, { meta, messages: [] })
-      runEvents.set(meta.id, [])
-      return clone(meta)
+      const created = prepareSessionEntry(
+        id,
+        [],
+        {
+          type: 'session.created',
+          timestamp: createdAt,
+          entryId: `session:${id}`,
+          data: { summary },
+        },
+        createEventId,
+      ).entry
+      journals.set(id, [created])
+      return clone(summary)
     },
-    async getConversation(sessionId): Promise<ConversationRecord> {
-      return clone(requireRecord(sessionId))
+    async getConversation(sessionId) {
+      return clone(projectConversation(requireJournal(sessionId)))
     },
-    async saveMessage(sessionId, message): Promise<ConversationSummary> {
-      const record = requireRecord(sessionId)
-      const prepared = clone(message)
-      const index = record.messages.findIndex((current) => current.id === prepared.id)
-      if (index >= 0) record.messages[index] = prepared
-      else record.messages.push(prepared)
-
-      record.meta = {
-        ...record.meta,
-        updatedAt: nextUpdatedAt(record.meta, now()),
-      }
-      if (record.meta.title === DEFAULT_SESSION_TITLE) {
-        const title = deriveTitle(prepared)
-        if (title) record.meta.title = title
-      }
-      return summary(record)
-    },
-    recordRunEvent,
-    async listConversations(): Promise<readonly ConversationSummary[]> {
-      return [...records.values()]
-        .map((record) => summary(record))
+    async listConversations() {
+      return [...journals.values()]
+        .map((entries) => projectConversation(entries).meta)
         .sort((left, right) => right.updatedAt - left.updatedAt)
+        .map(clone)
     },
-    async listRunEvents(sessionId): Promise<readonly PersistedRunEvent[]> {
-      return clone(orderedUniqueRunEvents(runEvents.get(sessionId) ?? []))
+    appendSessionEntry,
+    async listSessionEntries(sessionId) {
+      return clone(requireJournal(sessionId))
     },
-    async recoverInterruptedActivities(reason): Promise<readonly RunEventAppendResult[]> {
+    async recoverInterruptedActivities(reason) {
       const recovered: RunEventAppendResult[] = []
-      for (const [sessionId, record] of records) {
-        const events = runEvents.get(sessionId) ?? []
-        const replayedActivity = replayConversationActivity(events)
-        if (replayedActivity && !sameActivity(record.meta.activity, replayedActivity)) {
-          updateMeta(sessionId, (current) =>
-            current.activity && current.activity.updatedAt > replayedActivity.updatedAt
-              ? current
-              : {
-                  ...current,
-                  updatedAt: nextUpdatedAt(current, replayedActivity.updatedAt),
-                  activity: replayedActivity,
-                },
-          )
-        }
+      for (const [sessionId, entries] of journals) {
+        const events = sessionRunEvents(entries)
+        const record = projectConversation(entries)
         const recoveryEvent = createInterruptedConversationRecoveryEvent(events, {
           reason,
-          activity: replayedActivity ?? record.meta.activity,
+          activity: record.meta.activity,
         })
-        if (!recoveryEvent) continue
-        recovered.push(await recordRunEvent(sessionId, recoveryEvent))
+        if (recoveryEvent) recovered.push(await appendRecoveryEvent(sessionId, recoveryEvent))
       }
       return recovered.sort(
         (left, right) =>
@@ -222,82 +168,53 @@ export function createInMemoryRuntimeStore(input: InMemoryStoreOptions = {}): Wo
           (left.summary?.updatedAt ?? left.event.timestamp),
       )
     },
-    async renameConversation(sessionId, title): Promise<ConversationSummary> {
-      return updateMeta(sessionId, (current) => ({
-        ...current,
-        title: title.trim() || DEFAULT_SESSION_TITLE,
-        updatedAt: nextUpdatedAt(current, now()),
-      }))
-    },
-    async recordUsage(sessionId, usage: UsageInfo): Promise<ConversationSummary> {
-      const timestamp = now()
-      return updateMeta(sessionId, (current) => ({
-        ...current,
-        updatedAt: nextUpdatedAt(current, timestamp),
-        usage: createConversationUsageSnapshot(current.usage, usage, timestamp),
-      }))
-    },
-    async saveContextCheckpoint(sessionId, checkpoint): Promise<ConversationSummary> {
-      return updateMeta(sessionId, (current) => ({
-        ...current,
-        updatedAt: nextUpdatedAt(current, checkpoint.createdAt),
-        context: {
-          ...(current.context ?? {}),
-          checkpoint: clone(checkpoint),
-        },
-      }))
-    },
-    async recordContextTurnLedger(sessionId, entry): Promise<ConversationSummary> {
-      return updateMeta(sessionId, (current) => ({
-        ...current,
-        updatedAt: nextUpdatedAt(current, entry.createdAt),
-        context: appendConversationContextTurnLedgerEntry(current.context, entry),
-      }))
-    },
-    async saveRunCheckpoint(checkpoint): Promise<RunCheckpoint> {
-      requireRecord(checkpoint.identity.conversationId)
-      const key = runKey(checkpoint.identity.conversationId, checkpoint.identity.runId)
-      const prepared = prepareRunCheckpoint(checkpoint, checkpoints.get(key))
-      checkpoints.set(key, clone(prepared))
+    async saveRunSnapshot(snapshot) {
+      requireJournal(snapshot.identity.conversationId)
+      const key = runKey(snapshot.identity.conversationId, snapshot.identity.runId)
+      const prepared = prepareRunSnapshot(snapshot, snapshots.get(key))
+      snapshots.set(key, clone(prepared))
       return clone(prepared)
     },
-    async getRunCheckpoint(sessionId, runId): Promise<RunCheckpoint | null> {
-      const checkpoint = checkpoints.get(runKey(sessionId, runId))
-      return checkpoint ? clone(checkpoint) : null
+    async getRunSnapshot(sessionId, runId) {
+      const snapshot = snapshots.get(runKey(sessionId, runId))
+      return snapshot ? clone(snapshot) : null
     },
-    async listRunCheckpoints(sessionId): Promise<readonly RunCheckpoint[]> {
-      return [...checkpoints.values()]
-        .filter((checkpoint) => checkpoint.identity.conversationId === sessionId)
-        .map((checkpoint) => clone(checkpoint))
+    async listRunSnapshots(sessionId) {
+      return [...snapshots.values()]
+        .filter((snapshot) => snapshot.identity.conversationId === sessionId)
         .sort((left, right) => right.updatedAt - left.updatedAt)
+        .map(clone)
     },
-    async saveRunArtifact(artifact): Promise<RunArtifact> {
-      requireRecord(artifact.conversationId)
-      const prepared = prepareRunArtifact(artifact)
-      const existing = artifacts.get(prepared.artifactId)
-      if (existing) {
-        if (JSON.stringify(existing) !== JSON.stringify(prepared)) {
-          throw new Error(`run artifact is immutable: ${prepared.artifactId}`)
-        }
-        return clone(existing)
+    async putBlob(sessionId, blobInput) {
+      requireJournal(sessionId)
+      const blobId = blobInput.blobId ?? createId()
+      const ref: BlobRef = {
+        schemaVersion: AILA_BLOB_SCHEMA_VERSION,
+        blobId,
+        contentType: blobInput.contentType,
+        sizeBytes: blobSize(blobInput.data),
+        ...(blobInput.preview ? { preview: blobInput.preview } : {}),
       }
-      artifacts.set(prepared.artifactId, clone(prepared))
-      return clone(prepared)
-    },
-    async listRunArtifacts(sessionId, runId): Promise<readonly RunArtifact[]> {
-      return [...artifacts.values()]
-        .filter((artifact) => artifact.conversationId === sessionId && artifact.runId === runId)
-        .map((artifact) => clone(artifact))
-        .sort((left, right) => left.createdAt - right.createdAt)
-    },
-    async deleteConversation(sessionId): Promise<void> {
-      records.delete(sessionId)
-      runEvents.delete(sessionId)
-      for (const key of checkpoints.keys()) {
-        if (key.startsWith(`${sessionId}:`)) checkpoints.delete(key)
+      const key = blobKey(sessionId, blobId)
+      const existing = blobs.get(key)
+      const stored = { ref, data: clone(blobInput.data) }
+      if (existing && JSON.stringify(existing) !== JSON.stringify(stored)) {
+        throw new Error(`blob is immutable: ${blobId}`)
       }
-      for (const [artifactId, artifact] of artifacts) {
-        if (artifact.conversationId === sessionId) artifacts.delete(artifactId)
+      blobs.set(key, clone(stored))
+      return clone(ref)
+    },
+    async getBlob(sessionId, blobId) {
+      const blob = blobs.get(blobKey(sessionId, blobId))
+      return blob ? clone(blob) : null
+    },
+    async deleteConversation(sessionId) {
+      journals.delete(sessionId)
+      for (const key of snapshots.keys()) {
+        if (key.startsWith(`${sessionId}:`)) snapshots.delete(key)
+      }
+      for (const key of blobs.keys()) {
+        if (key.startsWith(`${sessionId}:`)) blobs.delete(key)
       }
     },
   }

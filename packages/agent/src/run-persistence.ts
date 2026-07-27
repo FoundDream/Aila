@@ -1,18 +1,15 @@
-import type { ChatMessage, ModelSelection, UsageInfo } from './agent-protocol'
-import type { AgentContextPlan } from './context'
-import type { PersistedMessage } from './conversation-core'
+import type { ModelSelection, UsageInfo } from './agent-protocol'
 import type { ModelCallToolCall } from './model-call'
-import {
-  assertRunStateInvariant,
-  type RunCursor,
-  type RunIdentity,
-  type RunNextAction,
-  type RunWait,
-} from './run-machine'
+import { assertRunStateInvariant, type RunCursor, type RunIdentity } from './run-machine'
+import type { BlobRef } from './session-journal'
 import type { AilaExecutionMode } from './tool-policy'
 
-export const AILA_RUN_CHECKPOINT_SCHEMA_VERSION = 2
-export const AILA_RUN_ARTIFACT_SCHEMA_VERSION = 2
+export const AILA_RUN_SNAPSHOT_SCHEMA_VERSION = 1
+/** @deprecated Use AILA_RUN_SNAPSHOT_SCHEMA_VERSION. */
+export const AILA_RUN_CHECKPOINT_SCHEMA_VERSION = AILA_RUN_SNAPSHOT_SCHEMA_VERSION
+export const AILA_RUN_PAYLOAD_SCHEMA_VERSION = 1
+/** @deprecated Run payloads are journal-backed views, not stored artifacts. */
+export const AILA_RUN_ARTIFACT_SCHEMA_VERSION = AILA_RUN_PAYLOAD_SCHEMA_VERSION
 
 export type RunRecoveryStrategy = 'automatic' | 'manual_review'
 
@@ -22,150 +19,30 @@ export interface RunRecovery {
 }
 
 /**
- * Durable execution cursor. Unlike a prompt-compaction checkpoint, this record
- * contains everything required to continue the same run after process restart.
+ * Materialized execution cursor. The session journal is the source of truth;
+ * this snapshot only accelerates exact run resume.
  */
-export interface RunCheckpoint {
-  schemaVersion: typeof AILA_RUN_CHECKPOINT_SCHEMA_VERSION
+export interface RunSnapshot {
+  schemaVersion: typeof AILA_RUN_SNAPSHOT_SCHEMA_VERSION
   identity: RunIdentity
   assistantMessageId: string
   selection: ModelSelection
   executionMode: AilaExecutionMode
   maxToolSteps: number
   loop: RunCursor<ModelCallToolCall>
-  messages: ChatMessage[]
-  modelStepOutputs: Record<string, string>
-  contextPlan?: AgentContextPlan
-  assistantMessage: PersistedMessage
+  contextRef: BlobRef
   usage?: UsageInfo
   recovery: RunRecovery
   revision: number
   createdAt: number
   updatedAt: number
-  lastEventSeq?: number
+  throughSeq: number
 }
 
-function normalizeNextAction(value: unknown): RunNextAction | undefined {
-  if (!value || typeof value !== 'object') return undefined
-  const record = value as Record<string, unknown>
-  if (
-    record.type === 'model' &&
-    (record.reason === 'user' ||
-      record.reason === 'tool_results' ||
-      record.reason === 'retry' ||
-      record.reason === 'steer' ||
-      record.reason === 'follow_up' ||
-      record.reason === 'resume' ||
-      record.reason === 'provider_overflow')
-  ) {
-    return { type: 'model', reason: record.reason }
-  }
-  if (
-    record.type === 'tools' &&
-    Array.isArray(record.toolCallIds) &&
-    record.toolCallIds.every((id) => typeof id === 'string')
-  ) {
-    return { type: 'tools', toolCallIds: [...record.toolCallIds] as string[] }
-  }
-  if (
-    record.type === 'compact' &&
-    (record.reason === 'preflight' || record.reason === 'provider_overflow')
-  ) {
-    return { type: 'compact', reason: record.reason }
-  }
-  return undefined
-}
+/** @deprecated Use RunSnapshot. */
+export type RunCheckpoint = RunSnapshot
 
-function normalizeWaitState(value: unknown): RunWait | undefined {
-  if (!value || typeof value !== 'object') return undefined
-  const record = value as Record<string, unknown>
-  if (
-    record.reason !== 'operator' &&
-    record.reason !== 'debug' &&
-    record.reason !== 'approval' &&
-    record.reason !== 'user_input'
-  ) {
-    return undefined
-  }
-  return {
-    reason: record.reason === 'debug' ? 'operator' : record.reason,
-    ...(typeof record.requestId === 'string' ? { requestId: record.requestId } : {}),
-    ...(typeof record.detail === 'string' ? { detail: record.detail } : {}),
-  }
-}
-
-/**
- * Upgrades durable run cursors without requiring callers to delete existing
- * data. V1 mixed pause/complete control states into nextAction; V2 keeps only
- * executable work there and stores the wait condition separately.
- */
-export function normalizeRunCheckpoint(value: unknown): RunCheckpoint {
-  if (!value || typeof value !== 'object') throw new Error('invalid agent run checkpoint')
-  const checkpoint = structuredClone(value) as RunCheckpoint
-  const sourceSchemaVersion = (checkpoint as unknown as { schemaVersion: number }).schemaVersion
-  if (sourceSchemaVersion !== 1 && sourceSchemaVersion !== 2) {
-    throw new Error(`unsupported agent run checkpoint schema: ${sourceSchemaVersion}`)
-  }
-
-  const state = checkpoint.loop?.state
-  if (!state || !checkpoint.identity) throw new Error('invalid agent run checkpoint state')
-  checkpoint.loop.toolBatchCalls ??= checkpoint.loop.pendingToolCalls.map((call) =>
-    structuredClone(call),
-  )
-  const legacyAction = state.nextAction as
-    | { type?: unknown; reason?: unknown; toolCallIds?: unknown }
-    | undefined
-  let nextAction = normalizeNextAction(legacyAction)
-  let wait = normalizeWaitState(state.wait)
-
-  if (legacyAction?.type === 'complete') {
-    state.status = 'completed'
-    state.completedAt ??= checkpoint.updatedAt
-  } else if (legacyAction?.type === 'pause') {
-    state.status = 'paused'
-    wait =
-      legacyAction.reason === 'approval' || legacyAction.reason === 'user_input'
-        ? { reason: legacyAction.reason }
-        : { reason: 'operator' }
-    nextAction = { type: 'model', reason: 'resume' }
-  }
-
-  if (state.status === 'completed' || state.status === 'failed' || state.status === 'cancelled') {
-    nextAction = undefined
-    wait = undefined
-  } else if (state.status === 'paused') {
-    nextAction ??= { type: 'model', reason: 'resume' }
-    wait ??= { reason: 'operator' }
-  } else if (state.status === 'running') {
-    if (!nextAction) {
-      const currentStep = state.currentStep
-      if (currentStep?.kind === 'tool' || currentStep?.kind === 'tool_batch') {
-        nextAction = {
-          type: 'tools',
-          toolCallIds: checkpoint.loop.pendingToolCalls.map(
-            (call, index) => call.id || `tool-${index + 1}`,
-          ),
-        }
-      } else if (currentStep?.kind === 'compact') {
-        nextAction = { type: 'compact', reason: 'provider_overflow' }
-      } else {
-        nextAction = { type: 'model', reason: currentStep ? 'retry' : 'resume' }
-      }
-    }
-    wait = undefined
-  } else {
-    nextAction = undefined
-    wait = undefined
-  }
-
-  state.nextAction = nextAction
-  state.wait = wait
-  checkpoint.schemaVersion = AILA_RUN_CHECKPOINT_SCHEMA_VERSION
-  assertRunStateInvariant(state)
-  return checkpoint
-}
-
-export type RunArtifactKind =
+export type RunPayloadKind =
   | 'model_request'
   | 'model_response'
   | 'model_call'
@@ -175,19 +52,49 @@ export type RunArtifactKind =
   | 'compaction'
   | 'inspection'
 
-/** Immutable, inspectable payload produced by one run step. */
-export interface RunArtifact {
-  schemaVersion: typeof AILA_RUN_ARTIFACT_SCHEMA_VERSION
-  artifactId: string
+/** Reader view resolved from a run.payload journal entry and its BlobRef. */
+export interface RunPayload {
+  schemaVersion: typeof AILA_RUN_PAYLOAD_SCHEMA_VERSION
+  payloadId: string
   conversationId: string
   turnId: string
   runId: string
   stepId: string
-  kind: RunArtifactKind
+  kind: RunPayloadKind
   createdAt: number
   contentType: 'application/json' | 'text/plain'
   data: unknown
 }
+
+/** @deprecated Use RunPayload. */
+export type RunArtifact = Omit<RunPayload, 'payloadId'> & { artifactId: string }
+/** @deprecated Use RunPayloadKind. */
+export type RunArtifactKind = RunPayloadKind
+
+/** Strictly validates the only supported snapshot schema. */
+export function normalizeRunSnapshot(value: unknown): RunSnapshot {
+  if (!value || typeof value !== 'object') throw new Error('invalid agent run snapshot')
+  const snapshot = structuredClone(value) as RunSnapshot
+  if (snapshot.schemaVersion !== AILA_RUN_SNAPSHOT_SCHEMA_VERSION) {
+    throw new Error(`unsupported agent run snapshot schema: ${snapshot.schemaVersion}`)
+  }
+  if (!snapshot.loop?.state || !snapshot.identity || !snapshot.contextRef) {
+    throw new Error('invalid agent run snapshot state')
+  }
+  if (
+    !Number.isInteger(snapshot.throughSeq) ||
+    snapshot.throughSeq < 0 ||
+    !Number.isInteger(snapshot.revision) ||
+    snapshot.revision < 1
+  ) {
+    throw new Error('invalid agent run snapshot revision')
+  }
+  assertRunStateInvariant(snapshot.loop.state)
+  return snapshot
+}
+
+/** @deprecated Use normalizeRunSnapshot. */
+export const normalizeRunCheckpoint = normalizeRunSnapshot
 
 export function runRecoveryFromCursor(loop: RunCursor<ModelCallToolCall>): RunRecovery {
   if (
@@ -202,21 +109,15 @@ export function runRecoveryFromCursor(loop: RunCursor<ModelCallToolCall>): RunRe
   return { strategy: 'automatic' }
 }
 
-export function prepareRunCheckpoint(
-  checkpoint: RunCheckpoint,
-  previous?: RunCheckpoint,
-): RunCheckpoint {
-  const normalized = normalizeRunCheckpoint(checkpoint)
-  const normalizedPrevious = previous ? normalizeRunCheckpoint(previous) : undefined
+export function prepareRunSnapshot(checkpoint: RunSnapshot, previous?: RunSnapshot): RunSnapshot {
+  const normalized = normalizeRunSnapshot(checkpoint)
+  const normalizedPrevious = previous ? normalizeRunSnapshot(previous) : undefined
   if (normalized.identity.runId !== normalized.loop.state.identity.runId) {
-    throw new Error('run checkpoint identity does not match loop snapshot')
-  }
-  if (normalized.assistantMessage.id !== normalized.assistantMessageId) {
-    throw new Error('run checkpoint assistant message id does not match its message snapshot')
+    throw new Error('run snapshot identity does not match loop snapshot')
   }
   return {
     ...structuredClone(normalized),
-    schemaVersion: AILA_RUN_CHECKPOINT_SCHEMA_VERSION,
+    schemaVersion: AILA_RUN_SNAPSHOT_SCHEMA_VERSION,
     revision: normalizedPrevious
       ? Math.max(normalizedPrevious.revision + 1, normalized.revision)
       : Math.max(1, normalized.revision),
@@ -224,11 +125,14 @@ export function prepareRunCheckpoint(
   }
 }
 
-export function prepareRunCheckpointForResume(
-  checkpoint: RunCheckpoint,
+/** @deprecated Use prepareRunSnapshot. */
+export const prepareRunCheckpoint = prepareRunSnapshot
+
+export function prepareRunSnapshotForResume(
+  checkpoint: RunSnapshot,
   timestamp: number,
-): RunCheckpoint {
-  const prepared = prepareRunCheckpoint(checkpoint)
+): RunSnapshot {
+  const prepared = prepareRunSnapshot(checkpoint)
   if (
     prepared.loop.state.status === 'completed' ||
     prepared.loop.state.status === 'failed' ||
@@ -267,6 +171,18 @@ export function prepareRunCheckpointForResume(
   return prepared
 }
 
+/** @deprecated Use prepareRunSnapshotForResume. */
+export const prepareRunCheckpointForResume = prepareRunSnapshotForResume
+
+/** Normalizes a journal-backed payload reader view. */
+export function prepareRunPayload(payload: RunPayload): RunPayload {
+  return {
+    ...structuredClone(payload),
+    schemaVersion: AILA_RUN_PAYLOAD_SCHEMA_VERSION,
+  }
+}
+
+/** @deprecated Run artifacts are compatibility reader views only. */
 export function prepareRunArtifact(artifact: RunArtifact): RunArtifact {
   return {
     ...structuredClone(artifact),

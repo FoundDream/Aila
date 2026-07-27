@@ -11,12 +11,7 @@ import {
   type Workbench,
   type WorkbenchEvent,
 } from '@aila/agent'
-import {
-  configureDataDir,
-  getDataDir,
-  getExtensionReport,
-  getToolPacksDir,
-} from '@aila/agent-node/app'
+import { configureDataDir, getDataDir, getExtensionReport } from '@aila/agent-node/app'
 import * as dotenv from 'dotenv'
 import {
   CombinedAutocompleteProvider,
@@ -72,19 +67,6 @@ function entry(kind: TranscriptEntry['kind'], title: string, body = ''): Transcr
 
 function extensionReportText(report: Awaited<ReturnType<typeof getExtensionReport>>): string {
   const lines = [`Data: ${report.dataDir}`]
-  lines.push('', `Tool packs: ${report.toolPacksDir}`)
-  const toolPackError = report.errors.find((error) => error.kind === 'toolPacks')
-  if (toolPackError) {
-    lines.push(`  [error] ${toolPackError.message}`)
-  } else if (report.toolPacks.length === 0) {
-    lines.push('  (none)')
-  } else {
-    for (const pack of report.toolPacks) {
-      const names = pack.tools.join(', ')
-      lines.push(`  ${pack.id} - ${pack.tools.length} tools${names ? `: ${names}` : ''}`)
-    }
-  }
-
   lines.push('', `Skills: ${report.skillsDir}`)
   const skillErrors = report.errors.filter((error) => error.kind === 'skills')
   for (const skillError of skillErrors) {
@@ -219,7 +201,6 @@ class AilaFullScreenApp {
       'runtime',
       [
         `Data: ${getDataDir()}`,
-        `Tool packs: ${getToolPacksDir()}`,
         `Conversation: ${resolved.conversationId}${resolved.isExisting ? ' (resumed)' : ''}`,
         `Model: ${modelLabel(this.session.selection)}`,
         `Runtime mode: ${this.session.mode}`,
@@ -531,7 +512,7 @@ class AilaFullScreenApp {
 
   private async reloadExtensions(): Promise<void> {
     const registry = await this.runtime.reloadToolPacks()
-    const message = `reloaded ${registry.toolPacks.length} tool packs, ${registry.specs.length} tools`
+    const message = `reloaded extensions, ${registry.specs.length} tools available`
     this.addEntry('system', 'extensions reloaded', message)
     this.setState({ status: message })
   }

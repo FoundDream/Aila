@@ -65,27 +65,33 @@ function runCli(args: string[], env: Record<string, string | undefined> = {}): P
   })
 }
 
-async function testExtensionReportFailure(): Promise<void> {
+async function testLegacyToolPackDirectoryIsIgnored(): Promise<void> {
   await withTempDataDir(async (dataDir) => {
-    await mkdir(join(dataDir, 'tool-packs', 'bad'), { recursive: true })
+    const legacyToolPackDir = join(dataDir, 'tool-packs', 'legacy')
+    await mkdir(legacyToolPackDir, { recursive: true })
     await writeFile(
-      join(dataDir, 'tool-packs', 'bad', 'aila-tool-pack.json'),
-      '{"schemaVersion":999}\n',
+      join(legacyToolPackDir, 'aila-tool-pack.json'),
+      '{"schemaVersion":1,"id":"legacy","name":"Legacy","entry":"index.mjs"}\n',
+      'utf-8',
+    )
+    await writeFile(
+      join(legacyToolPackDir, 'index.mjs'),
+      "throw new Error('legacy tool pack must not be loaded')\n",
       'utf-8',
     )
 
     const result = await runCli(['--data-dir', dataDir, '--extensions', '--json'])
-    assertEqual(result.code, 1, 'bad extension report should fail')
+    assertEqual(result.code, 0, 'legacy tool pack directory should be ignored')
     const parsed = JSON.parse(result.stdout) as {
       ok?: boolean
+      toolPacks?: unknown
+      toolPacksDir?: unknown
       errors?: Array<{ kind?: string; message?: string }>
     }
-    assertEqual(parsed.ok, false, 'bad extension JSON report ok=false')
-    assertEqual(parsed.errors?.[0]?.kind, 'toolPacks', 'bad extension error kind')
-    assert(
-      parsed.errors?.[0]?.message?.includes('unsupported tool pack manifest schemaVersion'),
-      'bad extension error should include loader message',
-    )
+    assertEqual(parsed.ok, true, 'extension JSON report should remain healthy')
+    assert(!('toolPacks' in parsed), 'extension JSON must not expose local tool packs')
+    assert(!('toolPacksDir' in parsed), 'extension JSON must not expose a tool packs directory')
+    assertEqual(parsed.errors?.length, 0, 'legacy tool packs must not create extension errors')
   })
 }
 
@@ -218,7 +224,7 @@ async function testCliUsesSharedRuntimeFactory(): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  await testExtensionReportFailure()
+  await testLegacyToolPackDirectoryIsIgnored()
   await testRetryLastDoesNotDuplicateUser()
   testInterruptedRunEventCompletesCliAdapter()
   await testCliUsesSharedRuntimeFactory()

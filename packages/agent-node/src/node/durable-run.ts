@@ -1,8 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type { Settings } from '@aila/agent'
 import {
-  AILA_RUN_ARTIFACT_SCHEMA_VERSION,
-  AILA_RUN_CHECKPOINT_SCHEMA_VERSION,
+  AILA_RUN_SNAPSHOT_SCHEMA_VERSION,
   type ChatMessage,
   type DurableRunExecutor,
   type ImageSideChannelBlock,
@@ -11,12 +10,12 @@ import {
   type ModelInfo,
   type ModelSelection,
   type PersistedToolResultRef,
-  type RunArtifact,
-  type RunCheckpoint,
   type RunEvent,
   type RunEventType,
   type RunHandlers,
   type RunIdentity,
+  type RunPayloadKind,
+  type RunSnapshot,
   runRecoveryFromCursor,
   type ToolActivityTarget,
   type ToolAuthorization,
@@ -137,15 +136,18 @@ export function createDurableRunExecutor(
       assistantMessageId,
       run: requestRun,
       loopMode = 'continuous',
-      runCheckpoint,
+      runSnapshot,
+      runContextRef,
+      resumeState,
       messages: requestMessages,
       contextPlan: requestContextPlan,
       prepareModelStep,
       selection: requestSelection,
       signal,
       onRunEvent,
-      saveRunCheckpoint,
-      saveRunArtifact,
+      saveRunSnapshot,
+      appendSessionEntry,
+      putBlob,
       workspaceRoots: requestWorkspaceRoots,
       shellCwd,
       onToolPolicy,
@@ -159,17 +161,15 @@ export function createDurableRunExecutor(
       toolRegistry,
     } = req
 
-    const messages = cloneAgentMessages(runCheckpoint?.messages ?? requestMessages)
+    const messages = cloneAgentMessages(resumeState?.messages ?? requestMessages)
     const selection = cloneAgentValue(requestSelection)
-    let contextPlan = cloneAgentValue(runCheckpoint?.contextPlan ?? requestContextPlan)
+    let contextPlan = cloneAgentValue(resumeState?.contextPlan ?? requestContextPlan)
     const workspaceRoots = cloneAgentWorkspaceRoots(requestWorkspaceRoots)
-    const builder = new AssistantMessageBuilder(runCheckpoint?.assistantMessage.blocks)
-    let lastUsage: UsageInfo | null = runCheckpoint?.usage
-      ? cloneAgentValue(runCheckpoint.usage)
-      : null
+    const builder = new AssistantMessageBuilder(resumeState?.assistantMessage?.blocks)
+    let lastUsage: UsageInfo | null = runSnapshot?.usage ? cloneAgentValue(runSnapshot.usage) : null
     const toolTargets = new Map<string, ToolActivityTarget>()
     const run: RunIdentity = cloneAgentValue(
-      runCheckpoint?.identity ??
+      runSnapshot?.identity ??
         requestRun ?? {
           conversationId,
           turnId: assistantMessageId,
@@ -219,9 +219,9 @@ export function createDurableRunExecutor(
       runBoundaryPersisted = true
       const timestamp = Date.now()
       const loop = cloneAgentValue(
-        runCheckpoint?.loop ?? createRunCursor<ModelCallToolCall>(run, loopMode),
+        runSnapshot?.loop ?? createRunCursor<ModelCallToolCall>(run, loopMode),
       )
-      if (!runCheckpoint) {
+      if (!runSnapshot) {
         const started: RunTransition = {
           type: 'run.started',
           timestamp,
@@ -239,24 +239,22 @@ export function createDurableRunExecutor(
       }
       loop.state = reduceRunTransition(loop.state, failed)
       await emitDurableRunEvent(failed.type, runTransitionData(failed))
-      if (!saveRunCheckpoint) return
-      await saveRunCheckpoint({
-        schemaVersion: AILA_RUN_CHECKPOINT_SCHEMA_VERSION,
+      if (!saveRunSnapshot) return
+      await saveRunSnapshot({
+        schemaVersion: AILA_RUN_SNAPSHOT_SCHEMA_VERSION,
         identity: cloneAgentValue(run),
         assistantMessageId,
         selection: cloneAgentValue(selection),
-        executionMode: runCheckpoint?.executionMode ?? req.mode ?? 'agent',
-        maxToolSteps: runCheckpoint?.maxToolSteps ?? maxToolSteps,
+        executionMode: runSnapshot?.executionMode ?? req.mode ?? 'agent',
+        maxToolSteps: runSnapshot?.maxToolSteps ?? maxToolSteps,
         loop,
-        messages: cloneAgentMessages(messages),
-        modelStepOutputs: cloneAgentValue(runCheckpoint?.modelStepOutputs ?? {}),
-        ...(contextPlan ? { contextPlan: cloneAgentValue(contextPlan) } : {}),
-        assistantMessage: builder.build(assistantMessageId, 'error', selection, message),
+        contextRef: cloneAgentValue(runContextRef),
         ...(lastUsage ? { usage: cloneAgentValue(lastUsage) } : {}),
         recovery: runRecoveryFromCursor(loop),
-        revision: (runCheckpoint?.revision ?? 0) + 1,
-        createdAt: runCheckpoint?.createdAt ?? timestamp,
+        revision: (runSnapshot?.revision ?? 0) + 1,
+        createdAt: runSnapshot?.createdAt ?? timestamp,
         updatedAt: timestamp,
+        throughSeq: runSnapshot?.throughSeq ?? 0,
       })
     }
 
@@ -266,7 +264,7 @@ export function createDurableRunExecutor(
         options.loadSettings?.() ?? { apiKeys: {}, defaultModel: null },
     )
     const descriptor = modelRegistry.resolve(selection)
-    if (!runCheckpoint) {
+    if (!runSnapshot) {
       emitRunEvent('turn.started', {
         providerId: selection.providerId,
         modelId: selection.modelId,
@@ -311,10 +309,10 @@ export function createDurableRunExecutor(
     }
 
     try {
-      const totalUsage = runCheckpoint?.usage
-        ? cloneAgentValue(runCheckpoint.usage)
+      const totalUsage = runSnapshot?.usage
+        ? cloneAgentValue(runSnapshot.usage)
         : createUsageAccumulator()
-      const bridged = runCheckpoint
+      const bridged = runSnapshot
         ? { messages, usage: [] }
         : await prepareModelInput({
             messages,
@@ -358,53 +356,70 @@ export function createDurableRunExecutor(
 
       let toolBudgetNoticeSent = false
       const assistantTextByModelStep = new Map<number, string>(
-        Object.entries(runCheckpoint?.modelStepOutputs ?? {}).map(([index, text]) => [
+        Object.entries(resumeState?.modelStepOutputs ?? {}).map(([index, text]) => [
           Number(index),
           text,
         ]),
       )
-      let checkpointRevision = runCheckpoint?.revision ?? 0
-      const checkpointCreatedAt = runCheckpoint?.createdAt ?? Date.now()
+      let snapshotRevision = runSnapshot?.revision ?? 0
+      const snapshotCreatedAt = runSnapshot?.createdAt ?? Date.now()
       let latestLoopSnapshot: RunCursor<ModelCallToolCall> | undefined
-      const persistRunCheckpoint = async (
+      const persistRunSnapshot = async (
         loop: RunCursor<ModelCallToolCall>,
-        messageStatus: 'streaming' | 'done' | 'error' = 'streaming',
-        messageError?: string,
+        _messageStatus: 'streaming' | 'done' | 'error' = 'streaming',
+        _messageError?: string,
       ): Promise<void> => {
         latestLoopSnapshot = cloneAgentValue(loop)
-        if (!saveRunCheckpoint) return
+        if (!saveRunSnapshot) return
         const timestamp = Date.now()
-        const checkpoint: RunCheckpoint = {
-          schemaVersion: AILA_RUN_CHECKPOINT_SCHEMA_VERSION,
+        const snapshot: RunSnapshot = {
+          schemaVersion: AILA_RUN_SNAPSHOT_SCHEMA_VERSION,
           identity: cloneAgentValue(run),
           assistantMessageId,
           selection: cloneAgentValue(selection),
           executionMode: req.mode ?? 'agent',
           maxToolSteps,
           loop: cloneAgentValue(loop),
-          messages: cloneAgentMessages(modelMessages),
-          modelStepOutputs: Object.fromEntries(assistantTextByModelStep),
-          ...(contextPlan ? { contextPlan: cloneAgentValue(contextPlan) } : {}),
-          assistantMessage: builder.build(
-            assistantMessageId,
-            messageStatus,
-            selection,
-            messageError,
-          ),
+          contextRef: cloneAgentValue(runContextRef),
           ...(lastUsage ? { usage: cloneAgentValue(lastUsage) } : {}),
           recovery: runRecoveryFromCursor(loop),
-          revision: checkpointRevision + 1,
-          createdAt: checkpointCreatedAt,
+          revision: snapshotRevision + 1,
+          createdAt: snapshotCreatedAt,
           updatedAt: timestamp,
+          throughSeq: runSnapshot?.throughSeq ?? 0,
         }
-        const saved = await saveRunCheckpoint(cloneAgentValue(checkpoint))
-        checkpointRevision = saved.revision
+        const saved = await saveRunSnapshot(cloneAgentValue(snapshot))
+        snapshotRevision = saved.revision
       }
-      const persistRunArtifact = async (artifact: RunArtifact): Promise<void> => {
-        if (!saveRunArtifact) return
-        await saveRunArtifact(cloneAgentValue(artifact))
+      const persistRunPayload = async (input: {
+        kind: RunPayloadKind
+        label: string
+        stepId: string
+        data: unknown
+        modelMessage?: ChatMessage
+      }): Promise<void> => {
+        if (!appendSessionEntry) return
+        const timestamp = Date.now()
+        const payloadRef = await putBlob?.({
+          contentType: 'application/json',
+          data: cloneAgentValue(input.data),
+        })
+        await appendSessionEntry({
+          type: 'run.payload',
+          timestamp,
+          turnId: run.turnId,
+          runId: run.runId,
+          stepId: input.stepId,
+          ...(payloadRef ? { payloadRef: cloneAgentValue(payloadRef) } : {}),
+          data: {
+            kind: runPayloadEntryKind(input.kind),
+            label: input.label,
+            ...(input.modelMessage ? { modelMessage: cloneAgentValue(input.modelMessage) } : {}),
+            assistantMessage: builder.build(assistantMessageId, 'streaming', selection),
+          },
+        })
       }
-      const initialSnapshot = runCheckpoint?.loop ? cloneAgentValue(runCheckpoint.loop) : undefined
+      const initialSnapshot = runSnapshot?.loop ? cloneAgentValue(runSnapshot.loop) : undefined
       if (initialSnapshot) initialSnapshot.state.mode = loopMode
       const toolCallsByModelStep = new Map<number, ParsedModelToolCall[]>()
       const toolResultsByModelStep = new Map<
@@ -416,12 +431,11 @@ export function createDurableRunExecutor(
           isError: boolean
         }>
       >()
-      if (runCheckpoint) {
-        const checkpointCalls =
-          runCheckpoint.loop.toolBatchCalls ?? runCheckpoint.loop.pendingToolCalls
+      if (runSnapshot) {
+        const checkpointCalls = runSnapshot.loop.toolBatchCalls ?? runSnapshot.loop.pendingToolCalls
         if (checkpointCalls.length > 0) {
           toolCallsByModelStep.set(
-            Math.max(0, runCheckpoint.loop.modelStepIndex - 1),
+            Math.max(0, runSnapshot.loop.modelStepIndex - 1),
             cloneAgentValue(checkpointCalls),
           )
         }
@@ -438,7 +452,7 @@ export function createDurableRunExecutor(
             }
           : {}),
         policy: { mode: loopMode },
-        onSnapshot: (snapshot) => persistRunCheckpoint(snapshot),
+        onSnapshot: (snapshot) => persistRunSnapshot(snapshot),
         onTransition: async (transition) => {
           if (transition.type === 'run.started' || transition.type === 'run.resumed') {
             runBoundaryPersisted = true
@@ -493,16 +507,10 @@ export function createDurableRunExecutor(
             }
           }
           const afterChars = JSON.stringify(modelMessages).length
-          await persistRunArtifact({
-            schemaVersion: AILA_RUN_ARTIFACT_SCHEMA_VERSION,
-            artifactId: `${run.runId}:${step.stepId}:compaction`,
-            conversationId,
-            turnId: run.turnId,
-            runId: run.runId,
-            stepId: step.stepId,
+          await persistRunPayload({
             kind: 'compaction',
-            createdAt: Date.now(),
-            contentType: 'application/json',
+            label: 'Context compaction',
+            stepId: step.stepId,
             data: {
               reason,
               beforeChars,
@@ -524,16 +532,10 @@ export function createDurableRunExecutor(
           const modelCallStartedAt = Date.now()
           const requestMessages = cloneAgentMessages(modelMessages)
           const requestTools = toolsEnabled ? cloneAgentValue(tools) : []
-          await persistRunArtifact({
-            schemaVersion: AILA_RUN_ARTIFACT_SCHEMA_VERSION,
-            artifactId: `${run.runId}:${step.stepId}:model_request`,
-            conversationId,
-            turnId: run.turnId,
-            runId: run.runId,
-            stepId: step.stepId,
+          await persistRunPayload({
             kind: 'model_request',
-            createdAt: modelCallStartedAt,
-            contentType: 'application/json',
+            label: 'Model request',
+            stepId: step.stepId,
             data: {
               reason,
               modelStepIndex,
@@ -590,10 +592,6 @@ export function createDurableRunExecutor(
                   break
                 case 'tool-input-delta':
                   builder.appendToolCallArgs(part.id, part.delta)
-                  emitRunEvent('tool.input.delta', {
-                    toolCallId: part.id,
-                    deltaSize: part.delta.length,
-                  })
                   callStreamHandler(handlers.onToolCallArgsDelta, {
                     conversationId,
                     messageId: assistantMessageId,
@@ -685,16 +683,18 @@ export function createDurableRunExecutor(
 
           assistantTextByModelStep.set(modelStepIndex, result.text)
           const modelCallCompletedAt = Date.now()
-          await persistRunArtifact({
-            schemaVersion: AILA_RUN_ARTIFACT_SCHEMA_VERSION,
-            artifactId: `${run.runId}:${step.stepId}:model_response`,
-            conversationId,
-            turnId: run.turnId,
-            runId: run.runId,
-            stepId: step.stepId,
+          const responseModelMessage: ChatMessage = {
+            role: 'assistant',
+            content: result.text,
+            ...(result.toolCalls.length > 0
+              ? { tool_calls: result.toolCalls.map(toChatToolCall) }
+              : {}),
+          }
+          await persistRunPayload({
             kind: 'model_response',
-            createdAt: modelCallCompletedAt,
-            contentType: 'application/json',
+            label: `Model response · ${result.outcome}`,
+            stepId: step.stepId,
+            modelMessage: responseModelMessage,
             data: {
               modelStepIndex,
               startedAt: modelCallStartedAt,
@@ -826,16 +826,10 @@ export function createDurableRunExecutor(
           const target = summarizeToolTarget(toolCall.name, toolCall.args)
           if (target) toolTargets.set(toolCall.id, target)
           const definitionPresent = tools.some((definition) => definition.name === toolCall.name)
-          await persistRunArtifact({
-            schemaVersion: AILA_RUN_ARTIFACT_SCHEMA_VERSION,
-            artifactId: `${run.runId}:${step.stepId}:tool_request:${toolCall.id}`,
-            conversationId,
-            turnId: run.turnId,
-            runId: run.runId,
-            stepId: step.stepId,
+          await persistRunPayload({
             kind: 'tool_request',
-            createdAt: toolStartedAt,
-            contentType: 'application/json',
+            label: `Tool request · ${toolCall.name}`,
+            stepId: step.stepId,
             data: {
               toolCallId: toolCall.id,
               toolName: toolCall.name,
@@ -868,16 +862,11 @@ export function createDurableRunExecutor(
               result: message,
               isError: true,
             })
-            await persistRunArtifact({
-              schemaVersion: AILA_RUN_ARTIFACT_SCHEMA_VERSION,
-              artifactId: `${run.runId}:${step.stepId}:tool_result:${toolCall.id}`,
-              conversationId,
-              turnId: run.turnId,
-              runId: run.runId,
-              stepId: step.stepId,
+            await persistRunPayload({
               kind: 'tool_result',
-              createdAt: Date.now(),
-              contentType: 'application/json',
+              label: `Tool result · ${toolCall.name} · failed`,
+              stepId: step.stepId,
+              modelMessage: { role: 'tool', tool_call_id: toolCall.id, content: message },
               data: {
                 toolCallId: toolCall.id,
                 toolName: toolCall.name,
@@ -932,16 +921,11 @@ export function createDurableRunExecutor(
                 isError: true,
               })
               const toolCompletedAt = Date.now()
-              await persistRunArtifact({
-                schemaVersion: AILA_RUN_ARTIFACT_SCHEMA_VERSION,
-                artifactId: `${run.runId}:${step.stepId}:tool_result:${toolCall.id}`,
-                conversationId,
-                turnId: run.turnId,
-                runId: run.runId,
-                stepId: step.stepId,
+              await persistRunPayload({
                 kind: 'tool_result',
-                createdAt: toolCompletedAt,
-                contentType: 'application/json',
+                label: `Tool result · ${toolCall.name} · failed`,
+                stepId: step.stepId,
+                modelMessage: { role: 'tool', tool_call_id: toolCall.id, content: message },
                 data: {
                   toolCallId: toolCall.id,
                   toolName: toolCall.name,
@@ -998,16 +982,15 @@ export function createDurableRunExecutor(
                 isError: false,
               })
               const toolCompletedAt = Date.now()
-              await persistRunArtifact({
-                schemaVersion: AILA_RUN_ARTIFACT_SCHEMA_VERSION,
-                artifactId: `${run.runId}:${step.stepId}:tool_result:${toolCall.id}`,
-                conversationId,
-                turnId: run.turnId,
-                runId: run.runId,
-                stepId: step.stepId,
+              await persistRunPayload({
                 kind: 'tool_result',
-                createdAt: toolCompletedAt,
-                contentType: 'application/json',
+                label: `Tool result · ${toolCall.name} · completed`,
+                stepId: step.stepId,
+                modelMessage: {
+                  role: 'tool',
+                  tool_call_id: toolCall.id,
+                  content: toolResult.content,
+                },
                 data: {
                   toolCallId: toolCall.id,
                   toolName: toolCall.name,
@@ -1027,16 +1010,10 @@ export function createDurableRunExecutor(
           }
 
           if (toolCallIndex === toolCallCount - 1) {
-            await persistRunArtifact({
-              schemaVersion: AILA_RUN_ARTIFACT_SCHEMA_VERSION,
-              artifactId: `${run.runId}:${step.stepId}:tool_batch`,
-              conversationId,
-              turnId: run.turnId,
-              runId: run.runId,
-              stepId: step.stepId,
+            await persistRunPayload({
               kind: 'tool_batch',
-              createdAt: Date.now(),
-              contentType: 'application/json',
+              label: 'Tool batch summary',
+              stepId: step.stepId,
               data: {
                 toolCallIds: batchCalls.map((call) => call.id),
                 completedCount: toolResults.length,
@@ -1072,7 +1049,7 @@ export function createDurableRunExecutor(
         const cancelled = loopResult.state.status === 'cancelled'
         const message = cancelled ? 'Aborted' : (loopResult.state.error ?? 'Agent run failed')
         if (latestLoopSnapshot) {
-          await persistRunCheckpoint(latestLoopSnapshot, 'error', message)
+          await persistRunSnapshot(latestLoopSnapshot, 'error', message)
         }
         await callAsyncStreamHandler(handlers.onError, {
           conversationId,
@@ -1088,7 +1065,7 @@ export function createDurableRunExecutor(
       }
       if (loopResult.state.status === 'paused') return
 
-      if (latestLoopSnapshot) await persistRunCheckpoint(latestLoopSnapshot, 'done')
+      if (latestLoopSnapshot) await persistRunSnapshot(latestLoopSnapshot, 'done')
       emitRunEvent('turn.completed', {
         usage: lastUsage ?? undefined,
         outputBlockCount: builder.blocks.length,
@@ -1476,6 +1453,22 @@ function previewEventValue(value: unknown): { preview: string; size: number } {
     preview: text.length > EVENT_PREVIEW_CHARS ? `${text.slice(0, EVENT_PREVIEW_CHARS)}...` : text,
     size: text.length,
   }
+}
+
+function runPayloadEntryKind(
+  kind: RunPayloadKind,
+):
+  | 'provider_request'
+  | 'provider_response'
+  | 'tool_batch'
+  | 'tool_request'
+  | 'tool_result'
+  | 'context_compaction'
+  | 'inspection' {
+  if (kind === 'model_request' || kind === 'model_call') return 'provider_request'
+  if (kind === 'model_response') return 'provider_response'
+  if (kind === 'compaction') return 'context_compaction'
+  return kind
 }
 
 function inspectableModelDescriptor(descriptor: ModelDescriptor): Record<string, unknown> {

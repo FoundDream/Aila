@@ -513,9 +513,11 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
       )
       setExtensionsReport(result.report)
       setExtensionsNotice(
-        `Loaded ${result.toolCount} tool${result.toolCount === 1 ? '' : 's'} from ${
-          result.report.toolPacks.length + result.report.mcpServers.length
-        } extension source${result.report.toolPacks.length + result.report.mcpServers.length === 1 ? '' : 's'}.`,
+        `Reloaded ${result.report.skills.length} skill${
+          result.report.skills.length === 1 ? '' : 's'
+        } and ${result.report.mcpServers.length} MCP server${
+          result.report.mcpServers.length === 1 ? '' : 's'
+        }.`,
       )
     } catch (err) {
       setExtensionsError(err instanceof Error ? err.message : String(err))
@@ -1552,7 +1554,7 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
                   <div className="min-w-0">
                     <div className="text-[13px] font-medium text-[var(--text)]">Extensions</div>
                     <div className="mt-0.5 text-[11px] text-[var(--text-dim)]">
-                      Tool packs, skills, and MCP servers loaded by the runtime.
+                      Skills and MCP servers loaded by the runtime.
                     </div>
                   </div>
                   <div className="flex shrink-0 items-center gap-2">
@@ -1604,7 +1606,6 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
                       <SectionTitle>Locations</SectionTitle>
                       <div className="divide-y divide-[var(--border)] rounded-md border border-[var(--border)]">
                         <PathRow label="Data" value={extensionsReport.dataDir} />
-                        <PathRow label="Tool packs" value={extensionsReport.toolPacksDir} />
                         <PathRow label="Skills" value={extensionsReport.skillsDir} />
                         <PathRow label="MCP user" value={extensionsReport.mcpConfigPath} />
                         <PathRow
@@ -1612,45 +1613,6 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
                           value={extensionsReport.projectMcpConfigPath}
                         />
                       </div>
-                    </section>
-
-                    <section>
-                      <div className="mb-1.5 flex items-center gap-2">
-                        <SectionTitle>Tool Packs</SectionTitle>
-                        <span className="rounded-full bg-[var(--surface-hover)] px-1.5 py-px text-[10px] tabular-nums text-[var(--text-dim)]">
-                          {extensionsReport.toolPacks.length}
-                        </span>
-                      </div>
-                      <ul className="divide-y divide-[var(--border)] rounded-md border border-[var(--border)]">
-                        {extensionsReport.toolPacks.map((pack) => (
-                          <li key={pack.manifestPath} className="px-2.5 py-2">
-                            <div className="flex items-center gap-2">
-                              <span className="truncate text-[12px] font-medium text-[var(--text)]">
-                                {pack.name}
-                              </span>
-                              <span className="rounded bg-[var(--surface-hover)] px-1 py-px text-[9.5px] uppercase tracking-wide text-[var(--text-dim)]">
-                                pack
-                              </span>
-                              <span className="ml-auto shrink-0 text-[10.5px] tabular-nums text-[var(--text-dim)]">
-                                {pack.tools.length} tools
-                              </span>
-                            </div>
-                            <div className="mt-1 truncate font-mono text-[10.5px] text-[var(--text-dim)]">
-                              {pack.manifestPath}
-                            </div>
-                            {pack.tools.length > 0 && (
-                              <div className="mt-1 truncate font-mono text-[10.5px] text-[var(--text-soft)]">
-                                {pack.tools.join(', ')}
-                              </div>
-                            )}
-                          </li>
-                        ))}
-                        {extensionsReport.toolPacks.length === 0 && (
-                          <li className="px-2.5 py-2 text-[12px] text-[var(--text-dim)]">
-                            No tool packs installed.
-                          </li>
-                        )}
-                      </ul>
                     </section>
 
                     <section>

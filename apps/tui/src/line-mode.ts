@@ -31,7 +31,6 @@ import {
   type ExtensionReport,
   getDataDir,
   getExtensionReport,
-  getToolPacksDir,
   loadSettings,
 } from '@aila/agent-node/app'
 import * as dotenv from 'dotenv'
@@ -496,19 +495,6 @@ export async function runLocalTool(input: {
 export function writeExtensionReport(report: ExtensionReport): void {
   writeLine('Aila extensions')
   writeLine(`Data: ${report.dataDir}`)
-  writeLine(`Tool packs: ${report.toolPacksDir}`)
-  const toolPackError = report.errors.find((error) => error.kind === 'toolPacks')
-  if (toolPackError) {
-    writeLine(`  [error] ${toolPackError.message}`)
-  } else if (report.toolPacks.length === 0) {
-    writeLine('  (none)')
-  } else {
-    for (const pack of report.toolPacks) {
-      const toolNames = pack.tools.join(', ')
-      writeLine(`  ${pack.id} - ${pack.tools.length} tools${toolNames ? `: ${toolNames}` : ''}`)
-    }
-  }
-
   writeLine(`Skills: ${report.skillsDir}`)
   const skillErrors = report.errors.filter((error) => error.kind === 'skills')
   for (const skillError of skillErrors) {
@@ -599,9 +585,7 @@ export async function handleSlashCommand(input: {
         }
         if (action) {
           const registry = await runtime.reloadToolPacks()
-          writeLine(
-            `[extensions] reloaded ${registry.toolPacks.length} tool packs, ${registry.specs.length} tools`,
-          )
+          writeLine(`[extensions] reloaded, ${registry.specs.length} tools available`)
         }
         writeExtensionReport(await getExtensionReport())
         return 'handled'
@@ -609,9 +593,7 @@ export async function handleSlashCommand(input: {
       case 'reload':
       case 'refresh': {
         const registry = await runtime.reloadToolPacks()
-        writeLine(
-          `[extensions] reloaded ${registry.toolPacks.length} tool packs, ${registry.specs.length} tools`,
-        )
+        writeLine(`[extensions] reloaded, ${registry.specs.length} tools available`)
         return 'handled'
       }
       case 'session':
@@ -797,7 +779,6 @@ export async function runLineMode(argv: string[] = process.argv.slice(2)): Promi
 
   writeLine('Aila TUI')
   writeLine(`Data: ${getDataDir()}`)
-  writeLine(`Tool packs: ${getToolPacksDir()}`)
   writeLine(`Conversation: ${conversationId}${isExisting ? ' (resumed)' : ''}`)
   writeLine(`Model: ${modelLabel(session.selection)}`)
   writeLine(`Runtime mode: ${session.mode}`)

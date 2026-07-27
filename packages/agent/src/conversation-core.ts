@@ -1073,8 +1073,6 @@ export function activityFromRunEvent(event: PersistedRunEvent): ConversationActi
       }
     case 'tool.requested':
       return { ...base, state: 'running', title: `Tool requested: ${toolLabel}`, detail: target }
-    case 'tool.input.delta':
-      return null
     case 'tool.input.completed':
       return {
         ...base,
@@ -1299,7 +1297,6 @@ export function replayConversationRuntimeState(
         )
         break
       case 'tool.requested':
-      case 'tool.input.delta':
       case 'tool.input.completed':
         state = runtimeReplayState(nonTerminalToolPhase(state), runtimeTurnFromEvent(state, event))
         break

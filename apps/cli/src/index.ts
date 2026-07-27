@@ -30,7 +30,6 @@ import {
   createPersistedWorkbench,
   getDataDir,
   getExtensionReport,
-  getToolPacksDir,
   loadSettings,
 } from '@aila/agent-node/app'
 import * as dotenv from 'dotenv'
@@ -76,7 +75,7 @@ function usage(): string {
     '  --prompt <text>         Prompt text; positional prompt and stdin are also supported',
     '  --conversation <id>     Continue an existing conversation',
     '  --data-dir <path>       Data directory (default: $AILA_DATA_DIR, ./.dev-data, or ~/.aila)',
-    '  --extensions            Validate and list manifest tool packs, then exit',
+    '  --extensions            List installed skills and extension status, then exit',
     '  --list                  List saved conversations and exit',
     '  --limit <n>             Limit rows for --list (default: 20)',
     '  --model <provider:id>   Override model, e.g. openai:gpt-5.4',
@@ -351,21 +350,6 @@ async function printExtensionReport(json: boolean): Promise<boolean> {
 
   output.write('Aila extensions\n')
   output.write(`Data: ${report.dataDir}\n`)
-  output.write(`Tool packs: ${report.toolPacksDir}\n`)
-  const toolPackError = report.errors.find((error) => error.kind === 'toolPacks')
-  if (toolPackError) {
-    output.write(`  [error] ${toolPackError.message}\n`)
-  } else if (report.toolPacks.length === 0) {
-    output.write('  (none)\n')
-  } else {
-    for (const pack of report.toolPacks) {
-      const toolNames = pack.tools.join(', ')
-      output.write(`  ${pack.id} - ${pack.tools.length} tools`)
-      if (toolNames) output.write(`: ${toolNames}`)
-      output.write('\n')
-    }
-  }
-
   output.write(`Skills: ${report.skillsDir}\n`)
   const skillErrors = report.errors.filter((error) => error.kind === 'skills')
   for (const skillError of skillErrors) {
@@ -611,7 +595,6 @@ async function main(): Promise<void> {
 
   if (!options.events && !options.json) {
     stderr.write(`Data: ${getDataDir()}\n`)
-    stderr.write(`Tool packs: ${getToolPacksDir()}\n`)
     stderr.write(`Conversation: ${conversationId}${isExisting ? ' (resumed)' : ''}\n`)
     stderr.write(`Model: ${modelLabel(selection)}\n`)
     stderr.write(`Runtime mode: ${options.mode}\n`)

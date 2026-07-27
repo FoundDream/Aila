@@ -58,7 +58,7 @@ Useful TUI commands:
 ```
 
 The CLI is a non-interactive entrypoint for scripts and automation. It uses the
-same `AgentRuntime`, persistence, tool packs, approval contract, and
+same `AgentRuntime`, persistence, tool registry, approval contract, and
 event schema as Desktop and TUI.
 
 Useful CLI commands:
@@ -81,9 +81,6 @@ stores data in the Electron app data directory, and in development uses
 `.dev-data`. When `.dev-data` exists in the current repo, TUI and CLI use it by
 default so local development shares the same settings and conversations as
 Desktop.
-
-Desktop, TUI, and CLI all load enabled manifest tool packs from
-`<data-dir>/tool-packs`.
 
 ## Checks
 

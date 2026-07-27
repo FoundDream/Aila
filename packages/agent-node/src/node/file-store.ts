@@ -1,30 +1,28 @@
 import { randomUUID } from 'node:crypto'
-import { mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { appendFile, mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import type { RunArtifact, RunCheckpoint, RunEvent, WorkbenchStore } from '@aila/agent'
+import type {
+  BlobRef,
+  ConversationSummary,
+  ConversationWorkspaceRef,
+  RunEvent,
+  RunEventAppendResult,
+  RunSnapshot,
+  SessionEntry,
+  SessionEntryInput,
+  StoredBlob,
+  WorkbenchStore,
+} from '@aila/agent'
 import {
+  AILA_BLOB_SCHEMA_VERSION,
   AILA_CONVERSATION_META_SCHEMA_VERSION,
-  AILA_RUN_EVENT_SCHEMA_VERSION,
-  appendConversationContextTurnLedgerEntry,
-  type ConversationRecord,
-  type ConversationSummary,
-  type ConversationWorkspaceRef,
-  createConversationUsageSnapshot,
   createInterruptedConversationRecoveryEvent,
   DEFAULT_CONVERSATION_TITLE,
-  deriveConversationTitle,
-  normalizeConversationMeta,
-  normalizeRunCheckpoint,
-  orderedUniqueRunEvents,
-  type PersistedMessage,
-  type PersistedRunEvent,
-  preparePersistedMessage,
-  prepareRunArtifact,
-  prepareRunCheckpoint,
-  prepareRunEventAppend,
-  type RunEventAppendResult,
-  replayConversationActivity,
-  upsertPersistedMessage,
+  normalizeRunSnapshot,
+  prepareRunSnapshot,
+  prepareSessionEntry,
+  projectConversation,
+  sessionRunEvents,
 } from '@aila/agent'
 import { getNodeToolResultsConversationDir } from './tool-result-store'
 
@@ -37,105 +35,57 @@ export interface FileRuntimeStoreOptions {
 }
 
 export function createFileRuntimeStore(options: FileRuntimeStoreOptions): WorkbenchStore {
-  const conversationsDir = join(options.dataDir, 'conversations')
-  const eventsDir = join(options.dataDir, 'events')
-  const runsDir = join(options.dataDir, 'runs')
+  const sessionsDir = join(options.dataDir, 'sessions')
   const createId = options.createId ?? randomUUID
   const createEventId = options.createEventId ?? randomUUID
   const now = options.now ?? Date.now
-  const runWriteChains = new Map<string, Promise<void>>()
+  const writeChains = new Map<string, Promise<void>>()
 
-  async function readRecord(conversationId: string): Promise<ConversationRecord> {
-    const path = join(conversationsDir, `${conversationId}.json`)
-    const raw = await readFile(path, 'utf-8')
-    const parsed = JSON.parse(raw) as ConversationRecord
-    return {
-      meta: normalizeConversationMeta(parsed.meta, conversationId),
-      messages: (parsed.messages ?? [])
-        .map((message) => preparePersistedMessage(message as PersistedMessage))
-        .filter(Boolean),
-    }
+  function sessionDir(sessionId: string): string {
+    return join(sessionsDir, encodeURIComponent(sessionId))
   }
 
-  async function writeRecord(record: ConversationRecord): Promise<void> {
-    await mkdir(conversationsDir, { recursive: true })
-    await writeFile(
-      join(conversationsDir, `${record.meta.id}.json`),
-      `${JSON.stringify(record, null, 2)}\n`,
-      'utf-8',
-    )
+  function journalPath(sessionId: string): string {
+    return join(sessionDir(sessionId), 'entries.jsonl')
   }
 
-  async function readEvents(conversationId: string): Promise<PersistedRunEvent[]> {
-    try {
-      const raw = await readFile(join(eventsDir, `${conversationId}.json`), 'utf-8')
-      const parsed = JSON.parse(raw) as PersistedRunEvent[]
-      return orderedUniqueRunEvents(
-        parsed.map((event) => ({
-          ...event,
-          schemaVersion: AILA_RUN_EVENT_SCHEMA_VERSION,
-        })),
-      )
-    } catch {
-      return []
-    }
+  function snapshotsDir(sessionId: string): string {
+    return join(sessionDir(sessionId), 'snapshots')
   }
 
-  async function writeEvents(conversationId: string, events: PersistedRunEvent[]): Promise<void> {
-    await mkdir(eventsDir, { recursive: true })
-    await writeFile(
-      join(eventsDir, `${conversationId}.json`),
-      `${JSON.stringify(orderedUniqueRunEvents(events), null, 2)}\n`,
-      'utf-8',
-    )
+  function snapshotPath(sessionId: string, runId: string): string {
+    return join(snapshotsDir(sessionId), `${encodeURIComponent(runId)}.json`)
   }
 
-  function runConversationDir(conversationId: string): string {
-    return join(runsDir, encodeURIComponent(conversationId))
+  function blobsDir(sessionId: string): string {
+    return join(sessionDir(sessionId), 'blobs')
   }
 
-  function runDir(conversationId: string, runId: string): string {
-    return join(runConversationDir(conversationId), encodeURIComponent(runId))
+  function blobPath(sessionId: string, blobId: string): string {
+    return join(blobsDir(sessionId), `${encodeURIComponent(blobId)}.json`)
   }
 
-  function runCheckpointPath(conversationId: string, runId: string): string {
-    return join(runDir(conversationId, runId), 'checkpoint.json')
-  }
-
-  function runArtifactsDir(conversationId: string, runId: string): string {
-    return join(runDir(conversationId, runId), 'artifacts')
-  }
-
-  async function queueRunWrite<T>(
-    conversationId: string,
-    runId: string,
-    writer: () => Promise<T>,
-  ): Promise<T> {
-    const key = `${conversationId}\0${runId}`
-    const previous = runWriteChains.get(key) ?? Promise.resolve()
+  async function queueWrite<T>(sessionId: string, writer: () => Promise<T>): Promise<T> {
+    const previous = writeChains.get(sessionId) ?? Promise.resolve()
     const run = previous.catch(() => {}).then(writer)
     const guard = run.then(
       () => undefined,
       () => undefined,
     )
-    runWriteChains.set(key, guard)
+    writeChains.set(sessionId, guard)
     guard.finally(() => {
-      if (runWriteChains.get(key) === guard) runWriteChains.delete(key)
+      if (writeChains.get(sessionId) === guard) writeChains.delete(sessionId)
     })
     return run
   }
 
-  async function readRunCheckpoint(
-    conversationId: string,
-    runId: string,
-  ): Promise<RunCheckpoint | null> {
-    try {
-      const raw = await readFile(runCheckpointPath(conversationId, runId), 'utf-8')
-      return normalizeRunCheckpoint(JSON.parse(raw))
-    } catch (error) {
-      if (isErrnoCode(error, 'ENOENT')) return null
-      throw error
-    }
+  async function readJournal(sessionId: string): Promise<SessionEntry[]> {
+    const raw = await readFile(journalPath(sessionId), 'utf-8')
+    return raw
+      .split('\n')
+      .filter((line) => line.trim().length > 0)
+      .map((line) => JSON.parse(line) as SessionEntry)
+      .sort((left, right) => left.seq - right.seq)
   }
 
   async function writeJsonAtomic(path: string, value: unknown): Promise<void> {
@@ -149,47 +99,45 @@ export function createFileRuntimeStore(options: FileRuntimeStoreOptions): Workbe
     }
   }
 
-  async function updateRecord(
-    conversationId: string,
-    update: (record: ConversationRecord) => ConversationRecord,
-  ): Promise<ConversationRecord> {
-    const record = update(await readRecord(conversationId))
-    await writeRecord(record)
-    return record
+  async function appendEntry(
+    sessionId: string,
+    input: SessionEntryInput,
+  ): Promise<
+    ReturnType<WorkbenchStore['appendSessionEntry']> extends Promise<infer T> ? T : never
+  > {
+    return queueWrite(sessionId, async () => {
+      const entries = await readJournal(sessionId)
+      const prepared = prepareSessionEntry(sessionId, entries, input, createEventId)
+      if (!prepared.duplicate) {
+        await appendFile(journalPath(sessionId), `${JSON.stringify(prepared.entry)}\n`, 'utf-8')
+        entries.push(prepared.entry)
+      }
+      return {
+        entry: structuredClone(prepared.entry),
+        summary: structuredClone(projectConversation(entries).meta),
+        ...(prepared.duplicate ? { duplicate: true } : {}),
+      }
+    })
   }
 
-  async function recordRunEvent(
-    conversationId: string,
+  async function appendRecoveryEvent(
+    sessionId: string,
     event: RunEvent,
   ): Promise<RunEventAppendResult> {
-    const record = await readRecord(conversationId)
-    const events = await readEvents(conversationId)
-    const previousActivity = replayConversationActivity(events)
-    const prepared = prepareRunEventAppend(events, event, createEventId)
-    const persisted = prepared.event
-    if (!prepared.duplicate) {
-      events.push(persisted)
-      await writeEvents(conversationId, events)
+    const result = await appendEntry(sessionId, {
+      type: 'run.event',
+      timestamp: event.timestamp,
+      entryId: event.eventId,
+      turnId: event.turnId,
+      runId: event.runId,
+      stepId: event.stepId,
+      data: { event },
+    })
+    if (result.entry.type !== 'run.event') throw new Error('invalid recovery journal entry')
+    return {
+      event: structuredClone(result.entry.data.event) as RunEventAppendResult['event'],
+      summary: structuredClone(result.summary),
     }
-
-    const activity = replayConversationActivity(events)
-    if (!activity || sameConversationActivity(previousActivity, activity)) {
-      return { event: persisted }
-    }
-    if (record.meta.activity && record.meta.activity.updatedAt > activity.updatedAt) {
-      return { event: persisted }
-    }
-
-    const updated = {
-      ...record,
-      meta: {
-        ...record.meta,
-        updatedAt: nextUpdatedAt(record.meta.updatedAt, persisted.timestamp),
-        activity,
-      },
-    }
-    await writeRecord(updated)
-    return { event: persisted, summary: updated.meta }
   }
 
   return {
@@ -197,248 +145,189 @@ export function createFileRuntimeStore(options: FileRuntimeStoreOptions): Workbe
       workspace?: ConversationWorkspaceRef | null,
     ): Promise<ConversationSummary> {
       const createdAt = now()
-      const meta: ConversationSummary = {
+      const id = createId()
+      const summary: ConversationSummary = {
         schemaVersion: AILA_CONVERSATION_META_SCHEMA_VERSION,
-        id: createId(),
+        id,
         title: DEFAULT_CONVERSATION_TITLE,
         createdAt,
         updatedAt: createdAt,
         ...(workspace ? { workspace: structuredClone(workspace) } : {}),
       }
-      await writeRecord({ meta, messages: [] })
-      await writeEvents(meta.id, [])
-      return structuredClone(meta)
+      const dir = sessionDir(id)
+      await mkdir(dir, { recursive: true })
+      const created = prepareSessionEntry(
+        id,
+        [],
+        {
+          type: 'session.created',
+          timestamp: createdAt,
+          entryId: `session:${id}`,
+          data: { summary },
+        },
+        createEventId,
+      ).entry
+      await writeFile(journalPath(id), `${JSON.stringify(created)}\n`, 'utf-8')
+      return structuredClone(summary)
     },
-    async getConversation(conversationId): Promise<ConversationRecord> {
-      return structuredClone(await readRecord(conversationId))
+    async getConversation(sessionId) {
+      return structuredClone(projectConversation(await readJournal(sessionId)))
     },
-    async saveMessage(conversationId, message): Promise<ConversationSummary> {
-      const record = await updateRecord(conversationId, (current) => {
-        const messages = [...current.messages]
-        const prepared = preparePersistedMessage(message)
-        upsertPersistedMessage(messages, prepared)
-        const title =
-          current.meta.title === DEFAULT_CONVERSATION_TITLE
-            ? (deriveConversationTitle(prepared) ?? current.meta.title)
-            : current.meta.title
-        return {
-          meta: {
-            ...current.meta,
-            title,
-            updatedAt: nextUpdatedAt(current.meta.updatedAt, now()),
-          },
-          messages,
-        }
-      })
-      return structuredClone(record.meta)
-    },
-    recordRunEvent,
-    async listConversations(): Promise<readonly ConversationSummary[]> {
-      await mkdir(conversationsDir, { recursive: true })
-      const files = await readdir(conversationsDir)
+    async listConversations() {
+      await mkdir(sessionsDir, { recursive: true })
+      const directories = await readdir(sessionsDir, { withFileTypes: true })
       const records = await Promise.all(
-        files
-          .filter((file) => file.endsWith('.json'))
-          .map((file) => readRecord(file.slice(0, -'.json'.length)).catch(() => null)),
+        directories
+          .filter((entry) => entry.isDirectory() && !entry.name.includes('.deleting-'))
+          .map((entry) =>
+            readJournal(decodeURIComponent(entry.name))
+              .then((entries) => projectConversation(entries).meta)
+              .catch(() => null),
+          ),
       )
       return records
-        .filter((record): record is ConversationRecord => record !== null)
-        .map((record) => structuredClone(record.meta))
+        .filter((summary): summary is ConversationSummary => summary !== null)
         .sort((left, right) => right.updatedAt - left.updatedAt)
+        .map((summary) => structuredClone(summary))
     },
-    async listRunEvents(conversationId): Promise<readonly PersistedRunEvent[]> {
-      return structuredClone(await readEvents(conversationId))
+    appendSessionEntry: appendEntry,
+    async listSessionEntries(sessionId) {
+      return structuredClone(await readJournal(sessionId))
     },
-    async recoverInterruptedActivities(reason): Promise<readonly RunEventAppendResult[]> {
+    async recoverInterruptedActivities(reason) {
       const summaries = (await this.listConversations?.()) ?? []
       const recovered: RunEventAppendResult[] = []
       for (const summary of summaries) {
-        const events = await readEvents(summary.id)
-        const activity = replayConversationActivity(events)
+        const entries = await readJournal(summary.id)
+        const events = sessionRunEvents(entries)
         const recoveryEvent = createInterruptedConversationRecoveryEvent(events, {
           reason,
-          activity,
+          activity: projectConversation(entries).meta.activity,
         })
-        if (!recoveryEvent) continue
-        recovered.push(await recordRunEvent(summary.id, recoveryEvent))
+        if (recoveryEvent) recovered.push(await appendRecoveryEvent(summary.id, recoveryEvent))
       }
       return recovered
     },
-    async renameConversation(conversationId, title): Promise<ConversationSummary> {
-      const record = await updateRecord(conversationId, (current) => ({
-        ...current,
-        meta: {
-          ...current.meta,
-          title: title.trim() || DEFAULT_CONVERSATION_TITLE,
-          updatedAt: nextUpdatedAt(current.meta.updatedAt, now()),
-        },
-      }))
-      return structuredClone(record.meta)
-    },
-    async recordUsage(conversationId, usage): Promise<ConversationSummary> {
-      const timestamp = now()
-      const record = await updateRecord(conversationId, (current) => ({
-        ...current,
-        meta: {
-          ...current.meta,
-          updatedAt: nextUpdatedAt(current.meta.updatedAt, timestamp),
-          usage: createConversationUsageSnapshot(current.meta.usage, usage, timestamp),
-        },
-      }))
-      return structuredClone(record.meta)
-    },
-    async saveContextCheckpoint(conversationId, checkpoint): Promise<ConversationSummary> {
-      const record = await updateRecord(conversationId, (current) => ({
-        ...current,
-        meta: {
-          ...current.meta,
-          updatedAt: nextUpdatedAt(current.meta.updatedAt, checkpoint.createdAt),
-          context: {
-            ...(current.meta.context ?? {}),
-            checkpoint: structuredClone(checkpoint),
-          },
-        },
-      }))
-      return structuredClone(record.meta)
-    },
-    async recordContextTurnLedger(conversationId, entry): Promise<ConversationSummary> {
-      const record = await updateRecord(conversationId, (current) => ({
-        ...current,
-        meta: {
-          ...current.meta,
-          updatedAt: nextUpdatedAt(current.meta.updatedAt, entry.createdAt),
-          context: appendConversationContextTurnLedgerEntry(current.meta.context, entry),
-        },
-      }))
-      return structuredClone(record.meta)
-    },
-    async saveRunCheckpoint(checkpoint): Promise<RunCheckpoint> {
-      return queueRunWrite(
-        checkpoint.identity.conversationId,
-        checkpoint.identity.runId,
-        async () => {
-          await readRecord(checkpoint.identity.conversationId)
-          const previous = await readRunCheckpoint(
-            checkpoint.identity.conversationId,
-            checkpoint.identity.runId,
-          )
-          const prepared = prepareRunCheckpoint(checkpoint, previous ?? undefined)
-          const dir = runDir(prepared.identity.conversationId, prepared.identity.runId)
-          await mkdir(dir, { recursive: true })
-          await writeJsonAtomic(
-            runCheckpointPath(prepared.identity.conversationId, prepared.identity.runId),
-            prepared,
-          )
-          return structuredClone(prepared)
-        },
-      )
-    },
-    async getRunCheckpoint(conversationId, runId): Promise<RunCheckpoint | null> {
-      const checkpoint = await readRunCheckpoint(conversationId, runId)
-      return checkpoint ? structuredClone(checkpoint) : null
-    },
-    async listRunCheckpoints(conversationId): Promise<readonly RunCheckpoint[]> {
-      const dir = runConversationDir(conversationId)
-      await mkdir(dir, { recursive: true })
-      const entries = await readdir(dir, { withFileTypes: true })
-      const checkpoints = await Promise.all(
-        entries
-          .filter((entry) => entry.isDirectory())
-          .map((entry) =>
-            readRunCheckpoint(conversationId, decodeURIComponent(entry.name)).catch(() => null),
-          ),
-      )
-      return checkpoints
-        .filter((checkpoint): checkpoint is RunCheckpoint => checkpoint !== null)
-        .map((checkpoint) => structuredClone(checkpoint))
-        .sort((left, right) => right.updatedAt - left.updatedAt)
-    },
-    async saveRunArtifact(artifact): Promise<RunArtifact> {
-      return queueRunWrite(artifact.conversationId, artifact.runId, async () => {
-        await readRecord(artifact.conversationId)
-        const prepared = prepareRunArtifact(artifact)
-        const dir = runArtifactsDir(prepared.conversationId, prepared.runId)
-        const path = join(dir, `${encodeURIComponent(prepared.artifactId)}.json`)
-        await mkdir(dir, { recursive: true })
+    async saveRunSnapshot(snapshot) {
+      return queueWrite(snapshot.identity.conversationId, async () => {
+        await readJournal(snapshot.identity.conversationId)
+        let previous: RunSnapshot | undefined
         try {
-          const existing = prepareRunArtifact(
-            JSON.parse(await readFile(path, 'utf-8')) as RunArtifact,
+          previous = normalizeRunSnapshot(
+            JSON.parse(
+              await readFile(
+                snapshotPath(snapshot.identity.conversationId, snapshot.identity.runId),
+                'utf-8',
+              ),
+            ),
           )
-          if (JSON.stringify(existing) !== JSON.stringify(prepared)) {
-            throw new Error(`run artifact is immutable: ${prepared.artifactId}`)
-          }
-          return structuredClone(existing)
         } catch (error) {
           if (!isErrnoCode(error, 'ENOENT')) throw error
         }
-        await writeJsonAtomic(path, prepared)
+        const prepared = prepareRunSnapshot(snapshot, previous)
+        await mkdir(snapshotsDir(snapshot.identity.conversationId), { recursive: true })
+        await writeJsonAtomic(
+          snapshotPath(prepared.identity.conversationId, prepared.identity.runId),
+          prepared,
+        )
         return structuredClone(prepared)
       })
     },
-    async listRunArtifacts(conversationId, runId): Promise<readonly RunArtifact[]> {
-      const dir = runArtifactsDir(conversationId, runId)
-      await mkdir(dir, { recursive: true })
-      const files = await readdir(dir)
-      const artifacts = await Promise.all(
+    async getRunSnapshot(sessionId, runId) {
+      try {
+        return structuredClone(
+          normalizeRunSnapshot(JSON.parse(await readFile(snapshotPath(sessionId, runId), 'utf-8'))),
+        )
+      } catch (error) {
+        if (isErrnoCode(error, 'ENOENT')) return null
+        throw error
+      }
+    },
+    async listRunSnapshots(sessionId) {
+      await readJournal(sessionId)
+      let files: string[]
+      try {
+        files = await readdir(snapshotsDir(sessionId))
+      } catch (error) {
+        if (isErrnoCode(error, 'ENOENT')) return []
+        throw error
+      }
+      const snapshots = await Promise.all(
         files
           .filter((file) => file.endsWith('.json'))
-          .map(async (file) => {
-            try {
-              return prepareRunArtifact(
-                JSON.parse(await readFile(join(dir, file), 'utf-8')) as RunArtifact,
-              )
-            } catch {
-              return null
-            }
-          }),
+          .map((file) =>
+            this.getRunSnapshot(sessionId, decodeURIComponent(file.slice(0, -5))).catch(() => null),
+          ),
       )
-      return artifacts
-        .filter((artifact): artifact is RunArtifact => artifact !== null)
-        .map((artifact) => structuredClone(artifact))
-        .sort((left, right) => left.createdAt - right.createdAt)
+      return snapshots
+        .filter((snapshot): snapshot is RunSnapshot => snapshot !== null)
+        .sort((left, right) => right.updatedAt - left.updatedAt)
     },
-    async deleteConversation(conversationId): Promise<void> {
-      const runWritePrefix = `${conversationId}\0`
-      await Promise.all(
-        [...runWriteChains]
-          .filter(([key]) => key.startsWith(runWritePrefix))
-          .map(([, chain]) => chain.catch(() => {})),
-      )
-      await Promise.all([
-        rm(join(conversationsDir, `${conversationId}.json`), { force: true }),
-        rm(join(eventsDir, `${conversationId}.json`), { force: true }),
-        rm(runConversationDir(conversationId), { recursive: true, force: true }),
-        rm(getNodeToolResultsConversationDir(conversationId, options), {
+    async putBlob(sessionId, input) {
+      return queueWrite(sessionId, async () => {
+        await readJournal(sessionId)
+        const blobId = input.blobId ?? createId()
+        const ref: BlobRef = {
+          schemaVersion: AILA_BLOB_SCHEMA_VERSION,
+          blobId,
+          contentType: input.contentType,
+          sizeBytes: blobSize(input.data),
+          ...(input.preview ? { preview: input.preview } : {}),
+        }
+        const stored: StoredBlob = { ref, data: structuredClone(input.data) }
+        const path = blobPath(sessionId, blobId)
+        await mkdir(blobsDir(sessionId), { recursive: true })
+        try {
+          const existing = JSON.parse(await readFile(path, 'utf-8')) as StoredBlob
+          if (JSON.stringify(existing) !== JSON.stringify(stored)) {
+            throw new Error(`blob is immutable: ${blobId}`)
+          }
+          return structuredClone(existing.ref)
+        } catch (error) {
+          if (!isErrnoCode(error, 'ENOENT')) throw error
+        }
+        await writeJsonAtomic(path, stored)
+        return structuredClone(ref)
+      })
+    },
+    async getBlob(sessionId, blobId) {
+      try {
+        return structuredClone(
+          JSON.parse(await readFile(blobPath(sessionId, blobId), 'utf-8')) as StoredBlob,
+        )
+      } catch (error) {
+        if (isErrnoCode(error, 'ENOENT')) return null
+        throw error
+      }
+    },
+    async deleteConversation(sessionId) {
+      await (writeChains.get(sessionId) ?? Promise.resolve()).catch(() => {})
+      const source = sessionDir(sessionId)
+      const tombstone = `${source}.deleting-${randomUUID()}`
+      let moved = false
+      try {
+        await rename(source, tombstone)
+        moved = true
+        await rm(getNodeToolResultsConversationDir(sessionId, options), {
           recursive: true,
           force: true,
-        }),
-      ])
-      for (const key of runWriteChains.keys()) {
-        if (key.startsWith(runWritePrefix)) runWriteChains.delete(key)
+        })
+        await rm(tombstone, { recursive: true, force: true })
+      } catch (error) {
+        if (moved) await rename(tombstone, source).catch(() => {})
+        if (!moved && isErrnoCode(error, 'ENOENT')) return
+        throw error
+      } finally {
+        writeChains.delete(sessionId)
       }
     },
   }
 }
 
-function nextUpdatedAt(current: number, candidate: number): number {
-  return candidate > current ? candidate : current + 1
+function blobSize(data: unknown): number {
+  return Buffer.byteLength(typeof data === 'string' ? data : JSON.stringify(data), 'utf-8')
 }
 
 function isErrnoCode(error: unknown, code: string): boolean {
   return error instanceof Error && 'code' in error && (error as NodeJS.ErrnoException).code === code
-}
-
-function sameConversationActivity(
-  left: ConversationSummary['activity'],
-  right: ConversationSummary['activity'],
-): boolean {
-  return (
-    left?.state === right?.state &&
-    left?.title === right?.title &&
-    left?.updatedAt === right?.updatedAt &&
-    left?.eventType === right?.eventType &&
-    left?.messageId === right?.messageId &&
-    left?.detail === right?.detail &&
-    left?.toolName === right?.toolName
-  )
 }

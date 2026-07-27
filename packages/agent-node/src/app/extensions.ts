@@ -5,23 +5,14 @@ import { type LoadedMcpServerConfig, loadMcpServerConfigs } from './mcp-config'
 import { getMcpConnectionSnapshots } from './mcp-connection-manager'
 import { getMcpOAuthStatus, type PublicMcpOAuthStatus } from './mcp-oauth'
 import { getMcpConnectionScopeKey } from './mcp-tool-pack'
-import { getDataDir, getSkillsDir, getToolPacksDir } from './paths'
+import { getDataDir, getSkillsDir } from './paths'
 import { loadSkillFromDir, loadSkillsFromDir } from './skill-loader'
-import { loadToolPacksFromDir } from './tool-pack-loader'
 
-export type ExtensionReportErrorKind = 'toolPacks' | 'skills' | 'mcp'
+export type ExtensionReportErrorKind = 'skills' | 'mcp'
 
 export interface ExtensionReportError {
   kind: ExtensionReportErrorKind
   message: string
-}
-
-export interface ExtensionToolPackReport {
-  id: string
-  name: string
-  directory: string
-  manifestPath: string
-  tools: string[]
 }
 
 export interface ExtensionSkillReport {
@@ -62,11 +53,9 @@ export interface ExtensionIntegrationReport {
 export interface ExtensionReport {
   ok: boolean
   dataDir: string
-  toolPacksDir: string
   skillsDir: string
   mcpConfigPath: string
   projectMcpConfigPath: string
-  toolPacks: ExtensionToolPackReport[]
   skills: ExtensionSkillReport[]
   integrations: ExtensionIntegrationReport[]
   mcpServers: ExtensionMcpServerReport[]
@@ -233,11 +222,9 @@ export async function getSkillExtensionReport(cwd = process.cwd()): Promise<Exte
   return {
     ok: errors.length === 0 && mcp.errors.length === 0,
     dataDir: getDataDir(),
-    toolPacksDir: getToolPacksDir(),
     skillsDir: getSkillsDir(),
     mcpConfigPath: mcp.mcpConfigPath,
     projectMcpConfigPath: mcp.projectMcpConfigPath,
-    toolPacks: [],
     skills: skillResult.skills.map((skill) => ({
       name: skill.definition.name,
       description: skill.definition.description,
@@ -252,13 +239,6 @@ export async function getSkillExtensionReport(cwd = process.cwd()): Promise<Exte
 
 export async function getExtensionReport(cwd = process.cwd()): Promise<ExtensionReport> {
   const errors: ExtensionReportError[] = []
-
-  let toolPackError: string | null = null
-  const toolPacks = await loadToolPacksFromDir().catch((error) => {
-    toolPackError = errorMessage(error)
-    return []
-  })
-  if (toolPackError) errors.push({ kind: 'toolPacks', message: toolPackError })
 
   const skillResult = await loadSkillsFromDir().catch((error) => ({
     skills: [],
@@ -279,17 +259,9 @@ export async function getExtensionReport(cwd = process.cwd()): Promise<Extension
   return {
     ok: errors.length === 0,
     dataDir: getDataDir(),
-    toolPacksDir: getToolPacksDir(),
     skillsDir: getSkillsDir(),
     mcpConfigPath: mcp.mcpConfigPath,
     projectMcpConfigPath: mcp.projectMcpConfigPath,
-    toolPacks: toolPacks.map((pack) => ({
-      id: pack.toolPack.id,
-      name: pack.toolPack.name,
-      directory: pack.directory,
-      manifestPath: pack.manifestPath,
-      tools: pack.toolPack.tools.map((tool) => tool.spec.function.name),
-    })),
     skills: skillResult.skills.map((skill) => ({
       name: skill.definition.name,
       description: skill.definition.description,

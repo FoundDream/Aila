@@ -37,9 +37,12 @@ import {
 } from './conversation-core'
 import type { RunIdentity, RunNextAction } from './run-machine'
 import {
-  prepareRunCheckpointForResume,
+  AILA_RUN_ARTIFACT_SCHEMA_VERSION,
+  prepareRunSnapshotForResume,
   type RunArtifact,
   type RunCheckpoint,
+  type RunPayloadKind,
+  type RunSnapshot,
 } from './run-persistence'
 import { createInMemoryRuntimeStore } from './runtime/memory-store'
 import type { WorkbenchStore } from './runtime/repositories'
@@ -48,6 +51,13 @@ import {
   TurnCoordinator,
   type TurnStartLock,
 } from './runtime/turn-coordinator'
+import {
+  type BlobRef,
+  type SessionEntry,
+  type SessionEntryInput,
+  sessionRunEvents,
+  sessionRunPayloads,
+} from './session-journal'
 import type { Settings } from './settings-types'
 import { createSkillToolPack, type LoadedSkill } from './skills'
 import {
@@ -143,7 +153,7 @@ function errorMessage(error: unknown): string {
 }
 
 function runtimeRunAllowedControls(
-  checkpoint: RunCheckpoint,
+  checkpoint: RunSnapshot,
   active: boolean,
 ): RuntimeRunAllowedControls {
   const status = checkpoint.loop.state.status
@@ -191,6 +201,46 @@ function runArtifactDescriptor(artifact: RunArtifact): RuntimeRunArtifactDescrip
     ...cloneRuntimeValue(metadata),
     label: runArtifactLabel(artifact),
     size,
+  }
+}
+
+interface RunContextBlobData {
+  messages: ChatMessage[]
+  contextPlan: AgentContextPlan
+}
+
+function isRunContextBlobData(value: unknown): value is RunContextBlobData {
+  if (!value || typeof value !== 'object') return false
+  const record = value as Partial<RunContextBlobData>
+  return (
+    Array.isArray(record.messages) && !!record.contextPlan && typeof record.contextPlan === 'object'
+  )
+}
+
+function artifactKindFromPayload(
+  kind: SessionEntry<'run.payload'>['data']['kind'],
+): RunPayloadKind {
+  if (kind === 'provider_request') return 'model_request'
+  if (kind === 'provider_response') return 'model_response'
+  if (kind === 'context_compaction') return 'compaction'
+  return kind
+}
+
+function runArtifactFromEntry(entry: SessionEntry<'run.payload'>, data: unknown): RunArtifact {
+  if (!entry.runId || !entry.turnId || !entry.stepId) {
+    throw new Error(`run payload entry is missing execution identity: ${entry.entryId}`)
+  }
+  return {
+    schemaVersion: AILA_RUN_ARTIFACT_SCHEMA_VERSION,
+    artifactId: entry.entryId,
+    conversationId: entry.sessionId,
+    turnId: entry.turnId,
+    runId: entry.runId,
+    stepId: entry.stepId,
+    kind: artifactKindFromPayload(entry.data.kind),
+    createdAt: entry.timestamp,
+    contentType: entry.payloadRef?.contentType === 'text/plain' ? 'text/plain' : 'application/json',
+    data: cloneRuntimeValue(data),
   }
 }
 
@@ -355,12 +405,12 @@ export interface RuntimeRunAllowedControls {
 }
 
 export interface RuntimeRunSummary {
-  identity: RunCheckpoint['identity']
-  status: RunCheckpoint['loop']['state']['status']
-  mode: RunCheckpoint['loop']['state']['mode']
-  nextAction?: RunCheckpoint['loop']['state']['nextAction']
-  wait?: RunCheckpoint['loop']['state']['wait']
-  recovery: RunCheckpoint['recovery']
+  identity: RunSnapshot['identity']
+  status: RunSnapshot['loop']['state']['status']
+  mode: RunSnapshot['loop']['state']['mode']
+  nextAction?: RunSnapshot['loop']['state']['nextAction']
+  wait?: RunSnapshot['loop']['state']['wait']
+  recovery: RunSnapshot['recovery']
   revision: number
   updatedAt: number
   stepCount: number
@@ -374,7 +424,7 @@ export interface RuntimeRunArtifactDescriptor extends Omit<RunArtifact, 'data'> 
 }
 
 export interface RuntimeRunInspection {
-  checkpoint: RunCheckpoint
+  checkpoint: RunSnapshot
   events: PersistedRunEvent[]
   artifacts: RuntimeRunArtifactDescriptor[]
   active: boolean
@@ -499,8 +549,11 @@ export {
   type RuntimeEnvironment,
 } from './runtime/memory-store'
 export type {
+  BlobRepository,
   EventRepository,
+  RecoveryRepository,
   RunRepository,
+  RunSnapshotRepository,
   SessionRepository,
   WorkbenchStore,
 } from './runtime/repositories'
@@ -862,8 +915,7 @@ export class WorkbenchRuntime implements Workbench {
     return cloneRuntimeSkills(await this.skillsLoad)
   }
 
-  // Reloads every extension cache (manifest tool packs and skills) and
-  // rebuilds the tool registry from the refreshed sources.
+  // Reloads dynamic extension and skill caches, then rebuilds the tool registry.
   async reloadToolPacks(): Promise<ToolRegistry> {
     this.toolRegistryLoad = null
     this.skillsLoad = null
@@ -919,21 +971,18 @@ export class WorkbenchRuntime implements Workbench {
   }
 
   async listRunEvents(conversationId: string): Promise<PersistedRunEvent[]> {
-    if (!this.store.listRunEvents) throw new Error('runtime store cannot list agent events')
-    return cloneRuntimePersistedRunEvents(await this.store.listRunEvents(conversationId))
+    return cloneRuntimePersistedRunEvents(
+      sessionRunEvents(await this.store.listSessionEntries(conversationId)),
+    )
   }
 
   async getRunCheckpoint(conversationId: string, runId: string): Promise<RunCheckpoint | null> {
-    if (!this.store.getRunCheckpoint) throw new Error('runtime store cannot load run checkpoints')
-    const checkpoint = await this.store.getRunCheckpoint(conversationId, runId)
+    const checkpoint = await this.store.getRunSnapshot(conversationId, runId)
     return checkpoint ? cloneRuntimeValue(checkpoint) : null
   }
 
   async listRunCheckpoints(conversationId: string): Promise<RunCheckpoint[]> {
-    if (!this.store.listRunCheckpoints) {
-      throw new Error('runtime store cannot list run checkpoints')
-    }
-    return cloneRuntimeValue([...(await this.store.listRunCheckpoints(conversationId))])
+    return cloneRuntimeValue([...(await this.store.listRunSnapshots(conversationId))])
   }
 
   async listRunSummaries(conversationId: string): Promise<RuntimeRunSummary[]> {
@@ -969,12 +1018,19 @@ export class WorkbenchRuntime implements Workbench {
     if (!checkpoint) {
       throw new Error(`agent run checkpoint not found: ${input.conversationId}/${input.runId}`)
     }
-    const [events, artifacts] = await Promise.all([
+    const [events, entries] = await Promise.all([
       this.listRunEvents(input.conversationId),
-      this.store.listRunArtifacts
-        ? this.store.listRunArtifacts(input.conversationId, input.runId)
-        : Promise.resolve([]),
+      this.store.listSessionEntries(input.conversationId),
     ])
+    const payloadEntries = sessionRunPayloads(entries, input.runId)
+    const artifacts = await Promise.all(
+      payloadEntries.map(async (entry) => {
+        const blob = entry.payloadRef
+          ? await this.store.getBlob(input.conversationId, entry.payloadRef.blobId)
+          : null
+        return runArtifactFromEntry(entry, blob?.data ?? null)
+      }),
+    )
     const active = this.listActiveStreams().some((turn) => turn.runId === input.runId)
     return cloneRuntimeValue({
       checkpoint,
@@ -986,16 +1042,17 @@ export class WorkbenchRuntime implements Workbench {
   }
 
   async getRunArtifact(input: RuntimeRunArtifactInput): Promise<RunArtifact> {
-    if (!this.store.listRunArtifacts) {
-      throw new Error('runtime store cannot load run artifacts')
-    }
-    const artifact = (await this.store.listRunArtifacts(input.conversationId, input.runId)).find(
-      (candidate) => candidate.artifactId === input.artifactId,
-    )
-    if (!artifact) {
+    const entry = sessionRunPayloads(
+      await this.store.listSessionEntries(input.conversationId),
+      input.runId,
+    ).find((candidate) => candidate.entryId === input.artifactId)
+    if (!entry) {
       throw new Error(`agent run artifact not found: ${input.artifactId}`)
     }
-    return cloneRuntimeValue(artifact)
+    const blob = entry.payloadRef
+      ? await this.store.getBlob(input.conversationId, entry.payloadRef.blobId)
+      : null
+    return cloneRuntimeValue(runArtifactFromEntry(entry, blob?.data ?? null))
   }
 
   async getConversationRuntimeState(
@@ -1027,10 +1084,12 @@ export class WorkbenchRuntime implements Workbench {
   }
 
   async renameConversation(conversationId: string, title: string): Promise<ConversationSummary> {
-    if (!this.store.renameConversation) throw new Error('runtime store cannot rename conversations')
-    const summary = cloneRuntimeConversationSummary(
-      await this.store.renameConversation(conversationId, title),
-    )
+    const { summary: appended } = await this.store.appendSessionEntry(conversationId, {
+      type: 'conversation.renamed',
+      timestamp: this.now(),
+      data: { title },
+    })
+    const summary = cloneRuntimeConversationSummary(appended)
     this.emit(createWorkbenchEvent('conversations:updated', summary))
     return summary
   }
@@ -1093,10 +1152,6 @@ export class WorkbenchRuntime implements Workbench {
       if (this.turns.has(conversationId)) {
         throw new Error('cannot compact while assistant turn is running')
       }
-      if (!this.store.saveContextCheckpoint) {
-        throw new Error('runtime store cannot save context checkpoints')
-      }
-
       const record = await this.getConversation(conversationId)
       const contextInput = {
         conversationId,
@@ -1268,10 +1323,7 @@ export class WorkbenchRuntime implements Workbench {
       }
       await this.abort(input.conversationId)
     }
-    if (!this.store.getRunCheckpoint || !this.store.saveRunCheckpoint) {
-      throw new Error('runtime store cannot abort persisted agent runs')
-    }
-    const loaded = await this.store.getRunCheckpoint(input.conversationId, input.runId)
+    const loaded = await this.store.getRunSnapshot(input.conversationId, input.runId)
     if (!loaded) {
       throw new Error(`agent run checkpoint not found: ${input.conversationId}/${input.runId}`)
     }
@@ -1291,11 +1343,6 @@ export class WorkbenchRuntime implements Workbench {
     checkpoint.loop.state.nextAction = undefined
     checkpoint.loop.state.wait = undefined
     checkpoint.loop.state.error = 'user'
-    checkpoint.assistantMessage = {
-      ...checkpoint.assistantMessage,
-      status: 'error',
-      error: 'Aborted',
-    }
     checkpoint.recovery = { strategy: 'automatic' }
     checkpoint.updatedAt = timestamp
     await this.recordRunEvent({
@@ -1307,17 +1354,26 @@ export class WorkbenchRuntime implements Workbench {
       type: 'run.cancelled',
       data: { reason: 'user' },
     })
-    const saved = cloneRuntimeValue(await this.store.saveRunCheckpoint(checkpoint))
-    await this.persistAndAnnounce(input.conversationId, saved.assistantMessage)
+    const saved = cloneRuntimeValue(await this.store.saveRunSnapshot(checkpoint))
+    const record = await this.getConversation(input.conversationId)
+    const currentAssistant = record.messages.find(
+      (message) => message.id === saved.assistantMessageId && message.role === 'assistant',
+    )
+    await this.persistAndAnnounce(input.conversationId, {
+      schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+      id: saved.assistantMessageId,
+      role: 'assistant',
+      blocks: cloneRuntimeValue(currentAssistant?.blocks ?? []),
+      status: 'error',
+      error: 'Aborted',
+      model: cloneRuntimeValue(saved.selection),
+    })
     return saved
   }
 
   async forkRun(input: RuntimeForkRunInput): Promise<RunCheckpoint> {
-    if (!this.store.getRunCheckpoint || !this.store.saveRunCheckpoint) {
-      throw new Error('runtime store cannot fork persisted agent runs')
-    }
     this.assertCanStartTurn(input.conversationId)
-    const source = await this.store.getRunCheckpoint(input.conversationId, input.runId)
+    const source = await this.store.getRunSnapshot(input.conversationId, input.runId)
     if (!source) {
       throw new Error(`agent run checkpoint not found: ${input.conversationId}/${input.runId}`)
     }
@@ -1339,10 +1395,6 @@ export class WorkbenchRuntime implements Workbench {
     const nextAction: RunNextAction = cloneRuntimeValue(
       source.loop.state.nextAction ?? { type: 'model', reason: 'resume' as const },
     )
-    const pendingModelOutput =
-      nextAction.type === 'tools'
-        ? source.modelStepOutputs[String(Math.max(0, source.loop.modelStepIndex - 1))]
-        : undefined
     const checkpoint: RunCheckpoint = {
       ...cloneRuntimeValue(source),
       identity,
@@ -1362,20 +1414,14 @@ export class WorkbenchRuntime implements Workbench {
         completedToolBatches: source.loop.completedToolBatches,
         pendingToolCalls: cloneRuntimeValue(source.loop.pendingToolCalls),
       },
-      modelStepOutputs: pendingModelOutput === undefined ? {} : { '0': pendingModelOutput },
-      assistantMessage: {
-        ...cloneRuntimeValue(source.assistantMessage),
-        id: assistantMessageId,
-        status: 'streaming',
-        error: undefined,
-      },
+      contextRef: cloneRuntimeValue(source.contextRef),
       recovery: { strategy: 'automatic' },
       revision: 1,
       createdAt: timestamp,
       updatedAt: timestamp,
-      lastEventSeq: undefined,
+      throughSeq: source.throughSeq,
     }
-    const saved = cloneRuntimeValue(await this.store.saveRunCheckpoint(checkpoint))
+    const saved = cloneRuntimeValue(await this.store.saveRunSnapshot(checkpoint))
     const identityData = {
       parentRunId: source.identity.runId,
       ...(originStepId ? { originStepId } : {}),
@@ -1413,11 +1459,7 @@ export class WorkbenchRuntime implements Workbench {
         await this.waitForPriorStreamBeforeNextTurn(input.conversationId, previous)
       }
       this.assertCanStartTurn(input.conversationId)
-      if (!this.store.saveRunCheckpoint || !this.store.getRunCheckpoint) {
-        throw new Error('runtime store cannot resume agent runs')
-      }
-
-      const loaded = await this.store.getRunCheckpoint(input.conversationId, input.runId)
+      const loaded = await this.store.getRunSnapshot(input.conversationId, input.runId)
       if (!loaded) {
         throw new Error(`agent run checkpoint not found: ${input.conversationId}/${input.runId}`)
       }
@@ -1427,7 +1469,7 @@ export class WorkbenchRuntime implements Workbench {
         checkpoint.updatedAt + 1,
         (interruptedStep?.startedAt ?? checkpoint.updatedAt) + 1,
       )
-      const resumed = prepareRunCheckpointForResume(checkpoint, recoveryTimestamp)
+      const resumed = prepareRunSnapshotForResume(checkpoint, recoveryTimestamp)
       if (interruptedStep?.status === 'running') {
         await this.recordRunEvent({
           timestamp: recoveryTimestamp,
@@ -1457,7 +1499,7 @@ export class WorkbenchRuntime implements Workbench {
           },
         })
       }
-      const savedCheckpoint = cloneRuntimeValue(await this.store.saveRunCheckpoint(resumed))
+      const savedCheckpoint = cloneRuntimeValue(await this.store.saveRunSnapshot(resumed))
       const record = await this.getConversation(input.conversationId)
       const userMessage = record.messages.find(
         (message) => message.id === savedCheckpoint.identity.turnId,
@@ -1465,9 +1507,7 @@ export class WorkbenchRuntime implements Workbench {
       if (!userMessage || userMessage.role !== 'user') {
         throw new Error(`run user message not found: ${savedCheckpoint.identity.turnId}`)
       }
-      if (!savedCheckpoint.contextPlan) {
-        throw new Error('run checkpoint is missing its context plan')
-      }
+      const resumeState = await this.loadRunResumeState(savedCheckpoint)
 
       const mode = savedCheckpoint.executionMode
       const assistantMessageId = savedCheckpoint.assistantMessageId
@@ -1505,13 +1545,15 @@ export class WorkbenchRuntime implements Workbench {
         selection: cloneRuntimeValue(savedCheckpoint.selection),
         controller,
         resolveCleanup,
-        messages: cloneRuntimeChatMessages(savedCheckpoint.messages) ?? [],
-        contextPlan: cloneRuntimeValue(savedCheckpoint.contextPlan),
+        messages: cloneRuntimeChatMessages(resumeState.messages) ?? [],
+        contextPlan: cloneRuntimeValue(resumeState.contextPlan),
         toolContext,
         toolRegistry,
         mode,
         loopMode: input.loopMode ?? 'continuous',
-        runCheckpoint: savedCheckpoint,
+        runSnapshot: savedCheckpoint,
+        runContextRef: cloneRuntimeValue(savedCheckpoint.contextRef),
+        resumeState,
       })
 
       return {
@@ -1521,6 +1563,71 @@ export class WorkbenchRuntime implements Workbench {
         runId: savedCheckpoint.identity.runId,
       }
     })
+  }
+
+  private async loadRunResumeState(snapshot: RunSnapshot): Promise<{
+    messages: ChatMessage[]
+    contextPlan: AgentContextPlan
+    assistantMessage?: PersistedMessage
+    modelStepOutputs: Record<string, string>
+  }> {
+    const contextBlob = await this.store.getBlob(
+      snapshot.identity.conversationId,
+      snapshot.contextRef.blobId,
+    )
+    if (!contextBlob || !isRunContextBlobData(contextBlob.data)) {
+      throw new Error(`run context blob not found: ${snapshot.contextRef.blobId}`)
+    }
+
+    const entries = await this.store.listSessionEntries(snapshot.identity.conversationId)
+    const sourceRunId = snapshot.identity.parentRunId ?? snapshot.identity.runId
+    let sourcePayloads = sessionRunPayloads(entries, sourceRunId)
+    if (snapshot.identity.originStepId) {
+      const boundarySeq = sourcePayloads
+        .filter((entry) => entry.stepId === snapshot.identity.originStepId)
+        .reduce((maximum, entry) => Math.max(maximum, entry.seq), 0)
+      if (boundarySeq > 0)
+        sourcePayloads = sourcePayloads.filter((entry) => entry.seq <= boundarySeq)
+    }
+    const ownPayloads =
+      sourceRunId === snapshot.identity.runId
+        ? []
+        : sessionRunPayloads(entries, snapshot.identity.runId)
+    const payloads = [...sourcePayloads, ...ownPayloads].sort((left, right) => left.seq - right.seq)
+    const messages = cloneRuntimeChatMessages(contextBlob.data.messages) ?? []
+    const modelStepOutputs: Record<string, string> = {}
+    let assistantMessage: PersistedMessage | undefined
+
+    for (const payload of payloads) {
+      if (payload.data.modelMessage) {
+        messages.push(cloneRuntimeValue(payload.data.modelMessage))
+      }
+      if (payload.data.assistantMessage) {
+        assistantMessage = {
+          ...cloneRuntimeValue(payload.data.assistantMessage),
+          id: snapshot.assistantMessageId,
+          status: 'streaming',
+          error: undefined,
+        }
+      }
+      if (payload.data.kind !== 'provider_response' || !payload.payloadRef) continue
+      const blob = await this.store.getBlob(
+        snapshot.identity.conversationId,
+        payload.payloadRef.blobId,
+      )
+      if (!blob?.data || typeof blob.data !== 'object') continue
+      const data = blob.data as Record<string, unknown>
+      if (typeof data.modelStepIndex === 'number' && typeof data.text === 'string') {
+        modelStepOutputs[String(data.modelStepIndex)] = data.text
+      }
+    }
+
+    return {
+      messages,
+      contextPlan: cloneRuntimeValue(contextBlob.data.contextPlan),
+      ...(assistantMessage ? { assistantMessage } : {}),
+      modelStepOutputs,
+    }
   }
 
   private async startAssistantTurn(input: {
@@ -1572,6 +1679,7 @@ export class WorkbenchRuntime implements Workbench {
     let streamStarted = false
     let messages: ChatMessage[]
     let contextPlan: AgentContextPlan
+    let runContextRef: BlobRef
     let toolContext: ToolContext
     let toolRegistry: ToolRegistry
     try {
@@ -1613,6 +1721,14 @@ export class WorkbenchRuntime implements Workbench {
         record,
         selection,
         contextPlan,
+      })
+      runContextRef = await this.store.putBlob(conversationId, {
+        blobId: `run-context:${run.runId}`,
+        contentType: 'application/json',
+        data: {
+          messages: cloneRuntimeChatMessages(messages) ?? [],
+          contextPlan: cloneRuntimeValue(contextPlan),
+        } satisfies RunContextBlobData,
       })
       const baseToolRegistry = await this.getToolRegistry({ conversationId, record })
       toolRegistry = filterRuntimeToolRegistryForMode(baseToolRegistry, mode)
@@ -1664,6 +1780,7 @@ export class WorkbenchRuntime implements Workbench {
       toolRegistry,
       mode,
       loopMode,
+      runContextRef,
     })
 
     return { userMessage, assistantMessageId, turnId: run.turnId, runId: run.runId }
@@ -1714,23 +1831,32 @@ export class WorkbenchRuntime implements Workbench {
       return [...recovered].sort((a, b) => b.updatedAt - a.updatedAt)
     }
 
-    if (!this.store.listConversations || !this.store.listRunEvents) return []
+    if (!this.store.listConversations) return []
 
     const conversations = cloneRuntimeConversationSummaries(await this.store.listConversations())
     const recovered: ConversationSummary[] = []
     await Promise.all(
       conversations.map(async (summary) => {
-        const loadedEvents = await this.store.listRunEvents?.(summary.id)
-        const events = loadedEvents ? cloneRuntimePersistedRunEvents(loadedEvents) : undefined
-        if (!events) return
+        const events = cloneRuntimePersistedRunEvents(
+          sessionRunEvents(await this.store.listSessionEntries(summary.id)),
+        )
         const recoveryEvent = createInterruptedConversationRecoveryEvent(events, {
           reason,
           activity: replayConversationActivity(events) ?? summary.activity,
         })
         if (!recoveryEvent) return
-        const { event, summary: nextSummary } = cloneRuntimeRunEventAppendResult(
-          await this.store.recordRunEvent(summary.id, cloneRuntimeValue(recoveryEvent)),
-        )
+        const appended = await this.store.appendSessionEntry(summary.id, {
+          type: 'run.event',
+          timestamp: recoveryEvent.timestamp,
+          entryId: recoveryEvent.eventId,
+          turnId: recoveryEvent.turnId,
+          runId: recoveryEvent.runId,
+          stepId: recoveryEvent.stepId,
+          data: { event: cloneRuntimeValue(recoveryEvent) },
+        })
+        if (appended.entry.type !== 'run.event') return
+        const event = cloneRuntimeValue(appended.entry.data.event) as PersistedRunEvent
+        const nextSummary = cloneRuntimeConversationSummary(appended.summary)
         this.emit(createWorkbenchEvent('run:event', event))
         if (!nextSummary) return
         this.emit(createWorkbenchEvent('conversations:updated', nextSummary))
@@ -1821,9 +1947,12 @@ export class WorkbenchRuntime implements Workbench {
     message: PersistedMessage,
   ): Promise<boolean> {
     if (this.deletedConversations.has(conversationId)) return false
-    const summary = cloneRuntimeConversationSummary(
-      await this.store.saveMessage(conversationId, cloneRuntimePersistedMessage(message)),
-    )
+    const appended = await this.store.appendSessionEntry(conversationId, {
+      type: 'message.committed',
+      timestamp: this.now(),
+      data: { message: cloneRuntimePersistedMessage(message) },
+    })
+    const summary = cloneRuntimeConversationSummary(appended.summary)
     if (this.deletedConversations.has(conversationId)) return false
     this.emit(createWorkbenchEvent('conversations:updated', summary))
     return true
@@ -1965,9 +2094,20 @@ export class WorkbenchRuntime implements Workbench {
     event: RuntimeRecordRunEventInput,
   ): Promise<RunEventAppendResult | null> {
     if (this.deletedConversations.has(event.conversationId)) return null
-    const result = cloneRuntimeRunEventAppendResult(
-      await this.store.recordRunEvent(event.conversationId, cloneRuntimeValue(event)),
-    )
+    const appended = await this.store.appendSessionEntry(event.conversationId, {
+      type: 'run.event',
+      timestamp: event.timestamp,
+      entryId: event.eventId,
+      turnId: event.turnId,
+      runId: event.runId,
+      stepId: event.stepId,
+      data: { event: cloneRuntimeValue(event) },
+    })
+    if (appended.entry.type !== 'run.event') throw new Error('invalid run event journal append')
+    const result: RunEventAppendResult = {
+      event: cloneRuntimeValue(appended.entry.data.event) as PersistedRunEvent,
+      summary: cloneRuntimeConversationSummary(appended.summary),
+    }
     if (this.deletedConversations.has(event.conversationId)) return null
     const { event: persisted, summary } = result
     this.emit(createWorkbenchEvent('run:event', persisted))
@@ -2322,7 +2462,7 @@ export class WorkbenchRuntime implements Workbench {
   }): Promise<void> {
     const { conversationId, assistantMessageId, record, selection, contextPlan } = input
     const recommended = contextPlan.compaction.recommendedCheckpoint
-    if (!recommended || !this.store.saveContextCheckpoint) return
+    if (!recommended) return
     await this.persistContextCheckpoint({
       conversationId,
       messageId: assistantMessageId,
@@ -2344,7 +2484,6 @@ export class WorkbenchRuntime implements Workbench {
     trigger?: 'auto' | 'manual'
   }): Promise<ConversationContextCheckpoint | null> {
     const { conversationId, messageId, record, selection, contextPlan, recommended } = input
-    if (!this.store.saveContextCheckpoint) return null
     await this.recordContextCompactionEvent({
       conversationId,
       messageId,
@@ -2373,9 +2512,12 @@ export class WorkbenchRuntime implements Workbench {
       artifact: cloneRuntimeValue(semantic.artifact),
     }
     try {
-      const summary = cloneRuntimeConversationSummary(
-        await this.store.saveContextCheckpoint(conversationId, checkpoint),
-      )
+      const appended = await this.store.appendSessionEntry(conversationId, {
+        type: 'context.compacted',
+        timestamp: checkpoint.createdAt,
+        data: { checkpoint: cloneRuntimeValue(checkpoint) },
+      })
+      const summary = cloneRuntimeConversationSummary(appended.summary)
       this.emit(createWorkbenchEvent('conversations:updated', summary))
       await this.recordContextCompactionEvent({
         conversationId,
@@ -2511,14 +2653,14 @@ export class WorkbenchRuntime implements Workbench {
     contextPlan: AgentContextPlan
     usage?: UsageInfo
   }): Promise<void> {
-    if (!this.store.recordContextTurnLedger) return
     try {
-      const summary = cloneRuntimeConversationSummary(
-        await this.store.recordContextTurnLedger(
-          input.conversationId,
-          this.createContextTurnLedgerEntry(input),
-        ),
-      )
+      const entry = this.createContextTurnLedgerEntry(input)
+      const appended = await this.store.appendSessionEntry(input.conversationId, {
+        type: 'context.turn.recorded',
+        timestamp: entry.createdAt,
+        data: { entry },
+      })
+      const summary = cloneRuntimeConversationSummary(appended.summary)
       this.emit(createWorkbenchEvent('conversations:updated', summary))
     } catch (error) {
       this.logger.warn('[runtime] context turn ledger persistence failed:', error)
@@ -2538,7 +2680,14 @@ export class WorkbenchRuntime implements Workbench {
     toolRegistry: ToolRegistry
     mode: AilaExecutionMode
     loopMode: 'continuous' | 'step'
-    runCheckpoint?: RunCheckpoint
+    runContextRef: BlobRef
+    runSnapshot?: RunSnapshot
+    resumeState?: {
+      messages: ChatMessage[]
+      contextPlan: AgentContextPlan
+      assistantMessage?: PersistedMessage
+      modelStepOutputs?: Record<string, string>
+    }
   }): Promise<void> {
     const {
       conversationId,
@@ -2553,10 +2702,13 @@ export class WorkbenchRuntime implements Workbench {
       toolRegistry,
       mode,
       loopMode,
-      runCheckpoint,
+      runContextRef,
+      runSnapshot,
+      resumeState,
     } = input
     let eventLogChain = Promise.resolve()
-    let lastEventSeq = runCheckpoint?.lastEventSeq
+    let eventLogFailure: unknown
+    let lastJournalSeq = runSnapshot?.throughSeq ?? 0
     let terminalRunEventQueued = false
     const queueRunEvent = (event: RunEventInput): Promise<void> => {
       const eventWithSelection = withTurnSelection(
@@ -2579,11 +2731,12 @@ export class WorkbenchRuntime implements Workbench {
       if (!this.acceptsStreamEvents(conversationId, controller)) return Promise.resolve()
       eventLogChain = eventLogChain
         .then(async () => {
+          if (eventLogFailure) return
           const result = await this.recordRunEventWithResult(eventWithSelection)
-          if (result?.event.seq !== undefined) lastEventSeq = result.event.seq
+          if (result?.event.seq !== undefined) lastJournalSeq = result.event.seq
         })
-        .catch((err) => {
-          this.logger.warn('[runtime] agent-event append failed:', err)
+        .catch((error) => {
+          eventLogFailure ??= error
         })
       return eventLogChain
     }
@@ -2597,7 +2750,9 @@ export class WorkbenchRuntime implements Workbench {
           assistantMessageId,
           run: cloneRuntimeValue(run),
           loopMode,
-          ...(runCheckpoint ? { runCheckpoint: cloneRuntimeValue(runCheckpoint) } : {}),
+          runContextRef: cloneRuntimeValue(runContextRef),
+          ...(runSnapshot ? { runSnapshot: cloneRuntimeValue(runSnapshot) } : {}),
+          ...(resumeState ? { resumeState: cloneRuntimeValue(resumeState) } : {}),
           messages: cloneRuntimeChatMessages(messages) ?? [],
           contextPlan: cloneRuntimeValue(contextPlan),
           prepareModelStep: ({ messages: currentMessages, contextPlan: currentPlan }) => ({
@@ -2617,24 +2772,24 @@ export class WorkbenchRuntime implements Workbench {
           onToolPolicy: toolContext.onToolPolicy,
           onToolApproval: toolContext.onToolApproval,
           onRunEvent: queueRunEvent,
-          ...(this.store.saveRunCheckpoint
-            ? {
-                saveRunCheckpoint: (checkpoint: RunCheckpoint) =>
-                  this.store.saveRunCheckpoint?.(
-                    cloneRuntimeValue({
-                      ...checkpoint,
-                      ...(lastEventSeq !== undefined ? { lastEventSeq } : {}),
-                    }),
-                  ) ?? Promise.resolve(cloneRuntimeValue(checkpoint)),
-              }
-            : {}),
-          ...(this.store.saveRunArtifact
-            ? {
-                saveRunArtifact: (artifact: RunArtifact) =>
-                  this.store.saveRunArtifact?.(cloneRuntimeValue(artifact)) ??
-                  Promise.resolve(cloneRuntimeValue(artifact)),
-              }
-            : {}),
+          saveRunSnapshot: (snapshot: RunSnapshot) =>
+            this.store.saveRunSnapshot(
+              cloneRuntimeValue({
+                ...snapshot,
+                throughSeq: lastJournalSeq,
+              }),
+            ),
+          appendSessionEntry: async (entry: SessionEntryInput) => {
+            await eventLogChain
+            if (eventLogFailure) throw eventLogFailure
+            const appended = await this.store.appendSessionEntry(
+              conversationId,
+              cloneRuntimeValue(entry),
+            )
+            lastJournalSeq = appended.entry.seq
+            return cloneRuntimeValue(appended.entry)
+          },
+          putBlob: (blob) => this.store.putBlob(conversationId, cloneRuntimeValue(blob)),
           toolRegistry: cloneRuntimeToolRegistry(toolRegistry),
         },
         {
@@ -2682,9 +2837,12 @@ export class WorkbenchRuntime implements Workbench {
             this.emit(createWorkbenchEvent('chat:done', doneEvent))
             if (doneEvent.usage) {
               try {
-                const summary = cloneRuntimeConversationSummary(
-                  await this.store.recordUsage(conversationId, cloneRuntimeValue(doneEvent.usage)),
-                )
+                const appended = await this.store.appendSessionEntry(conversationId, {
+                  type: 'usage.recorded',
+                  timestamp: this.now(),
+                  data: { usage: cloneRuntimeValue(doneEvent.usage) },
+                })
+                const summary = cloneRuntimeConversationSummary(appended.summary)
                 this.emit(createWorkbenchEvent('conversations:updated', summary))
               } catch (err) {
                 this.logger.warn('[runtime] usage persistence failed:', err)
@@ -2707,6 +2865,8 @@ export class WorkbenchRuntime implements Workbench {
           },
         },
       )
+      await eventLogChain
+      if (eventLogFailure) throw eventLogFailure
     } catch (err) {
       const isAbort = controller.signal.aborted
       const message = isAbort ? 'Aborted' : err instanceof Error ? err.message : String(err)
@@ -2743,9 +2903,15 @@ export class WorkbenchRuntime implements Workbench {
         }
       }
     } finally {
-      this.turns.deleteWhere(conversationId, (turn) => turn.controller === controller)
-      await eventLogChain
-      resolveCleanup()
+      try {
+        await eventLogChain
+        if (eventLogFailure) {
+          this.logger.error('[runtime] durable journal append failed:', eventLogFailure)
+        }
+      } finally {
+        this.turns.deleteWhere(conversationId, (turn) => turn.controller === controller)
+        resolveCleanup()
+      }
     }
   }
 }
