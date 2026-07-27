@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { access, mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -284,14 +284,19 @@ async function testDesktopKeepsRunControlsOutOfChatCanvas(): Promise<void> {
   )
 }
 
-async function testDesktopExposesEmbeddedTerminalApi(): Promise<void> {
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await access(path)
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function testDesktopDoesNotExposeEmbeddedTerminalApi(): Promise<void> {
   const mainSource = await readFile(join(process.cwd(), 'apps/desktop/src/main/index.ts'), 'utf-8')
   const preloadSource = await readFile(
     join(process.cwd(), 'apps/desktop/src/preload/index.ts'),
-    'utf-8',
-  )
-  const terminalSource = await readFile(
-    join(process.cwd(), 'apps/desktop/src/main/terminal.ts'),
     'utf-8',
   )
   const appSource = await readFile(
@@ -302,51 +307,47 @@ async function testDesktopExposesEmbeddedTerminalApi(): Promise<void> {
     join(process.cwd(), 'apps/desktop/src/renderer/src/pages/chat/ConversationList.tsx'),
     'utf-8',
   )
-  const panelSource = await readFile(
-    join(
-      process.cwd(),
-      'apps/desktop/src/renderer/src/components/terminal/WorkspaceTerminalPanel.tsx',
-    ),
+  const desktopPackageSource = await readFile(
+    join(process.cwd(), 'apps/desktop/package.json'),
     'utf-8',
+  )
+  const terminalAdapterPath = join(process.cwd(), 'apps/desktop/src/main/terminal.ts')
+  const terminalPanelPath = join(
+    process.cwd(),
+    'apps/desktop/src/renderer/src/components/terminal/WorkspaceTerminalPanel.tsx',
   )
 
   assert(
-    mainSource.includes('createTerminalSessionManager') &&
-      mainSource.includes('registerTerminalIpcHandlers(ipcMain, getTerminalManager())') &&
-      mainSource.includes('terminalManager?.shutdown()'),
-    'Desktop main process should own embedded terminal IPC and lifecycle',
+    !mainSource.includes('createTerminalSessionManager') &&
+      !mainSource.includes('registerTerminalIpcHandlers') &&
+      !mainSource.includes('terminalManager'),
+    'Desktop main process should not own embedded terminal IPC or lifecycle',
   )
   assert(
-    preloadSource.includes('terminal: {') &&
-      preloadSource.includes("'terminal:create'") &&
-      preloadSource.includes("'terminal:write'") &&
-      preloadSource.includes("'terminal:data'") &&
-      preloadSource.includes("'terminal:exit'"),
-    'Desktop preload should expose a terminal namespace to the renderer',
+    !preloadSource.includes('terminal: {') &&
+      !preloadSource.includes("'terminal:create'") &&
+      !preloadSource.includes("'terminal:write'") &&
+      !preloadSource.includes("'terminal:data'") &&
+      !preloadSource.includes("'terminal:exit'"),
+    'Desktop preload should not expose a terminal namespace to the renderer',
   )
   assert(
-    terminalSource.includes("from 'node-pty'") &&
-      terminalSource.includes('pty.spawn') &&
-      terminalSource.includes("'terminal:data'") &&
-      terminalSource.includes("'terminal:exit'") &&
-      terminalSource.includes('registerTerminalIpcHandlers'),
-    'Embedded terminal adapter should create PTY sessions and bridge output through IPC',
+    !appSource.includes('terminalWorkspace') &&
+      !appSource.includes('WorkspaceTerminalPanel') &&
+      !sidebarSource.includes('TerminalIcon') &&
+      !sidebarSource.includes('Open Terminal') &&
+      !sidebarSource.includes('onOpenTerminal'),
+    'Desktop renderer should not expose an embedded terminal entry point or panel',
   )
   assert(
-    appSource.includes('terminalWorkspace') &&
-      appSource.includes('<WorkspaceTerminalPanel') &&
-      sidebarSource.includes('TerminalIcon') &&
-      sidebarSource.includes('onOpenTerminal(workspace)'),
-    'Renderer project sidebar should open an embedded terminal dock for workspaces',
+    !desktopPackageSource.includes('"node-pty"') &&
+      !desktopPackageSource.includes('"@xterm/xterm"') &&
+      !desktopPackageSource.includes('"@xterm/addon-fit"'),
+    'Desktop package should not depend on PTY or terminal rendering packages',
   )
   assert(
-    panelSource.includes("from '@xterm/xterm'") &&
-      panelSource.includes("from '@xterm/addon-fit'") &&
-      panelSource.includes('window.api.terminal') &&
-      panelSource.includes('.create({ cwd: workspace.path') &&
-      panelSource.includes('window.api.terminal.write') &&
-      panelSource.includes('window.api.terminal.resize'),
-    'Embedded terminal panel should render xterm and communicate through the terminal API',
+    !(await pathExists(terminalAdapterPath)) && !(await pathExists(terminalPanelPath)),
+    'Desktop embedded terminal adapter and panel should be removed',
   )
 }
 
@@ -2103,7 +2104,7 @@ async function main(): Promise<void> {
   await testDesktopUsesSharedRuntimeFactory()
   await testDesktopExposesRuntimeStateApi()
   await testDesktopKeepsRunControlsOutOfChatCanvas()
-  await testDesktopExposesEmbeddedTerminalApi()
+  await testDesktopDoesNotExposeEmbeddedTerminalApi()
   await testRendererUsesRuntimeHydrationApi()
   await testDesktopExposesMcpIntegrationOAuthApi()
   await testConversationListContract()

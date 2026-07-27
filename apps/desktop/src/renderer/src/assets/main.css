@@ -52,8 +52,6 @@
   --shadow-sm: 0 8px 24px rgba(24, 29, 38, 0.08);
   --shadow-lg: 0 24px 72px rgba(24, 29, 38, 0.18);
   --composer-shadow: 0 10px 30px rgba(24, 29, 38, 0.09);
-  --terminal-bg: #f1f3f6;
-  --terminal-fg: #292e38;
 
   /* shadcn tokens (consumed by streamdown). */
   --background: var(--bg);
@@ -120,8 +118,6 @@
     --shadow-sm: 0 10px 28px rgba(0, 0, 0, 0.25);
     --shadow-lg: 0 28px 80px rgba(0, 0, 0, 0.48);
     --composer-shadow: 0 12px 34px rgba(0, 0, 0, 0.24);
-    --terminal-bg: #14171c;
-    --terminal-fg: #d7dbe3;
     --highlight: oklch(0.66 0.14 87);
   }
 }
@@ -249,18 +245,6 @@ body {
 
 .aila-dialog {
   box-shadow: var(--shadow-lg);
-}
-
-.aila-terminal .xterm {
-  height: 100%;
-}
-
-.aila-terminal .xterm-viewport {
-  scrollbar-color: color-mix(in srgb, var(--terminal-fg) 20%, transparent) transparent;
-}
-
-.aila-terminal .xterm-viewport::-webkit-scrollbar-thumb {
-  background: color-mix(in srgb, var(--terminal-fg) 20%, transparent);
 }
 
 ::-webkit-scrollbar {

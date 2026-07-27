@@ -1,11 +1,4 @@
-import {
-  FolderIcon,
-  FolderPlusIcon,
-  PencilIcon,
-  PlusIcon,
-  TerminalIcon,
-  Trash2Icon,
-} from 'lucide-react'
+import { FolderIcon, FolderPlusIcon, PencilIcon, PlusIcon, Trash2Icon } from 'lucide-react'
 import { type ReactElement, useEffect, useMemo, useRef, useState } from 'react'
 import type { ConversationSummary, ConversationWorkspaceRef } from '../../../../preload/index'
 import { type ConversationStatusTone, getConversationStatus } from './conversationStatus'
@@ -18,7 +11,6 @@ interface ConversationListProps {
   onSelect: (id: string) => void
   onCreate: (workspace?: ConversationWorkspaceRef | null) => void
   onCreateWorkspaceChat: () => void
-  onOpenTerminal: (workspace: ConversationWorkspaceRef) => void
   onRename: (id: string, title: string) => void
   onDelete: (id: string) => void
 }
@@ -123,7 +115,6 @@ export function ConversationList({
   onSelect,
   onCreate,
   onCreateWorkspaceChat,
-  onOpenTerminal,
   onRename,
   onDelete,
 }: ConversationListProps): ReactElement {
@@ -217,17 +208,6 @@ export function ConversationList({
                         <span className="min-w-0 flex-1 truncate text-[13.5px] text-[var(--sidebar-text-soft)]">
                           {project.label}
                         </span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (workspace) onOpenTerminal(workspace)
-                        }}
-                        aria-label={`Open Terminal in ${project.label}`}
-                        title="Open Terminal"
-                        className="grid size-5 shrink-0 cursor-pointer place-items-center rounded-md text-[var(--sidebar-text-dim)] opacity-0 transition group-hover/project:opacity-100 hover:bg-[var(--surface)] hover:text-[var(--text)] focus:opacity-100"
-                      >
-                        <TerminalIcon className="size-3.5" />
                       </button>
                       <button
                         type="button"

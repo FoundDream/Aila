@@ -1,5 +1,5 @@
 import { PanelLeftCloseIcon, PanelLeftOpenIcon, SettingsIcon } from 'lucide-react'
-import { lazy, type ReactElement, Suspense, useCallback, useEffect, useMemo, useState } from 'react'
+import { type ReactElement, useCallback, useEffect, useMemo, useState } from 'react'
 import { SettingsModal } from '@/components/SettingsModal'
 import { ToolApprovalDialog } from '@/components/ToolApprovalDialog'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
@@ -13,19 +13,7 @@ import {
   resolveToolApproval as resolveToolApprovalState,
   resolveToolApprovalsForConversation,
 } from '@/toolApprovalsState'
-import type {
-  ConversationWorkspaceRef,
-  ProviderId,
-  Settings,
-  SettingsState,
-  ToolApprovalRequestEvent,
-} from './types'
-
-const WorkspaceTerminalPanel = lazy(() =>
-  import('@/components/terminal/WorkspaceTerminalPanel').then((module) => ({
-    default: module.WorkspaceTerminalPanel,
-  })),
-)
+import type { ProviderId, Settings, SettingsState, ToolApprovalRequestEvent } from './types'
 
 const SIDEBAR_EXPANDED_STORAGE_KEY = 'app.sidebar.expanded'
 
@@ -48,7 +36,6 @@ export default function App(): ReactElement {
   )
   const [settingsState, setSettingsState] = useState<SettingsState | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const [terminalWorkspace, setTerminalWorkspace] = useState<ConversationWorkspaceRef | null>(null)
   const [toolApprovalsState, setToolApprovalsState] = useState(createToolApprovalsState)
 
   const sidebarIsExpanded = sidebarExpanded
@@ -128,10 +115,6 @@ export default function App(): ReactElement {
     setSettingsState(saved)
   }, [])
 
-  const openWorkspaceTerminal = useCallback((workspace: ConversationWorkspaceRef) => {
-    setTerminalWorkspace(workspace)
-  }, [])
-
   const resolveToolApproval = useCallback((requestId: string, approved: boolean): void => {
     window.api.tools.sendApprovalResponse({ requestId, approved })
     setToolApprovalsState((current) => resolveToolApprovalState(current, requestId))
@@ -165,7 +148,6 @@ export default function App(): ReactElement {
                 onCreateWorkspaceChat={() => {
                   void conversationsState.createWorkspaceChat()
                 }}
-                onOpenTerminal={openWorkspaceTerminal}
                 onRename={(id, title) => {
                   void conversationsState.rename(id, title)
                 }}
@@ -233,25 +215,6 @@ export default function App(): ReactElement {
                 onOpenSettings={() => setSettingsOpen(true)}
               />
             </div>
-            {terminalWorkspace && (
-              <Suspense
-                fallback={
-                  <section className="flex h-[min(34vh,340px)] min-h-[220px] shrink-0 flex-col border-t border-[var(--border)] bg-[var(--surface)]">
-                    <header className="flex h-9 shrink-0 items-center gap-2 border-b border-[var(--border)] px-3 text-[12px]">
-                      <span className="font-medium">Terminal</span>
-                      <span className="text-[var(--text-dim)]">Loading…</span>
-                    </header>
-                    <div className="min-h-0 flex-1 bg-[var(--bg-soft)]" />
-                  </section>
-                }
-              >
-                <WorkspaceTerminalPanel
-                  key={terminalWorkspace.id}
-                  workspace={terminalWorkspace}
-                  onClose={() => setTerminalWorkspace(null)}
-                />
-              </Suspense>
-            )}
           </div>
         </main>
 

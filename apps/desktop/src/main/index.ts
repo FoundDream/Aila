@@ -49,11 +49,6 @@ import {
   createDesktopRuntimeWorkbench,
   registerRuntimeWorkbenchIpcHandlers,
 } from './runtime-workbench'
-import {
-  createTerminalSessionManager,
-  registerTerminalIpcHandlers,
-  type TerminalSessionManager,
-} from './terminal'
 import { handleWidgetProtocol, registerWidgetProtocolScheme } from './widget-protocol'
 
 dotenv.config()
@@ -161,7 +156,6 @@ async function pickSkillDirectory(): Promise<string | null> {
 }
 
 let runtimeWorkbench: ReturnType<typeof createDesktopRuntimeWorkbench> | null = null
-let terminalManager: TerminalSessionManager | null = null
 
 function initRuntimeWorkbench(): ReturnType<typeof createDesktopRuntimeWorkbench> {
   runtimeWorkbench ??= createDesktopRuntimeWorkbench({ emit: send, logger: console })
@@ -173,13 +167,7 @@ function getRuntimeWorkbench(): ReturnType<typeof createDesktopRuntimeWorkbench>
   return runtimeWorkbench
 }
 
-function getTerminalManager(): TerminalSessionManager {
-  terminalManager ??= createTerminalSessionManager(send)
-  return terminalManager
-}
-
 async function shutdownRuntimeWorkbench(): Promise<void> {
-  terminalManager?.shutdown()
   await runtimeWorkbench?.shutdown()
   await disposeMcpConnections()
 }
@@ -187,7 +175,6 @@ async function shutdownRuntimeWorkbench(): Promise<void> {
 function registerIpcHandlers(): void {
   const runtimeWorkbench = getRuntimeWorkbench()
   registerRuntimeWorkbenchIpcHandlers(ipcMain, runtimeWorkbench)
-  registerTerminalIpcHandlers(ipcMain, getTerminalManager())
 
   async function reloadExtensions() {
     const runtimeReload = await runtimeWorkbench.reloadExtensions()
