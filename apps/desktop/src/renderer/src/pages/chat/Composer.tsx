@@ -67,12 +67,12 @@ const APPROVAL_MODES: Array<{
 }> = [
   {
     id: 'safe',
-    label: 'Safe',
+    label: 'Ask first',
     description: 'Ask before write, edit, and shell tools.',
   },
   {
     id: 'yolo',
-    label: 'Yolo',
+    label: 'Full access',
     description: 'Run tools without approval prompts.',
   },
 ]
@@ -944,13 +944,13 @@ export function Composer({
                   <button
                     type="button"
                     aria-label="Execution mode"
-                    className={`inline-flex h-8 shrink-0 items-center px-1 text-[12px] outline-none transition-colors ${
+                    className={`inline-flex h-8 shrink-0 items-center rounded-md px-2 text-[12px] outline-none transition-colors ${
                       activeApprovalMode === 'safe'
-                        ? 'text-[var(--text-soft)] hover:text-[var(--text)] focus-visible:text-[var(--text)]'
-                        : 'text-[var(--warning)] hover:brightness-110 focus-visible:brightness-110'
+                        ? 'text-[var(--text-soft)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)] focus-visible:bg-[var(--surface-hover)] focus-visible:text-[var(--text)]'
+                        : 'text-[var(--error)] hover:bg-[var(--error-soft)] focus-visible:bg-[var(--error-soft)]'
                     }`}
                   >
-                    <span>{activeApprovalModeMeta?.label ?? 'Safe'}</span>
+                    <span>{activeApprovalModeMeta?.label ?? 'Ask first'}</span>
                   </button>
                 </PopoverTrigger>
                 <PopoverContent side="top" align="start" className="w-64 border-0 p-1">
@@ -969,7 +969,11 @@ export function Composer({
                               : 'hover:bg-[var(--surface-hover)]'
                           }`}
                         >
-                          <span className="block text-[12px] font-medium text-[var(--text)]">
+                          <span
+                            className={`block text-[12px] font-medium ${
+                              mode.id === 'yolo' ? 'text-[var(--error)]' : 'text-[var(--text)]'
+                            }`}
+                          >
                             {mode.label}
                           </span>
                           <span className="mt-0.5 block text-[11px] leading-snug text-[var(--text-dim)]">
@@ -990,7 +994,7 @@ export function Composer({
                     <span
                       role="img"
                       aria-label="Usage details"
-                      className={`inline-flex shrink-0 ${meterColor}`}
+                      className={`inline-grid size-7 shrink-0 place-items-center rounded-md transition-colors hover:bg-[var(--surface-hover)] ${meterColor}`}
                     >
                       <ContextRing ratio={ratio} />
                     </span>
@@ -1028,7 +1032,7 @@ export function Composer({
                     className={`grid size-8 shrink-0 place-items-center rounded-full transition disabled:cursor-not-allowed ${
                       primaryActionIsAbort
                         ? 'border border-[var(--border)] bg-[var(--surface)] text-[var(--text-soft)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]'
-                        : 'bg-[var(--brand-ink)] text-[var(--brand-ink-fg)] hover:opacity-85 disabled:bg-[var(--surface-hover)] disabled:text-[var(--text-dim)]'
+                        : 'bg-[var(--brand-ink)] text-[var(--brand-ink-fg)] enabled:hover:bg-[var(--text-soft)] disabled:bg-[var(--surface-hover)] disabled:text-[var(--text-dim)]'
                     }`}
                   >
                     {primaryActionIsAbort ? (

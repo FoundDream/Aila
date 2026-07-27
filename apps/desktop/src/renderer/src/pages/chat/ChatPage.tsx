@@ -15,6 +15,7 @@ import { useModelSelection } from './useModelSelection'
 
 interface ChatPageProps {
   conversation: ConversationRecord | null
+  draftWorkspace: ConversationWorkspaceRef | null
   onCreateConversation: (
     workspace?: ConversationWorkspaceRef | null,
   ) => Promise<ConversationSummary>
@@ -27,6 +28,7 @@ interface ChatPageProps {
 
 export function ChatPage({
   conversation,
+  draftWorkspace,
   onCreateConversation,
   streams,
   settings,
@@ -78,7 +80,7 @@ export function ChatPage({
 
       let id = conversationId
       if (!id) {
-        const summary = await onCreateConversation()
+        const summary = await onCreateConversation(draftWorkspace)
         id = summary.id
         // We just created it, and disk is empty. Mark hydrated synchronously so
         // the deferred hydrate effect doesn't race with our enqueueSend.
@@ -88,7 +90,7 @@ export function ChatPage({
       streams.enqueueSend(id, trimmed, currentSelection, attachments)
       setSubmitScrollKey((key) => key + 1)
     },
-    [conversationId, onCreateConversation, streams, onOpenSettings, selectionRef],
+    [conversationId, draftWorkspace, onCreateConversation, streams, onOpenSettings, selectionRef],
   )
 
   const handleAbort = useCallback(() => {
@@ -159,7 +161,7 @@ export function ChatPage({
                   alt="Aila assistant"
                   className="h-auto w-28 shrink-0 object-contain"
                 />
-                <h1 className="text-[40px] font-medium leading-tight tracking-[-0.035em]">
+                <h1 className="text-[36px] font-medium leading-tight tracking-[-0.035em]">
                   What will we build?
                 </h1>
               </div>

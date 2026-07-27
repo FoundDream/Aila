@@ -67,7 +67,7 @@ export default function App(): ReactElement {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
-      if ((event.metaKey || event.ctrlKey) && event.key === '\\') {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'b') {
         event.preventDefault()
         setSidebarExpanded((expanded) => !expanded)
       } else if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
@@ -124,6 +124,14 @@ export default function App(): ReactElement {
     setToolApprovalsState((current) => resolveToolApprovalsForConversation(current, conversationId))
   }, [])
 
+  const headerWorkspace =
+    conversationsState.activeRecord?.meta.workspace ?? conversationsState.draftWorkspace
+  const headerTitle = conversationsState.activeRecord
+    ? conversationsState.activeRecord.meta.title || 'New session'
+    : conversationsState.draftWorkspace
+      ? 'New session'
+      : null
+
   return (
     <TooltipProvider delayDuration={220}>
       <div className="aila-shell flex h-full overflow-hidden text-[var(--text)]">
@@ -138,13 +146,12 @@ export default function App(): ReactElement {
             <div className="min-h-0 flex-1">
               <ConversationList
                 conversations={conversationsState.conversations}
+                workspaces={conversationsState.workspaces}
                 activeId={conversationsState.activeId}
                 busyIds={chatStreams.busyIds}
                 pendingApprovalIds={pendingApprovalConversationIds}
                 onSelect={conversationsState.select}
-                onCreate={(workspace) => {
-                  void conversationsState.create(workspace)
-                }}
+                onStartSession={conversationsState.startSession}
                 onCreateWorkspaceChat={() => {
                   void conversationsState.createWorkspaceChat()
                 }}
@@ -168,7 +175,7 @@ export default function App(): ReactElement {
 
           {sidebarIsExpanded && (
             <div className="shrink-0 px-1.5 pb-2">
-              <div className="space-y-1 border-t border-[var(--border)] px-1 pt-2">
+              <div className="space-y-1 px-1 pt-2">
                 <button
                   type="button"
                   onClick={() => setSettingsOpen(true)}
@@ -190,14 +197,14 @@ export default function App(): ReactElement {
                   sidebarIsExpanded ? 'px-5' : 'pl-[128px] pr-5'
                 }`}
               >
-                {conversationsState.activeRecord && (
+                {headerTitle && (
                   <>
                     <span className="min-w-0 truncate text-[13.5px] font-semibold">
-                      {conversationsState.activeRecord.meta.title || 'New session'}
+                      {headerTitle}
                     </span>
-                    {conversationsState.activeRecord.meta.workspace?.label && (
+                    {headerWorkspace?.label && (
                       <span className="hidden truncate rounded-md border border-[var(--border)] bg-[var(--bg-soft)] px-2 py-0.5 text-[10.5px] text-[var(--text-dim)] xl:inline">
-                        {conversationsState.activeRecord.meta.workspace.label}
+                        {headerWorkspace.label}
                       </span>
                     )}
                   </>
@@ -207,6 +214,7 @@ export default function App(): ReactElement {
             <div className="min-h-0 flex-1">
               <ChatPage
                 conversation={conversationsState.activeRecord}
+                draftWorkspace={conversationsState.draftWorkspace}
                 onCreateConversation={conversationsState.create}
                 streams={chatStreams}
                 settings={settingsState?.settings ?? null}
@@ -235,7 +243,7 @@ export default function App(): ReactElement {
           </TooltipTrigger>
           <TooltipContent side="bottom">
             {sidebarIsExpanded ? 'Collapse sidebar' : 'Expand sidebar'}
-            <span className="ml-2 opacity-60">{'⌘\\'}</span>
+            <span className="ml-2 opacity-60">⌘B</span>
           </TooltipContent>
         </Tooltip>
 

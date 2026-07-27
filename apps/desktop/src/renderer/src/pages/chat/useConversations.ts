@@ -7,16 +7,60 @@ import type {
 
 export interface ConversationsState {
   conversations: ConversationSummary[]
+  workspaces: ConversationWorkspaceRef[]
   activeId: string | null
   activeRecord: ConversationRecord | null
+  draftWorkspace: ConversationWorkspaceRef | null
   isReady: boolean
   select: (id: string) => void
   deselect: () => void
+  startSession: (workspace?: ConversationWorkspaceRef | null) => void
   create: (workspace?: ConversationWorkspaceRef | null) => Promise<ConversationSummary>
-  createWorkspaceChat: () => Promise<ConversationSummary | null>
+  createWorkspaceChat: () => Promise<ConversationWorkspaceRef | null>
   remove: (id: string) => Promise<void>
   rename: (id: string, title: string) => Promise<void>
   applyUpdate: (summary: ConversationSummary) => void
+}
+
+const WORKSPACES_STORAGE_KEY = 'app.workspaces'
+
+function readStoredWorkspaces(): ConversationWorkspaceRef[] {
+  try {
+    const value: unknown = JSON.parse(localStorage.getItem(WORKSPACES_STORAGE_KEY) ?? '[]')
+    if (!Array.isArray(value)) return []
+    return value.filter(
+      (workspace): workspace is ConversationWorkspaceRef =>
+        typeof workspace === 'object' &&
+        workspace !== null &&
+        typeof workspace.id === 'string' &&
+        typeof workspace.path === 'string' &&
+        (workspace.label === undefined || typeof workspace.label === 'string'),
+    )
+  } catch {
+    return []
+  }
+}
+
+function persistWorkspaces(workspaces: ConversationWorkspaceRef[]): void {
+  try {
+    localStorage.setItem(WORKSPACES_STORAGE_KEY, JSON.stringify(workspaces))
+  } catch {
+    // Persistence is an enhancement; restricted renderer storage may reject it.
+  }
+}
+
+function mergeWorkspaceRefs(
+  current: ConversationWorkspaceRef[],
+  incoming: ConversationWorkspaceRef[],
+  prepend = false,
+): ConversationWorkspaceRef[] {
+  const ordered = prepend ? [...incoming, ...current] : [...current, ...incoming]
+  const seen = new Set<string>()
+  return ordered.filter((workspace) => {
+    if (seen.has(workspace.id)) return false
+    seen.add(workspace.id)
+    return true
+  })
 }
 
 function visibleConversationSummaries(
@@ -45,10 +89,24 @@ export function mergeConversationSummaryUpdate(
 
 export function useConversations(): ConversationsState {
   const [conversations, setConversations] = useState<ConversationSummary[]>([])
+  const [workspaces, setWorkspaces] = useState<ConversationWorkspaceRef[]>(readStoredWorkspaces)
   const [activeId, setActiveId] = useState<string | null>(null)
   const [activeRecord, setActiveRecord] = useState<ConversationRecord | null>(null)
+  const [draftWorkspace, setDraftWorkspace] = useState<ConversationWorkspaceRef | null>(null)
   const [isReady, setIsReady] = useState(false)
   const removedConversationIdsRef = useRef<Set<string>>(new Set())
+
+  const rememberWorkspaces = useCallback(
+    (incoming: ConversationWorkspaceRef[], prepend = false): void => {
+      if (incoming.length === 0) return
+      setWorkspaces((current) => {
+        const next = mergeWorkspaceRefs(current, incoming, prepend)
+        persistWorkspaces(next)
+        return next
+      })
+    },
+    [],
+  )
 
   const refreshList = useCallback(async (): Promise<ConversationSummary[]> => {
     const list = visibleConversationSummaries(
@@ -56,8 +114,11 @@ export function useConversations(): ConversationsState {
       removedConversationIdsRef.current,
     )
     setConversations(list)
+    rememberWorkspaces(
+      list.flatMap((conversation) => (conversation.workspace ? [conversation.workspace] : [])),
+    )
     return list
-  }, [])
+  }, [rememberWorkspaces])
 
   // No auto-select: the chat tab opens on the new-chat empty state until the
   // user explicitly picks a conversation from the list.
@@ -105,19 +166,33 @@ export function useConversations(): ConversationsState {
       const summary = workspace
         ? await window.api.runtime.conversations.createForWorkspace(workspace)
         : await window.api.runtime.conversations.create()
+      if (workspace) rememberWorkspaces([workspace], true)
       await refreshList()
+      setDraftWorkspace(null)
       setActiveId(summary.id)
       setActiveRecord({ meta: summary, messages: [] })
       return summary
     },
-    [refreshList],
+    [refreshList, rememberWorkspaces],
   )
 
-  const createWorkspaceChat = useCallback(async (): Promise<ConversationSummary | null> => {
+  const startSession = useCallback(
+    (workspace?: ConversationWorkspaceRef | null): void => {
+      const nextWorkspace = workspace ?? null
+      if (nextWorkspace) rememberWorkspaces([nextWorkspace], true)
+      setDraftWorkspace(nextWorkspace)
+      setActiveId(null)
+      setActiveRecord(null)
+    },
+    [rememberWorkspaces],
+  )
+
+  const createWorkspaceChat = useCallback(async (): Promise<ConversationWorkspaceRef | null> => {
     const workspace = await window.api.workspaces.pickDirectory()
     if (!workspace) return null
-    return create(workspace)
-  }, [create])
+    startSession(workspace)
+    return workspace
+  }, [startSession])
 
   const remove = useCallback(
     async (id: string) => {
@@ -152,29 +227,41 @@ export function useConversations(): ConversationsState {
 
   // Reconciles a single ConversationSummary update from main (fired after every
   // appendMessage / setUsage). Keeps the sidebar in sync without a full refetch.
-  const applyUpdate = useCallback((summary: ConversationSummary) => {
-    const removed = removedConversationIdsRef.current
-    if (removed.has(summary.id)) {
+  const applyUpdate = useCallback(
+    (summary: ConversationSummary) => {
+      if (summary.workspace) rememberWorkspaces([summary.workspace])
+      const removed = removedConversationIdsRef.current
+      if (removed.has(summary.id)) {
+        setConversations((prev) => mergeConversationSummaryUpdate(prev, summary, removed))
+        setActiveRecord((current) => (current?.meta.id === summary.id ? null : current))
+        setActiveId((current) => (current === summary.id ? null : current))
+        return
+      }
       setConversations((prev) => mergeConversationSummaryUpdate(prev, summary, removed))
-      setActiveRecord((current) => (current?.meta.id === summary.id ? null : current))
-      setActiveId((current) => (current === summary.id ? null : current))
-      return
-    }
-    setConversations((prev) => mergeConversationSummaryUpdate(prev, summary, removed))
-    setActiveRecord((current) =>
-      current?.meta.id === summary.id ? { ...current, meta: summary } : current,
-    )
+      setActiveRecord((current) =>
+        current?.meta.id === summary.id ? { ...current, meta: summary } : current,
+      )
+    },
+    [rememberWorkspaces],
+  )
+
+  const select = useCallback((id: string): void => {
+    setDraftWorkspace(null)
+    setActiveId(id)
   }, [])
 
-  const deselect = useCallback(() => setActiveId(null), [])
+  const deselect = useCallback(() => startSession(null), [startSession])
 
   return {
     conversations,
+    workspaces,
     activeId,
     activeRecord,
+    draftWorkspace,
     isReady,
-    select: setActiveId,
+    select,
     deselect,
+    startSession,
     create,
     createWorkspaceChat,
     remove,

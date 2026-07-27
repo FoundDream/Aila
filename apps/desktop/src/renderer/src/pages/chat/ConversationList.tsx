@@ -1,15 +1,23 @@
-import { FolderIcon, FolderPlusIcon, PencilIcon, PlusIcon, Trash2Icon } from 'lucide-react'
+import {
+  FolderIcon,
+  FolderPlusIcon,
+  LoaderCircleIcon,
+  PencilIcon,
+  PlusIcon,
+  Trash2Icon,
+} from 'lucide-react'
 import { type ReactElement, useEffect, useMemo, useRef, useState } from 'react'
 import type { ConversationSummary, ConversationWorkspaceRef } from '../../../../preload/index'
 import { type ConversationStatusTone, getConversationStatus } from './conversationStatus'
 
 interface ConversationListProps {
   conversations: ConversationSummary[]
+  workspaces: ConversationWorkspaceRef[]
   activeId: string | null
   busyIds: Set<string>
   pendingApprovalIds: Set<string>
   onSelect: (id: string) => void
-  onCreate: (workspace?: ConversationWorkspaceRef | null) => void
+  onStartSession: (workspace?: ConversationWorkspaceRef | null) => void
   onCreateWorkspaceChat: () => void
   onRename: (id: string, title: string) => void
   onDelete: (id: string) => void
@@ -38,8 +46,19 @@ function workspaceLabel(workspace: ConversationWorkspaceRef): string {
 
 export function groupConversationsByWorkspace(
   conversations: ConversationSummary[],
+  workspaces: ConversationWorkspaceRef[] = [],
 ): ConversationWorkspaceGroup[] {
   const groups = new Map<string, ConversationWorkspaceGroup>()
+  for (const workspace of workspaces) {
+    groups.set(workspace.id, {
+      id: workspace.id,
+      label: workspaceLabel(workspace),
+      path: workspace.path,
+      workspace,
+      conversations: [],
+      updatedAt: 0,
+    })
+  }
   for (const conversation of conversations) {
     const workspace = conversation.workspace ?? null
     const id = workspace?.id ?? GENERAL_GROUP_ID
@@ -72,8 +91,9 @@ export function groupConversationsByWorkspace(
 
 export function buildConversationSidebarSections(
   conversations: ConversationSummary[],
+  workspaces: ConversationWorkspaceRef[] = [],
 ): ConversationSidebarSections {
-  const groups = groupConversationsByWorkspace(conversations)
+  const groups = groupConversationsByWorkspace(conversations, workspaces)
   return {
     projects: groups.filter((group) => group.workspace !== null),
     chats: groups.find((group) => group.workspace === null)?.conversations ?? [],
@@ -109,11 +129,12 @@ export function formatConversationListRelativeTime(updatedAt: number, now = Date
 
 export function ConversationList({
   conversations,
+  workspaces,
   activeId,
   busyIds,
   pendingApprovalIds,
   onSelect,
-  onCreate,
+  onStartSession,
   onCreateWorkspaceChat,
   onRename,
   onDelete,
@@ -123,8 +144,8 @@ export function ConversationList({
   const [fullyShownProjectIds, setFullyShownProjectIds] = useState<Set<string>>(() => new Set())
   const initializedProjectExpansionRef = useRef(false)
   const { projects, chats } = useMemo(
-    () => buildConversationSidebarSections(conversations),
-    [conversations],
+    () => buildConversationSidebarSections(conversations, workspaces),
+    [conversations, workspaces],
   )
   const activeConversation = useMemo(
     () => conversations.find((conversation) => conversation.id === activeId) ?? null,
@@ -211,7 +232,7 @@ export function ConversationList({
                       </button>
                       <button
                         type="button"
-                        onClick={() => onCreate(workspace)}
+                        onClick={() => onStartSession(workspace)}
                         aria-label={`New thread in ${project.label}`}
                         title={`New thread in ${project.label}`}
                         className="mr-1 grid size-5 shrink-0 cursor-pointer place-items-center rounded-md text-[var(--sidebar-text-dim)] opacity-0 transition group-hover/project:opacity-100 hover:bg-[var(--surface)] hover:text-[var(--text)] focus:opacity-100"
@@ -275,13 +296,13 @@ export function ConversationList({
               label="Threads"
               actionLabel="New session"
               actionIcon={<PlusIcon className="size-3.5" />}
-              onAction={() => onCreate(null)}
+              onAction={() => onStartSession(null)}
             />
           </div>
           {chats.length === 0 ? (
             <button
               type="button"
-              onClick={() => onCreate(null)}
+              onClick={() => onStartSession(null)}
               className="mt-1 flex h-8 w-full cursor-pointer items-center gap-2 rounded-lg px-2 text-left text-[12.5px] text-[var(--sidebar-text-dim)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--sidebar-text-soft)]"
             >
               <PlusIcon className="size-3.5" />
@@ -381,7 +402,7 @@ function ConversationRow({
     <li
       className={`group relative flex h-8 items-center rounded-lg transition-colors before:absolute before:inset-y-1.5 before:left-0 before:w-[3px] before:rounded-full before:bg-transparent ${
         isActive
-          ? 'bg-[var(--surface)] shadow-[var(--shadow-xs)] before:bg-[var(--signal)]'
+          ? 'bg-[var(--signal-soft)] before:bg-[var(--signal)]'
           : 'hover:bg-[var(--surface-hover)]'
       }`}
     >
@@ -419,11 +440,15 @@ function ConversationRow({
                 role="status"
                 aria-label={status.ariaLabel}
                 title={status.title}
-                className={`shrink-0 rounded-full px-1.5 py-0.5 text-[10px] leading-none ${statusClassName(
-                  status.tone,
-                )}`}
+                className={`shrink-0 rounded-full text-[10px] leading-none ${
+                  status.tone === 'running' ? 'grid size-5 place-items-center' : 'px-1.5 py-0.5'
+                } ${statusClassName(status.tone)}`}
               >
-                {status.label}
+                {status.tone === 'running' ? (
+                  <LoaderCircleIcon className="size-3 animate-spin" />
+                ) : (
+                  status.label
+                )}
               </span>
             )}
           </button>

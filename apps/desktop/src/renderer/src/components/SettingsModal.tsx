@@ -28,7 +28,16 @@ import {
   XIcon,
 } from 'lucide-react'
 import { Dialog as DialogPrimitive } from 'radix-ui'
-import { type ReactElement, type ReactNode, useCallback, useEffect, useMemo, useState } from 'react'
+import {
+  type ReactElement,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import type {
   ExtensionMcpServerConfigInput,
@@ -184,6 +193,7 @@ function TokenActivityTooltipBody({ day }: { day: TokenUsageDay }): ReactElement
 }
 
 function TokenActivityGrid({ stats }: { stats: TokenUsageStats }): ReactElement {
+  const scrollRef = useRef<HTMLDivElement | null>(null)
   const peakTokens = Math.max(0, ...stats.days.map((day) => day.totalTokens))
   const firstDay = stats.days[0]
   const leadingCells = firstDay ? new Date(`${firstDay.date}T00:00:00`).getDay() : 0
@@ -192,8 +202,14 @@ function TokenActivityGrid({ stats }: { stats: TokenUsageStats }): ReactElement 
     ...stats.days,
   ]
 
+  useLayoutEffect(() => {
+    const viewport = scrollRef.current
+    if (!viewport || stats.days.length === 0) return
+    viewport.scrollLeft = viewport.scrollWidth
+  }, [stats.days.length])
+
   return (
-    <div className="overflow-x-auto pb-1">
+    <div ref={scrollRef} className="overflow-x-auto pb-1">
       <div
         className="grid w-max grid-flow-col gap-1"
         style={{ gridTemplateRows: 'repeat(7, minmax(0, 10px))' }}

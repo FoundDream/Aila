@@ -58,7 +58,7 @@ export function Transcript({
       >
         <div
           ref={contentRef}
-          className={`mx-auto flex flex-col ${compact ? 'max-w-none gap-3' : 'max-w-[820px] gap-6'}`}
+          className={`mx-auto flex flex-col ${compact ? 'max-w-none gap-3' : 'max-w-[720px] gap-6'}`}
         >
           {messages.map((message) => (
             <MessageRow key={message.id} message={message} compact={compact} />
@@ -108,33 +108,35 @@ function MessageRow({ message, compact }: { message: Message; compact: boolean }
 
   if (isUser) {
     return (
-      <article className="group relative ml-auto flex w-fit max-w-[min(88%,680px)] flex-col gap-2 rounded-[18px] bg-[var(--bg-soft)] px-4 py-2.5">
-        <div
-          className={
-            isQueued
-              ? 'pr-7 text-[15px] text-[var(--text-soft)] opacity-70'
-              : 'pr-7 text-[15px] text-[var(--text)]'
-          }
-        >
-          <div className="flex flex-col gap-3">
-            {visibleBlocks.map((block, index) => (
-              <BlockView
-                // biome-ignore lint/suspicious/noArrayIndexKey: blocks are append-only per message
-                key={index}
-                block={block}
-                isStreaming={isStreaming}
-                compact={compact}
-              />
-            ))}
+      <article className="group relative ml-auto flex w-fit max-w-[min(88%,680px)] flex-col items-end gap-1">
+        <div className="rounded-[18px] bg-[var(--bg-soft)] px-4 py-2.5">
+          <div
+            className={
+              isQueued
+                ? 'text-[15px] text-[var(--text-soft)] opacity-70'
+                : 'text-[15px] text-[var(--text)]'
+            }
+          >
+            <div className="flex flex-col gap-3">
+              {visibleBlocks.map((block, index) => (
+                <BlockView
+                  // biome-ignore lint/suspicious/noArrayIndexKey: blocks are append-only per message
+                  key={index}
+                  block={block}
+                  isStreaming={isStreaming}
+                  compact={compact}
+                />
+              ))}
+            </div>
           </div>
+          {isQueued && (
+            <div className="mt-2 flex items-center gap-1 text-[11px] text-[var(--text-dim)]">
+              <LoaderCircleIcon className="size-3 animate-spin" />
+              Queued
+            </div>
+          )}
         </div>
-        {isQueued && (
-          <div className="flex items-center gap-1 text-[11px] text-[var(--text-dim)]">
-            <LoaderCircleIcon className="size-3 animate-spin" />
-            Queued
-          </div>
-        )}
-        {canCopy && <CopyButton message={message} position="right-2 top-2" />}
+        {canCopy && <CopyButton message={message} className="self-end" />}
       </article>
     )
   }
@@ -142,7 +144,7 @@ function MessageRow({ message, compact }: { message: Message; compact: boolean }
   return (
     <article className="group relative py-1">
       <div className="min-w-0">
-        <div className="flex flex-col gap-3 pr-7 text-[13.5px]">
+        <div className="flex flex-col gap-3 text-[13.5px]">
           {visibleBlocks.length === 0 && isStreaming ? (
             <StreamingDots />
           ) : (
@@ -176,13 +178,19 @@ function MessageRow({ message, compact }: { message: Message; compact: boolean }
             </span>
           </div>
         )}
+        {canCopy && <CopyButton message={message} className="mt-2" />}
       </div>
-      {canCopy && <CopyButton message={message} position="right-0 top-0" />}
     </article>
   )
 }
 
-function CopyButton({ message, position }: { message: Message; position: string }): ReactElement {
+function CopyButton({
+  message,
+  className = '',
+}: {
+  message: Message
+  className?: string
+}): ReactElement {
   const [copied, setCopied] = useState(false)
   const onCopy = useCallback(async () => {
     const text = messageToPlainText(message)
@@ -201,7 +209,7 @@ function CopyButton({ message, position }: { message: Message; position: string 
       onClick={onCopy}
       aria-label={copied ? 'Copied' : 'Copy message'}
       title={copied ? 'Copied' : 'Copy'}
-      className={`absolute ${position} grid size-6 place-items-center rounded-lg text-[var(--text-dim)] transition-opacity hover:bg-[var(--surface-hover)] hover:text-[var(--text)] ${
+      className={`${className} grid size-6 place-items-center rounded-lg text-[var(--text-dim)] transition-opacity hover:bg-[var(--surface-hover)] hover:text-[var(--text)] ${
         copied ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 focus:opacity-100'
       }`}
     >
