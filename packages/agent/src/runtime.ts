@@ -586,6 +586,7 @@ export type {
 } from './runtime/repositories'
 
 interface WorkbenchSessionApi {
+  getSessionRuntime(conversationId: string): SessionRuntime
   createConversation(input?: RuntimeCreateConversationInput): Promise<ConversationSummary>
   listConversations(): Promise<ConversationSummary[]>
   getConversation(conversationId: string): Promise<ConversationRecord>
@@ -903,7 +904,7 @@ function createRuntimeSkillToolPacks(skills: readonly LoadedSkill[]): ToolPack[]
   return pack ? [pack] : []
 }
 
-export class WorkbenchRuntime implements Workbench {
+class SessionRuntimeEngine {
   private readonly turns = new TurnCoordinator<StreamSlot>()
   private readonly deletedConversations = new Set<string>()
   private readonly sessionPhases = new Map<string, SessionPhase>()
@@ -1958,6 +1959,10 @@ export class WorkbenchRuntime implements Workbench {
 
   listActiveTurns(): ActiveAssistantTurn[] {
     return this.listActiveStreams()
+  }
+
+  async waitForIdle(conversationId: string): Promise<void> {
+    await this.turns.get(conversationId)?.cleanup
   }
 
   listActiveStreams(): ActiveAssistantTurn[] {
@@ -3173,5 +3178,474 @@ export class WorkbenchRuntime implements Workbench {
         resolveCleanup()
       }
     }
+  }
+}
+
+/**
+ * A complete runtime bound to exactly one durable conversation session.
+ *
+ * Unlike WorkbenchRuntime, callers never pass a conversation id to turn,
+ * navigation, compaction, extension, or run-control methods. All mutable
+ * execution state is therefore scoped to this one session.
+ */
+export class SessionRuntime {
+  readonly conversationId: string
+  private readonly engine: SessionRuntimeEngine
+  private readonly listeners = new Set<(event: WorkbenchEvent) => void>()
+
+  constructor(
+    conversationId: string,
+    options: WorkbenchOptions = {},
+    private readonly onDeleted?: () => void,
+  ) {
+    if (!conversationId.trim()) throw new Error('conversationId is required')
+    this.conversationId = conversationId
+    const externalOnEvent = normalizeRuntimeHost(options).onEvent
+    const onEvent = (event: WorkbenchEvent): void => {
+      externalOnEvent?.(cloneRuntimeValue(event))
+      const eventConversationId =
+        event.type === 'conversations:updated' ? event.data.id : event.data.conversationId
+      if (eventConversationId !== this.conversationId) return
+      for (const listener of this.listeners) listener(cloneRuntimeValue(event))
+    }
+    this.engine = new SessionRuntimeEngine({
+      ...options,
+      onEvent,
+      host: { ...options.host, onEvent },
+    })
+  }
+
+  subscribe(listener: (event: WorkbenchEvent) => void): () => void {
+    this.listeners.add(listener)
+    return () => {
+      this.listeners.delete(listener)
+    }
+  }
+
+  async getConversation(): Promise<ConversationRecord> {
+    return this.engine.getConversation(this.conversationId)
+  }
+
+  async getSessionTree(): Promise<SessionTree> {
+    return this.engine.getSessionTree(this.conversationId)
+  }
+
+  async getPhase(): Promise<SessionPhase> {
+    return (await this.getSessionTree()).phase
+  }
+
+  getActiveTurn(): ActiveAssistantTurn | null {
+    return (
+      this.engine.listActiveTurns().find((turn) => turn.conversationId === this.conversationId) ??
+      null
+    )
+  }
+
+  async waitForIdle(): Promise<void> {
+    await this.engine.waitForIdle(this.conversationId)
+  }
+
+  async navigateSession(
+    input: Omit<RuntimeNavigateSessionInput, 'conversationId'>,
+  ): Promise<ConversationRecord> {
+    return this.engine.navigateSession({ ...input, conversationId: this.conversationId })
+  }
+
+  async forkSession(
+    input: Omit<RuntimeForkSessionInput, 'conversationId'> = {},
+  ): Promise<ConversationSummary> {
+    return this.engine.forkSession({ ...input, conversationId: this.conversationId })
+  }
+
+  async collectGarbage(): Promise<BlobGarbageCollectionResult> {
+    return this.engine.collectSessionGarbage(this.conversationId)
+  }
+
+  async compact(
+    input: Omit<RuntimeCompactConversationInput, 'conversationId'>,
+  ): Promise<RuntimeCompactConversationResult> {
+    return this.engine.compactConversation({ ...input, conversationId: this.conversationId })
+  }
+
+  async hydrate(): Promise<ConversationRuntimeHydration> {
+    return this.engine.hydrateConversation(this.conversationId)
+  }
+
+  async getRuntimeState(): Promise<ConversationRuntimeReplayState> {
+    return this.engine.getConversationRuntimeState(this.conversationId)
+  }
+
+  async listRunEvents(): Promise<PersistedRunEvent[]> {
+    return this.engine.listRunEvents(this.conversationId)
+  }
+
+  async getRunSnapshot(runId: string): Promise<RunSnapshot | null> {
+    return this.engine.getRunSnapshot(this.conversationId, runId)
+  }
+
+  async listRunSnapshots(): Promise<RunSnapshot[]> {
+    return this.engine.listRunSnapshots(this.conversationId)
+  }
+
+  async listRunSummaries(): Promise<RuntimeRunSummary[]> {
+    return this.engine.listRunSummaries(this.conversationId)
+  }
+
+  async inspectRun(
+    input: Omit<RuntimeRunControlInput, 'conversationId'>,
+  ): Promise<RuntimeRunInspection> {
+    return this.engine.inspectRun({ ...input, conversationId: this.conversationId })
+  }
+
+  async getRunPayload(input: Omit<RuntimeRunPayloadInput, 'conversationId'>): Promise<RunPayload> {
+    return this.engine.getRunPayload({ ...input, conversationId: this.conversationId })
+  }
+
+  async rename(title: string): Promise<ConversationSummary> {
+    return this.engine.renameConversation(this.conversationId, title)
+  }
+
+  async appendUserMessage(
+    input: Omit<RuntimeAppendUserMessageInput, 'conversationId'>,
+  ): Promise<PersistedMessage> {
+    return this.engine.appendUserMessage({ ...input, conversationId: this.conversationId })
+  }
+
+  async appendCustomEntry(
+    input: Omit<RuntimeAppendSessionCustomInput, 'conversationId'>,
+  ): Promise<string> {
+    return this.engine.appendSessionCustomEntry({
+      ...input,
+      conversationId: this.conversationId,
+    })
+  }
+
+  async appendCustomMessage(
+    input: Omit<RuntimeAppendSessionCustomMessageInput, 'conversationId'>,
+  ): Promise<string> {
+    return this.engine.appendSessionCustomMessage({
+      ...input,
+      conversationId: this.conversationId,
+    })
+  }
+
+  async recordRunEvent(
+    event: Omit<RuntimeRecordRunEventInput, 'conversationId'>,
+  ): Promise<boolean> {
+    return this.engine.recordRunEvent({ ...event, conversationId: this.conversationId })
+  }
+
+  async getToolRegistry(record?: ConversationRecord): Promise<ToolRegistry> {
+    return this.engine.getToolRegistry({
+      conversationId: this.conversationId,
+      ...(record ? { record } : {}),
+    })
+  }
+
+  async getSkills(): Promise<LoadedSkill[]> {
+    return this.engine.getSkills()
+  }
+
+  async reloadToolPacks(): Promise<ToolRegistry> {
+    return this.engine.reloadToolPacks()
+  }
+
+  async executeTool(input: Omit<RuntimeExecuteToolInput, 'conversationId'>): Promise<string> {
+    return this.engine.executeTool({ ...input, conversationId: this.conversationId })
+  }
+
+  async send(input: Omit<RuntimeSendInput, 'conversationId'>): Promise<RuntimeSendResult> {
+    return this.engine.send({ ...input, conversationId: this.conversationId })
+  }
+
+  async retryLastUserMessage(
+    input: Omit<RuntimeRetryLastInput, 'conversationId'>,
+  ): Promise<RuntimeSendResult> {
+    return this.engine.retryLastUserMessage({
+      ...input,
+      conversationId: this.conversationId,
+    })
+  }
+
+  async resumeRun(
+    input: Omit<RuntimeResumeRunInput, 'conversationId'>,
+  ): Promise<RuntimeSendResult> {
+    return this.engine.resumeRun({ ...input, conversationId: this.conversationId })
+  }
+
+  async stepRun(input: Omit<RuntimeRunControlInput, 'conversationId'>): Promise<RuntimeSendResult> {
+    return this.engine.stepRun({ ...input, conversationId: this.conversationId })
+  }
+
+  async continueRun(
+    input: Omit<RuntimeRunControlInput, 'conversationId'>,
+  ): Promise<RuntimeSendResult> {
+    return this.engine.continueRun({ ...input, conversationId: this.conversationId })
+  }
+
+  async abortRun(input: Omit<RuntimeRunControlInput, 'conversationId'>): Promise<RunSnapshot> {
+    return this.engine.abortRun({ ...input, conversationId: this.conversationId })
+  }
+
+  async forkRun(input: Omit<RuntimeForkRunInput, 'conversationId'>): Promise<RunSnapshot> {
+    return this.engine.forkRun({ ...input, conversationId: this.conversationId })
+  }
+
+  async abort(): Promise<void> {
+    await this.engine.abort(this.conversationId)
+  }
+
+  async abortActive(reason: ConversationAbortReason = 'user'): Promise<void> {
+    await this.engine.abortAll(reason)
+  }
+
+  async shutdown(reason: ConversationAbortReason = 'shutdown'): Promise<void> {
+    await this.engine.shutdown(reason)
+  }
+
+  async delete(): Promise<void> {
+    await this.engine.deleteConversation(this.conversationId)
+    this.onDeleted?.()
+  }
+}
+
+/**
+ * Multi-session process facade. Durable conversation execution is delegated to
+ * one SessionRuntime instance per conversation.
+ */
+export class WorkbenchRuntime implements Workbench {
+  private readonly store: WorkbenchStore
+  private readonly runtimeOptions: WorkbenchOptions
+  private readonly globalRuntime: SessionRuntimeEngine
+  private readonly sessions = new Map<string, SessionRuntime>()
+  private shutdownStarted = false
+  private shutdownPromise: Promise<void> | null = null
+
+  constructor(options: WorkbenchOptions = {}) {
+    const host = normalizeRuntimeHost(options)
+    this.store =
+      options.store ??
+      createInMemoryRuntimeStore({
+        createId: host.createId ?? defaultCreateRuntimeId,
+        createEventId: host.createEventId ?? defaultCreateRuntimeId,
+        now: host.now ?? defaultRuntimeNow,
+      })
+    this.runtimeOptions = { ...options, store: this.store }
+    this.globalRuntime = new SessionRuntimeEngine(this.runtimeOptions)
+  }
+
+  getSessionRuntime(conversationId: string): SessionRuntime {
+    const existing = this.sessions.get(conversationId)
+    if (existing) return existing
+    let session: SessionRuntime
+    session = new SessionRuntime(conversationId, this.runtimeOptions, () => {
+      if (this.sessions.get(conversationId) === session) this.sessions.delete(conversationId)
+    })
+    this.sessions.set(conversationId, session)
+    if (this.shutdownStarted) void session.shutdown('shutdown')
+    return session
+  }
+
+  async getToolRegistry(input?: RuntimeToolPackLoadInput): Promise<ToolRegistry> {
+    if (!input?.conversationId) return this.globalRuntime.getToolRegistry(input)
+    return this.getSessionRuntime(input.conversationId).getToolRegistry(input.record)
+  }
+
+  async getSkills(): Promise<LoadedSkill[]> {
+    return this.globalRuntime.getSkills()
+  }
+
+  async reloadToolPacks(): Promise<ToolRegistry> {
+    const [registry] = await Promise.all([
+      this.globalRuntime.reloadToolPacks(),
+      ...[...this.sessions.values()].map((session) => session.reloadToolPacks()),
+    ])
+    return registry
+  }
+
+  async createConversation(
+    input: RuntimeCreateConversationInput = {},
+  ): Promise<ConversationSummary> {
+    const summary = await this.globalRuntime.createConversation(input)
+    this.getSessionRuntime(summary.id)
+    return summary
+  }
+
+  async listConversations(): Promise<ConversationSummary[]> {
+    return this.globalRuntime.listConversations()
+  }
+
+  async getConversation(conversationId: string): Promise<ConversationRecord> {
+    return this.getSessionRuntime(conversationId).getConversation()
+  }
+
+  async getSessionTree(conversationId: string): Promise<SessionTree> {
+    return this.getSessionRuntime(conversationId).getSessionTree()
+  }
+
+  async navigateSession(input: RuntimeNavigateSessionInput): Promise<ConversationRecord> {
+    return this.getSessionRuntime(input.conversationId).navigateSession(input)
+  }
+
+  async forkSession(input: RuntimeForkSessionInput): Promise<ConversationSummary> {
+    const summary = await this.getSessionRuntime(input.conversationId).forkSession(input)
+    this.getSessionRuntime(summary.id)
+    return summary
+  }
+
+  async collectSessionGarbage(conversationId: string): Promise<BlobGarbageCollectionResult> {
+    return this.getSessionRuntime(conversationId).collectGarbage()
+  }
+
+  async compactConversation(
+    input: RuntimeCompactConversationInput,
+  ): Promise<RuntimeCompactConversationResult> {
+    return this.getSessionRuntime(input.conversationId).compact(input)
+  }
+
+  async resolveConversation(
+    input: RuntimeResolveConversationInput = {},
+  ): Promise<RuntimeResolveConversationResult> {
+    const resolved = await this.globalRuntime.resolveConversation(input)
+    this.getSessionRuntime(resolved.conversationId)
+    return resolved
+  }
+
+  async hydrateConversation(conversationId: string): Promise<ConversationRuntimeHydration> {
+    return this.getSessionRuntime(conversationId).hydrate()
+  }
+
+  async getConversationRuntimeState(
+    conversationId: string,
+  ): Promise<ConversationRuntimeReplayState> {
+    return this.getSessionRuntime(conversationId).getRuntimeState()
+  }
+
+  async listConversationRuntimeStates(): Promise<ConversationRuntimeStateSnapshot[]> {
+    const conversations = await this.listConversations()
+    return Promise.all(
+      conversations.map(async ({ id }) => ({
+        conversationId: id,
+        state: await this.getSessionRuntime(id).getRuntimeState(),
+      })),
+    )
+  }
+
+  async listRunEvents(conversationId: string): Promise<PersistedRunEvent[]> {
+    return this.getSessionRuntime(conversationId).listRunEvents()
+  }
+
+  async getRunSnapshot(conversationId: string, runId: string): Promise<RunSnapshot | null> {
+    return this.getSessionRuntime(conversationId).getRunSnapshot(runId)
+  }
+
+  async listRunSnapshots(conversationId: string): Promise<RunSnapshot[]> {
+    return this.getSessionRuntime(conversationId).listRunSnapshots()
+  }
+
+  async listRunSummaries(conversationId: string): Promise<RuntimeRunSummary[]> {
+    return this.getSessionRuntime(conversationId).listRunSummaries()
+  }
+
+  async inspectRun(input: RuntimeRunControlInput): Promise<RuntimeRunInspection> {
+    return this.getSessionRuntime(input.conversationId).inspectRun(input)
+  }
+
+  async getRunPayload(input: RuntimeRunPayloadInput): Promise<RunPayload> {
+    return this.getSessionRuntime(input.conversationId).getRunPayload(input)
+  }
+
+  async appendUserMessage(input: RuntimeAppendUserMessageInput): Promise<PersistedMessage> {
+    return this.getSessionRuntime(input.conversationId).appendUserMessage(input)
+  }
+
+  async appendSessionCustomEntry(input: RuntimeAppendSessionCustomInput): Promise<string> {
+    return this.getSessionRuntime(input.conversationId).appendCustomEntry(input)
+  }
+
+  async appendSessionCustomMessage(input: RuntimeAppendSessionCustomMessageInput): Promise<string> {
+    return this.getSessionRuntime(input.conversationId).appendCustomMessage(input)
+  }
+
+  async recordRunEvent(event: RuntimeRecordRunEventInput): Promise<boolean> {
+    return this.getSessionRuntime(event.conversationId).recordRunEvent(event)
+  }
+
+  async renameConversation(conversationId: string, title: string): Promise<ConversationSummary> {
+    return this.getSessionRuntime(conversationId).rename(title)
+  }
+
+  async deleteConversation(conversationId: string): Promise<void> {
+    const session = this.getSessionRuntime(conversationId)
+    await session.delete()
+  }
+
+  async send(input: RuntimeSendInput): Promise<RuntimeSendResult> {
+    return this.getSessionRuntime(input.conversationId).send(input)
+  }
+
+  async retryLastUserMessage(input: RuntimeRetryLastInput): Promise<RuntimeSendResult> {
+    return this.getSessionRuntime(input.conversationId).retryLastUserMessage(input)
+  }
+
+  async resumeRun(input: RuntimeResumeRunInput): Promise<RuntimeSendResult> {
+    return this.getSessionRuntime(input.conversationId).resumeRun(input)
+  }
+
+  async stepRun(input: RuntimeRunControlInput): Promise<RuntimeSendResult> {
+    return this.getSessionRuntime(input.conversationId).stepRun(input)
+  }
+
+  async continueRun(input: RuntimeRunControlInput): Promise<RuntimeSendResult> {
+    return this.getSessionRuntime(input.conversationId).continueRun(input)
+  }
+
+  async abortRun(input: RuntimeRunControlInput): Promise<RunSnapshot> {
+    return this.getSessionRuntime(input.conversationId).abortRun(input)
+  }
+
+  async forkRun(input: RuntimeForkRunInput): Promise<RunSnapshot> {
+    return this.getSessionRuntime(input.conversationId).forkRun(input)
+  }
+
+  async abort(conversationId: string): Promise<void> {
+    await this.getSessionRuntime(conversationId).abort()
+  }
+
+  async abortAll(reason: ConversationAbortReason = 'shutdown'): Promise<void> {
+    await Promise.all([...this.sessions.values()].map((session) => session.abortActive(reason)))
+  }
+
+  shutdown(reason: ConversationAbortReason = 'shutdown'): Promise<void> {
+    this.shutdownStarted = true
+    if (!this.shutdownPromise) {
+      this.shutdownPromise = Promise.all([
+        this.globalRuntime.shutdown(reason),
+        ...[...this.sessions.values()].map((session) => session.shutdown(reason)),
+      ]).then(() => undefined)
+    }
+    return this.shutdownPromise
+  }
+
+  listActiveTurns(): ActiveAssistantTurn[] {
+    return [...this.sessions.values()].flatMap((session) => {
+      const turn = session.getActiveTurn()
+      return turn ? [turn] : []
+    })
+  }
+
+  listActiveStreams(): ActiveAssistantTurn[] {
+    return this.listActiveTurns()
+  }
+
+  async recoverInterruptedActivities(reason?: string): Promise<ConversationSummary[]> {
+    const recovered = await this.globalRuntime.recoverInterruptedActivities(reason)
+    for (const summary of recovered) this.getSessionRuntime(summary.id)
+    return recovered
+  }
+
+  async executeTool(input: RuntimeExecuteToolInput): Promise<string> {
+    if (!input.conversationId) return this.globalRuntime.executeTool(input)
+    return this.getSessionRuntime(input.conversationId).executeTool(input)
   }
 }

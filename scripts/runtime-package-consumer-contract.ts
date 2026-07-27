@@ -32,6 +32,7 @@ export type AgentPackageConsumerContract = {
   persistedToolResultRef: agent.PersistedToolResultRef
   provider: agent.ProviderId
   settings: agent.Settings
+  sessionRuntime: agent.SessionRuntime
   store: agent.WorkbenchStore
   stream: agent.DurableRunExecutor
   tokenCountInput: agent.RuntimeContextTokenCountInput
@@ -44,6 +45,7 @@ export const agentInternalPackageValueContract = {
 } satisfies Record<string, unknown>
 
 export const agentPackageValueContract = {
+  SessionRuntime: agent.SessionRuntime,
   WorkbenchRuntime: agent.WorkbenchRuntime,
   ToolApprovalStore: agent.ToolApprovalStore,
   createInMemoryRuntimeStore: agent.createInMemoryRuntimeStore,

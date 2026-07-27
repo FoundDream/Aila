@@ -11258,6 +11258,105 @@ async function testSkillExtensionReportContract(): Promise<void> {
   })
 }
 
+async function testSingleSessionRuntimeBoundaryContract(): Promise<void> {
+  const releases = new Map<string, () => void>()
+  const runtime = new WorkbenchRuntime({
+    store: createInMemoryRuntimeStore(),
+    logger: { warn() {}, error() {} },
+    runAgent: async (request, handlers) => {
+      await new Promise<void>((resolve) => {
+        releases.set(request.conversationId, resolve)
+        if (request.signal.aborted) resolve()
+        else request.signal.addEventListener('abort', () => resolve(), { once: true })
+      })
+      releases.delete(request.conversationId)
+      if (request.signal.aborted) throw new Error('aborted')
+      await handlers.onDone({
+        conversationId: request.conversationId,
+        messageId: request.assistantMessageId,
+        message: {
+          schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+          id: request.assistantMessageId,
+          role: 'assistant',
+          blocks: [{ type: 'text', content: `completed:${request.conversationId}` }],
+          status: 'done',
+          model: request.selection,
+        },
+      })
+    },
+  })
+
+  const first = await runtime.createConversation()
+  const second = await runtime.createConversation()
+  const firstSession = runtime.getSessionRuntime(first.id)
+  const secondSession = runtime.getSessionRuntime(second.id)
+  assert(
+    firstSession === runtime.getSessionRuntime(first.id),
+    'workbench should retain one runtime instance per session',
+  )
+  assert(
+    firstSession !== secondSession,
+    'different sessions should have different runtime instances',
+  )
+  assertEqual(firstSession.conversationId, first.id, 'session runtime should expose its bound id')
+
+  const sessionEvents: WorkbenchEvent[] = []
+  const unsubscribe = firstSession.subscribe((event) => sessionEvents.push(event))
+  await firstSession.rename('first session')
+  await firstSession.appendCustomEntry({
+    namespace: 'contract',
+    version: 1,
+    data: { session: 'first' },
+  })
+  unsubscribe()
+  assert(
+    sessionEvents.every((event) => {
+      const conversationId =
+        event.type === 'conversations:updated' ? event.data.id : event.data.conversationId
+      return conversationId === first.id
+    }),
+    'session subscriptions should only receive events for their bound session',
+  )
+  assertEqual(
+    (await firstSession.getConversation()).meta.title,
+    'first session',
+    'bound mutations should target the owning session',
+  )
+  assert(
+    (await secondSession.getConversation()).meta.title !== 'first session',
+    'bound mutations should not leak into another session',
+  )
+
+  const selection = { providerId: 'openrouter', modelId: 'contract/mock' } as const
+  await Promise.all([
+    firstSession.send({ userText: 'first turn', selection }),
+    secondSession.send({ userText: 'second turn', selection }),
+  ])
+  await waitFor(
+    () => runtime.listActiveTurns().length === 2,
+    'independent sessions should run concurrently',
+  )
+  assert(firstSession.getActiveTurn(), 'first session should own its active turn')
+  assert(secondSession.getActiveTurn(), 'second session should own its active turn')
+
+  await firstSession.abort()
+  assertEqual(firstSession.getActiveTurn(), null, 'aborting one session should settle that session')
+  assert(secondSession.getActiveTurn(), 'aborting one session should not stop another session')
+
+  releases.get(second.id)?.()
+  await secondSession.waitForIdle()
+  assertEqual(runtime.listActiveTurns().length, 0, 'all session turns should eventually settle')
+  assertEqual(await firstSession.getPhase(), 'idle', 'aborted session should return to idle')
+  assertEqual(await secondSession.getPhase(), 'idle', 'completed session should return to idle')
+
+  await firstSession.delete()
+  assert(
+    runtime.getSessionRuntime(first.id) !== firstSession,
+    'deleting a conversation should evict its session runtime',
+  )
+  await runtime.shutdown()
+}
+
 async function main(): Promise<void> {
   await testRunMachineStepModePausesBeforeToolStep()
   await testRunCursorResumesOneActionAtATime()
@@ -11292,6 +11391,7 @@ async function main(): Promise<void> {
   await testRuntimeManualCompactConversation()
   await testRuntimeStreamHandlerSnapshots()
   await testRuntimeConversationStoreFacadeContract()
+  await testSingleSessionRuntimeBoundaryContract()
   await testRuntimeConversationRuntimeStateApiUsesEventReplay()
   await testRuntimeOptionalStoreCapabilitiesFailClosed()
   await testInMemoryRuntimeStoreEventListContract()

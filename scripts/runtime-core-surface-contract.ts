@@ -64,6 +64,7 @@ import {
   type RuntimeModelInfoResolver,
   type RuntimeStableInstructionsInput,
   requestToolApprovalWithActivity,
+  SessionRuntime,
   type Settings,
   type ToolApprovalMode,
   type ToolApprovalRequest,
@@ -131,6 +132,7 @@ export type RuntimeCorePublicSurfaceContract = {
   persistedMessage: PersistedMessage
   persistedToolResultRef: PersistedToolResultRef
   runtime: WorkbenchRuntime
+  sessionRuntime: SessionRuntime
   runtimeCompactConversationInput: RuntimeCompactConversationInput
   runtimeCompactConversationResult: RuntimeCompactConversationResult
   runtimeContextCompactArtifactInput: RuntimeContextCompactArtifactInput
@@ -160,6 +162,7 @@ export const runtimeCorePublicValueSurfaceContract = {
   contextBudgetManager: ContextBudgetManager,
   contextTokenEstimator: ContextTokenEstimator,
   runtime: WorkbenchRuntime,
+  sessionRuntime: SessionRuntime,
   runtimeEvent: createWorkbenchEvent,
   sdkVersion: AILA_RUNTIME_SDK_VERSION,
   toolApprovalStore: ToolApprovalStore,

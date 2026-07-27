@@ -235,6 +235,7 @@ export {
   type RuntimeToolPackLoadInput,
   type RuntimeTransientContextInput,
   type SessionRepository,
+  SessionRuntime,
   type Workbench,
   type WorkbenchEvent,
   type WorkbenchEventMap,

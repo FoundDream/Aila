@@ -12,6 +12,21 @@ The public runtime SDK entrypoint is `@aila/agent`; Node adapters live in
 `@aila/agent-node/app`. Consumers should use these exported entrypoints instead
 of importing workspace source files directly.
 
+The runtime is split into four explicit scopes:
+
+- `WorkbenchRuntime` is the multi-session process facade. It creates, retains,
+  routes, recovers, and shuts down session runtimes.
+- `SessionRuntime` is bound to one durable conversation. It owns that session's
+  turn lifecycle, phase, pending journal writes, context assembly, run controls,
+  navigation, compaction, and event subscription.
+- `AgentRuntime` orchestrates one model/tool loop, including queue timing and
+  step policy.
+- `RunMachine` is the pure durable execution state machine.
+
+Desktop, TUI, and CLI can keep using the `Workbench` API. Code that already
+knows a conversation id can call `workbench.getSessionRuntime(id)` and use the
+bound API without repeatedly passing that id.
+
 ## Interfaces
 
 - Desktop: `bun run dev`
