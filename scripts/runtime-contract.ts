@@ -121,6 +121,32 @@ function normalizeFixtureStore(
   const nextId = () => `fixture-${++generatedId}`
   const runKey = (conversationId: string, runId: string) => `${conversationId}:${runId}`
   const blobKey = (conversationId: string, blobId: string) => `${conversationId}:${blobId}`
+  const ensureJournal = async (
+    conversationId: string,
+    knownSummary?: ConversationSummary,
+  ): Promise<runtimeSdk.SessionEntry[]> => {
+    const existing = entries.get(conversationId)
+    if (existing) return existing
+    const listedSummary = knownSummary
+      ? undefined
+      : (await store.listConversations?.())?.find((candidate) => candidate.id === conversationId)
+    const summary =
+      knownSummary ?? listedSummary ?? (await store.getConversation(conversationId)).meta
+    const created = runtimeSdk.prepareSessionEntry(
+      conversationId,
+      [],
+      {
+        type: 'session.created',
+        entryId: `session:${conversationId}`,
+        timestamp: summary.createdAt,
+        data: { summary },
+      },
+      nextId,
+    ).entry
+    const journal = [created]
+    entries.set(conversationId, journal)
+    return journal
+  }
 
   const adapted: WorkbenchStore = {
     createConversation:
@@ -142,7 +168,7 @@ function normalizeFixtureStore(
         summary = await store.recordUsage(conversationId, input.data.usage)
       }
       summary ??= (await store.getConversation(conversationId)).meta
-      const journal = entries.get(conversationId) ?? []
+      const journal = await ensureJournal(conversationId, summary)
       const prepared = runtimeSdk.prepareSessionEntry(conversationId, journal, input, nextId)
       if (!prepared.duplicate) journal.push(prepared.entry)
       entries.set(conversationId, journal)
@@ -153,7 +179,7 @@ function normalizeFixtureStore(
       }
     },
     async listSessionEntries(conversationId) {
-      const journal = entries.get(conversationId) ?? []
+      const journal = await ensureJournal(conversationId)
       if (!journal.some((entry) => entry.type === 'run.event') && store.listRunEvents) {
         const legacyEvents = await store.listRunEvents(conversationId)
         const projected = [...journal]
@@ -177,6 +203,25 @@ function normalizeFixtureStore(
         return runtimeSdk.orderedSessionEntries(projected)
       }
       return runtimeSdk.orderedSessionEntries(journal)
+    },
+    async getSessionTree(conversationId) {
+      return runtimeSdk.createSessionTree(await ensureJournal(conversationId))
+    },
+    async getSessionBranch(conversationId, entryId) {
+      const journal = await ensureJournal(conversationId)
+      const leafId = entryId ?? runtimeSdk.getSessionLeafId(journal)
+      if (!leafId) throw new Error(`conversation has no active leaf: ${conversationId}`)
+      return runtimeSdk.getSessionBranch(journal, leafId)
+    },
+    async setSessionLeaf(conversationId, entryId) {
+      return adapted.appendSessionEntry(conversationId, {
+        type: 'session.leaf.changed',
+        timestamp: Date.now(),
+        data: { targetEntryId: entryId },
+      })
+    },
+    async forkConversation() {
+      throw new Error('fixture store does not support session fork')
     },
     deleteConversation: store.deleteConversation ?? (async () => {}),
     recoverInterruptedActivities: store.recoverInterruptedActivities,
@@ -359,7 +404,7 @@ async function testRunCursorResumesOneActionAtATime(): Promise<void> {
   )
 }
 
-async function testRunCheckpointAndArtifactStoreContract(): Promise<void> {
+async function testRunSnapshotAndPayloadStoreContract(): Promise<void> {
   const store = createInMemoryRuntimeStore({
     createId: () => 'run-store-conversation',
   })
@@ -383,6 +428,7 @@ async function testRunCheckpointAndArtifactStoreContract(): Promise<void> {
     executionMode: 'agent',
     maxToolSteps: 2,
     loop: createRunCursor(identity, 'step'),
+    sessionLeafId: `session:${conversation.id}`,
     contextRef,
     recovery: { strategy: 'automatic' },
     revision: 1,
@@ -452,7 +498,7 @@ async function testRuntimeRunInspectionForkAndAbortContract(): Promise<void> {
     conversationId: conversation.id,
     text: 'inspect and fork this run',
   })
-  const source = createRunCheckpointFixture(conversation.id, 'run-control-source')
+  const source = createRunSnapshotFixture(conversation.id, 'run-control-source')
   source.identity.turnId = userMessage.id
   source.loop.state.identity.turnId = userMessage.id
   source.loop.state.status = 'paused'
@@ -496,7 +542,7 @@ async function testRuntimeRunInspectionForkAndAbortContract(): Promise<void> {
   })
   assertEqual(inspection.active, false, 'persisted run inspection should report inactive state')
   assertEqual(inspection.events.length, 1, 'run inspection should filter events by run id')
-  assertEqual(inspection.artifacts.length, 1, 'run inspection should include immutable artifacts')
+  assertEqual(inspection.payloads.length, 1, 'run inspection should include immutable payloads')
 
   const forked = await runtime.forkRun({
     conversationId: conversation.id,
@@ -532,8 +578,8 @@ async function testRuntimeRunInspectionForkAndAbortContract(): Promise<void> {
   )
 }
 
-function testRunCheckpointRecoverySafetyContract(): void {
-  const toolCheckpoint = createRunCheckpointFixture('recovery-conversation', 'recovery-tool-run')
+function testRunSnapshotRecoverySafetyContract(): void {
+  const toolCheckpoint = createRunSnapshotFixture('recovery-conversation', 'recovery-tool-run')
   const toolStep = {
     stepId: 'recovery-tool-step',
     index: 1,
@@ -547,7 +593,7 @@ function testRunCheckpointRecoverySafetyContract(): void {
   toolCheckpoint.loop.state.currentStep = toolStep
   toolCheckpoint.loop.state.steps = [toolStep]
   toolCheckpoint.loop.state.nextAction = { type: 'tools', toolCallIds: ['unsafe-call'] }
-  const preparedTool = runtimeSdk.prepareRunCheckpoint(toolCheckpoint)
+  const preparedTool = runtimeSdk.prepareRunSnapshot(toolCheckpoint)
   assertEqual(
     preparedTool.recovery.strategy,
     'manual_review',
@@ -555,7 +601,7 @@ function testRunCheckpointRecoverySafetyContract(): void {
   )
   let manualReviewError = ''
   try {
-    runtimeSdk.prepareRunCheckpointForResume(preparedTool, 30)
+    runtimeSdk.prepareRunSnapshotForResume(preparedTool, 30)
   } catch (error) {
     manualReviewError = error instanceof Error ? error.message : String(error)
   }
@@ -564,7 +610,7 @@ function testRunCheckpointRecoverySafetyContract(): void {
     'automatic resume should refuse an interrupted tool call',
   )
 
-  const modelCheckpoint = createRunCheckpointFixture('recovery-conversation', 'recovery-model-run')
+  const modelCheckpoint = createRunSnapshotFixture('recovery-conversation', 'recovery-model-run')
   const modelStep = {
     stepId: 'recovery-model-step',
     index: 0,
@@ -577,7 +623,7 @@ function testRunCheckpointRecoverySafetyContract(): void {
   modelCheckpoint.loop.state.currentStep = modelStep
   modelCheckpoint.loop.state.steps = [modelStep]
   modelCheckpoint.loop.state.nextAction = { type: 'model', reason: 'user' }
-  const resumed = runtimeSdk.prepareRunCheckpointForResume(modelCheckpoint, 30)
+  const resumed = runtimeSdk.prepareRunSnapshotForResume(modelCheckpoint, 30)
   assertEqual(
     resumed.loop.state.status,
     'paused',
@@ -595,9 +641,9 @@ function testRunCheckpointRecoverySafetyContract(): void {
   )
 }
 
-function testRunCheckpointV1MigrationContract(): void {
+function testRunSnapshotRejectsLegacySchemaContract(): void {
   const legacy = structuredClone(
-    createRunCheckpointFixture('migration-conversation', 'migration-run'),
+    createRunSnapshotFixture('migration-conversation', 'migration-run'),
   ) as unknown as {
     schemaVersion: number
     loop: {
@@ -608,7 +654,7 @@ function testRunCheckpointV1MigrationContract(): void {
       }
     }
   }
-  legacy.schemaVersion = 2
+  legacy.schemaVersion = 1
   legacy.loop.state.status = 'paused'
   legacy.loop.state.nextAction = { type: 'tools', toolCallIds: ['legacy-tool'] }
   delete legacy.loop.state.wait
@@ -696,6 +742,27 @@ async function testProviderStreamStepCheckpointResumeContract(): Promise<void> {
   let toolRunCount = 0
   let checkpoint: runtimeSdk.RunSnapshot | undefined
   const entries: runtimeSdk.SessionEntry[] = []
+  entries.push(
+    runtimeSdk.prepareSessionEntry(
+      'step-resume-conversation',
+      [],
+      {
+        type: 'session.created',
+        entryId: 'session:step-resume-conversation',
+        timestamp: 0,
+        data: {
+          summary: {
+            schemaVersion: runtimeSdk.AILA_CONVERSATION_META_SCHEMA_VERSION,
+            id: 'step-resume-conversation',
+            title: runtimeSdk.DEFAULT_CONVERSATION_TITLE,
+            createdAt: 0,
+            updatedAt: 0,
+          },
+        },
+      },
+      () => 'session:step-resume-conversation',
+    ).entry,
+  )
   const blobs = new Map<string, runtimeSdk.StoredBlob>()
   const events: RunEvent[] = []
   const doneMessages: PersistedMessage[] = []
@@ -2206,7 +2273,7 @@ async function testConversationUsageAccumulatorContract(): Promise<void> {
   )
 }
 
-function createRunCheckpointFixture(conversationId: string, runId: string): runtimeSdk.RunSnapshot {
+function createRunSnapshotFixture(conversationId: string, runId: string): runtimeSdk.RunSnapshot {
   const identity = {
     conversationId,
     turnId: `${runId}-turn`,
@@ -2220,6 +2287,7 @@ function createRunCheckpointFixture(conversationId: string, runId: string): runt
     executionMode: 'agent',
     maxToolSteps: 3,
     loop: createRunCursor(identity, 'step'),
+    sessionLeafId: `session:${conversationId}`,
     contextRef: {
       schemaVersion: runtimeSdk.AILA_BLOB_SCHEMA_VERSION,
       blobId: `${runId}-context`,
@@ -2242,7 +2310,7 @@ async function testFileRunPersistenceSurvivesRestart(): Promise<void> {
     })
     const conversation = await store.createConversation?.()
     assert(conversation, 'file run store should create a conversation')
-    const checkpoint = createRunCheckpointFixture(conversation.id, 'run-file-id')
+    const checkpoint = createRunSnapshotFixture(conversation.id, 'run-file-id')
     checkpoint.contextRef = await store.putBlob(conversation.id, {
       blobId: checkpoint.contextRef.blobId,
       contentType: 'application/json',
@@ -2286,6 +2354,42 @@ async function testFileRunPersistenceSurvivesRestart(): Promise<void> {
       '2,3',
       'concurrent file checkpoint writes should serialize monotonic revisions',
     )
+    const forkMessage = await reopened.appendSessionEntry(conversation.id, {
+      type: 'message.committed',
+      timestamp: 30,
+      data: {
+        message: {
+          schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+          id: 'run-file-fork-message',
+          role: 'user',
+          blocks: [{ type: 'text', content: 'fork persisted file branch' }],
+          status: 'done',
+        },
+      },
+    })
+    const forked = await reopened.forkConversation(conversation.id, forkMessage.entry.entryId)
+    assertEqual(
+      (await reopened.getConversation(forked.id)).messages[0]?.id,
+      'run-file-fork-message',
+      'file store should persist a selected session branch into a new session',
+    )
+    await reopened.putBlob(conversation.id, {
+      blobId: 'run-file-orphan',
+      contentType: 'application/json',
+      data: { orphan: true },
+    })
+    const garbage = await reopened.collectGarbageBlobs(conversation.id)
+    assertEqual(
+      garbage.deletedBlobIds.join(','),
+      'run-file-orphan',
+      'file store blob GC should delete unreferenced blobs',
+    )
+    assert(
+      garbage.retainedBlobIds.includes('run-file-id-context') &&
+        garbage.retainedBlobIds.includes('run-file-payload'),
+      'file store blob GC should retain snapshot and journal payload blobs',
+    )
+    await reopened.deleteConversation(forked.id)
     await reopened.deleteConversation(conversation.id)
     try {
       await reopened.listRunSnapshots(conversation.id)
@@ -2304,7 +2408,7 @@ async function testDesktopRunPersistenceSurvivesRestart(): Promise<void> {
     const store = createPersistedRuntimeStore()
     const conversation = await store.createConversation?.()
     assert(conversation, 'desktop run store should create a conversation')
-    const checkpoint = createRunCheckpointFixture(conversation.id, 'run-desktop-id')
+    const checkpoint = createRunSnapshotFixture(conversation.id, 'run-desktop-id')
     checkpoint.contextRef = await store.putBlob(conversation.id, {
       blobId: checkpoint.contextRef.blobId,
       contentType: 'application/json',
@@ -3817,9 +3921,262 @@ async function testInMemoryRuntimeStoreEventListContract(): Promise<void> {
   }
 }
 
+async function testSessionTreeProjectionForkAndGarbageCollectionContract(): Promise<void> {
+  let conversationIndex = 0
+  let entryIndex = 0
+  const store = createInMemoryRuntimeStore({
+    createId: () => `tree-conversation-${++conversationIndex}`,
+    createEventId: () => `tree-entry-${++entryIndex}`,
+    now: () => 100 + entryIndex,
+  })
+  const source = await store.createConversation?.()
+  assert(source, 'tree store should create a source session')
+
+  const firstUser = await store.appendSessionEntry(source.id, {
+    type: 'message.committed',
+    timestamp: 110,
+    data: {
+      message: {
+        schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+        id: 'tree-user',
+        role: 'user',
+        blocks: [{ type: 'text', content: 'root question' }],
+        status: 'done',
+      },
+    },
+  })
+  const firstAssistant = await store.appendSessionEntry(source.id, {
+    type: 'message.committed',
+    timestamp: 120,
+    data: {
+      message: {
+        schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+        id: 'tree-assistant-a',
+        role: 'assistant',
+        blocks: [{ type: 'text', content: 'branch A' }],
+        status: 'done',
+      },
+    },
+  })
+  await store.setSessionLeaf(source.id, firstUser.entry.entryId)
+  const secondBranch = await store.appendSessionEntry(source.id, {
+    type: 'message.committed',
+    timestamp: 130,
+    data: {
+      message: {
+        schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+        id: 'tree-assistant-b',
+        role: 'assistant',
+        blocks: [{ type: 'text', content: 'branch B' }],
+        status: 'done',
+      },
+    },
+  })
+
+  const branchRecord = await store.getConversation(source.id)
+  assertEqual(
+    branchRecord.messages.map((message) => message.id).join(','),
+    'tree-user,tree-assistant-b',
+    'active branch projection should not leak sibling messages',
+  )
+  const tree = await store.getSessionTree(source.id)
+  assertEqual(tree.leafId, secondBranch.entry.entryId, 'tree should persist the selected leaf')
+  const firstUserNode = tree.nodes.find((node) => node.entry.entryId === firstUser.entry.entryId)
+  assertEqual(
+    firstUserNode?.children.sort().join(','),
+    [firstAssistant.entry.entryId, secondBranch.entry.entryId].sort().join(','),
+    'tree should retain both semantic children',
+  )
+
+  const leafBeforeObservation = tree.leafId
+  await store.appendSessionEntry(source.id, {
+    type: 'run.event',
+    entryId: 'tree-observation',
+    timestamp: 140,
+    data: {
+      event: {
+        timestamp: 140,
+        conversationId: source.id,
+        messageId: 'tree-assistant-b',
+        type: 'turn.completed',
+      },
+    },
+  })
+  assertEqual(
+    (await store.getSessionTree(source.id)).leafId,
+    leafBeforeObservation,
+    'run observations should not advance the semantic leaf',
+  )
+
+  const customEntry = await store.appendSessionEntry(source.id, {
+    type: 'extension.custom',
+    timestamp: 150,
+    data: { namespace: 'contract.note', version: 1, data: { text: 'project me' } },
+  })
+  const customProjected = runtimeSdk.projectConversation(
+    await store.listSessionEntries(source.id),
+    {
+      customEntryProjectors: {
+        'contract.note': (entry) => ({
+          schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+          id: `custom:${entry.entryId}`,
+          role: 'assistant',
+          blocks: [{ type: 'text', content: String((entry.data.data as { text: string }).text) }],
+          status: 'done',
+        }),
+      },
+    },
+  )
+  assert(
+    customProjected.messages.some(
+      (message) => message.id === `custom:${customEntry.entry.entryId}`,
+    ),
+    'registered custom projectors should contribute to active-branch context',
+  )
+
+  const runtime = new WorkbenchRuntime({ store, logger: { warn() {}, error() {} } })
+  const navigated = await runtime.navigateSession({
+    conversationId: source.id,
+    entryId: firstAssistant.entry.entryId,
+  })
+  assertEqual(
+    navigated.messages.map((message) => message.id).join(','),
+    'tree-user,tree-assistant-a',
+    'runtime navigation should durably select another branch',
+  )
+  const forked = await runtime.forkSession({
+    conversationId: source.id,
+    entryId: firstAssistant.entry.entryId,
+  })
+  const forkedRecord = await runtime.getConversation(forked.id)
+  assertEqual(
+    forkedRecord.messages.map((message) => message.id).join(','),
+    'tree-user,tree-assistant-a',
+    'session fork should copy only the selected root-to-leaf path',
+  )
+  const forkOrigin = (await store.listSessionEntries(forked.id)).find(
+    (entry) => entry.type === 'session.forked',
+  )
+  assert(
+    forkOrigin?.type === 'session.forked' &&
+      forkOrigin.data.origin.sessionId === source.id &&
+      forkOrigin.data.origin.entryId === firstAssistant.entry.entryId,
+    'forked session should retain durable origin metadata',
+  )
+
+  const retainedPayload = await store.putBlob(source.id, {
+    blobId: 'tree-retained-payload',
+    contentType: 'application/json',
+    data: { retained: 'payload' },
+  })
+  await store.appendSessionEntry(source.id, {
+    type: 'run.payload',
+    timestamp: 160,
+    turnId: 'tree-turn',
+    runId: 'tree-run',
+    stepId: 'tree-step',
+    payloadRef: retainedPayload,
+    data: { kind: 'inspection', label: 'retained payload' },
+  })
+  const retainedContext = await store.putBlob(source.id, {
+    blobId: 'tree-retained-context',
+    contentType: 'application/json',
+    data: { messages: [], contextPlan: {} },
+  })
+  const snapshot = createRunSnapshotFixture(source.id, 'tree-run')
+  snapshot.sessionLeafId = (await store.getSessionTree(source.id)).leafId
+  snapshot.contextRef = retainedContext
+  snapshot.throughSeq = (await store.listSessionEntries(source.id)).at(-1)?.seq ?? 0
+  await store.saveRunSnapshot(snapshot)
+  await store.putBlob(source.id, {
+    blobId: 'tree-orphan',
+    contentType: 'application/json',
+    data: { orphan: true },
+  })
+  const garbage = await runtime.collectSessionGarbage(source.id)
+  assertEqual(garbage.deletedBlobIds.join(','), 'tree-orphan', 'blob GC should delete only orphans')
+  assert(
+    garbage.retainedBlobIds.includes('tree-retained-context') &&
+      garbage.retainedBlobIds.includes('tree-retained-payload'),
+    'blob GC should retain snapshot and payload references',
+  )
+
+  const invalidRoot = structuredClone((await store.listSessionEntries(source.id))[0])
+  assert(invalidRoot, 'tree journal should have a root entry')
+  ;(invalidRoot as { schemaVersion: number }).schemaVersion = 1
+  let schemaError = ''
+  try {
+    runtimeSdk.validateSessionJournal([invalidRoot])
+  } catch (error) {
+    schemaError = error instanceof Error ? error.message : String(error)
+  }
+  assert(
+    schemaError.includes('unsupported session entry schema'),
+    'legacy session journal schemas should be rejected without migration',
+  )
+}
+
+async function testRuntimePendingWritesFlushAtSavePointContract(): Promise<void> {
+  const store = createInMemoryRuntimeStore()
+  let runtime: WorkbenchRuntime
+  let pendingEntryId = ''
+  let pendingWasBuffered = false
+  let phaseDuringRun: runtimeSdk.SessionPhase | null = null
+  const runAgent: runtimeSdk.DurableRunExecutor = async (request, handlers) => {
+    phaseDuringRun = (await store.getSessionTree(request.conversationId)).phase
+    pendingEntryId = await runtime.appendSessionCustomEntry({
+      conversationId: request.conversationId,
+      namespace: 'contract.pending',
+      version: 1,
+      data: { durable: true },
+    })
+    pendingWasBuffered = !(await store.listSessionEntries(request.conversationId)).some(
+      (entry) => entry.entryId === pendingEntryId,
+    )
+    await request.onSavePoint?.('model_response')
+    assert(
+      (await store.listSessionEntries(request.conversationId)).some(
+        (entry) => entry.entryId === pendingEntryId,
+      ),
+      'save point should flush pending session writes',
+    )
+    await handlers.onDone({
+      conversationId: request.conversationId,
+      messageId: request.assistantMessageId,
+      message: {
+        schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+        id: request.assistantMessageId,
+        role: 'assistant',
+        blocks: [{ type: 'text', content: 'saved' }],
+        status: 'done',
+        model: request.selection,
+      },
+    })
+  }
+  runtime = new WorkbenchRuntime({
+    store,
+    runAgent,
+    logger: { warn() {}, error() {} },
+  })
+  const conversation = await runtime.createConversation()
+  await runtime.send({
+    conversationId: conversation.id,
+    userText: 'exercise save point',
+    selection: { providerId: 'openrouter', modelId: 'contract/mock' },
+  })
+  await waitFor(() => runtime.listActiveTurns().length === 0, 'save-point run should settle')
+  assertEqual(phaseDuringRun, 'turn', 'runtime should durably enter the turn phase')
+  assertEqual(pendingWasBuffered, true, 'active-turn extension writes should be buffered')
+  assertEqual(
+    (await store.getSessionTree(conversation.id)).phase,
+    'idle',
+    'runtime should return to idle after terminal cleanup',
+  )
+}
+
 async function testRuntimeEnvironmentContract(): Promise<void> {
   const ids = ['conversation-env-id', 'user-env-id', 'assistant-env-id']
-  const timestamps = [100, 200, 300, 400]
+  const timestamps = [100, 200, 300, 400, 500, 600]
   const emitted: WorkbenchEvent[] = []
   const runtime = new WorkbenchRuntime({
     createId: () => {
@@ -3854,7 +4211,7 @@ async function testRuntimeEnvironmentContract(): Promise<void> {
   )
 
   const record = await runtime.getConversation(conversation.id)
-  assertEqual(record.meta.updatedAt, 400, 'runtime should use injected event time for activity')
+  assertEqual(record.meta.updatedAt, 600, 'runtime should use injected event time for activity')
   assertEqual(record.messages[0]?.id, 'user-env-id', 'recorded user id')
   assertEqual(record.messages[1]?.id, 'assistant-env-id', 'recorded assistant id')
   assertEqual(record.messages[1]?.status, 'error', 'hostless assistant status')
@@ -3865,7 +4222,7 @@ async function testRuntimeEnvironmentContract(): Promise<void> {
   assert(failedEvent?.type === 'run:event', 'runtime should emit setup failure event')
   assertEqual(
     failedEvent.data.timestamp,
-    400,
+    500,
     'runtime should timestamp events from injected clock',
   )
   assertEqual(ids.length, 0, 'runtime should consume expected injected ids')
@@ -4186,7 +4543,7 @@ async function testRuntimeRecoveryUsesInjectedStoreReplay(): Promise<void> {
 
   assertEqual(
     calls.join(','),
-    `list-conversations,list-events:${conversationId},append:turn.interrupted:${conversationId}`,
+    `list-conversations,list-conversations,list-events:${conversationId},append:turn.interrupted:${conversationId},list-conversations`,
     'runtime should recover through injected store methods',
   )
   assertEqual(appendedEvent?.type, 'turn.interrupted', 'injected replay should append interrupted')
@@ -8962,6 +9319,27 @@ async function testProviderToolApprovalPausesBeforeSideEffectContract(): Promise
   let resolveApproval: ((approved: boolean) => void) | undefined
   const snapshots: runtimeSdk.RunSnapshot[] = []
   const sessionEntries: runtimeSdk.SessionEntry[] = []
+  sessionEntries.push(
+    runtimeSdk.prepareSessionEntry(
+      'approval-runtime-conversation',
+      [],
+      {
+        type: 'session.created',
+        entryId: 'session:approval-runtime-conversation',
+        timestamp: 0,
+        data: {
+          summary: {
+            schemaVersion: runtimeSdk.AILA_CONVERSATION_META_SCHEMA_VERSION,
+            id: 'approval-runtime-conversation',
+            title: runtimeSdk.DEFAULT_CONVERSATION_TITLE,
+            createdAt: 0,
+            updatedAt: 0,
+          },
+        },
+      },
+      () => 'session:approval-runtime-conversation',
+    ).entry,
+  )
   const events: RunEvent[] = []
 
   const modelStreamClient: runtimePackageNodeSdk.ModelStreamClient = {
@@ -10883,10 +11261,10 @@ async function testSkillExtensionReportContract(): Promise<void> {
 async function main(): Promise<void> {
   await testRunMachineStepModePausesBeforeToolStep()
   await testRunCursorResumesOneActionAtATime()
-  await testRunCheckpointAndArtifactStoreContract()
+  await testRunSnapshotAndPayloadStoreContract()
   await testRuntimeRunInspectionForkAndAbortContract()
-  testRunCheckpointRecoverySafetyContract()
-  testRunCheckpointV1MigrationContract()
+  testRunSnapshotRecoverySafetyContract()
+  testRunSnapshotRejectsLegacySchemaContract()
   await testProviderModelCallExecutesExactlyOneRequest()
   await testProviderStreamStepCheckpointResumeContract()
   await testProviderStreamPreflightFailureCheckpointContract()
@@ -10917,6 +11295,8 @@ async function main(): Promise<void> {
   await testRuntimeConversationRuntimeStateApiUsesEventReplay()
   await testRuntimeOptionalStoreCapabilitiesFailClosed()
   await testInMemoryRuntimeStoreEventListContract()
+  await testSessionTreeProjectionForkAndGarbageCollectionContract()
+  await testRuntimePendingWritesFlushAtSavePointContract()
   await testRuntimeEnvironmentContract()
   await testRuntimeAppendUserMessageUsesInjectedStore()
   await testRuntimeRecordRunEventUsesInjectedStore()

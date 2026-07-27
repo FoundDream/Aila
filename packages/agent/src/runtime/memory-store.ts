@@ -9,6 +9,9 @@ import { prepareRunSnapshot, type RunSnapshot } from '../run-persistence'
 import {
   AILA_BLOB_SCHEMA_VERSION,
   type BlobRef,
+  createSessionTree,
+  getSessionBranch,
+  getSessionLeafId,
   prepareSessionEntry,
   projectConversation,
   type SessionEntry,
@@ -112,32 +115,48 @@ export function createInMemoryRuntimeStore(input: InMemoryStoreOptions = {}): Wo
     }
   }
 
+  async function createConversationInternal(
+    workspace?: Parameters<NonNullable<WorkbenchStore['createConversation']>>[0],
+  ): Promise<ReturnType<typeof projectConversation>['meta']> {
+    const createdAt = now()
+    const id = createId()
+    const summary: ReturnType<typeof projectConversation>['meta'] = {
+      schemaVersion: AILA_CONVERSATION_META_SCHEMA_VERSION,
+      id,
+      title: DEFAULT_CONVERSATION_TITLE,
+      createdAt,
+      updatedAt: createdAt,
+      ...(workspace ? { workspace: clone(workspace) } : {}),
+    }
+    const created = prepareSessionEntry(
+      id,
+      [],
+      {
+        type: 'session.created',
+        timestamp: createdAt,
+        entryId: `session:${id}`,
+        data: { summary },
+      },
+      createEventId,
+    ).entry
+    journals.set(id, [created])
+    return clone(summary)
+  }
+
+  function copyEntryInput(entry: SessionEntry): SessionEntryInput {
+    const {
+      schemaVersion: _schemaVersion,
+      entryId: _entryId,
+      sessionId: _sessionId,
+      seq: _seq,
+      parentId: _parentId,
+      ...inputEntry
+    } = clone(entry)
+    return inputEntry as SessionEntryInput
+  }
+
   return {
-    async createConversation(workspace) {
-      const createdAt = now()
-      const id = createId()
-      const summary: ReturnType<typeof projectConversation>['meta'] = {
-        schemaVersion: AILA_CONVERSATION_META_SCHEMA_VERSION,
-        id,
-        title: DEFAULT_CONVERSATION_TITLE,
-        createdAt,
-        updatedAt: createdAt,
-        ...(workspace ? { workspace: clone(workspace) } : {}),
-      }
-      const created = prepareSessionEntry(
-        id,
-        [],
-        {
-          type: 'session.created',
-          timestamp: createdAt,
-          entryId: `session:${id}`,
-          data: { summary },
-        },
-        createEventId,
-      ).entry
-      journals.set(id, [created])
-      return clone(summary)
-    },
+    createConversation: createConversationInternal,
     async getConversation(sessionId) {
       return clone(projectConversation(requireJournal(sessionId)))
     },
@@ -150,6 +169,79 @@ export function createInMemoryRuntimeStore(input: InMemoryStoreOptions = {}): Wo
     appendSessionEntry,
     async listSessionEntries(sessionId) {
       return clone(requireJournal(sessionId))
+    },
+    async getSessionTree(sessionId) {
+      return clone(createSessionTree(requireJournal(sessionId)))
+    },
+    async getSessionBranch(sessionId, entryId) {
+      const entries = requireJournal(sessionId)
+      const leafId = entryId ?? getSessionLeafId(entries)
+      if (!leafId) throw new Error(`conversation has no active leaf: ${sessionId}`)
+      return clone(getSessionBranch(entries, leafId))
+    },
+    async setSessionLeaf(sessionId, entryId) {
+      return appendSessionEntry(sessionId, {
+        type: 'session.leaf.changed',
+        timestamp: now(),
+        data: { targetEntryId: entryId },
+      })
+    },
+    async forkConversation(sessionId, entryId, workspace) {
+      const sourceEntries = requireJournal(sessionId)
+      const sourceLeafId = entryId ?? getSessionLeafId(sourceEntries)
+      if (!sourceLeafId) throw new Error(`conversation has no active leaf: ${sessionId}`)
+      const sourceBranch = getSessionBranch(sourceEntries, sourceLeafId)
+      const sourceBranchIds = new Set(sourceBranch.map((entry) => entry.entryId))
+      const copyableEntries = sourceEntries.filter(
+        (entry) =>
+          (entry.type !== 'session.created' && sourceBranchIds.has(entry.entryId)) ||
+          (entry.type === 'extension.custom' &&
+            entry.parentId !== null &&
+            sourceBranchIds.has(entry.parentId)),
+      )
+      const sourceRecord = projectConversation(sourceEntries)
+      const explicitTitle = [...sourceEntries]
+        .reverse()
+        .find((entry) => entry.type === 'conversation.renamed')
+      const created = await createConversationInternal(workspace ?? sourceRecord.meta.workspace)
+      const targetJournal = requireJournal(created.id)
+      try {
+        await appendSessionEntry(created.id, {
+          type: 'session.forked',
+          timestamp: now(),
+          data: { origin: { sessionId, entryId: sourceLeafId } },
+        })
+        for (const entry of copyableEntries) {
+          if (entry.payloadRef) {
+            const sourceBlob = blobs.get(blobKey(sessionId, entry.payloadRef.blobId))
+            if (!sourceBlob) {
+              throw new Error(`fork source blob not found: ${entry.payloadRef.blobId}`)
+            }
+            blobs.set(blobKey(created.id, entry.payloadRef.blobId), clone(sourceBlob))
+          }
+          const prepared = prepareSessionEntry(
+            created.id,
+            targetJournal,
+            copyEntryInput(entry),
+            createEventId,
+          )
+          targetJournal.push(clone(prepared.entry))
+        }
+        if (explicitTitle?.type === 'conversation.renamed') {
+          await appendSessionEntry(created.id, {
+            type: 'conversation.renamed',
+            timestamp: now(),
+            data: { title: explicitTitle.data.title },
+          })
+        }
+        return clone(projectConversation(targetJournal).meta)
+      } catch (error) {
+        journals.delete(created.id)
+        for (const key of blobs.keys()) {
+          if (key.startsWith(`${created.id}:`)) blobs.delete(key)
+        }
+        throw error
+      }
     },
     async recoverInterruptedActivities(reason) {
       const recovered: RunEventAppendResult[] = []
@@ -169,7 +261,12 @@ export function createInMemoryRuntimeStore(input: InMemoryStoreOptions = {}): Wo
       )
     },
     async saveRunSnapshot(snapshot) {
-      requireJournal(snapshot.identity.conversationId)
+      const entries = requireJournal(snapshot.identity.conversationId)
+      getSessionBranch(entries, snapshot.sessionLeafId)
+      const maximumSeq = entries.reduce((maximum, entry) => Math.max(maximum, entry.seq), 0)
+      if (snapshot.throughSeq > maximumSeq) {
+        throw new Error(`run snapshot exceeds session journal: ${snapshot.throughSeq}`)
+      }
       const key = runKey(snapshot.identity.conversationId, snapshot.identity.runId)
       const prepared = prepareRunSnapshot(snapshot, snapshots.get(key))
       snapshots.set(key, clone(prepared))
@@ -207,6 +304,32 @@ export function createInMemoryRuntimeStore(input: InMemoryStoreOptions = {}): Wo
     async getBlob(sessionId, blobId) {
       const blob = blobs.get(blobKey(sessionId, blobId))
       return blob ? clone(blob) : null
+    },
+    async collectGarbageBlobs(sessionId) {
+      const entries = requireJournal(sessionId)
+      const referenced = new Set(
+        entries.flatMap((entry) => (entry.payloadRef ? [entry.payloadRef.blobId] : [])),
+      )
+      for (const snapshot of snapshots.values()) {
+        if (snapshot.identity.conversationId === sessionId) {
+          referenced.add(snapshot.contextRef.blobId)
+        }
+      }
+      const deletedBlobIds: string[] = []
+      const retainedBlobIds: string[] = []
+      for (const key of [...blobs.keys()]) {
+        if (!key.startsWith(`${sessionId}:`)) continue
+        const blobId = key.slice(sessionId.length + 1)
+        if (referenced.has(blobId)) retainedBlobIds.push(blobId)
+        else {
+          blobs.delete(key)
+          deletedBlobIds.push(blobId)
+        }
+      }
+      return {
+        deletedBlobIds: deletedBlobIds.sort(),
+        retainedBlobIds: retainedBlobIds.sort(),
+      }
     },
     async deleteConversation(sessionId) {
       journals.delete(sessionId)

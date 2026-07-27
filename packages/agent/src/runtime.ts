@@ -37,10 +37,9 @@ import {
 } from './conversation-core'
 import type { RunIdentity, RunNextAction } from './run-machine'
 import {
-  AILA_RUN_ARTIFACT_SCHEMA_VERSION,
+  AILA_RUN_PAYLOAD_SCHEMA_VERSION,
   prepareRunSnapshotForResume,
-  type RunArtifact,
-  type RunCheckpoint,
+  type RunPayload,
   type RunPayloadKind,
   type RunSnapshot,
 } from './run-persistence'
@@ -52,9 +51,16 @@ import {
   type TurnStartLock,
 } from './runtime/turn-coordinator'
 import {
+  type BlobGarbageCollectionResult,
   type BlobRef,
+  projectConversation,
   type SessionEntry,
   type SessionEntryInput,
+  type SessionExtensionData,
+  type SessionExtensionMessageData,
+  type SessionPhase,
+  type SessionProjectionOptions,
+  type SessionTree,
   sessionRunEvents,
   sessionRunPayloads,
 } from './session-journal'
@@ -153,44 +159,44 @@ function errorMessage(error: unknown): string {
 }
 
 function runtimeRunAllowedControls(
-  checkpoint: RunSnapshot,
+  snapshot: RunSnapshot,
   active: boolean,
 ): RuntimeRunAllowedControls {
-  const status = checkpoint.loop.state.status
+  const status = snapshot.loop.state.status
   const terminal = status === 'completed' || status === 'failed' || status === 'cancelled'
-  const resumable = status === 'paused' && checkpoint.recovery.strategy === 'automatic'
+  const resumable = status === 'paused' && snapshot.recovery.strategy === 'automatic'
   return {
     step: resumable && !active,
     continue: resumable && !active,
     abort: !terminal,
-    fork: !active && checkpoint.loop.state.currentStep?.status !== 'running',
+    fork: !active && snapshot.loop.state.currentStep?.status !== 'running',
   }
 }
 
-function runArtifactLabel(artifact: RunArtifact): string {
+function runPayloadLabel(payload: RunPayload): string {
   const data =
-    artifact.data && typeof artifact.data === 'object'
-      ? (artifact.data as Record<string, unknown>)
+    payload.data && typeof payload.data === 'object'
+      ? (payload.data as Record<string, unknown>)
       : undefined
   const toolName = typeof data?.toolName === 'string' ? data.toolName : undefined
   const outcome = typeof data?.outcome === 'string' ? data.outcome : undefined
-  if (artifact.kind === 'model_request') return 'Model request'
-  if (artifact.kind === 'model_response')
+  if (payload.kind === 'model_request') return 'Model request'
+  if (payload.kind === 'model_response')
     return outcome ? `Model response · ${outcome}` : 'Model response'
-  if (artifact.kind === 'tool_request')
+  if (payload.kind === 'tool_request')
     return toolName ? `Tool request · ${toolName}` : 'Tool request'
-  if (artifact.kind === 'tool_result') {
+  if (payload.kind === 'tool_result') {
     return [toolName ? `Tool result · ${toolName}` : 'Tool result', outcome]
       .filter(Boolean)
       .join(' · ')
   }
-  if (artifact.kind === 'tool_batch') return 'Tool batch summary'
-  if (artifact.kind === 'compaction') return 'Context compaction'
-  return artifact.kind.replaceAll('_', ' ')
+  if (payload.kind === 'tool_batch') return 'Tool batch summary'
+  if (payload.kind === 'compaction') return 'Context compaction'
+  return payload.kind.replaceAll('_', ' ')
 }
 
-function runArtifactDescriptor(artifact: RunArtifact): RuntimeRunArtifactDescriptor {
-  const { data, ...metadata } = artifact
+function runPayloadDescriptor(payload: RunPayload): RuntimeRunPayloadDescriptor {
+  const { data, ...metadata } = payload
   let size = 0
   try {
     size = JSON.stringify(data).length
@@ -199,7 +205,7 @@ function runArtifactDescriptor(artifact: RunArtifact): RuntimeRunArtifactDescrip
   }
   return {
     ...cloneRuntimeValue(metadata),
-    label: runArtifactLabel(artifact),
+    label: runPayloadLabel(payload),
     size,
   }
 }
@@ -217,7 +223,7 @@ function isRunContextBlobData(value: unknown): value is RunContextBlobData {
   )
 }
 
-function artifactKindFromPayload(
+function runPayloadKindFromEntry(
   kind: SessionEntry<'run.payload'>['data']['kind'],
 ): RunPayloadKind {
   if (kind === 'provider_request') return 'model_request'
@@ -226,18 +232,18 @@ function artifactKindFromPayload(
   return kind
 }
 
-function runArtifactFromEntry(entry: SessionEntry<'run.payload'>, data: unknown): RunArtifact {
+function runPayloadFromEntry(entry: SessionEntry<'run.payload'>, data: unknown): RunPayload {
   if (!entry.runId || !entry.turnId || !entry.stepId) {
     throw new Error(`run payload entry is missing execution identity: ${entry.entryId}`)
   }
   return {
-    schemaVersion: AILA_RUN_ARTIFACT_SCHEMA_VERSION,
-    artifactId: entry.entryId,
+    schemaVersion: AILA_RUN_PAYLOAD_SCHEMA_VERSION,
+    payloadId: entry.entryId,
     conversationId: entry.sessionId,
     turnId: entry.turnId,
     runId: entry.runId,
     stepId: entry.stepId,
-    kind: artifactKindFromPayload(entry.data.kind),
+    kind: runPayloadKindFromEntry(entry.data.kind),
     createdAt: entry.timestamp,
     contentType: entry.payloadRef?.contentType === 'text/plain' ? 'text/plain' : 'application/json',
     data: cloneRuntimeValue(data),
@@ -393,8 +399,8 @@ export interface RuntimeForkRunInput extends RuntimeRunControlInput {
   originStepId?: string
 }
 
-export interface RuntimeRunArtifactInput extends RuntimeRunControlInput {
-  artifactId: string
+export interface RuntimeRunPayloadInput extends RuntimeRunControlInput {
+  payloadId: string
 }
 
 export interface RuntimeRunAllowedControls {
@@ -418,15 +424,15 @@ export interface RuntimeRunSummary {
   allowedControls: RuntimeRunAllowedControls
 }
 
-export interface RuntimeRunArtifactDescriptor extends Omit<RunArtifact, 'data'> {
+export interface RuntimeRunPayloadDescriptor extends Omit<RunPayload, 'data'> {
   label: string
   size: number
 }
 
 export interface RuntimeRunInspection {
-  checkpoint: RunSnapshot
+  snapshot: RunSnapshot
   events: PersistedRunEvent[]
-  artifacts: RuntimeRunArtifactDescriptor[]
+  payloads: RuntimeRunPayloadDescriptor[]
   active: boolean
   allowedControls: RuntimeRunAllowedControls
 }
@@ -440,6 +446,17 @@ export interface ActiveAssistantTurn {
 }
 
 export interface RuntimeCreateConversationInput {
+  workspace?: ConversationWorkspaceRef | null
+}
+
+export interface RuntimeNavigateSessionInput {
+  conversationId: string
+  entryId: string
+}
+
+export interface RuntimeForkSessionInput {
+  conversationId: string
+  entryId?: string
   workspace?: ConversationWorkspaceRef | null
 }
 
@@ -469,6 +486,14 @@ export interface RuntimeResolveConversationResult {
 export interface RuntimeAppendUserMessageInput {
   conversationId: string
   text: string
+}
+
+export interface RuntimeAppendSessionCustomInput extends SessionExtensionData {
+  conversationId: string
+}
+
+export interface RuntimeAppendSessionCustomMessageInput extends SessionExtensionMessageData {
+  conversationId: string
 }
 
 export interface RuntimeExecuteToolInput {
@@ -532,6 +557,8 @@ export interface WorkbenchHost {
   shellCwd?: ToolContext['shellCwd'] | (() => ToolContext['shellCwd'])
   getModelInfo?: RuntimeModelInfoResolver
   runAgent?: DurableRunExecutor
+  sessionEntryTransforms?: SessionProjectionOptions['entryTransforms']
+  sessionCustomEntryProjectors?: SessionProjectionOptions['customEntryProjectors']
   logger?: Pick<Console, 'error' | 'warn'>
 }
 
@@ -562,6 +589,10 @@ interface WorkbenchSessionApi {
   createConversation(input?: RuntimeCreateConversationInput): Promise<ConversationSummary>
   listConversations(): Promise<ConversationSummary[]>
   getConversation(conversationId: string): Promise<ConversationRecord>
+  getSessionTree(conversationId: string): Promise<SessionTree>
+  navigateSession(input: RuntimeNavigateSessionInput): Promise<ConversationRecord>
+  forkSession(input: RuntimeForkSessionInput): Promise<ConversationSummary>
+  collectSessionGarbage(conversationId: string): Promise<BlobGarbageCollectionResult>
   compactConversation(
     input: RuntimeCompactConversationInput,
   ): Promise<RuntimeCompactConversationResult>
@@ -572,12 +603,14 @@ interface WorkbenchSessionApi {
   getConversationRuntimeState(conversationId: string): Promise<ConversationRuntimeReplayState>
   listConversationRuntimeStates(): Promise<ConversationRuntimeStateSnapshot[]>
   listRunEvents(conversationId: string): Promise<PersistedRunEvent[]>
-  getRunCheckpoint(conversationId: string, runId: string): Promise<RunCheckpoint | null>
-  listRunCheckpoints(conversationId: string): Promise<RunCheckpoint[]>
+  getRunSnapshot(conversationId: string, runId: string): Promise<RunSnapshot | null>
+  listRunSnapshots(conversationId: string): Promise<RunSnapshot[]>
   listRunSummaries(conversationId: string): Promise<RuntimeRunSummary[]>
   inspectRun(input: RuntimeRunControlInput): Promise<RuntimeRunInspection>
-  getRunArtifact(input: RuntimeRunArtifactInput): Promise<RunArtifact>
+  getRunPayload(input: RuntimeRunPayloadInput): Promise<RunPayload>
   appendUserMessage(input: RuntimeAppendUserMessageInput): Promise<PersistedMessage>
+  appendSessionCustomEntry(input: RuntimeAppendSessionCustomInput): Promise<string>
+  appendSessionCustomMessage(input: RuntimeAppendSessionCustomMessageInput): Promise<string>
   recordRunEvent(event: RuntimeRecordRunEventInput): Promise<boolean>
   renameConversation(conversationId: string, title: string): Promise<ConversationSummary>
   deleteConversation(conversationId: string): Promise<void>
@@ -589,8 +622,8 @@ interface WorkbenchRunApi {
   resumeRun(input: RuntimeResumeRunInput): Promise<RuntimeSendResult>
   stepRun(input: RuntimeRunControlInput): Promise<RuntimeSendResult>
   continueRun(input: RuntimeRunControlInput): Promise<RuntimeSendResult>
-  abortRun(input: RuntimeRunControlInput): Promise<RunCheckpoint>
-  forkRun(input: RuntimeForkRunInput): Promise<RunCheckpoint>
+  abortRun(input: RuntimeRunControlInput): Promise<RunSnapshot>
+  forkRun(input: RuntimeForkRunInput): Promise<RunSnapshot>
   abort(conversationId: string): Promise<void>
   abortAll(reason?: ConversationAbortReason): Promise<void>
   shutdown(reason?: ConversationAbortReason): Promise<void>
@@ -646,6 +679,12 @@ function normalizeRuntimeHost(options: WorkbenchOptions): WorkbenchHost {
   if (options.shellCwd !== undefined) host.shellCwd = options.shellCwd
   if (options.getModelInfo) host.getModelInfo = options.getModelInfo
   if (options.runAgent) host.runAgent = options.runAgent
+  if (options.sessionEntryTransforms) {
+    host.sessionEntryTransforms = options.sessionEntryTransforms
+  }
+  if (options.sessionCustomEntryProjectors) {
+    host.sessionCustomEntryProjectors = options.sessionCustomEntryProjectors
+  }
   if (options.logger) host.logger = options.logger
 
   if (!options.host) return host
@@ -684,6 +723,12 @@ function normalizeRuntimeHost(options: WorkbenchOptions): WorkbenchHost {
   if (options.host.shellCwd !== undefined) host.shellCwd = options.host.shellCwd
   if (options.host.getModelInfo) host.getModelInfo = options.host.getModelInfo
   if (options.host.runAgent) host.runAgent = options.host.runAgent
+  if (options.host.sessionEntryTransforms) {
+    host.sessionEntryTransforms = options.host.sessionEntryTransforms
+  }
+  if (options.host.sessionCustomEntryProjectors) {
+    host.sessionCustomEntryProjectors = options.host.sessionCustomEntryProjectors
+  }
   if (options.host.logger) host.logger = options.host.logger
   return host
 }
@@ -861,6 +906,8 @@ function createRuntimeSkillToolPacks(skills: readonly LoadedSkill[]): ToolPack[]
 export class WorkbenchRuntime implements Workbench {
   private readonly turns = new TurnCoordinator<StreamSlot>()
   private readonly deletedConversations = new Set<string>()
+  private readonly sessionPhases = new Map<string, SessionPhase>()
+  private readonly pendingSessionWrites = new Map<string, SessionEntryInput[]>()
   private readonly host: WorkbenchHost
   private readonly store: WorkbenchStore
   private readonly logger: Pick<Console, 'error' | 'warn'>
@@ -941,7 +988,57 @@ export class WorkbenchRuntime implements Workbench {
   }
 
   async getConversation(conversationId: string): Promise<ConversationRecord> {
-    return cloneRuntimeConversationRecord(await this.store.getConversation(conversationId))
+    return cloneRuntimeConversationRecord(
+      projectConversation(await this.store.listSessionEntries(conversationId), {
+        entryTransforms: this.host.sessionEntryTransforms,
+        customEntryProjectors: this.host.sessionCustomEntryProjectors,
+      }),
+    )
+  }
+
+  async getSessionTree(conversationId: string): Promise<SessionTree> {
+    return cloneRuntimeValue(await this.store.getSessionTree(conversationId))
+  }
+
+  async navigateSession(input: RuntimeNavigateSessionInput): Promise<ConversationRecord> {
+    return this.turns.withStartLock(input.conversationId, async () => {
+      this.assertCanStartTurn(input.conversationId)
+      if (this.turns.has(input.conversationId)) {
+        throw new Error('cannot navigate session while an assistant turn is running')
+      }
+      await this.requireIdleSession(input.conversationId)
+      const appended = await this.store.setSessionLeaf(input.conversationId, input.entryId)
+      const record = await this.getConversation(input.conversationId)
+      this.emit(createWorkbenchEvent('conversations:updated', appended.summary))
+      return record
+    })
+  }
+
+  async forkSession(input: RuntimeForkSessionInput): Promise<ConversationSummary> {
+    return this.turns.withStartLock(input.conversationId, async () => {
+      this.assertCanStartTurn(input.conversationId)
+      if (this.turns.has(input.conversationId)) {
+        throw new Error('cannot fork session while an assistant turn is running')
+      }
+      await this.requireIdleSession(input.conversationId)
+      const summary = await this.store.forkConversation(
+        input.conversationId,
+        input.entryId,
+        input.workspace,
+      )
+      const cloned = cloneRuntimeConversationSummary(summary)
+      this.emit(createWorkbenchEvent('conversations:updated', cloned))
+      return cloned
+    })
+  }
+
+  async collectSessionGarbage(conversationId: string): Promise<BlobGarbageCollectionResult> {
+    this.assertCanStartTurn(conversationId)
+    if (this.turns.has(conversationId)) {
+      throw new Error('cannot collect session garbage while an assistant turn is running')
+    }
+    await this.requireIdleSession(conversationId)
+    return cloneRuntimeValue(await this.store.collectGarbageBlobs(conversationId))
   }
 
   async resolveConversation(
@@ -976,12 +1073,12 @@ export class WorkbenchRuntime implements Workbench {
     )
   }
 
-  async getRunCheckpoint(conversationId: string, runId: string): Promise<RunCheckpoint | null> {
-    const checkpoint = await this.store.getRunSnapshot(conversationId, runId)
-    return checkpoint ? cloneRuntimeValue(checkpoint) : null
+  async getRunSnapshot(conversationId: string, runId: string): Promise<RunSnapshot | null> {
+    const snapshot = await this.store.getRunSnapshot(conversationId, runId)
+    return snapshot ? cloneRuntimeValue(snapshot) : null
   }
 
-  async listRunCheckpoints(conversationId: string): Promise<RunCheckpoint[]> {
+  async listRunSnapshots(conversationId: string): Promise<RunSnapshot[]> {
     return cloneRuntimeValue([...(await this.store.listRunSnapshots(conversationId))])
   }
 
@@ -991,68 +1088,66 @@ export class WorkbenchRuntime implements Workbench {
         .filter((turn) => turn.conversationId === conversationId)
         .map((turn) => turn.runId),
     )
-    return (await this.listRunCheckpoints(conversationId)).map((checkpoint) => {
-      const active = activeRunIds.has(checkpoint.identity.runId)
+    return (await this.listRunSnapshots(conversationId)).map((snapshot) => {
+      const active = activeRunIds.has(snapshot.identity.runId)
       return {
-        identity: cloneRuntimeValue(checkpoint.identity),
-        status: checkpoint.loop.state.status,
-        mode: checkpoint.loop.state.mode,
-        ...(checkpoint.loop.state.nextAction
-          ? { nextAction: cloneRuntimeValue(checkpoint.loop.state.nextAction) }
+        identity: cloneRuntimeValue(snapshot.identity),
+        status: snapshot.loop.state.status,
+        mode: snapshot.loop.state.mode,
+        ...(snapshot.loop.state.nextAction
+          ? { nextAction: cloneRuntimeValue(snapshot.loop.state.nextAction) }
           : {}),
-        ...(checkpoint.loop.state.wait
-          ? { wait: cloneRuntimeValue(checkpoint.loop.state.wait) }
-          : {}),
-        recovery: cloneRuntimeValue(checkpoint.recovery),
-        revision: checkpoint.revision,
-        updatedAt: checkpoint.updatedAt,
-        stepCount: checkpoint.loop.state.steps.length,
+        ...(snapshot.loop.state.wait ? { wait: cloneRuntimeValue(snapshot.loop.state.wait) } : {}),
+        recovery: cloneRuntimeValue(snapshot.recovery),
+        revision: snapshot.revision,
+        updatedAt: snapshot.updatedAt,
+        stepCount: snapshot.loop.state.steps.length,
         active,
-        allowedControls: runtimeRunAllowedControls(checkpoint, active),
+        allowedControls: runtimeRunAllowedControls(snapshot, active),
       }
     })
   }
 
   async inspectRun(input: RuntimeRunControlInput): Promise<RuntimeRunInspection> {
-    const checkpoint = await this.getRunCheckpoint(input.conversationId, input.runId)
-    if (!checkpoint) {
-      throw new Error(`agent run checkpoint not found: ${input.conversationId}/${input.runId}`)
+    const snapshot = await this.getRunSnapshot(input.conversationId, input.runId)
+    if (!snapshot) {
+      throw new Error(`agent run snapshot not found: ${input.conversationId}/${input.runId}`)
     }
     const [events, entries] = await Promise.all([
       this.listRunEvents(input.conversationId),
       this.store.listSessionEntries(input.conversationId),
     ])
     const payloadEntries = sessionRunPayloads(entries, input.runId)
-    const artifacts = await Promise.all(
+    const payloads = await Promise.all(
       payloadEntries.map(async (entry) => {
         const blob = entry.payloadRef
           ? await this.store.getBlob(input.conversationId, entry.payloadRef.blobId)
           : null
-        return runArtifactFromEntry(entry, blob?.data ?? null)
+        return runPayloadFromEntry(entry, blob?.data ?? null)
       }),
     )
     const active = this.listActiveStreams().some((turn) => turn.runId === input.runId)
     return cloneRuntimeValue({
-      checkpoint,
+      snapshot,
       events: events.filter((event) => event.runId === input.runId),
-      artifacts: [...artifacts].map(runArtifactDescriptor),
+      payloads: [...payloads].map(runPayloadDescriptor),
       active,
-      allowedControls: runtimeRunAllowedControls(checkpoint, active),
+      allowedControls: runtimeRunAllowedControls(snapshot, active),
     })
   }
 
-  async getRunArtifact(input: RuntimeRunArtifactInput): Promise<RunArtifact> {
+  async getRunPayload(input: RuntimeRunPayloadInput): Promise<RunPayload> {
     const entry = sessionRunPayloads(
       await this.store.listSessionEntries(input.conversationId),
       input.runId,
-    ).find((candidate) => candidate.entryId === input.artifactId)
+    ).find((candidate) => candidate.entryId === input.payloadId)
     if (!entry) {
-      throw new Error(`agent run artifact not found: ${input.artifactId}`)
+      throw new Error(`agent run payload not found: ${input.payloadId}`)
     }
     const blob = entry.payloadRef
       ? await this.store.getBlob(input.conversationId, entry.payloadRef.blobId)
       : null
-    return cloneRuntimeValue(runArtifactFromEntry(entry, blob?.data ?? null))
+    return cloneRuntimeValue(runPayloadFromEntry(entry, blob?.data ?? null))
   }
 
   async getConversationRuntimeState(
@@ -1111,6 +1206,36 @@ export class WorkbenchRuntime implements Workbench {
     return message
   }
 
+  async appendSessionCustomEntry(input: RuntimeAppendSessionCustomInput): Promise<string> {
+    const entryId = this.createEventId()
+    await this.appendOrQueueSessionWrite(input.conversationId, {
+      type: 'extension.custom',
+      entryId,
+      timestamp: this.now(),
+      data: {
+        namespace: input.namespace,
+        version: input.version,
+        data: cloneRuntimeValue(input.data),
+      },
+    })
+    return entryId
+  }
+
+  async appendSessionCustomMessage(input: RuntimeAppendSessionCustomMessageInput): Promise<string> {
+    const entryId = this.createEventId()
+    await this.appendOrQueueSessionWrite(input.conversationId, {
+      type: 'extension.message',
+      entryId,
+      timestamp: this.now(),
+      data: {
+        namespace: input.namespace,
+        version: input.version,
+        message: cloneRuntimeValue(input.message),
+      },
+    })
+    return entryId
+  }
+
   async executeTool(input: RuntimeExecuteToolInput): Promise<string> {
     const mode = normalizeAilaExecutionMode(input.mode)
     let record: ConversationRecord | undefined
@@ -1152,36 +1277,21 @@ export class WorkbenchRuntime implements Workbench {
       if (this.turns.has(conversationId)) {
         throw new Error('cannot compact while assistant turn is running')
       }
-      const record = await this.getConversation(conversationId)
-      const contextInput = {
-        conversationId,
-        record,
-        selection,
-        source: 'send' as const,
-      }
-      const [resolvedStableInstructions, hostTransientContext] = await Promise.all([
-        this.resolveStableInstructions(contextInput),
-        this.resolveTransientContext(contextInput),
-      ])
-      const context = assembleAgentContext({
-        stableInstructions: resolvedStableInstructions,
-        messages: cloneRuntimeValue(record.messages),
-        modelInfo: await this.resolveModelInfo(selection),
-        providerId: selection.providerId,
-        dynamicContext: hostTransientContext,
-        compactionCheckpoint: record.meta.context?.checkpoint,
-      })
-      const manualMessageId = context.plan.compaction.recommendedCheckpoint?.boundaryMessageId
-      const contextPlan = await this.applyContextTokenPreflight({
-        conversationId,
-        assistantMessageId: manualMessageId ?? `compact:${this.createId()}`,
-        selection,
-        messages: context.messages,
-        contextPlan: context.plan,
-      })
-      const recommended =
-        contextPlan.compaction.recommendedCheckpoint ??
-        recommendManualContextCheckpoint({
+      await this.requireIdleSession(conversationId)
+      await this.setSessionPhase(conversationId, 'compaction')
+      try {
+        const record = await this.getConversation(conversationId)
+        const contextInput = {
+          conversationId,
+          record,
+          selection,
+          source: 'send' as const,
+        }
+        const [resolvedStableInstructions, hostTransientContext] = await Promise.all([
+          this.resolveStableInstructions(contextInput),
+          this.resolveTransientContext(contextInput),
+        ])
+        const context = assembleAgentContext({
           stableInstructions: resolvedStableInstructions,
           messages: cloneRuntimeValue(record.messages),
           modelInfo: await this.resolveModelInfo(selection),
@@ -1189,36 +1299,58 @@ export class WorkbenchRuntime implements Workbench {
           dynamicContext: hostTransientContext,
           compactionCheckpoint: record.meta.context?.checkpoint,
         })
-      if (!recommended) {
-        return {
-          compacted: false,
-          reason: 'nothing_to_compact',
-          summary: cloneRuntimeConversationSummary(record.meta),
+        const manualMessageId = context.plan.compaction.recommendedCheckpoint?.boundaryMessageId
+        const contextPlan = await this.applyContextTokenPreflight({
+          conversationId,
+          assistantMessageId: manualMessageId ?? `compact:${this.createId()}`,
+          selection,
+          messages: context.messages,
+          contextPlan: context.plan,
+        })
+        const recommended =
+          contextPlan.compaction.recommendedCheckpoint ??
+          recommendManualContextCheckpoint({
+            stableInstructions: resolvedStableInstructions,
+            messages: cloneRuntimeValue(record.messages),
+            modelInfo: await this.resolveModelInfo(selection),
+            providerId: selection.providerId,
+            dynamicContext: hostTransientContext,
+            compactionCheckpoint: record.meta.context?.checkpoint,
+          })
+        if (!recommended) {
+          return {
+            compacted: false,
+            reason: 'nothing_to_compact',
+            summary: cloneRuntimeConversationSummary(record.meta),
+          }
         }
-      }
 
-      const checkpoint = await this.persistContextCheckpoint({
-        conversationId,
-        messageId: recommended.boundaryMessageId,
-        record,
-        selection,
-        contextPlan,
-        recommended,
-        reason: contextPlan.compaction.reason ?? 'manual',
-        trigger: 'manual',
-      })
-      if (!checkpoint) {
-        return {
-          compacted: false,
-          reason: 'nothing_to_compact',
-          summary: cloneRuntimeConversationSummary(record.meta),
+        const checkpoint = await this.persistContextCheckpoint({
+          conversationId,
+          messageId: recommended.boundaryMessageId,
+          record,
+          selection,
+          contextPlan,
+          recommended,
+          reason: contextPlan.compaction.reason ?? 'manual',
+          trigger: 'manual',
+        })
+        if (!checkpoint) {
+          return {
+            compacted: false,
+            reason: 'nothing_to_compact',
+            summary: cloneRuntimeConversationSummary(record.meta),
+          }
         }
-      }
-      const nextRecord = await this.getConversation(conversationId)
-      return {
-        compacted: true,
-        summary: cloneRuntimeConversationSummary(nextRecord.meta),
-        checkpoint: cloneRuntimeValue(checkpoint),
+        const nextRecord = await this.getConversation(conversationId)
+        return {
+          compacted: true,
+          summary: cloneRuntimeConversationSummary(nextRecord.meta),
+          checkpoint: cloneRuntimeValue(checkpoint),
+        }
+      } finally {
+        await this.flushPendingSessionWrites(conversationId)
+        await this.setSessionPhase(conversationId, 'idle')
       }
     })
   }
@@ -1315,7 +1447,7 @@ export class WorkbenchRuntime implements Workbench {
     return this.resumeRun({ ...input, loopMode: 'continuous' })
   }
 
-  async abortRun(input: RuntimeRunControlInput): Promise<RunCheckpoint> {
+  async abortRun(input: RuntimeRunControlInput): Promise<RunSnapshot> {
     const active = this.turns.get(input.conversationId)
     if (active) {
       if (active.run.runId !== input.runId) {
@@ -1325,7 +1457,7 @@ export class WorkbenchRuntime implements Workbench {
     }
     const loaded = await this.store.getRunSnapshot(input.conversationId, input.runId)
     if (!loaded) {
-      throw new Error(`agent run checkpoint not found: ${input.conversationId}/${input.runId}`)
+      throw new Error(`agent run snapshot not found: ${input.conversationId}/${input.runId}`)
     }
     if (
       loaded.loop.state.status === 'completed' ||
@@ -1336,25 +1468,25 @@ export class WorkbenchRuntime implements Workbench {
     }
 
     const timestamp = this.now()
-    const checkpoint = cloneRuntimeValue(loaded)
-    checkpoint.loop.state.status = 'cancelled'
-    checkpoint.loop.state.completedAt = timestamp
-    checkpoint.loop.state.currentStep = undefined
-    checkpoint.loop.state.nextAction = undefined
-    checkpoint.loop.state.wait = undefined
-    checkpoint.loop.state.error = 'user'
-    checkpoint.recovery = { strategy: 'automatic' }
-    checkpoint.updatedAt = timestamp
+    const snapshot = cloneRuntimeValue(loaded)
+    snapshot.loop.state.status = 'cancelled'
+    snapshot.loop.state.completedAt = timestamp
+    snapshot.loop.state.currentStep = undefined
+    snapshot.loop.state.nextAction = undefined
+    snapshot.loop.state.wait = undefined
+    snapshot.loop.state.error = 'user'
+    snapshot.recovery = { strategy: 'automatic' }
+    snapshot.updatedAt = timestamp
     await this.recordRunEvent({
       timestamp,
       conversationId: input.conversationId,
-      messageId: checkpoint.assistantMessageId,
-      turnId: checkpoint.identity.turnId,
-      runId: checkpoint.identity.runId,
+      messageId: snapshot.assistantMessageId,
+      turnId: snapshot.identity.turnId,
+      runId: snapshot.identity.runId,
       type: 'run.cancelled',
       data: { reason: 'user' },
     })
-    const saved = cloneRuntimeValue(await this.store.saveRunSnapshot(checkpoint))
+    const saved = cloneRuntimeValue(await this.store.saveRunSnapshot(snapshot))
     const record = await this.getConversation(input.conversationId)
     const currentAssistant = record.messages.find(
       (message) => message.id === saved.assistantMessageId && message.role === 'assistant',
@@ -1371,11 +1503,16 @@ export class WorkbenchRuntime implements Workbench {
     return saved
   }
 
-  async forkRun(input: RuntimeForkRunInput): Promise<RunCheckpoint> {
+  async forkRun(input: RuntimeForkRunInput): Promise<RunSnapshot> {
     this.assertCanStartTurn(input.conversationId)
+    if (this.turns.has(input.conversationId)) {
+      throw new Error('cannot fork a run while an assistant turn is running')
+    }
+    await this.requireIdleSession(input.conversationId)
+    const sessionTree = await this.store.getSessionTree(input.conversationId)
     const source = await this.store.getRunSnapshot(input.conversationId, input.runId)
     if (!source) {
-      throw new Error(`agent run checkpoint not found: ${input.conversationId}/${input.runId}`)
+      throw new Error(`agent run snapshot not found: ${input.conversationId}/${input.runId}`)
     }
     if (source.loop.state.currentStep?.status === 'running') {
       throw new Error('cannot fork while a step is running')
@@ -1395,7 +1532,7 @@ export class WorkbenchRuntime implements Workbench {
     const nextAction: RunNextAction = cloneRuntimeValue(
       source.loop.state.nextAction ?? { type: 'model', reason: 'resume' as const },
     )
-    const checkpoint: RunCheckpoint = {
+    const snapshot: RunSnapshot = {
       ...cloneRuntimeValue(source),
       identity,
       assistantMessageId,
@@ -1414,6 +1551,7 @@ export class WorkbenchRuntime implements Workbench {
         completedToolBatches: source.loop.completedToolBatches,
         pendingToolCalls: cloneRuntimeValue(source.loop.pendingToolCalls),
       },
+      sessionLeafId: sessionTree.leafId,
       contextRef: cloneRuntimeValue(source.contextRef),
       recovery: { strategy: 'automatic' },
       revision: 1,
@@ -1421,7 +1559,7 @@ export class WorkbenchRuntime implements Workbench {
       updatedAt: timestamp,
       throughSeq: source.throughSeq,
     }
-    const saved = cloneRuntimeValue(await this.store.saveRunSnapshot(checkpoint))
+    const saved = cloneRuntimeValue(await this.store.saveRunSnapshot(snapshot))
     const identityData = {
       parentRunId: source.identity.runId,
       ...(originStepId ? { originStepId } : {}),
@@ -1461,22 +1599,28 @@ export class WorkbenchRuntime implements Workbench {
       this.assertCanStartTurn(input.conversationId)
       const loaded = await this.store.getRunSnapshot(input.conversationId, input.runId)
       if (!loaded) {
-        throw new Error(`agent run checkpoint not found: ${input.conversationId}/${input.runId}`)
+        throw new Error(`agent run snapshot not found: ${input.conversationId}/${input.runId}`)
       }
-      const checkpoint = cloneRuntimeValue(loaded)
-      const interruptedStep = checkpoint.loop.state.currentStep
+      const snapshot = cloneRuntimeValue(loaded)
+      const sessionTree = await this.store.getSessionTree(input.conversationId)
+      if (sessionTree.leafId !== snapshot.sessionLeafId) {
+        throw new Error(
+          `run belongs to session leaf ${snapshot.sessionLeafId}; current leaf is ${sessionTree.leafId}`,
+        )
+      }
+      const interruptedStep = snapshot.loop.state.currentStep
       const recoveryTimestamp = Math.max(
-        checkpoint.updatedAt + 1,
-        (interruptedStep?.startedAt ?? checkpoint.updatedAt) + 1,
+        snapshot.updatedAt + 1,
+        (interruptedStep?.startedAt ?? snapshot.updatedAt) + 1,
       )
-      const resumed = prepareRunSnapshotForResume(checkpoint, recoveryTimestamp)
+      const resumed = prepareRunSnapshotForResume(snapshot, recoveryTimestamp)
       if (interruptedStep?.status === 'running') {
         await this.recordRunEvent({
           timestamp: recoveryTimestamp,
           conversationId: input.conversationId,
-          messageId: checkpoint.assistantMessageId,
-          turnId: checkpoint.identity.turnId,
-          runId: checkpoint.identity.runId,
+          messageId: snapshot.assistantMessageId,
+          turnId: snapshot.identity.turnId,
+          runId: snapshot.identity.runId,
           stepId: interruptedStep.stepId,
           type: 'step.cancelled',
           data: {
@@ -1489,9 +1633,9 @@ export class WorkbenchRuntime implements Workbench {
         await this.recordRunEvent({
           timestamp: recoveryTimestamp,
           conversationId: input.conversationId,
-          messageId: checkpoint.assistantMessageId,
-          turnId: checkpoint.identity.turnId,
-          runId: checkpoint.identity.runId,
+          messageId: snapshot.assistantMessageId,
+          turnId: snapshot.identity.turnId,
+          runId: snapshot.identity.runId,
           type: 'run.paused',
           data: {
             nextAction: cloneRuntimeValue(resumed.loop.state.nextAction),
@@ -1527,6 +1671,7 @@ export class WorkbenchRuntime implements Workbench {
       const cleanup = new Promise<void>((resolve) => {
         resolveCleanup = resolve
       })
+      await this.setSessionPhase(input.conversationId, 'turn')
       this.turns.set(input.conversationId, {
         controller,
         cleanup,
@@ -1552,6 +1697,7 @@ export class WorkbenchRuntime implements Workbench {
         mode,
         loopMode: input.loopMode ?? 'continuous',
         runSnapshot: savedCheckpoint,
+        sessionLeafId: savedCheckpoint.sessionLeafId,
         runContextRef: cloneRuntimeValue(savedCheckpoint.contextRef),
         resumeState,
       })
@@ -1659,6 +1805,7 @@ export class WorkbenchRuntime implements Workbench {
       runId: this.createRunId(),
     }
     this.assertCanStartTurn(conversationId)
+    await this.setSessionPhase(conversationId, source === 'retry' ? 'retry' : 'turn')
 
     const controller = new AbortController()
     let resolveCleanup: () => void = () => {}
@@ -1680,6 +1827,7 @@ export class WorkbenchRuntime implements Workbench {
     let messages: ChatMessage[]
     let contextPlan: AgentContextPlan
     let runContextRef: BlobRef
+    let sessionLeafId: string
     let toolContext: ToolContext
     let toolRegistry: ToolRegistry
     try {
@@ -1722,6 +1870,7 @@ export class WorkbenchRuntime implements Workbench {
         selection,
         contextPlan,
       })
+      sessionLeafId = (await this.store.getSessionTree(conversationId)).leafId
       runContextRef = await this.store.putBlob(conversationId, {
         blobId: `run-context:${run.runId}`,
         contentType: 'application/json',
@@ -1762,6 +1911,12 @@ export class WorkbenchRuntime implements Workbench {
       return { userMessage, assistantMessageId, turnId: run.turnId, runId: run.runId }
     } finally {
       if (!streamStarted) {
+        await this.flushPendingSessionWrites(conversationId).catch((error) => {
+          this.logger.warn('[runtime] pending session write flush failed:', error)
+        })
+        await this.setSessionPhase(conversationId, 'idle').catch((error) => {
+          this.logger.warn('[runtime] idle phase persistence failed:', error)
+        })
         this.turns.deleteWhere(conversationId, (turn) => turn.controller === controller)
         resolveCleanup()
       }
@@ -1780,6 +1935,7 @@ export class WorkbenchRuntime implements Workbench {
       toolRegistry,
       mode,
       loopMode,
+      sessionLeafId,
       runContextRef,
     })
 
@@ -1828,6 +1984,7 @@ export class WorkbenchRuntime implements Workbench {
         this.emit(createWorkbenchEvent('conversations:updated', result.summary))
         recovered.push(result.summary)
       }
+      await this.resetInterruptedSessionPhases()
       return [...recovered].sort((a, b) => b.updatedAt - a.updatedAt)
     }
 
@@ -1863,7 +2020,20 @@ export class WorkbenchRuntime implements Workbench {
         recovered.push(nextSummary)
       }),
     )
+    await this.resetInterruptedSessionPhases()
     return recovered.sort((a, b) => b.updatedAt - a.updatedAt)
+  }
+
+  private async resetInterruptedSessionPhases(): Promise<void> {
+    if (!this.store.listConversations) return
+    const conversations = await this.store.listConversations()
+    await Promise.all(
+      conversations.map(async (summary) => {
+        const tree = await this.store.getSessionTree(summary.id)
+        if (tree.phase === 'idle') return
+        await this.setSessionPhase(summary.id, 'idle')
+      }),
+    )
   }
 
   async abortAll(reason: ConversationAbortReason = 'shutdown'): Promise<void> {
@@ -1919,6 +2089,8 @@ export class WorkbenchRuntime implements Workbench {
       await this.cleanupConversationAssets(conversationId)
 
       await this.store.deleteConversation(conversationId)
+      this.sessionPhases.delete(conversationId)
+      this.pendingSessionWrites.delete(conversationId)
       removed = true
     } catch (error) {
       this.deletedConversations.delete(conversationId)
@@ -2223,6 +2395,72 @@ export class WorkbenchRuntime implements Workbench {
   private assertCanStartTurn(conversationId: string): void {
     if (this.shutdownStarted) throw new Error('runtime is shut down')
     this.assertConversationOpen(conversationId)
+  }
+
+  private async setSessionPhase(conversationId: string, phase: SessionPhase): Promise<number> {
+    const previous = this.sessionPhases.get(conversationId)
+    this.sessionPhases.set(conversationId, phase)
+    try {
+      const appended = await this.store.appendSessionEntry(conversationId, {
+        type: 'session.phase.changed',
+        timestamp: this.now(),
+        data: { phase },
+      })
+      return appended.entry.seq
+    } catch (error) {
+      if (previous) this.sessionPhases.set(conversationId, previous)
+      else this.sessionPhases.delete(conversationId)
+      throw error
+    }
+  }
+
+  private async requireIdleSession(conversationId: string): Promise<void> {
+    const tree = await this.store.getSessionTree(conversationId)
+    if (tree.phase !== 'idle') {
+      throw new Error(
+        `session structural operation requires idle phase; current phase is ${tree.phase}`,
+      )
+    }
+  }
+
+  private async appendOrQueueSessionWrite(
+    conversationId: string,
+    entry: SessionEntryInput,
+  ): Promise<void> {
+    this.assertCanStartTurn(conversationId)
+    const phase =
+      this.sessionPhases.get(conversationId) ??
+      (await this.store.getSessionTree(conversationId)).phase
+    if (phase === 'idle') {
+      await this.store.appendSessionEntry(conversationId, cloneRuntimeValue(entry))
+      return
+    }
+    const pending = this.pendingSessionWrites.get(conversationId) ?? []
+    pending.push(cloneRuntimeValue(entry))
+    this.pendingSessionWrites.set(conversationId, pending)
+  }
+
+  private async flushPendingSessionWrites(conversationId: string): Promise<number | null> {
+    const pending = this.pendingSessionWrites.get(conversationId)
+    if (!pending || pending.length === 0) return null
+    this.pendingSessionWrites.delete(conversationId)
+    let lastSeq: number | null = null
+    for (let index = 0; index < pending.length; index += 1) {
+      try {
+        const appended = await this.store.appendSessionEntry(
+          conversationId,
+          cloneRuntimeValue(pending[index] as SessionEntryInput),
+        )
+        lastSeq = appended.entry.seq
+      } catch (error) {
+        this.pendingSessionWrites.set(
+          conversationId,
+          pending.slice(index).map((entry) => cloneRuntimeValue(entry)),
+        )
+        throw error
+      }
+    }
+    return lastSeq
   }
 
   private async waitForPriorStreamBeforeNextTurn(
@@ -2681,6 +2919,7 @@ export class WorkbenchRuntime implements Workbench {
     mode: AilaExecutionMode
     loopMode: 'continuous' | 'step'
     runContextRef: BlobRef
+    sessionLeafId: string
     runSnapshot?: RunSnapshot
     resumeState?: {
       messages: ChatMessage[]
@@ -2703,12 +2942,14 @@ export class WorkbenchRuntime implements Workbench {
       mode,
       loopMode,
       runContextRef,
+      sessionLeafId,
       runSnapshot,
       resumeState,
     } = input
     let eventLogChain = Promise.resolve()
     let eventLogFailure: unknown
     let lastJournalSeq = runSnapshot?.throughSeq ?? 0
+    let currentSessionLeafId = sessionLeafId
     let terminalRunEventQueued = false
     const queueRunEvent = (event: RunEventInput): Promise<void> => {
       const eventWithSelection = withTurnSelection(
@@ -2751,6 +2992,7 @@ export class WorkbenchRuntime implements Workbench {
           run: cloneRuntimeValue(run),
           loopMode,
           runContextRef: cloneRuntimeValue(runContextRef),
+          sessionLeafId,
           ...(runSnapshot ? { runSnapshot: cloneRuntimeValue(runSnapshot) } : {}),
           ...(resumeState ? { resumeState: cloneRuntimeValue(resumeState) } : {}),
           messages: cloneRuntimeChatMessages(messages) ?? [],
@@ -2772,10 +3014,20 @@ export class WorkbenchRuntime implements Workbench {
           onToolPolicy: toolContext.onToolPolicy,
           onToolApproval: toolContext.onToolApproval,
           onRunEvent: queueRunEvent,
+          onSavePoint: async () => {
+            await eventLogChain
+            if (eventLogFailure) throw eventLogFailure
+            const pendingSeq = await this.flushPendingSessionWrites(conversationId)
+            if (pendingSeq !== null) {
+              lastJournalSeq = Math.max(lastJournalSeq, pendingSeq)
+              currentSessionLeafId = (await this.store.getSessionTree(conversationId)).leafId
+            }
+          },
           saveRunSnapshot: (snapshot: RunSnapshot) =>
             this.store.saveRunSnapshot(
               cloneRuntimeValue({
                 ...snapshot,
+                sessionLeafId: currentSessionLeafId,
                 throughSeq: lastJournalSeq,
               }),
             ),
@@ -2909,6 +3161,14 @@ export class WorkbenchRuntime implements Workbench {
           this.logger.error('[runtime] durable journal append failed:', eventLogFailure)
         }
       } finally {
+        await this.flushPendingSessionWrites(conversationId).catch((error) => {
+          this.logger.warn('[runtime] pending session write flush failed:', error)
+        })
+        if (!this.deletedConversations.has(conversationId)) {
+          await this.setSessionPhase(conversationId, 'idle').catch((error) => {
+            this.logger.warn('[runtime] idle phase persistence failed:', error)
+          })
+        }
         this.turns.deleteWhere(conversationId, (turn) => turn.controller === controller)
         resolveCleanup()
       }

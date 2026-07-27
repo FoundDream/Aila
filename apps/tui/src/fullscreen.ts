@@ -443,7 +443,7 @@ class AilaFullScreenApp {
   }
 
   private async showRuns(): Promise<void> {
-    const runs = await this.runtime.listRunCheckpoints(this.conversationId)
+    const runs = await this.runtime.listRunSnapshots(this.conversationId)
     const body =
       runs.length === 0
         ? 'No persisted agent runs.'
@@ -481,14 +481,14 @@ class AilaFullScreenApp {
         return
       }
       const inspection = await this.runtime.inspectRun(target)
-      const checkpoint = inspection.checkpoint
+      const snapshot = inspection.snapshot
       const body = [
-        `status: ${checkpoint.loop.state.status}`,
-        `next: ${checkpoint.loop.state.nextAction?.type ?? 'none'}`,
-        `steps: ${checkpoint.loop.state.steps.length}`,
+        `status: ${snapshot.loop.state.status}`,
+        `next: ${snapshot.loop.state.nextAction?.type ?? 'none'}`,
+        `steps: ${snapshot.loop.state.steps.length}`,
         `events: ${inspection.events.length}`,
-        `artifacts: ${inspection.artifacts.length}`,
-        `recovery: ${checkpoint.recovery.strategy}`,
+        `payloads: ${inspection.payloads.length}`,
+        `recovery: ${snapshot.recovery.strategy}`,
       ].join('\n')
       this.addEntry('system', `run ${runId}`, body)
       showPanelOverlay(this.ui, `Run ${runId}`, body)

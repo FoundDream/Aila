@@ -255,17 +255,23 @@ async function testDesktopKeepsRunControlsOutOfChatCanvas(): Promise<void> {
       `Desktop workbench should register runtime:runs:${action}`,
     )
   }
-  for (const action of ['list-summaries', 'get-artifact']) {
+  for (const action of ['list-summaries', 'get-payload']) {
     assert(
       workbenchSource.includes(`'runtime:runs:${action}'`),
       `Desktop workbench should register scalable inspector API runtime:runs:${action}`,
+    )
+  }
+  for (const action of ['tree', 'navigate', 'fork', 'collect-garbage']) {
+    assert(
+      workbenchSource.includes(`'runtime:sessions:${action}'`),
+      `Desktop workbench should register session tree API runtime:sessions:${action}`,
     )
   }
   assert(
     preloadSource.includes('listRuns:') &&
       preloadSource.includes('listRunSummaries:') &&
       preloadSource.includes('inspectRun:') &&
-      preloadSource.includes('getRunArtifact:') &&
+      preloadSource.includes('getRunPayload:') &&
       preloadSource.includes('stepRun:') &&
       preloadSource.includes('continueRun:') &&
       preloadSource.includes('abortRun:') &&

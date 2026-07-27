@@ -6,15 +6,15 @@ import type {
   ConversationWorkspaceRef,
   PersistedMessage,
   PersistedRunEvent,
-  RunArtifact,
-  RunCheckpoint,
   RunEvent,
   RunEventAppendResult,
+  RunPayload,
+  RunSnapshot,
   SessionEntry,
   UsageInfo,
   WorkbenchStore,
 } from '@aila/agent'
-import { AILA_RUN_ARTIFACT_SCHEMA_VERSION, sessionRunEvents, sessionRunPayloads } from '@aila/agent'
+import { AILA_RUN_PAYLOAD_SCHEMA_VERSION, sessionRunEvents, sessionRunPayloads } from '@aila/agent'
 import { createFileRuntimeStore } from '../node/file-store'
 import { getDataDir } from './paths'
 
@@ -244,62 +244,62 @@ export async function recordConversationContextTurnLedger(
   return structuredClone(result.summary)
 }
 
-export async function getRunCheckpoint(
+export async function getRunSnapshot(
   conversationId: string,
   runId: string,
-): Promise<RunCheckpoint | null> {
+): Promise<RunSnapshot | null> {
   return structuredClone(await store().getRunSnapshot(conversationId, runId))
 }
 
-export async function saveRunCheckpoint(checkpoint: RunCheckpoint): Promise<RunCheckpoint> {
-  return structuredClone(await store().saveRunSnapshot(checkpoint))
+export async function saveRunSnapshot(snapshot: RunSnapshot): Promise<RunSnapshot> {
+  return structuredClone(await store().saveRunSnapshot(snapshot))
 }
 
-export async function listRunCheckpoints(conversationId: string): Promise<RunCheckpoint[]> {
+export async function listRunSnapshots(conversationId: string): Promise<RunSnapshot[]> {
   return structuredClone([...(await store().listRunSnapshots(conversationId))])
 }
 
-export async function saveRunArtifact(artifact: RunArtifact): Promise<RunArtifact> {
-  const payloadRef = await store().putBlob(artifact.conversationId, {
-    blobId: `payload:${artifact.artifactId}`,
-    contentType: artifact.contentType,
-    data: structuredClone(artifact.data),
+export async function saveRunPayload(payload: RunPayload): Promise<RunPayload> {
+  const payloadRef = await store().putBlob(payload.conversationId, {
+    blobId: `payload:${payload.payloadId}`,
+    contentType: payload.contentType,
+    data: structuredClone(payload.data),
   })
-  await store().appendSessionEntry(artifact.conversationId, {
+  await store().appendSessionEntry(payload.conversationId, {
     type: 'run.payload',
-    entryId: artifact.artifactId,
-    timestamp: artifact.createdAt,
-    turnId: artifact.turnId,
-    runId: artifact.runId,
-    stepId: artifact.stepId,
+    entryId: payload.payloadId,
+    timestamp: payload.createdAt,
+    turnId: payload.turnId,
+    runId: payload.runId,
+    stepId: payload.stepId,
     payloadRef,
     data: {
-      kind: sessionPayloadKind(artifact.kind),
-      label: artifact.kind.replaceAll('_', ' '),
+      kind: sessionPayloadKind(payload.kind),
+      label: payload.kind.replaceAll('_', ' '),
     },
   })
-  return structuredClone(artifact)
+  return structuredClone(payload)
 }
 
-export async function listRunArtifacts(
+export async function listRunPayloads(
   conversationId: string,
   runId: string,
-): Promise<RunArtifact[]> {
+): Promise<RunPayload[]> {
   const entries = sessionRunPayloads(await store().listSessionEntries(conversationId), runId)
-  return Promise.all(entries.map((entry) => resolveArtifact(entry)))
+  return Promise.all(entries.map((entry) => resolvePayload(entry)))
 }
 
 export async function deleteConversation(id: string): Promise<void> {
   await store().deleteConversation(id)
 }
 
-async function resolveArtifact(entry: SessionEntry<'run.payload'>): Promise<RunArtifact> {
+async function resolvePayload(entry: SessionEntry<'run.payload'>): Promise<RunPayload> {
   const blob = entry.payloadRef
     ? await store().getBlob(entry.sessionId, entry.payloadRef.blobId)
     : null
   return {
-    schemaVersion: AILA_RUN_ARTIFACT_SCHEMA_VERSION,
-    artifactId: entry.entryId,
+    schemaVersion: AILA_RUN_PAYLOAD_SCHEMA_VERSION,
+    payloadId: entry.entryId,
     conversationId: entry.sessionId,
     turnId: entry.turnId ?? '',
     runId: entry.runId ?? '',
@@ -318,9 +318,7 @@ async function resolveArtifact(entry: SessionEntry<'run.payload'>): Promise<RunA
   }
 }
 
-function sessionPayloadKind(
-  kind: RunArtifact['kind'],
-): SessionEntry<'run.payload'>['data']['kind'] {
+function sessionPayloadKind(kind: RunPayload['kind']): SessionEntry<'run.payload'>['data']['kind'] {
   if (kind === 'model_request' || kind === 'model_call') return 'provider_request'
   if (kind === 'model_response') return 'provider_response'
   if (kind === 'compaction') return 'context_compaction'

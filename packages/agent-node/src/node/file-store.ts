@@ -17,12 +17,16 @@ import {
   AILA_BLOB_SCHEMA_VERSION,
   AILA_CONVERSATION_META_SCHEMA_VERSION,
   createInterruptedConversationRecoveryEvent,
+  createSessionTree,
   DEFAULT_CONVERSATION_TITLE,
+  getSessionBranch,
+  getSessionLeafId,
   normalizeRunSnapshot,
   prepareRunSnapshot,
   prepareSessionEntry,
   projectConversation,
   sessionRunEvents,
+  validateSessionJournal,
 } from '@aila/agent'
 import { getNodeToolResultsConversationDir } from './tool-result-store'
 
@@ -81,11 +85,13 @@ export function createFileRuntimeStore(options: FileRuntimeStoreOptions): Workbe
 
   async function readJournal(sessionId: string): Promise<SessionEntry[]> {
     const raw = await readFile(journalPath(sessionId), 'utf-8')
-    return raw
+    const entries = raw
       .split('\n')
       .filter((line) => line.trim().length > 0)
       .map((line) => JSON.parse(line) as SessionEntry)
       .sort((left, right) => left.seq - right.seq)
+    validateSessionJournal(entries)
+    return entries
   }
 
   async function writeJsonAtomic(path: string, value: unknown): Promise<void> {
@@ -140,36 +146,50 @@ export function createFileRuntimeStore(options: FileRuntimeStoreOptions): Workbe
     }
   }
 
+  async function createConversationInternal(
+    workspace?: ConversationWorkspaceRef | null,
+  ): Promise<ConversationSummary> {
+    const createdAt = now()
+    const id = createId()
+    const summary: ConversationSummary = {
+      schemaVersion: AILA_CONVERSATION_META_SCHEMA_VERSION,
+      id,
+      title: DEFAULT_CONVERSATION_TITLE,
+      createdAt,
+      updatedAt: createdAt,
+      ...(workspace ? { workspace: structuredClone(workspace) } : {}),
+    }
+    const dir = sessionDir(id)
+    await mkdir(dir, { recursive: true })
+    const created = prepareSessionEntry(
+      id,
+      [],
+      {
+        type: 'session.created',
+        timestamp: createdAt,
+        entryId: `session:${id}`,
+        data: { summary },
+      },
+      createEventId,
+    ).entry
+    await writeFile(journalPath(id), `${JSON.stringify(created)}\n`, 'utf-8')
+    return structuredClone(summary)
+  }
+
+  function copyEntryInput(entry: SessionEntry): SessionEntryInput {
+    const {
+      schemaVersion: _schemaVersion,
+      entryId: _entryId,
+      sessionId: _sessionId,
+      seq: _seq,
+      parentId: _parentId,
+      ...inputEntry
+    } = structuredClone(entry)
+    return inputEntry as SessionEntryInput
+  }
+
   return {
-    async createConversation(
-      workspace?: ConversationWorkspaceRef | null,
-    ): Promise<ConversationSummary> {
-      const createdAt = now()
-      const id = createId()
-      const summary: ConversationSummary = {
-        schemaVersion: AILA_CONVERSATION_META_SCHEMA_VERSION,
-        id,
-        title: DEFAULT_CONVERSATION_TITLE,
-        createdAt,
-        updatedAt: createdAt,
-        ...(workspace ? { workspace: structuredClone(workspace) } : {}),
-      }
-      const dir = sessionDir(id)
-      await mkdir(dir, { recursive: true })
-      const created = prepareSessionEntry(
-        id,
-        [],
-        {
-          type: 'session.created',
-          timestamp: createdAt,
-          entryId: `session:${id}`,
-          data: { summary },
-        },
-        createEventId,
-      ).entry
-      await writeFile(journalPath(id), `${JSON.stringify(created)}\n`, 'utf-8')
-      return structuredClone(summary)
-    },
+    createConversation: createConversationInternal,
     async getConversation(sessionId) {
       return structuredClone(projectConversation(await readJournal(sessionId)))
     },
@@ -180,9 +200,9 @@ export function createFileRuntimeStore(options: FileRuntimeStoreOptions): Workbe
         directories
           .filter((entry) => entry.isDirectory() && !entry.name.includes('.deleting-'))
           .map((entry) =>
-            readJournal(decodeURIComponent(entry.name))
-              .then((entries) => projectConversation(entries).meta)
-              .catch(() => null),
+            readJournal(decodeURIComponent(entry.name)).then(
+              (entries) => projectConversation(entries).meta,
+            ),
           ),
       )
       return records
@@ -193,6 +213,76 @@ export function createFileRuntimeStore(options: FileRuntimeStoreOptions): Workbe
     appendSessionEntry: appendEntry,
     async listSessionEntries(sessionId) {
       return structuredClone(await readJournal(sessionId))
+    },
+    async getSessionTree(sessionId) {
+      return structuredClone(createSessionTree(await readJournal(sessionId)))
+    },
+    async getSessionBranch(sessionId, entryId) {
+      const entries = await readJournal(sessionId)
+      const leafId = entryId ?? getSessionLeafId(entries)
+      if (!leafId) throw new Error(`conversation has no active leaf: ${sessionId}`)
+      return structuredClone(getSessionBranch(entries, leafId))
+    },
+    async setSessionLeaf(sessionId, entryId) {
+      return appendEntry(sessionId, {
+        type: 'session.leaf.changed',
+        timestamp: now(),
+        data: { targetEntryId: entryId },
+      })
+    },
+    async forkConversation(sessionId, entryId, workspace) {
+      const sourceEntries = await readJournal(sessionId)
+      const sourceLeafId = entryId ?? getSessionLeafId(sourceEntries)
+      if (!sourceLeafId) throw new Error(`conversation has no active leaf: ${sessionId}`)
+      const sourceBranch = getSessionBranch(sourceEntries, sourceLeafId)
+      const sourceBranchIds = new Set(sourceBranch.map((entry) => entry.entryId))
+      const copyableEntries = sourceEntries.filter(
+        (entry) =>
+          (entry.type !== 'session.created' && sourceBranchIds.has(entry.entryId)) ||
+          (entry.type === 'extension.custom' &&
+            entry.parentId !== null &&
+            sourceBranchIds.has(entry.parentId)),
+      )
+      const sourceRecord = projectConversation(sourceEntries)
+      const explicitTitle = [...sourceEntries]
+        .reverse()
+        .find((entry) => entry.type === 'conversation.renamed')
+      const created = await createConversationInternal(workspace ?? sourceRecord.meta.workspace)
+      try {
+        await appendEntry(created.id, {
+          type: 'session.forked',
+          timestamp: now(),
+          data: { origin: { sessionId, entryId: sourceLeafId } },
+        })
+        for (const entry of copyableEntries) {
+          if (entry.payloadRef) {
+            const sourceBlob = await readFile(blobPath(sessionId, entry.payloadRef.blobId), 'utf-8')
+            await mkdir(blobsDir(created.id), { recursive: true })
+            const targetBlobPath = blobPath(created.id, entry.payloadRef.blobId)
+            try {
+              const existingBlob = await readFile(targetBlobPath, 'utf-8')
+              if (existingBlob !== sourceBlob) {
+                throw new Error(`fork target blob is immutable: ${entry.payloadRef.blobId}`)
+              }
+            } catch (error) {
+              if (!isErrnoCode(error, 'ENOENT')) throw error
+              await writeFile(targetBlobPath, sourceBlob, { encoding: 'utf-8', flag: 'wx' })
+            }
+          }
+          await appendEntry(created.id, copyEntryInput(entry))
+        }
+        if (explicitTitle?.type === 'conversation.renamed') {
+          await appendEntry(created.id, {
+            type: 'conversation.renamed',
+            timestamp: now(),
+            data: { title: explicitTitle.data.title },
+          })
+        }
+        return structuredClone(projectConversation(await readJournal(created.id)).meta)
+      } catch (error) {
+        await rm(sessionDir(created.id), { recursive: true, force: true }).catch(() => {})
+        throw error
+      }
     },
     async recoverInterruptedActivities(reason) {
       const summaries = (await this.listConversations?.()) ?? []
@@ -210,7 +300,12 @@ export function createFileRuntimeStore(options: FileRuntimeStoreOptions): Workbe
     },
     async saveRunSnapshot(snapshot) {
       return queueWrite(snapshot.identity.conversationId, async () => {
-        await readJournal(snapshot.identity.conversationId)
+        const entries = await readJournal(snapshot.identity.conversationId)
+        getSessionBranch(entries, snapshot.sessionLeafId)
+        const maximumSeq = entries.reduce((maximum, entry) => Math.max(maximum, entry.seq), 0)
+        if (snapshot.throughSeq > maximumSeq) {
+          throw new Error(`run snapshot exceeds session journal: ${snapshot.throughSeq}`)
+        }
         let previous: RunSnapshot | undefined
         try {
           previous = normalizeRunSnapshot(
@@ -255,9 +350,7 @@ export function createFileRuntimeStore(options: FileRuntimeStoreOptions): Workbe
       const snapshots = await Promise.all(
         files
           .filter((file) => file.endsWith('.json'))
-          .map((file) =>
-            this.getRunSnapshot(sessionId, decodeURIComponent(file.slice(0, -5))).catch(() => null),
-          ),
+          .map((file) => this.getRunSnapshot(sessionId, decodeURIComponent(file.slice(0, -5)))),
       )
       return snapshots
         .filter((snapshot): snapshot is RunSnapshot => snapshot !== null)
@@ -299,6 +392,49 @@ export function createFileRuntimeStore(options: FileRuntimeStoreOptions): Workbe
         if (isErrnoCode(error, 'ENOENT')) return null
         throw error
       }
+    },
+    async collectGarbageBlobs(sessionId) {
+      return queueWrite(sessionId, async () => {
+        const entries = await readJournal(sessionId)
+        const referenced = new Set(
+          entries.flatMap((entry) => (entry.payloadRef ? [entry.payloadRef.blobId] : [])),
+        )
+        try {
+          const snapshotFiles = await readdir(snapshotsDir(sessionId))
+          for (const file of snapshotFiles.filter((candidate) => candidate.endsWith('.json'))) {
+            const snapshot = normalizeRunSnapshot(
+              JSON.parse(await readFile(join(snapshotsDir(sessionId), file), 'utf-8')),
+            )
+            referenced.add(snapshot.contextRef.blobId)
+          }
+        } catch (error) {
+          if (!isErrnoCode(error, 'ENOENT')) throw error
+        }
+
+        let blobFiles: string[]
+        try {
+          blobFiles = await readdir(blobsDir(sessionId))
+        } catch (error) {
+          if (isErrnoCode(error, 'ENOENT')) {
+            return { deletedBlobIds: [], retainedBlobIds: [] }
+          }
+          throw error
+        }
+        const deletedBlobIds: string[] = []
+        const retainedBlobIds: string[] = []
+        for (const file of blobFiles.filter((candidate) => candidate.endsWith('.json'))) {
+          const blobId = decodeURIComponent(file.slice(0, -5))
+          if (referenced.has(blobId)) retainedBlobIds.push(blobId)
+          else {
+            await rm(join(blobsDir(sessionId), file), { force: true })
+            deletedBlobIds.push(blobId)
+          }
+        }
+        return {
+          deletedBlobIds: deletedBlobIds.sort(),
+          retainedBlobIds: retainedBlobIds.sort(),
+        }
+      })
     },
     async deleteConversation(sessionId) {
       await (writeChains.get(sessionId) ?? Promise.resolve()).catch(() => {})

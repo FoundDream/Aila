@@ -137,6 +137,7 @@ export function createDurableRunExecutor(
       run: requestRun,
       loopMode = 'continuous',
       runSnapshot,
+      sessionLeafId: requestSessionLeafId,
       runContextRef,
       resumeState,
       messages: requestMessages,
@@ -145,6 +146,7 @@ export function createDurableRunExecutor(
       selection: requestSelection,
       signal,
       onRunEvent,
+      onSavePoint,
       saveRunSnapshot,
       appendSessionEntry,
       putBlob,
@@ -162,6 +164,8 @@ export function createDurableRunExecutor(
     } = req
 
     const messages = cloneAgentMessages(resumeState?.messages ?? requestMessages)
+    const sessionLeafId =
+      runSnapshot?.sessionLeafId ?? requestSessionLeafId ?? `session:${conversationId}`
     const selection = cloneAgentValue(requestSelection)
     let contextPlan = cloneAgentValue(resumeState?.contextPlan ?? requestContextPlan)
     const workspaceRoots = cloneAgentWorkspaceRoots(requestWorkspaceRoots)
@@ -213,6 +217,11 @@ export function createDurableRunExecutor(
     ): Promise<void> => {
       await onRunEvent?.(cloneAgentValue(createRunEvent(type, data, stepId)))
     }
+    const reachSavePoint = async (
+      reason: Parameters<NonNullable<typeof onSavePoint>>[0],
+    ): Promise<void> => {
+      await onSavePoint?.(reason)
+    }
     let runBoundaryPersisted = false
     const persistPreLoopFailure = async (message: string): Promise<void> => {
       if (runBoundaryPersisted) return
@@ -248,6 +257,7 @@ export function createDurableRunExecutor(
         executionMode: runSnapshot?.executionMode ?? req.mode ?? 'agent',
         maxToolSteps: runSnapshot?.maxToolSteps ?? maxToolSteps,
         loop,
+        sessionLeafId: runSnapshot?.sessionLeafId ?? sessionLeafId,
         contextRef: cloneAgentValue(runContextRef),
         ...(lastUsage ? { usage: cloneAgentValue(lastUsage) } : {}),
         recovery: runRecoveryFromCursor(loop),
@@ -380,6 +390,7 @@ export function createDurableRunExecutor(
           executionMode: req.mode ?? 'agent',
           maxToolSteps,
           loop: cloneAgentValue(loop),
+          sessionLeafId: runSnapshot?.sessionLeafId ?? sessionLeafId,
           contextRef: cloneAgentValue(runContextRef),
           ...(lastUsage ? { usage: cloneAgentValue(lastUsage) } : {}),
           recovery: runRecoveryFromCursor(loop),
@@ -432,11 +443,11 @@ export function createDurableRunExecutor(
         }>
       >()
       if (runSnapshot) {
-        const checkpointCalls = runSnapshot.loop.toolBatchCalls ?? runSnapshot.loop.pendingToolCalls
-        if (checkpointCalls.length > 0) {
+        const snapshotCalls = runSnapshot.loop.toolBatchCalls ?? runSnapshot.loop.pendingToolCalls
+        if (snapshotCalls.length > 0) {
           toolCallsByModelStep.set(
             Math.max(0, runSnapshot.loop.modelStepIndex - 1),
-            cloneAgentValue(checkpointCalls),
+            cloneAgentValue(snapshotCalls),
           )
         }
       }
@@ -518,6 +529,7 @@ export function createDurableRunExecutor(
               compactedToolResultCount: compactable.length,
             },
           })
+          await reachSavePoint('compaction')
           return compactSignal.aborted
             ? { outcome: 'cancelled', error: 'abort_signal' }
             : { outcome: 'completed' }
@@ -710,6 +722,7 @@ export function createDurableRunExecutor(
               ...(result.error ? { error: result.error } : {}),
             },
           })
+          await reachSavePoint('model_response')
           const pendingToolCalls =
             result.outcome === 'completed'
               ? result.toolCalls.filter(
@@ -773,7 +786,11 @@ export function createDurableRunExecutor(
                 requestId: `approval:${run.runId}:${toolCall.id}`,
                 detail: `Approval required for ${toolCall.name}`,
               },
-              () => onToolApproval(cloneAgentValue(authorization.request)),
+              async () => {
+                await reachSavePoint('approval')
+                if (latestLoopSnapshot) await persistRunSnapshot(latestLoopSnapshot)
+                return onToolApproval(cloneAgentValue(authorization.request))
+              },
             )
             if (!approved) {
               return {
@@ -1022,6 +1039,7 @@ export function createDurableRunExecutor(
               },
             })
           }
+          await reachSavePoint('tool_result')
           return toolSignal.aborted
             ? { outcome: 'cancelled', error: 'abort_signal' }
             : { outcome: 'completed' }
@@ -1057,6 +1075,7 @@ export function createDurableRunExecutor(
           error: message,
           message: builder.build(assistantMessageId, 'error', selection, message),
         })
+        await reachSavePoint('terminal')
         emitRunEvent(
           cancelled ? 'turn.cancelled' : 'turn.failed',
           cancelled ? { phase: 'completed', reason: 'abort_signal' } : { error: message },
@@ -1076,6 +1095,7 @@ export function createDurableRunExecutor(
         message: builder.build(assistantMessageId, 'done', selection),
         usage: lastUsage ?? undefined,
       })
+      await reachSavePoint('terminal')
     } catch (error) {
       const isAbort = signal.aborted
       const message = isAbort ? 'Aborted' : error instanceof Error ? error.message : String(error)
@@ -1086,6 +1106,7 @@ export function createDurableRunExecutor(
         error: message,
         message: builder.build(assistantMessageId, 'error', selection, message),
       })
+      await reachSavePoint('terminal')
       emitRunEvent(
         isAbort ? 'turn.cancelled' : 'turn.failed',
         isAbort ? { phase: 'completed', reason: 'abort_signal' } : { error: message },

@@ -182,6 +182,8 @@ export interface RunRequest {
   run?: RunIdentity
   loopMode?: 'continuous' | 'step'
   runSnapshot?: RunSnapshot
+  /** Active semantic session leaf used to materialize this run. */
+  sessionLeafId: string
   runContextRef: BlobRef
   resumeState?: {
     messages: ChatMessage[]
@@ -199,6 +201,7 @@ export interface RunRequest {
   selection: ModelSelection
   signal: AbortSignal
   onRunEvent?: RunEventSink
+  onSavePoint?: (reason: RunSavePointReason) => MaybePromise<void>
   saveRunSnapshot?: (snapshot: RunSnapshot) => MaybePromise<RunSnapshot>
   appendSessionEntry?: (entry: SessionEntryInput) => MaybePromise<SessionEntry>
   putBlob?: (input: {
@@ -219,6 +222,13 @@ export interface RunRequest {
   fileSystem?: ToolContext['fileSystem']
   toolRegistry?: ToolRegistry
 }
+
+export type RunSavePointReason =
+  | 'model_response'
+  | 'tool_result'
+  | 'approval'
+  | 'compaction'
+  | 'terminal'
 
 export interface RunModelStepPreparationInput {
   conversationId: string

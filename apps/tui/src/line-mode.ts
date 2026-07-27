@@ -114,11 +114,11 @@ export function usage(): string {
     '  /exit                   Quit',
     '  /abort                  Abort the active response',
     '  /runs                   List persisted agent runs',
-    '  /inspect-run <id>       Inspect checkpoint, events, and artifacts',
+    '  /inspect-run <id>       Inspect snapshot, events, and payloads',
     '  /step-run <id>          Execute one pending run action',
     '  /continue-run <id>      Continue a paused run',
     '  /abort-run <id>         Cancel a persisted run',
-    '  /fork-run <id>          Fork a run at its latest checkpoint',
+    '  /fork-run <id>          Fork a run at its latest snapshot',
     '  /retry                  Retry the last failed or dangling user turn',
     '  /sessions               List saved conversations',
     '  /extensions [reload]    List extension manifests, optionally refresh runtime caches',
@@ -377,11 +377,11 @@ export function commandHelp(): string {
     '  /exit                   Quit',
     '  /abort                  Abort the active response',
     '  /runs                   List persisted agent runs',
-    '  /inspect-run <id>       Inspect checkpoint, events, and artifacts',
+    '  /inspect-run <id>       Inspect snapshot, events, and payloads',
     '  /step-run <id>          Execute one pending run action',
     '  /continue-run <id>      Continue a paused run',
     '  /abort-run <id>         Cancel a persisted run',
-    '  /fork-run <id>          Fork a run at its latest checkpoint',
+    '  /fork-run <id>          Fork a run at its latest snapshot',
     '  /retry                  Retry a dangling last user turn',
     '  /sessions               List saved conversations',
     '  /extensions [reload]    List extension manifests, optionally refresh runtime caches',
@@ -535,7 +535,7 @@ export async function handleSlashCommand(input: {
         runtime.abort(conversationId)
         return 'handled'
       case 'runs': {
-        const runs = await runtime.listRunCheckpoints(conversationId)
+        const runs = await runtime.listRunSnapshots(conversationId)
         if (runs.length === 0) {
           writeLine('[runs] none')
         } else {
@@ -574,7 +574,7 @@ export async function handleSlashCommand(input: {
         }
         const inspection = await runtime.inspectRun(target)
         writeLine(
-          `[run] ${runId} ${inspection.checkpoint.loop.state.status} next=${inspection.checkpoint.loop.state.nextAction?.type ?? 'none'} steps=${inspection.checkpoint.loop.state.steps.length} events=${inspection.events.length} artifacts=${inspection.artifacts.length}`,
+          `[run] ${runId} ${inspection.snapshot.loop.state.status} next=${inspection.snapshot.loop.state.nextAction?.type ?? 'none'} steps=${inspection.snapshot.loop.state.steps.length} events=${inspection.events.length} payloads=${inspection.payloads.length}`,
         )
         return 'handled'
       }

@@ -4,12 +4,8 @@ import { assertRunStateInvariant, type RunCursor, type RunIdentity } from './run
 import type { BlobRef } from './session-journal'
 import type { AilaExecutionMode } from './tool-policy'
 
-export const AILA_RUN_SNAPSHOT_SCHEMA_VERSION = 1
-/** @deprecated Use AILA_RUN_SNAPSHOT_SCHEMA_VERSION. */
-export const AILA_RUN_CHECKPOINT_SCHEMA_VERSION = AILA_RUN_SNAPSHOT_SCHEMA_VERSION
+export const AILA_RUN_SNAPSHOT_SCHEMA_VERSION = 2
 export const AILA_RUN_PAYLOAD_SCHEMA_VERSION = 1
-/** @deprecated Run payloads are journal-backed views, not stored artifacts. */
-export const AILA_RUN_ARTIFACT_SCHEMA_VERSION = AILA_RUN_PAYLOAD_SCHEMA_VERSION
 
 export type RunRecoveryStrategy = 'automatic' | 'manual_review'
 
@@ -30,6 +26,8 @@ export interface RunSnapshot {
   executionMode: AilaExecutionMode
   maxToolSteps: number
   loop: RunCursor<ModelCallToolCall>
+  /** Semantic session branch used to materialize this run's context. */
+  sessionLeafId: string
   contextRef: BlobRef
   usage?: UsageInfo
   recovery: RunRecovery
@@ -38,9 +36,6 @@ export interface RunSnapshot {
   updatedAt: number
   throughSeq: number
 }
-
-/** @deprecated Use RunSnapshot. */
-export type RunCheckpoint = RunSnapshot
 
 export type RunPayloadKind =
   | 'model_request'
@@ -66,11 +61,6 @@ export interface RunPayload {
   data: unknown
 }
 
-/** @deprecated Use RunPayload. */
-export type RunArtifact = Omit<RunPayload, 'payloadId'> & { artifactId: string }
-/** @deprecated Use RunPayloadKind. */
-export type RunArtifactKind = RunPayloadKind
-
 /** Strictly validates the only supported snapshot schema. */
 export function normalizeRunSnapshot(value: unknown): RunSnapshot {
   if (!value || typeof value !== 'object') throw new Error('invalid agent run snapshot')
@@ -78,7 +68,12 @@ export function normalizeRunSnapshot(value: unknown): RunSnapshot {
   if (snapshot.schemaVersion !== AILA_RUN_SNAPSHOT_SCHEMA_VERSION) {
     throw new Error(`unsupported agent run snapshot schema: ${snapshot.schemaVersion}`)
   }
-  if (!snapshot.loop?.state || !snapshot.identity || !snapshot.contextRef) {
+  if (
+    !snapshot.loop?.state ||
+    !snapshot.identity ||
+    !snapshot.contextRef ||
+    !snapshot.sessionLeafId
+  ) {
     throw new Error('invalid agent run snapshot state')
   }
   if (
@@ -93,9 +88,6 @@ export function normalizeRunSnapshot(value: unknown): RunSnapshot {
   return snapshot
 }
 
-/** @deprecated Use normalizeRunSnapshot. */
-export const normalizeRunCheckpoint = normalizeRunSnapshot
-
 export function runRecoveryFromCursor(loop: RunCursor<ModelCallToolCall>): RunRecovery {
   if (
     (loop.state.currentStep?.kind === 'tool' || loop.state.currentStep?.kind === 'tool_batch') &&
@@ -109,8 +101,8 @@ export function runRecoveryFromCursor(loop: RunCursor<ModelCallToolCall>): RunRe
   return { strategy: 'automatic' }
 }
 
-export function prepareRunSnapshot(checkpoint: RunSnapshot, previous?: RunSnapshot): RunSnapshot {
-  const normalized = normalizeRunSnapshot(checkpoint)
+export function prepareRunSnapshot(snapshot: RunSnapshot, previous?: RunSnapshot): RunSnapshot {
+  const normalized = normalizeRunSnapshot(snapshot)
   const normalizedPrevious = previous ? normalizeRunSnapshot(previous) : undefined
   if (normalized.identity.runId !== normalized.loop.state.identity.runId) {
     throw new Error('run snapshot identity does not match loop snapshot')
@@ -125,14 +117,8 @@ export function prepareRunSnapshot(checkpoint: RunSnapshot, previous?: RunSnapsh
   }
 }
 
-/** @deprecated Use prepareRunSnapshot. */
-export const prepareRunCheckpoint = prepareRunSnapshot
-
-export function prepareRunSnapshotForResume(
-  checkpoint: RunSnapshot,
-  timestamp: number,
-): RunSnapshot {
-  const prepared = prepareRunSnapshot(checkpoint)
+export function prepareRunSnapshotForResume(snapshot: RunSnapshot, timestamp: number): RunSnapshot {
+  const prepared = prepareRunSnapshot(snapshot)
   if (
     prepared.loop.state.status === 'completed' ||
     prepared.loop.state.status === 'failed' ||
@@ -171,21 +157,10 @@ export function prepareRunSnapshotForResume(
   return prepared
 }
 
-/** @deprecated Use prepareRunSnapshotForResume. */
-export const prepareRunCheckpointForResume = prepareRunSnapshotForResume
-
 /** Normalizes a journal-backed payload reader view. */
 export function prepareRunPayload(payload: RunPayload): RunPayload {
   return {
     ...structuredClone(payload),
     schemaVersion: AILA_RUN_PAYLOAD_SCHEMA_VERSION,
-  }
-}
-
-/** @deprecated Run artifacts are compatibility reader views only. */
-export function prepareRunArtifact(artifact: RunArtifact): RunArtifact {
-  return {
-    ...structuredClone(artifact),
-    schemaVersion: AILA_RUN_ARTIFACT_SCHEMA_VERSION,
   }
 }

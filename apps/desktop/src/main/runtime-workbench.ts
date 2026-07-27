@@ -1,6 +1,7 @@
 import {
   type ActiveAssistantTurn,
   type AilaExecutionMode,
+  type BlobGarbageCollectionResult,
   type ChatAttachmentInput,
   type ConversationRecord,
   type ConversationRuntimeHydration,
@@ -8,15 +9,18 @@ import {
   type ConversationSummary,
   type ConversationWorkspaceRef,
   type ModelSelection,
-  type RunArtifact,
-  type RunCheckpoint,
+  type RunPayload,
+  type RunSnapshot,
   type RuntimeCompactConversationResult,
   type RuntimeForkRunInput,
-  type RuntimeRunArtifactInput,
+  type RuntimeForkSessionInput,
+  type RuntimeNavigateSessionInput,
   type RuntimeRunControlInput,
   type RuntimeRunInspection,
+  type RuntimeRunPayloadInput,
   type RuntimeRunSummary,
   type RuntimeSendResult,
+  type SessionTree,
   type ToolApprovalRequest,
   type ToolApprovalRequestPayload,
   ToolApprovalStore,
@@ -76,16 +80,20 @@ export interface DesktopRuntimeWorkbench {
   createConversation(input?: RuntimeWorkbenchCreateConversationInput): Promise<ConversationSummary>
   listConversations(): Promise<ConversationSummary[]>
   getConversation(conversationId: string): Promise<ConversationRecord>
+  getSessionTree(conversationId: string): Promise<SessionTree>
+  navigateSession(input: RuntimeNavigateSessionInput): Promise<ConversationRecord>
+  forkSession(input: RuntimeForkSessionInput): Promise<ConversationSummary>
+  collectSessionGarbage(conversationId: string): Promise<BlobGarbageCollectionResult>
   hydrateConversation(conversationId: string): Promise<ConversationRuntimeHydration>
-  listRunCheckpoints(conversationId: string): Promise<RunCheckpoint[]>
+  listRunSnapshots(conversationId: string): Promise<RunSnapshot[]>
   listRunSummaries(conversationId: string): Promise<RuntimeRunSummary[]>
   inspectRun(input: RuntimeRunControlInput): Promise<RuntimeRunInspection>
-  getRunArtifact(input: RuntimeRunArtifactInput): Promise<RunArtifact>
+  getRunPayload(input: RuntimeRunPayloadInput): Promise<RunPayload>
   stepRun(input: RuntimeRunControlInput): Promise<RuntimeSendResult>
   continueRun(input: RuntimeRunControlInput): Promise<RuntimeSendResult>
   resumeRun(input: RuntimeRunControlInput): Promise<RuntimeSendResult>
-  abortRun(input: RuntimeRunControlInput): Promise<RunCheckpoint>
-  forkRun(input: RuntimeForkRunInput): Promise<RunCheckpoint>
+  abortRun(input: RuntimeRunControlInput): Promise<RunSnapshot>
+  forkRun(input: RuntimeForkRunInput): Promise<RunSnapshot>
   listConversationRuntimeStates(): Promise<ConversationRuntimeStateSnapshot[]>
   renameConversation(conversationId: string, title: string): Promise<ConversationSummary>
   deleteConversation(conversationId: string): Promise<void>
@@ -187,11 +195,23 @@ export function createDesktopRuntimeWorkbench(
     getConversation(conversationId) {
       return runtime.getConversation(conversationId)
     },
+    getSessionTree(conversationId) {
+      return runtime.getSessionTree(conversationId)
+    },
+    navigateSession(input) {
+      return runtime.navigateSession(input)
+    },
+    forkSession(input) {
+      return runtime.forkSession(input)
+    },
+    collectSessionGarbage(conversationId) {
+      return runtime.collectSessionGarbage(conversationId)
+    },
     hydrateConversation(conversationId) {
       return runtime.hydrateConversation(conversationId)
     },
-    listRunCheckpoints(conversationId) {
-      return runtime.listRunCheckpoints(conversationId)
+    listRunSnapshots(conversationId) {
+      return runtime.listRunSnapshots(conversationId)
     },
     listRunSummaries(conversationId) {
       return runtime.listRunSummaries(conversationId)
@@ -199,8 +219,8 @@ export function createDesktopRuntimeWorkbench(
     inspectRun(input) {
       return runtime.inspectRun(input)
     },
-    getRunArtifact(input) {
-      return runtime.getRunArtifact(input)
+    getRunPayload(input) {
+      return runtime.getRunPayload(input)
     },
     stepRun(input) {
       return runtime.stepRun(input)
@@ -254,8 +274,20 @@ export function registerRuntimeWorkbenchIpcHandlers(
   ipc.handle('runtime:hydrate-conversation', (_event, conversationId: string) =>
     workbench.hydrateConversation(conversationId),
   )
+  ipc.handle('runtime:sessions:tree', (_event, conversationId: string) =>
+    workbench.getSessionTree(conversationId),
+  )
+  ipc.handle('runtime:sessions:navigate', (_event, request: RuntimeNavigateSessionInput) =>
+    workbench.navigateSession(request),
+  )
+  ipc.handle('runtime:sessions:fork', (_event, request: RuntimeForkSessionInput) =>
+    workbench.forkSession(request),
+  )
+  ipc.handle('runtime:sessions:collect-garbage', (_event, conversationId: string) =>
+    workbench.collectSessionGarbage(conversationId),
+  )
   ipc.handle('runtime:runs:list', (_event, conversationId: string) =>
-    workbench.listRunCheckpoints(conversationId),
+    workbench.listRunSnapshots(conversationId),
   )
   ipc.handle('runtime:runs:list-summaries', (_event, conversationId: string) =>
     workbench.listRunSummaries(conversationId),
@@ -263,8 +295,8 @@ export function registerRuntimeWorkbenchIpcHandlers(
   ipc.handle('runtime:runs:inspect', (_event, request: RuntimeRunControlInput) =>
     workbench.inspectRun(request),
   )
-  ipc.handle('runtime:runs:get-artifact', (_event, request: RuntimeRunArtifactInput) =>
-    workbench.getRunArtifact(request),
+  ipc.handle('runtime:runs:get-payload', (_event, request: RuntimeRunPayloadInput) =>
+    workbench.getRunPayload(request),
   )
   ipc.handle('runtime:runs:step', (_event, request: RuntimeRunControlInput) =>
     workbench.stepRun(request),

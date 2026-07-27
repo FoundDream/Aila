@@ -1,15 +1,19 @@
 import type {
   AilaExecutionMode,
+  BlobGarbageCollectionResult,
   ConversationWorkspaceRef,
   ProviderId,
-  RunArtifact,
-  RunCheckpoint,
+  RunPayload,
+  RunSnapshot,
   RuntimeForkRunInput,
-  RuntimeRunArtifactDescriptor,
-  RuntimeRunArtifactInput,
+  RuntimeForkSessionInput,
+  RuntimeNavigateSessionInput,
   RuntimeRunControlInput,
   RuntimeRunInspection,
+  RuntimeRunPayloadDescriptor,
+  RuntimeRunPayloadInput,
   RuntimeRunSummary,
+  SessionTree,
 } from '@aila/agent'
 import { contextBridge, ipcRenderer } from 'electron'
 import type { OrCatalog } from '../shared/openrouter'
@@ -17,16 +21,20 @@ import type { OrCatalog } from '../shared/openrouter'
 export type { OrCatalog, OrFamily, OrModel } from '../shared/openrouter'
 export type {
   AilaExecutionMode,
+  BlobGarbageCollectionResult,
   ConversationWorkspaceRef,
   ProviderId,
-  RunArtifact,
-  RunCheckpoint,
+  RunPayload,
+  RunSnapshot,
   RuntimeForkRunInput,
-  RuntimeRunArtifactDescriptor,
-  RuntimeRunArtifactInput,
+  RuntimeForkSessionInput,
+  RuntimeNavigateSessionInput,
   RuntimeRunControlInput,
   RuntimeRunInspection,
+  RuntimeRunPayloadDescriptor,
+  RuntimeRunPayloadInput,
   RuntimeRunSummary,
+  SessionTree,
 }
 
 export const AILA_CONVERSATION_META_SCHEMA_VERSION = 1
@@ -738,23 +746,31 @@ const api = {
       ipcRenderer.invoke('runtime:list-active-turns'),
     hydrateConversation: (conversationId: string): Promise<RuntimeConversationHydration> =>
       ipcRenderer.invoke('runtime:hydrate-conversation', conversationId),
-    listRuns: (conversationId: string): Promise<RunCheckpoint[]> =>
+    getSessionTree: (conversationId: string): Promise<SessionTree> =>
+      ipcRenderer.invoke('runtime:sessions:tree', conversationId),
+    navigateSession: (request: RuntimeNavigateSessionInput): Promise<ConversationRecord> =>
+      ipcRenderer.invoke('runtime:sessions:navigate', request),
+    forkSession: (request: RuntimeForkSessionInput): Promise<ConversationSummary> =>
+      ipcRenderer.invoke('runtime:sessions:fork', request),
+    collectSessionGarbage: (conversationId: string): Promise<BlobGarbageCollectionResult> =>
+      ipcRenderer.invoke('runtime:sessions:collect-garbage', conversationId),
+    listRuns: (conversationId: string): Promise<RunSnapshot[]> =>
       ipcRenderer.invoke('runtime:runs:list', conversationId),
     listRunSummaries: (conversationId: string): Promise<RuntimeRunSummary[]> =>
       ipcRenderer.invoke('runtime:runs:list-summaries', conversationId),
     inspectRun: (request: RuntimeRunControlInput): Promise<RuntimeRunInspection> =>
       ipcRenderer.invoke('runtime:runs:inspect', request),
-    getRunArtifact: (request: RuntimeRunArtifactInput): Promise<RunArtifact> =>
-      ipcRenderer.invoke('runtime:runs:get-artifact', request),
+    getRunPayload: (request: RuntimeRunPayloadInput): Promise<RunPayload> =>
+      ipcRenderer.invoke('runtime:runs:get-payload', request),
     stepRun: (request: RuntimeRunControlInput): Promise<SendResult> =>
       ipcRenderer.invoke('runtime:runs:step', request),
     continueRun: (request: RuntimeRunControlInput): Promise<SendResult> =>
       ipcRenderer.invoke('runtime:runs:continue', request),
     resumeRun: (request: RuntimeRunControlInput): Promise<SendResult> =>
       ipcRenderer.invoke('runtime:runs:resume', request),
-    abortRun: (request: RuntimeRunControlInput): Promise<RunCheckpoint> =>
+    abortRun: (request: RuntimeRunControlInput): Promise<RunSnapshot> =>
       ipcRenderer.invoke('runtime:runs:abort', request),
-    forkRun: (request: RuntimeForkRunInput): Promise<RunCheckpoint> =>
+    forkRun: (request: RuntimeForkRunInput): Promise<RunSnapshot> =>
       ipcRenderer.invoke('runtime:runs:fork', request),
     listRuntimeStates: (): Promise<ConversationRuntimeStateSnapshot[]> =>
       ipcRenderer.invoke('runtime:conversations:list-runtime-states'),
