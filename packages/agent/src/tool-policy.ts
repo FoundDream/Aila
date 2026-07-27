@@ -5,7 +5,7 @@ import type {
   ToolPolicyRequest,
 } from './tools'
 
-export const AILA_EXECUTION_MODES = ['chat', 'plan', 'agent'] as const
+export const AILA_EXECUTION_MODES = ['chat', 'agent'] as const
 
 export type AilaExecutionMode = (typeof AILA_EXECUTION_MODES)[number]
 
@@ -47,8 +47,7 @@ export function evaluateToolApprovalMode(
   return { action: 'allow', reason: 'safe mode' }
 }
 
-export function isPlanSafeToolMetadata(metadata: ToolMetadata): boolean {
-  if (metadata.planSafe === true) return true
+export function isReadOnlyToolMetadata(metadata: ToolMetadata): boolean {
   return (
     metadata.readOnly === true &&
     metadata.destructive !== true &&
@@ -63,10 +62,10 @@ export function evaluateExecutionModeToolPolicy(
   request: ToolPolicyRequest,
 ): ToolPolicyDecision | undefined {
   if (mode === 'agent') return undefined
-  if (isPlanSafeToolMetadata(request.metadata)) return undefined
+  if (isReadOnlyToolMetadata(request.metadata)) return undefined
   return {
     action: 'deny',
-    reason: `${mode} mode only allows read-only planning tools`,
+    reason: `${mode} mode only allows read-only tools`,
   }
 }
 

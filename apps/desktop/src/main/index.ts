@@ -90,9 +90,8 @@ function getDevelopmentAppIcon(): NativeImage | undefined {
 }
 
 function createWindow(): void {
-  // The workbench uses a dark, low-chrome shell. Pin the native appearance so
-  // traffic lights, menus, and macOS vibrancy agree with the renderer.
-  nativeTheme.themeSource = 'dark'
+  // Follow the operating system so native chrome and renderer tokens stay aligned.
+  nativeTheme.themeSource = 'system'
   const appIcon = getDevelopmentAppIcon()
 
   if (process.platform === 'darwin' && app.dock && appIcon) app.dock.setIcon(appIcon)
@@ -104,12 +103,12 @@ function createWindow(): void {
     minHeight: 620,
     show: false,
     titleBarStyle: 'hiddenInset',
-    // macOS keeps a restrained native material beneath the dark task rail.
+    // macOS keeps a restrained native material beneath the task rail.
     ...(process.platform === 'darwin'
       ? { vibrancy: 'sidebar' as const }
-      : { backgroundColor: '#202124' }),
+      : { backgroundColor: nativeTheme.shouldUseDarkColors ? '#111319' : '#fcfaf9' }),
     ...(appIcon ? { icon: appIcon } : {}),
-    trafficLightPosition: { x: 6, y: 10 },
+    trafficLightPosition: { x: 18, y: 20 },
     webPreferences: {
       preload: join(MAIN_DIR, '../preload/index.mjs'),
       sandbox: false,

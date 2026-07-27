@@ -26,7 +26,6 @@ import type {
   ModelSelection,
   PersistedMessage,
   PersistedRunEvent,
-  PlanArtifact,
   ReasoningDeltaEvent,
   RuntimeCompactConversationResult,
   TextDeltaEvent,
@@ -46,21 +45,12 @@ export type QueuedRun =
       selection: ModelSelection
       mode?: AilaExecutionMode
       loopMode?: 'continuous' | 'step'
-      planId?: string
     }
   | {
       id: string
       kind: 'retryLast'
       selection: ModelSelection
       mode?: AilaExecutionMode
-      planId?: string
-    }
-  | {
-      id: string
-      kind: 'approvePlan'
-      planId: string
-      expectedRevisionId?: string
-      selection: ModelSelection
     }
 
 export interface ConversationStream {
@@ -71,7 +61,6 @@ export interface ConversationStream {
   runningMessageId: string | null
   usage: UsageInfo | null
   events: PersistedRunEvent[]
-  plans: PlanArtifact[]
 }
 
 type ConversationStreamState = Omit<ConversationStream, 'displayMessages'>
@@ -88,7 +77,6 @@ const EMPTY_STREAM: ConversationStreamState = {
   runningMessageId: null,
   usage: null,
   events: [],
-  plans: [],
 }
 
 type Action =
@@ -98,7 +86,6 @@ type Action =
       messages: Message[]
       usage: UsageInfo | null
       events: PersistedRunEvent[]
-      plans?: PlanArtifact[]
       activeTurn?: ActiveAssistantTurn | null
       runtimeState?: ConversationRuntimeReplayState
     }
@@ -162,7 +149,6 @@ type Action =
       usage?: UsageInfo
     }
   | { type: 'CLEAR_QUEUE'; conversationId: string }
-  | { type: 'SET_PLANS'; conversationId: string; plans: PlanArtifact[] }
   | { type: 'RUN_EVENT'; event: PersistedRunEvent }
   | { type: 'DROP'; conversationId: string }
 
@@ -497,7 +483,6 @@ function reducer(state: State, action: Action): State {
           messages,
           usage: action.usage,
           events,
-          plans: action.plans ?? current.plans,
           runningMessageId:
             action.activeTurn?.assistantMessageId ??
             (hasTerminalMessage(messages, current.runningMessageId)
@@ -506,12 +491,6 @@ function reducer(state: State, action: Action): State {
           isHydrated: true,
         }
       })
-
-    case 'SET_PLANS':
-      return withStream(state, action.conversationId, (current) => ({
-        ...current,
-        plans: action.plans,
-      }))
 
     case 'ENQUEUE':
       return withStream(state, action.conversationId, (current) => ({
@@ -740,20 +719,13 @@ export interface ChatStreamsApi {
     text: string,
     selection: ModelSelection,
     attachments?: ChatAttachmentInput[],
-    options?: { mode?: AilaExecutionMode; loopMode?: 'continuous' | 'step'; planId?: string },
+    options?: { mode?: AilaExecutionMode; loopMode?: 'continuous' | 'step' },
   ) => void
   enqueueRetryLast: (
     id: string,
     selection: ModelSelection,
-    options?: { mode?: AilaExecutionMode; planId?: string },
+    options?: { mode?: AilaExecutionMode },
   ) => void
-  enqueueApprovePlan: (
-    id: string,
-    planId: string,
-    selection: ModelSelection,
-    expectedRevisionId?: string,
-  ) => void
-  refreshPlans: (id: string) => Promise<void>
   compact: (id: string, selection: ModelSelection) => Promise<RuntimeCompactConversationResult>
   abort: (id: string) => void
   drop: (id: string) => void
@@ -808,24 +780,13 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
               selection: queued.selection,
               ...(queued.mode ? { mode: queued.mode } : {}),
               ...(queued.loopMode ? { loopMode: queued.loopMode } : {}),
-              ...(queued.planId ? { planId: queued.planId } : {}),
               attachments: queued.attachments,
             })
-          : queued.kind === 'retryLast'
-            ? await window.api.runtime.retryLast({
-                conversationId: id,
-                selection: queued.selection,
-                ...(queued.mode ? { mode: queued.mode } : {}),
-                ...(queued.planId ? { planId: queued.planId } : {}),
-              })
-            : await window.api.runtime.approvePlan({
-                conversationId: id,
-                planId: queued.planId,
-                selection: queued.selection,
-                ...(queued.expectedRevisionId
-                  ? { expectedRevisionId: queued.expectedRevisionId }
-                  : {}),
-              })
+          : await window.api.runtime.retryLast({
+              conversationId: id,
+              selection: queued.selection,
+              ...(queued.mode ? { mode: queued.mode } : {}),
+            })
     } catch (err) {
       const errorText = err instanceof Error ? err.message : String(err)
       // Surface as a synthetic error message in the conversation so it isn't lost.
@@ -845,13 +806,6 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
           userMessage: {
             ...queuedSendToMessage(queued, crypto.randomUUID(), 'done'),
           },
-          assistantMessage: stub,
-        })
-      } else if (queued.kind === 'retryLast') {
-        dispatch({
-          type: 'RETRY_STARTED',
-          conversationId: id,
-          queuedId: queued.id,
           assistantMessage: stub,
         })
       } else {
@@ -887,20 +841,12 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
             userMessage,
             assistantMessage,
           }
-        : queued.kind === 'approvePlan'
-          ? {
-              type: 'RUN_STARTED',
-              conversationId: id,
-              queuedId: queued.id,
-              userMessage,
-              assistantMessage,
-            }
-          : {
-              type: 'RETRY_STARTED',
-              conversationId: id,
-              queuedId: queued.id,
-              assistantMessage,
-            },
+        : {
+            type: 'RETRY_STARTED',
+            conversationId: id,
+            queuedId: queued.id,
+            assistantMessage,
+          },
     )
   }, [])
 
@@ -935,7 +881,6 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
       options: {
         mode?: AilaExecutionMode
         loopMode?: 'continuous' | 'step'
-        planId?: string
       } = {},
     ): void => {
       const trimmed = text.trim()
@@ -954,7 +899,6 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
           selection,
           ...(options.mode ? { mode: options.mode } : {}),
           ...(options.loopMode ? { loopMode: options.loopMode } : {}),
-          ...(options.planId ? { planId: options.planId } : {}),
         },
       })
     },
@@ -962,11 +906,7 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
   )
 
   const enqueueRetryLast = useCallback(
-    (
-      id: string,
-      selection: ModelSelection,
-      options: { mode?: AilaExecutionMode; planId?: string } = {},
-    ): void => {
+    (id: string, selection: ModelSelection, options: { mode?: AilaExecutionMode } = {}): void => {
       dispatch({
         type: 'ENQUEUE',
         conversationId: id,
@@ -975,34 +915,11 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
           kind: 'retryLast',
           selection,
           ...(options.mode ? { mode: options.mode } : {}),
-          ...(options.planId ? { planId: options.planId } : {}),
         },
       })
     },
     [],
   )
-
-  const enqueueApprovePlan = useCallback(
-    (id: string, planId: string, selection: ModelSelection, expectedRevisionId?: string): void => {
-      dispatch({
-        type: 'ENQUEUE',
-        conversationId: id,
-        queued: {
-          id: crypto.randomUUID(),
-          kind: 'approvePlan',
-          planId,
-          selection,
-          ...(expectedRevisionId ? { expectedRevisionId } : {}),
-        },
-      })
-    },
-    [],
-  )
-
-  const refreshPlans = useCallback(async (id: string): Promise<void> => {
-    const plans = await window.api.runtime.listPlans(id)
-    dispatch({ type: 'SET_PLANS', conversationId: id, plans })
-  }, [])
 
   const compact = useCallback(
     (id: string, selection: ModelSelection): Promise<RuntimeCompactConversationResult> =>
@@ -1012,7 +929,7 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
 
   const hydrate = useCallback(async (id: string): Promise<void> => {
     if (stateRef.current.streams.get(id)?.isHydrated) return
-    const { record, events, runtimeState, activeTurn, plans } =
+    const { record, events, runtimeState, activeTurn } =
       await window.api.runtime.hydrateConversation(id)
     if (stateRef.current.streams.get(id)?.isHydrated) return
     const messages = record.messages.map(persistedToMessage)
@@ -1062,7 +979,6 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
       messages,
       usage,
       events,
-      plans,
       runtimeState,
       activeTurn,
     })
@@ -1080,7 +996,6 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
       messages: [],
       usage: null,
       events: [],
-      plans: [],
     })
   }, [])
 
@@ -1178,7 +1093,6 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
       }),
       window.api.runtime.onRunEvent((event) => {
         dispatch({ type: 'RUN_EVENT', event })
-        if (event.type.startsWith('plan.')) void refreshPlans(event.conversationId)
       }),
       window.api.runtime.conversations.onUpdated((summary) => {
         onConversationUpdatedRef.current?.(summary)
@@ -1187,7 +1101,7 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
     return () => {
       for (const cleanup of cleanups) cleanup()
     }
-  }, [refreshPlans])
+  }, [])
 
   const busyIds = useMemo(() => {
     const set = new Set<string>()
@@ -1209,8 +1123,6 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
     markHydrated,
     enqueueSend,
     enqueueRetryLast,
-    enqueueApprovePlan,
-    refreshPlans,
     compact,
     abort,
     drop,

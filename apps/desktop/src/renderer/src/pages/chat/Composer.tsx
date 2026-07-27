@@ -4,7 +4,6 @@ import {
   ClockIcon,
   FileTextIcon,
   ImageIcon,
-  ListChecksIcon,
   PlusIcon,
   PuzzleIcon,
   RotateCcwIcon,
@@ -27,7 +26,6 @@ import { ModelPicker } from '@/components/ModelPicker'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import type {
-  AilaExecutionMode,
   ChatAttachmentInput,
   ExtensionSkillReport,
   ModelSelection,
@@ -52,8 +50,6 @@ interface ComposerProps {
   recentOpenRouterModels: string[]
   approvalMode: ApprovalMode
   onApprovalModeChange: (mode: ApprovalMode) => Promise<void> | void
-  executionMode?: AilaExecutionMode
-  onExecutionModeChange?: (mode: AilaExecutionMode) => void
   compact?: boolean
 }
 
@@ -122,7 +118,6 @@ function pluralize(count: number, singular: string, plural = `${singular}s`): st
 
 function queuedRunPreview(queued: QueuedRun): string {
   if (queued.kind === 'retryLast') return 'Resume last turn'
-  if (queued.kind === 'approvePlan') return `Approve plan ${queued.planId}`
   const text = compactTextPreview(queued.text)
   if (text) return text
   return queued.attachments.length > 0 ? 'Attachment-only prompt' : 'Empty prompt'
@@ -130,14 +125,13 @@ function queuedRunPreview(queued: QueuedRun): string {
 
 function queuedRunMeta(queued: QueuedRun): string | null {
   if (queued.kind === 'retryLast') return 'Retry'
-  if (queued.kind === 'approvePlan') return 'Plan approval'
   const images = queued.attachments.filter((attachment) => attachment.kind === 'image').length
   const files = queued.attachments.length - images
   const parts = [
     images > 0 ? pluralize(images, 'image') : null,
     files > 0 ? pluralize(files, 'file') : null,
   ].filter((part): part is string => Boolean(part))
-  return parts.length > 0 ? parts.join(' · ') : null
+  return parts.length > 0 ? parts.join(', ') : null
 }
 
 function getSlashState(text: string, cursor: number): SlashState | null {
@@ -328,39 +322,6 @@ function AttachMenuItem({
   )
 }
 
-function PlanModeToggle({
-  value,
-  onChange,
-}: {
-  value: AilaExecutionMode
-  onChange: (mode: AilaExecutionMode) => void
-}): ReactElement {
-  const active = value === 'plan'
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <button
-          type="button"
-          aria-label={active ? 'Turn off plan mode' : 'Turn on plan mode'}
-          aria-pressed={active}
-          onClick={() => onChange(active ? 'agent' : 'plan')}
-          className={`inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full px-2.5 text-[12px] font-medium outline-none transition-colors ${
-            active
-              ? 'bg-[var(--text)] text-[var(--surface)] hover:opacity-85'
-              : 'text-[var(--text-soft)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]'
-          }`}
-        >
-          <ListChecksIcon className="size-3.5" />
-          <span>Plan</span>
-        </button>
-      </TooltipTrigger>
-      <TooltipContent>
-        {active ? 'Plan mode is active' : 'Plan before editing or running tools'}
-      </TooltipContent>
-    </Tooltip>
-  )
-}
-
 function SlashCommandMenu({
   commands,
   selectedIndex,
@@ -477,8 +438,6 @@ export function Composer({
   recentOpenRouterModels,
   approvalMode,
   onApprovalModeChange,
-  executionMode,
-  onExecutionModeChange,
   compact = false,
 }: ComposerProps): ReactElement {
   const [value, setValue] = useState('')
@@ -831,17 +790,17 @@ export function Composer({
         : 'text-[var(--text-dim)]'
 
   return (
-    <div className={`shrink-0 ${compact ? 'px-3 pb-3 pt-2' : 'px-6 pb-6 pt-2'}`}>
-      <div className={`mx-auto ${compact ? 'max-w-none' : 'max-w-[820px]'}`}>
+    <div className={`relative z-10 shrink-0 ${compact ? 'px-3 pb-3 pt-2' : 'px-6 pb-5 pt-2'}`}>
+      <div className={`mx-auto ${compact ? 'max-w-none' : 'max-w-[720px]'}`}>
         <div
           onDragOver={(e) => e.preventDefault()}
           onDrop={handleDrop}
-          className="relative rounded-lg border border-[var(--border)] bg-[var(--textarea)] shadow-[0_8px_24px_rgba(0,0,0,0.16)] transition-[border-color,box-shadow] focus-within:border-[var(--border-strong)] focus-within:shadow-[0_10px_28px_rgba(0,0,0,0.22)]"
+          className="aila-composer relative rounded-[22px] border border-[var(--border-strong)] bg-[var(--textarea)]"
         >
           {slashState && (
             <div
               ref={slashMenuRef}
-              className="absolute bottom-full left-4 z-40 mb-2 w-[min(28rem,calc(100%-2rem))] overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--surface)] p-1 shadow-[0_14px_48px_rgba(0,0,0,0.3)]"
+              className="absolute bottom-full left-4 z-40 mb-2 w-[min(28rem,calc(100%-2rem))] overflow-hidden rounded-[10px] border border-[var(--border-strong)] bg-[var(--surface-raised)] p-1 shadow-[var(--shadow-lg)]"
             >
               <SlashCommandMenu
                 commands={filteredSlashCommands}
@@ -897,7 +856,7 @@ export function Composer({
             </div>
           )}
 
-          <div className="px-3.5 pb-1 pt-3">
+          <div className="px-5 pb-1 pt-3">
             <textarea
               ref={textareaRef}
               value={value}
@@ -912,13 +871,15 @@ export function Composer({
               }
               onKeyDown={handleKeyDown}
               onPaste={handlePaste}
-              placeholder={isStreaming ? 'Queue a follow-up…' : 'Ask Aila anything…'}
+              placeholder={
+                isStreaming ? 'Queue a follow-up…' : 'Ask a question, or describe a task…'
+              }
               rows={1}
-              className="block min-h-7 max-h-[180px] w-full resize-none overflow-y-auto bg-transparent text-[14px] leading-[1.55] text-[var(--text)] outline-none placeholder:text-[var(--text-dim)]"
+              className="block min-h-10 max-h-[180px] w-full resize-none overflow-y-auto bg-transparent text-[15px] leading-[1.55] text-[var(--text)] outline-none placeholder:text-[var(--text-dim)]"
             />
           </div>
 
-          <div className="flex min-h-10 items-center justify-between gap-2 px-2 pb-2 pt-1">
+          <div className="flex min-h-10 items-center justify-between gap-2 px-3 pb-3 pt-1">
             <div className="flex min-w-0 items-center gap-1.5">
               <input
                 ref={imageInputRef}
@@ -978,9 +939,6 @@ export function Composer({
                   </div>
                 </PopoverContent>
               </Popover>
-              {executionMode && onExecutionModeChange && (
-                <PlanModeToggle value={executionMode} onChange={onExecutionModeChange} />
-              )}
               <Popover open={modeOpen} onOpenChange={setModeOpen}>
                 <PopoverTrigger asChild>
                   <button
@@ -1067,7 +1025,7 @@ export function Composer({
                     aria-label={primaryActionLabel}
                     onClick={handlePrimaryAction}
                     disabled={primaryActionDisabled}
-                    className={`grid size-7 shrink-0 place-items-center rounded-md transition disabled:cursor-not-allowed ${
+                    className={`grid size-8 shrink-0 place-items-center rounded-full transition disabled:cursor-not-allowed ${
                       primaryActionIsAbort
                         ? 'border border-[var(--border)] bg-[var(--surface)] text-[var(--text-soft)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]'
                         : 'bg-[var(--brand-ink)] text-[var(--brand-ink-fg)] hover:opacity-85 disabled:bg-[var(--surface-hover)] disabled:text-[var(--text-dim)]'

@@ -204,7 +204,7 @@ function TokenActivityGrid({ stats }: { stats: TokenUsageStats }): ReactElement 
               <TooltipTrigger asChild>
                 <span
                   role="img"
-                  aria-label={`${formatUsageDate(cell.date)} · ${formatTokenStat(cell.totalTokens)} tokens`}
+                  aria-label={`${formatUsageDate(cell.date)}, ${formatTokenStat(cell.totalTokens)} tokens`}
                   className={`block size-2.5 rounded-[3px] transition-transform hover:scale-125 ${activityColor(cell, peakTokens)}`}
                 />
               </TooltipTrigger>
@@ -278,7 +278,7 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
   const [revealSearchKeys, setRevealSearchKeys] = useState(false)
   // Live OpenRouter catalog, fetched lazily the first time that detail page
   // is shown. The static MODEL_CATALOG only carries a couple of curated
-  // OpenRouter entries — the real list comes from the API.
+  // OpenRouter entries. The real list comes from the API.
   const [orCatalog, setOrCatalog] = useState<OrCatalog | null>(null)
   const [orError, setOrError] = useState<string | null>(null)
   const [orQuery, setOrQuery] = useState('')
@@ -784,11 +784,11 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
   return (
     <DialogPrimitive.Root open={open} onOpenChange={onOpenChange}>
       <DialogPrimitive.Portal>
-        <DialogPrimitive.Overlay className="fixed inset-0 z-[900] bg-black/60 data-[state=open]:animate-in data-[state=open]:fade-in-0" />
-        <DialogPrimitive.Content className="fixed left-1/2 top-1/2 z-[1000] flex h-[560px] max-h-[88vh] w-[820px] max-w-[94vw] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface)] shadow-2xl outline-none data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95">
+        <DialogPrimitive.Overlay className="aila-dialog-overlay fixed inset-0 z-[900] data-[state=open]:animate-in data-[state=open]:fade-in-0" />
+        <DialogPrimitive.Content className="aila-dialog fixed left-1/2 top-1/2 z-[1000] flex h-[600px] max-h-[88vh] w-[880px] max-w-[94vw] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-[16px] border border-[var(--border-strong)] bg-[var(--surface)] outline-none data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95">
           {/* Left tab rail */}
-          <nav className="flex w-44 shrink-0 flex-col gap-0.5 border-r border-[var(--border)] bg-[var(--bg-soft)] p-3">
-            <DialogPrimitive.Title className="mb-2 px-2 pt-1 text-[13px] font-semibold text-[var(--text)]">
+          <nav className="flex w-48 shrink-0 flex-col gap-1 border-r border-[var(--border)] bg-[var(--bg-soft)] p-3">
+            <DialogPrimitive.Title className="mb-3 px-2 pt-1 text-[14px] font-semibold tracking-[-0.01em] text-[var(--text)]">
               Settings
             </DialogPrimitive.Title>
             {TABS.map(({ id, label, icon: Icon }) => (
@@ -796,9 +796,9 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
                 key={id}
                 type="button"
                 onClick={() => setTab(id)}
-                className={`flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12px] transition-colors ${
+                className={`flex h-8 items-center gap-2 rounded-lg px-2 text-left text-[12px] transition-colors ${
                   tab === id
-                    ? 'bg-[var(--surface-hover)] font-medium text-[var(--text)]'
+                    ? 'bg-[var(--surface)] font-medium text-[var(--text)] shadow-[var(--shadow-xs)]'
                     : 'text-[var(--text-dim)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]'
                 }`}
               >
@@ -810,15 +810,15 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
 
           {/* Right page */}
           <div className="flex min-w-0 flex-1 flex-col">
-            <div className="flex items-center justify-between border-b border-[var(--border)] px-5 py-3">
-              <h2 className="text-[13px] font-semibold text-[var(--text)]">
+            <div className="flex h-[52px] items-center justify-between border-b border-[var(--border)] px-5">
+              <h2 className="text-[14px] font-semibold tracking-[-0.01em] text-[var(--text)]">
                 {TABS.find((t) => t.id === tab)?.label}
               </h2>
               <DialogPrimitive.Close asChild>
                 <button
                   type="button"
                   aria-label="Close"
-                  className="grid size-6 place-items-center rounded-md text-[var(--text-dim)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
+                  className="grid size-7 place-items-center rounded-lg text-[var(--text-dim)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
                 >
                   <XIcon className="size-4" />
                 </button>
@@ -828,7 +828,7 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
             {tab === 'provider' && (
               <div className="flex min-h-0 flex-1">
                 {/* Provider list */}
-                <div className="flex w-44 shrink-0 flex-col gap-0.5 overflow-y-auto border-r border-[var(--border)] p-2">
+                <div className="flex w-44 shrink-0 flex-col gap-1 overflow-y-auto border-r border-[var(--border)] bg-[var(--bg-soft)]/60 p-2">
                   {PROVIDER_ORDER.map((id) => {
                     const configured = configuredInDraft.includes(id)
                     return (
@@ -839,9 +839,9 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
                           setSelectedProvider(id)
                           setRevealKey(false)
                         }}
-                        className={`flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12px] transition-colors ${
+                        className={`flex h-8 items-center gap-2 rounded-lg px-2 text-left text-[12px] transition-colors ${
                           selectedProvider === id
-                            ? 'bg-[var(--surface-hover)] font-medium text-[var(--text)]'
+                            ? 'bg-[var(--surface)] font-medium text-[var(--text)] shadow-[var(--shadow-xs)]'
                             : 'text-[var(--text-soft)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]'
                         }`}
                       >
@@ -1085,7 +1085,7 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
                         {PROVIDER_ORDER.filter((p) => configuredInDraft.includes(p)).flatMap((p) =>
                           MODEL_CATALOG.filter((m) => m.providerId === p).map((m) => (
                             <option key={`${p}:${m.modelId}`} value={`${p}:${m.modelId}`}>
-                              {PROVIDER_LABELS[p]} · {m.displayName}
+                              {PROVIDER_LABELS[p]}, {m.displayName}
                             </option>
                           )),
                         )}
@@ -1128,7 +1128,7 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
                             key={`${m.providerId}:${m.modelId}`}
                             value={`${m.providerId}:${m.modelId}`}
                           >
-                            {PROVIDER_LABELS[m.providerId]} · {m.displayName}
+                            {PROVIDER_LABELS[m.providerId]}, {m.displayName}
                           </option>
                         ))}
                       </select>
@@ -1192,7 +1192,7 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
                         }}
                         className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-soft)] px-2 py-1.5 text-[12px] outline-none focus:border-[var(--border-strong)]"
                       >
-                        <option value="">(none — disable image generation)</option>
+                        <option value="">(none, disable image generation)</option>
                         {IMAGE_MODEL_CATALOG.filter((m) =>
                           configuredInDraft.includes(m.providerId),
                         ).map((m) => (
@@ -1200,7 +1200,7 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
                             key={`${m.providerId}:${m.modelId}`}
                             value={`${m.providerId}:${m.modelId}`}
                           >
-                            {PROVIDER_LABELS[m.providerId]} · {m.displayName}
+                            {PROVIDER_LABELS[m.providerId]}, {m.displayName}
                           </option>
                         ))}
                       </select>
@@ -1960,11 +1960,11 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
               </div>
             )}
 
-            <div className="flex items-center justify-end gap-2 border-t border-[var(--border)] px-5 py-3">
+            <div className="flex items-center justify-end gap-2 border-t border-[var(--border)] bg-[var(--surface)] px-5 py-3">
               <button
                 type="button"
                 onClick={() => onOpenChange(false)}
-                className="rounded-md border border-[var(--border)] px-3 py-1.5 text-[12px] hover:bg-[var(--surface-hover)]"
+                className="h-8 rounded-lg border border-[var(--border)] px-3 text-[12px] text-[var(--text-soft)] hover:border-[var(--border-strong)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
               >
                 Cancel
               </button>
@@ -1972,7 +1972,7 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
                 type="button"
                 onClick={() => void handleSave()}
                 disabled={saving}
-                className="rounded-md bg-[var(--brand-ink)] px-3 py-1.5 text-[12px] text-[var(--brand-ink-fg)] transition-colors hover:opacity-90 disabled:opacity-50"
+                className="h-8 rounded-lg bg-[var(--brand-ink)] px-3.5 text-[12px] font-medium text-[var(--brand-ink-fg)] transition-colors hover:opacity-90 disabled:opacity-50"
               >
                 {saving ? 'Saving…' : 'Save'}
               </button>

@@ -23,6 +23,54 @@ function statusLabel(status: TerminalStatus): string {
   return 'Error'
 }
 
+function terminalTheme(dark: boolean) {
+  return dark
+    ? {
+        background: '#14171c',
+        foreground: '#d7dbe3',
+        cursor: '#86aaf4',
+        selectionBackground: '#33415a',
+        black: '#171a20',
+        brightBlack: '#727b8b',
+        red: '#e9827d',
+        brightRed: '#f29a95',
+        green: '#6bc395',
+        brightGreen: '#8bd4ac',
+        yellow: '#d9b36a',
+        brightYellow: '#e6c582',
+        blue: '#7da1ed',
+        brightBlue: '#9bb8f3',
+        magenta: '#b49ad0',
+        brightMagenta: '#c7b1dc',
+        cyan: '#71b7bd',
+        brightCyan: '#90c9ce',
+        white: '#cfd4dd',
+        brightWhite: '#eef0f4',
+      }
+    : {
+        background: '#f1f3f6',
+        foreground: '#292e38',
+        cursor: '#2864dc',
+        selectionBackground: '#cedaf1',
+        black: '#292e38',
+        brightBlack: '#737b89',
+        red: '#b74d50',
+        brightRed: '#ca686a',
+        green: '#44795d',
+        brightGreen: '#5e9274',
+        yellow: '#8b6b31',
+        brightYellow: '#a27f43',
+        blue: '#4d6f9f',
+        brightBlue: '#6688b7',
+        magenta: '#7b648e',
+        brightMagenta: '#9279a5',
+        cyan: '#477a7e',
+        brightCyan: '#609196',
+        white: '#d6d9df',
+        brightWhite: '#f9fafb',
+      }
+}
+
 export function WorkspaceTerminalPanel({
   workspace,
   onClose,
@@ -47,6 +95,7 @@ export function WorkspaceTerminalPanel({
     let receivedFirstData = false
     setStatus('starting')
     setSession(null)
+    const darkMode = window.matchMedia('(prefers-color-scheme: dark)')
 
     const terminal = new Terminal({
       cursorBlink: true,
@@ -55,29 +104,12 @@ export function WorkspaceTerminalPanel({
       fontSize: 12,
       lineHeight: 1.25,
       scrollback: 5000,
-      theme: {
-        background: '#f7f7f7',
-        foreground: '#2f3437',
-        cursor: '#2f3437',
-        selectionBackground: '#dde6ef',
-        black: '#2f3437',
-        brightBlack: '#8a9094',
-        red: '#b45f62',
-        brightRed: '#c97778',
-        green: '#667f54',
-        brightGreen: '#7f946b',
-        yellow: '#9b793f',
-        brightYellow: '#ad8c55',
-        blue: '#5f7ea8',
-        brightBlue: '#7893b8',
-        magenta: '#8d6f9f',
-        brightMagenta: '#a287b0',
-        cyan: '#587f82',
-        brightCyan: '#709599',
-        white: '#d9dcdd',
-        brightWhite: '#ffffff',
-      },
+      theme: terminalTheme(darkMode.matches),
     })
+    const onThemeChange = (event: MediaQueryListEvent): void => {
+      terminal.options.theme = terminalTheme(event.matches)
+    }
+    darkMode.addEventListener('change', onThemeChange)
     const fitAddon = new FitAddon()
     terminal.loadAddon(fitAddon)
     terminal.open(container)
@@ -144,6 +176,7 @@ export function WorkspaceTerminalPanel({
     return () => {
       disposed = true
       resizeObserver.disconnect()
+      darkMode.removeEventListener('change', onThemeChange)
       inputDisposable.dispose()
       stopData()
       stopExit()
@@ -156,13 +189,13 @@ export function WorkspaceTerminalPanel({
 
   return (
     <section className="flex h-[min(34vh,340px)] min-h-[220px] shrink-0 flex-col border-t border-[var(--border)] bg-[var(--surface)] text-[var(--text)]">
-      <header className="flex h-9 shrink-0 items-center gap-2 border-b border-[var(--border)] bg-[var(--surface)] px-3 text-[12px]">
+      <header className="flex h-10 shrink-0 items-center gap-2 border-b border-[var(--border)] bg-[var(--surface)] px-3 text-[12px]">
         <TerminalIcon className="size-3.5 shrink-0 text-[var(--text-dim)]" />
         <span className="font-medium text-[var(--text)]">Terminal</span>
         <span className="min-w-0 flex-1 truncate text-[var(--text-dim)]" title={workspace.path}>
           {label}
         </span>
-        <span className="shrink-0 rounded-full border border-[var(--border)] bg-[var(--bg-soft)] px-1.5 py-0.5 text-[10px] leading-none text-[var(--text-soft)]">
+        <span className="shrink-0 rounded-md border border-[var(--border)] bg-[var(--bg-soft)] px-1.5 py-0.5 text-[10px] leading-none text-[var(--text-soft)]">
           {statusLabel(status)}
         </span>
         {session && (
@@ -191,7 +224,7 @@ export function WorkspaceTerminalPanel({
       </header>
       <div
         ref={containerRef}
-        className="aila-terminal min-h-0 flex-1 overflow-hidden bg-[var(--bg-soft)] px-2 py-2"
+        className="aila-terminal min-h-0 flex-1 overflow-hidden bg-[var(--terminal-bg)] px-2 py-2"
       />
     </section>
   )

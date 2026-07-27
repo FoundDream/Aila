@@ -37,7 +37,7 @@ export type RunNextAction =
   | { type: 'tools'; toolCallIds: string[] }
   | { type: 'compact'; reason: 'preflight' | 'provider_overflow' }
 
-export type RunWaitReason = 'debug' | 'approval' | 'user_input'
+export type RunWaitReason = 'operator' | 'approval' | 'user_input'
 
 export interface RunWait {
   reason: RunWaitReason
@@ -455,15 +455,20 @@ function eventWaitState(event: RunEvent): RunWait {
   if (value && typeof value === 'object') {
     const record = value as Record<string, unknown>
     const reason = record.reason
-    if (reason === 'debug' || reason === 'approval' || reason === 'user_input') {
+    if (
+      reason === 'operator' ||
+      reason === 'debug' ||
+      reason === 'approval' ||
+      reason === 'user_input'
+    ) {
       return {
-        reason,
+        reason: reason === 'debug' ? 'operator' : reason,
         ...(typeof record.requestId === 'string' ? { requestId: record.requestId } : {}),
         ...(typeof record.detail === 'string' ? { detail: record.detail } : {}),
       }
     }
   }
-  return { reason: 'debug' }
+  return { reason: 'operator' }
 }
 
 function transitionFromRunEvent(event: RunEvent): RunTransition | null {
@@ -734,7 +739,7 @@ export async function advanceRun<TToolCall>(
   const pause = async (
     nextAction: RunNextAction,
     executedAction: RunNextAction,
-    wait: RunWait = { reason: 'debug' },
+    wait: RunWait = { reason: 'operator' },
   ): Promise<AdvanceRunResult<TToolCall>> => {
     await emit({
       type: 'run.paused',

@@ -35,13 +35,6 @@ import {
   replayConversationActivity,
   replayConversationRuntimeState,
 } from './conversation-core'
-import {
-  AILA_PLAN_REVISION_SCHEMA_VERSION,
-  normalizePlanRevision,
-  type PlanApprovedBy,
-  type PlanArtifact,
-  type PlanStatus,
-} from './plan-core'
 import type { RunIdentity, RunNextAction } from './run-machine'
 import {
   prepareRunCheckpointForResume,
@@ -49,13 +42,7 @@ import {
   type RunCheckpoint,
 } from './run-persistence'
 import { createInMemoryRuntimeStore } from './runtime/memory-store'
-import {
-  createPlanImplementationToolPack,
-  createPlanToolPack,
-  type PlanToolServices,
-  renderPlanContext,
-} from './runtime/plan-tools'
-import type { PlanRepository, WorkbenchStore } from './runtime/repositories'
+import type { WorkbenchStore } from './runtime/repositories'
 import {
   type CoordinatedTurn,
   TurnCoordinator,
@@ -66,9 +53,8 @@ import { createSkillToolPack, type LoadedSkill } from './skills'
 import {
   type AilaExecutionMode,
   createExecutionModeToolPolicy,
-  isPlanSafeToolMetadata,
+  isReadOnlyToolMetadata,
   normalizeAilaExecutionMode,
-  type ToolApprovalMode,
 } from './tool-policy'
 import {
   createDefaultToolRegistry,
@@ -275,7 +261,6 @@ export interface RuntimeSendInput {
   selection: ModelSelection
   mode?: AilaExecutionMode
   loopMode?: 'continuous' | 'step'
-  planId?: string
   attachments?: ChatAttachmentInput[]
   transientContext?: ChatMessage[]
 }
@@ -285,7 +270,6 @@ export interface RuntimeRetryLastInput {
   selection: ModelSelection
   mode?: AilaExecutionMode
   loopMode?: 'continuous' | 'step'
-  planId?: string
   transientContext?: ChatMessage[]
 }
 
@@ -305,9 +289,8 @@ export interface RuntimeTransientContextInput {
   conversationId: string
   record: ConversationRecord
   selection: ModelSelection
-  source: 'send' | 'retry' | 'plan_approval'
+  source: 'send' | 'retry'
   mode?: AilaExecutionMode
-  planId?: string
 }
 
 export type RuntimeStableInstructionsInput = RuntimeTransientContextInput
@@ -398,39 +381,6 @@ export interface RuntimeRunInspection {
   allowedControls: RuntimeRunAllowedControls
 }
 
-export interface RuntimeSavePlanMarkdownInput {
-  conversationId: string
-  planId: string
-  markdown: string
-  title?: string
-  status?: PlanStatus
-  expectedRevisionId?: string
-}
-
-export interface RuntimeApprovePlanInput {
-  conversationId: string
-  planId: string
-  selection: ModelSelection
-  expectedRevisionId?: string
-  implementationMode?: 'same_session' | 'new_turn'
-  approvalMode?: ToolApprovalMode
-  approvedBy?: PlanApprovedBy
-}
-
-export interface RuntimeRevisePlanInput {
-  conversationId: string
-  planId: string
-  userText: string
-  selection: ModelSelection
-  expectedRevisionId?: string
-}
-
-export interface RuntimeCancelPlanInput {
-  conversationId: string
-  planId: string
-  reason?: string
-}
-
 export interface ActiveAssistantTurn {
   conversationId: string
   assistantMessageId: string
@@ -453,7 +403,6 @@ export interface ConversationRuntimeHydration {
   events: PersistedRunEvent[]
   runtimeState: ConversationRuntimeReplayState
   activeTurn: ActiveAssistantTurn | null
-  plans: PlanArtifact[]
 }
 
 export interface RuntimeResolveConversationInput {
@@ -551,7 +500,6 @@ export {
 } from './runtime/memory-store'
 export type {
   EventRepository,
-  PlanRepository,
   RunRepository,
   SessionRepository,
   WorkbenchStore,
@@ -597,15 +545,6 @@ interface WorkbenchRunApi {
   recoverInterruptedActivities(reason?: string): Promise<ConversationSummary[]>
 }
 
-interface WorkbenchPlanApi {
-  listPlans(conversationId: string): Promise<PlanArtifact[]>
-  getPlan(conversationId: string, planId: string): Promise<PlanArtifact>
-  savePlanMarkdown(input: RuntimeSavePlanMarkdownInput): Promise<PlanArtifact>
-  revisePlan(input: RuntimeRevisePlanInput): Promise<RuntimeSendResult>
-  approvePlan(input: RuntimeApprovePlanInput): Promise<RuntimeSendResult>
-  cancelPlan(input: RuntimeCancelPlanInput): Promise<PlanArtifact>
-}
-
 interface WorkbenchExtensionApi {
   getToolRegistry(input?: RuntimeToolPackLoadInput): Promise<ToolRegistry>
   getSkills(): Promise<LoadedSkill[]>
@@ -613,11 +552,7 @@ interface WorkbenchExtensionApi {
   executeTool(input: RuntimeExecuteToolInput): Promise<string>
 }
 
-export interface Workbench
-  extends WorkbenchSessionApi,
-    WorkbenchRunApi,
-    WorkbenchPlanApi,
-    WorkbenchExtensionApi {}
+export interface Workbench extends WorkbenchSessionApi, WorkbenchRunApi, WorkbenchExtensionApi {}
 
 function cloneRuntimeValue<T>(value: T): T {
   return structuredClone(value)
@@ -722,7 +657,7 @@ function filterRuntimeToolRegistryForMode(
   const toolPacks = registry.toolPacks
     .map((toolPack) => ({
       ...toolPack,
-      tools: toolPack.tools.filter((entry) => isPlanSafeToolMetadata(entry.spec.metadata)),
+      tools: toolPack.tools.filter((entry) => isReadOnlyToolMetadata(entry.spec.metadata)),
     }))
     .filter((toolPack) => toolPack.tools.length > 0)
   return createToolRegistry(toolPacks)
@@ -910,56 +845,6 @@ export class WorkbenchRuntime implements Workbench {
     ])
   }
 
-  private requirePlanStore<K extends keyof PlanRepository>(
-    method: K,
-  ): NonNullable<PlanRepository[K]> {
-    const fn = this.store[method]
-    if (!fn) throw new Error(`runtime store cannot ${String(method)}`)
-    return fn as NonNullable<PlanRepository[K]>
-  }
-
-  private assertPlanRevisionCurrent(plan: PlanArtifact, expectedRevisionId?: string): void {
-    if (!expectedRevisionId) return
-    if (plan.latestRevisionId !== expectedRevisionId) {
-      throw new Error(
-        `stale plan revision: expected ${expectedRevisionId}, latest is ${
-          plan.latestRevisionId ?? 'none'
-        }`,
-      )
-    }
-  }
-
-  private async recordPlanLifecycleEvent(
-    type: RunEvent['type'],
-    input: {
-      plan: PlanArtifact
-      messageId: string
-      data?: Record<string, unknown>
-    },
-  ): Promise<void> {
-    await this.recordRunEvent({
-      timestamp: this.now(),
-      conversationId: input.plan.conversationId,
-      messageId: input.messageId,
-      type,
-      data: {
-        planId: input.plan.id,
-        title: input.plan.title,
-        status: input.plan.status,
-        ...input.data,
-      },
-    })
-  }
-
-  private planToolServices(): PlanToolServices {
-    return {
-      store: this.store,
-      createId: this.createId,
-      now: this.now,
-      recordLifecycleEvent: (type, input) => this.recordPlanLifecycleEvent(type, input),
-    }
-  }
-
   async getToolRegistry(input?: RuntimeToolPackLoadInput): Promise<ToolRegistry> {
     if (!this.host.loadToolPacks && !this.host.loadSkills) {
       return cloneRuntimeToolRegistry(this.fallbackToolRegistry)
@@ -1121,15 +1006,14 @@ export class WorkbenchRuntime implements Workbench {
   }
 
   async hydrateConversation(conversationId: string): Promise<ConversationRuntimeHydration> {
-    const [record, events, plans] = await Promise.all([
+    const [record, events] = await Promise.all([
       this.getConversation(conversationId),
       this.listRunEvents(conversationId),
-      this.store.listPlans ? this.listPlans(conversationId) : Promise.resolve([]),
     ])
     const runtimeState = replayConversationRuntimeState(events)
     const activeTurn =
       this.listActiveStreams().find((turn) => turn.conversationId === conversationId) ?? null
-    return cloneRuntimeValue({ record, events, runtimeState, activeTurn, plans })
+    return cloneRuntimeValue({ record, events, runtimeState, activeTurn })
   }
 
   async listConversationRuntimeStates(): Promise<ConversationRuntimeStateSnapshot[]> {
@@ -1166,162 +1050,6 @@ export class WorkbenchRuntime implements Workbench {
       throw new Error('conversation was deleted')
     }
     return message
-  }
-
-  async listPlans(conversationId: string): Promise<PlanArtifact[]> {
-    const listPlans = this.requirePlanStore('listPlans')
-    return cloneRuntimeValue([...(await listPlans(conversationId))])
-  }
-
-  async getPlan(conversationId: string, planId: string): Promise<PlanArtifact> {
-    const getPlan = this.requirePlanStore('getPlan')
-    return cloneRuntimeValue(await getPlan(conversationId, planId))
-  }
-
-  async savePlanMarkdown(input: RuntimeSavePlanMarkdownInput): Promise<PlanArtifact> {
-    const getPlan = this.requirePlanStore('getPlan')
-    const appendPlanRevision = this.requirePlanStore('appendPlanRevision')
-    const updatePlan = this.requirePlanStore('updatePlan')
-    const current = await getPlan(input.conversationId, input.planId)
-    this.assertPlanRevisionCurrent(current, input.expectedRevisionId)
-    const createdAt = this.now()
-    const revision = normalizePlanRevision({
-      schemaVersion: AILA_PLAN_REVISION_SCHEMA_VERSION,
-      id: this.createId(),
-      planId: current.id,
-      createdAt,
-      author: 'user',
-      markdown: input.markdown,
-      tasks: current.tasks,
-      summary: 'User edited plan Markdown',
-    })
-    if (!revision) throw new Error('invalid plan markdown revision')
-    const revised = await appendPlanRevision({
-      conversationId: input.conversationId,
-      planId: input.planId,
-      revision,
-    })
-    const updated = await updatePlan({
-      ...revised,
-      title: input.title?.trim() || revised.title,
-      status: input.status ?? revised.status,
-      updatedAt: Math.max(revised.updatedAt + 1, this.now()),
-    })
-    await this.recordPlanLifecycleEvent('plan.updated', {
-      plan: updated,
-      messageId: updated.latestAssistantMessageId ?? updated.sourceUserMessageId,
-      data: { summary: 'Plan Markdown edited' },
-    })
-    return cloneRuntimeValue(updated)
-  }
-
-  async revisePlan(input: RuntimeRevisePlanInput): Promise<RuntimeSendResult> {
-    const current = await this.getPlan(input.conversationId, input.planId)
-    this.assertPlanRevisionCurrent(current, input.expectedRevisionId)
-    return this.send({
-      conversationId: input.conversationId,
-      userText: input.userText,
-      selection: input.selection,
-      mode: 'plan',
-      planId: input.planId,
-    })
-  }
-
-  async cancelPlan(input: RuntimeCancelPlanInput): Promise<PlanArtifact> {
-    const getPlan = this.requirePlanStore('getPlan')
-    const updatePlan = this.requirePlanStore('updatePlan')
-    const current = await getPlan(input.conversationId, input.planId)
-    const updated = await updatePlan({
-      ...current,
-      status: 'cancelled',
-      updatedAt: Math.max(current.updatedAt + 1, this.now()),
-    })
-    await this.recordPlanLifecycleEvent('plan.cancelled', {
-      plan: updated,
-      messageId: updated.latestAssistantMessageId ?? updated.sourceUserMessageId,
-      data: { reason: input.reason ?? 'user' },
-    })
-    return cloneRuntimeValue(updated)
-  }
-
-  async approvePlan(input: RuntimeApprovePlanInput): Promise<RuntimeSendResult> {
-    return this.turns.withStartLock(input.conversationId, async (turnStartLock) => {
-      const { conversationId, planId, selection } = input
-      this.assertCanStartTurn(conversationId)
-      const previous = this.turns.get(conversationId)
-      if (previous) await this.waitForPriorStreamBeforeNextTurn(conversationId, previous)
-      this.assertCanStartTurn(conversationId)
-
-      const getPlan = this.requirePlanStore('getPlan')
-      const updatePlan = this.requirePlanStore('updatePlan')
-      const current = await getPlan(conversationId, planId)
-      this.assertPlanRevisionCurrent(current, input.expectedRevisionId)
-      if (current.status !== 'ready') {
-        throw new Error(`cannot approve plan in status "${current.status}"`)
-      }
-
-      const userMessage: PersistedMessage = {
-        schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
-        id: this.createId(),
-        role: 'user',
-        blocks: [
-          {
-            type: 'text',
-            content: `Approved plan "${current.title}". Implement the approved plan.`,
-          },
-        ],
-        status: 'done',
-      }
-      if (!(await this.persistAndAnnounce(conversationId, userMessage))) {
-        this.assertConversationOpen(conversationId)
-        throw new Error('conversation was deleted')
-      }
-
-      const approvedAt = this.now()
-      const approved = await updatePlan({
-        ...current,
-        status: 'approved',
-        approvedAt,
-        approvedBy: input.approvedBy ?? 'user',
-        approvedRevisionId: current.latestRevisionId,
-        updatedAt: Math.max(current.updatedAt + 1, approvedAt),
-      })
-      await this.recordPlanLifecycleEvent('plan.approved', {
-        plan: approved,
-        messageId: userMessage.id,
-        data: {
-          approvedRevisionId: approved.approvedRevisionId,
-          approvedBy: approved.approvedBy,
-          implementationMode: input.implementationMode ?? 'new_turn',
-          ...(input.approvalMode ? { approvalMode: input.approvalMode } : {}),
-        },
-      })
-
-      const implementing = await updatePlan({
-        ...approved,
-        status: 'implementing',
-        updatedAt: Math.max(approved.updatedAt + 1, this.now()),
-      })
-      await this.recordPlanLifecycleEvent('plan.implementation.started', {
-        plan: implementing,
-        messageId: userMessage.id,
-        data: { approvedRevisionId: implementing.approvedRevisionId },
-      })
-
-      const record = await this.getConversation(conversationId)
-      this.assertCanStartTurn(conversationId)
-      return this.startAssistantTurn({
-        conversationId,
-        userMessage,
-        record,
-        selection,
-        mode: 'agent',
-        planId,
-        planOperation: 'implement',
-        source: 'plan_approval',
-        turnStartLock,
-      })
-    })
   }
 
   async executeTool(input: RuntimeExecuteToolInput): Promise<string> {
@@ -1480,7 +1208,6 @@ export class WorkbenchRuntime implements Workbench {
         selection,
         mode,
         loopMode: input.loopMode ?? 'continuous',
-        ...(input.planId ? { planId: input.planId } : {}),
         transientContext,
         source: 'send',
         turnStartLock,
@@ -1518,7 +1245,6 @@ export class WorkbenchRuntime implements Workbench {
         selection,
         mode,
         loopMode: input.loopMode ?? 'continuous',
-        ...(input.planId ? { planId: input.planId } : {}),
         transientContext,
         source: 'retry',
         turnStartLock,
@@ -1629,7 +1355,7 @@ export class WorkbenchRuntime implements Workbench {
           startedAt: timestamp,
           steps: [],
           nextAction,
-          wait: { reason: 'debug', detail: 'forked run is ready for inspection' },
+          wait: { reason: 'operator', detail: 'forked run is ready for inspection' },
         },
         nextStepIndex: 0,
         modelStepIndex: nextAction.type === 'tools' ? 1 : 0,
@@ -1673,7 +1399,7 @@ export class WorkbenchRuntime implements Workbench {
       data: {
         ...identityData,
         nextAction,
-        wait: { reason: 'debug', detail: 'forked run is ready for inspection' },
+        wait: { reason: 'operator', detail: 'forked run is ready for inspection' },
       },
     })
     return saved
@@ -1749,37 +1475,7 @@ export class WorkbenchRuntime implements Workbench {
         conversationId: input.conversationId,
         record,
       })
-      let activePlan: PlanArtifact | undefined
-      const planToolPacks: ToolPack[] = []
-      if (savedCheckpoint.plan) {
-        activePlan = await this.requirePlanStore('getPlan')(
-          input.conversationId,
-          savedCheckpoint.plan.id,
-        )
-      }
-      if (mode === 'plan') {
-        planToolPacks.push(
-          createPlanToolPack(this.planToolServices(), {
-            conversationId: input.conversationId,
-            assistantMessageId,
-            sourceUserMessageId: savedCheckpoint.identity.turnId,
-          }),
-        )
-      }
-      if (activePlan && savedCheckpoint.plan?.operation === 'implement') {
-        planToolPacks.push(
-          createPlanImplementationToolPack(this.planToolServices(), {
-            conversationId: input.conversationId,
-            assistantMessageId,
-            planId: activePlan.id,
-          }),
-        )
-      }
-      const registry =
-        planToolPacks.length > 0
-          ? createToolRegistry([...baseToolRegistry.toolPacks, ...planToolPacks])
-          : baseToolRegistry
-      const toolRegistry = filterRuntimeToolRegistryForMode(registry, mode)
+      const toolRegistry = filterRuntimeToolRegistryForMode(baseToolRegistry, mode)
       const toolContext = await this.buildToolContext({
         conversationId: input.conversationId,
         messageId: assistantMessageId,
@@ -1816,10 +1512,6 @@ export class WorkbenchRuntime implements Workbench {
         mode,
         loopMode: input.loopMode ?? 'continuous',
         runCheckpoint: savedCheckpoint,
-        ...(activePlan ? { plan: activePlan } : {}),
-        ...(savedCheckpoint.plan?.operation
-          ? { planOperation: savedCheckpoint.plan.operation }
-          : {}),
       })
 
       return {
@@ -1838,8 +1530,6 @@ export class WorkbenchRuntime implements Workbench {
     selection: ModelSelection
     mode: AilaExecutionMode
     loopMode?: 'continuous' | 'step'
-    planId?: string
-    planOperation?: 'revise' | 'implement'
     transientContext?: ChatMessage[]
     source: RuntimeTransientContextInput['source']
     turnStartLock: TurnStartLock
@@ -1850,8 +1540,6 @@ export class WorkbenchRuntime implements Workbench {
       record,
       mode,
       loopMode = 'continuous',
-      planId,
-      planOperation,
       transientContext,
       source,
       turnStartLock,
@@ -1886,21 +1574,14 @@ export class WorkbenchRuntime implements Workbench {
     let contextPlan: AgentContextPlan
     let toolContext: ToolContext
     let toolRegistry: ToolRegistry
-    let activePlan: PlanArtifact | undefined
-    let activePlanOperation: 'revise' | 'implement' | undefined
     try {
       if (!this.host.runAgent) throw new Error('runtime host cannot execute agent runs')
-      if (planId) {
-        activePlan = await this.requirePlanStore('getPlan')(conversationId, planId)
-        activePlanOperation = planOperation ?? (mode === 'plan' ? 'revise' : undefined)
-      }
       const contextInput = {
         conversationId,
         record,
         selection,
         source,
         mode,
-        ...(planId ? { planId } : {}),
       }
       const inputTransientContext = cloneRuntimeChatMessages(transientContext)
       const [resolvedStableInstructions, hostTransientContext] = await Promise.all([
@@ -1910,16 +1591,12 @@ export class WorkbenchRuntime implements Workbench {
           : Promise.resolve(undefined),
       ])
       const resolvedDynamicContext = inputTransientContext ?? hostTransientContext
-      const planContext =
-        activePlan && activePlanOperation
-          ? [renderPlanContext(activePlan, activePlanOperation)]
-          : []
       const context = assembleAgentContext({
         stableInstructions: resolvedStableInstructions,
         messages: cloneRuntimeValue(record.messages),
         modelInfo: await this.resolveModelInfo(selection),
         providerId: selection.providerId,
-        dynamicContext: [...planContext, ...(resolvedDynamicContext ?? [])],
+        dynamicContext: resolvedDynamicContext,
         compactionCheckpoint: record.meta.context?.checkpoint,
       })
       messages = context.messages
@@ -1938,30 +1615,7 @@ export class WorkbenchRuntime implements Workbench {
         contextPlan,
       })
       const baseToolRegistry = await this.getToolRegistry({ conversationId, record })
-      const planToolPacks: ToolPack[] = []
-      if (mode === 'plan') {
-        planToolPacks.push(
-          createPlanToolPack(this.planToolServices(), {
-            conversationId,
-            assistantMessageId,
-            sourceUserMessageId: userMessage.id,
-          }),
-        )
-      }
-      if (activePlan && activePlanOperation === 'implement') {
-        planToolPacks.push(
-          createPlanImplementationToolPack(this.planToolServices(), {
-            conversationId,
-            assistantMessageId,
-            planId: activePlan.id,
-          }),
-        )
-      }
-      const toolRegistryWithPlanTools =
-        planToolPacks.length > 0
-          ? createToolRegistry([...baseToolRegistry.toolPacks, ...planToolPacks])
-          : baseToolRegistry
-      toolRegistry = filterRuntimeToolRegistryForMode(toolRegistryWithPlanTools, mode)
+      toolRegistry = filterRuntimeToolRegistryForMode(baseToolRegistry, mode)
       toolContext = await this.buildToolContext({
         conversationId,
         messageId: assistantMessageId,
@@ -2010,8 +1664,6 @@ export class WorkbenchRuntime implements Workbench {
       toolRegistry,
       mode,
       loopMode,
-      ...(activePlan ? { plan: activePlan } : {}),
-      ...(activePlanOperation ? { planOperation: activePlanOperation } : {}),
     })
 
     return { userMessage, assistantMessageId, turnId: run.turnId, runId: run.runId }
@@ -2887,8 +2539,6 @@ export class WorkbenchRuntime implements Workbench {
     mode: AilaExecutionMode
     loopMode: 'continuous' | 'step'
     runCheckpoint?: RunCheckpoint
-    plan?: PlanArtifact
-    planOperation?: 'create' | 'revise' | 'implement'
   }): Promise<void> {
     const {
       conversationId,
@@ -2904,8 +2554,6 @@ export class WorkbenchRuntime implements Workbench {
       mode,
       loopMode,
       runCheckpoint,
-      plan,
-      planOperation,
     } = input
     let eventLogChain = Promise.resolve()
     let lastEventSeq = runCheckpoint?.lastEventSeq
@@ -2956,8 +2604,6 @@ export class WorkbenchRuntime implements Workbench {
             messages: prepareRuntimeModelStepMessages(currentMessages, currentPlan),
           }),
           mode,
-          ...(plan ? { plan: cloneRuntimeValue(plan) } : {}),
-          ...(planOperation ? { planOperation } : {}),
           selection: cloneRuntimeValue(selection),
           signal: controller.signal,
           workspaceRoots: cloneRuntimeWorkspaceRoots(toolContext.workspaceRoots),

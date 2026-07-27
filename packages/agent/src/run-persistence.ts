@@ -38,10 +38,6 @@ export interface RunCheckpoint {
   contextPlan?: AgentContextPlan
   assistantMessage: PersistedMessage
   usage?: UsageInfo
-  plan?: {
-    id: string
-    operation?: 'create' | 'revise' | 'implement'
-  }
   recovery: RunRecovery
   revision: number
   createdAt: number
@@ -83,11 +79,16 @@ function normalizeNextAction(value: unknown): RunNextAction | undefined {
 function normalizeWaitState(value: unknown): RunWait | undefined {
   if (!value || typeof value !== 'object') return undefined
   const record = value as Record<string, unknown>
-  if (record.reason !== 'debug' && record.reason !== 'approval' && record.reason !== 'user_input') {
+  if (
+    record.reason !== 'operator' &&
+    record.reason !== 'debug' &&
+    record.reason !== 'approval' &&
+    record.reason !== 'user_input'
+  ) {
     return undefined
   }
   return {
-    reason: record.reason,
+    reason: record.reason === 'debug' ? 'operator' : record.reason,
     ...(typeof record.requestId === 'string' ? { requestId: record.requestId } : {}),
     ...(typeof record.detail === 'string' ? { detail: record.detail } : {}),
   }
@@ -125,7 +126,7 @@ export function normalizeRunCheckpoint(value: unknown): RunCheckpoint {
     wait =
       legacyAction.reason === 'approval' || legacyAction.reason === 'user_input'
         ? { reason: legacyAction.reason }
-        : { reason: 'debug' }
+        : { reason: 'operator' }
     nextAction = { type: 'model', reason: 'resume' }
   }
 
@@ -134,7 +135,7 @@ export function normalizeRunCheckpoint(value: unknown): RunCheckpoint {
     wait = undefined
   } else if (state.status === 'paused') {
     nextAction ??= { type: 'model', reason: 'resume' }
-    wait ??= { reason: 'debug' }
+    wait ??= { reason: 'operator' }
   } else if (state.status === 'running') {
     if (!nextAction) {
       const currentStep = state.currentStep
@@ -172,7 +173,7 @@ export type RunArtifactKind =
   | 'tool_request'
   | 'tool_result'
   | 'compaction'
-  | 'debug'
+  | 'inspection'
 
 /** Immutable, inspectable payload produced by one run step. */
 export interface RunArtifact {
@@ -258,7 +259,7 @@ export function prepareRunCheckpointForResume(
         : { type: 'model', reason: 'retry' }
   }
   prepared.loop.state.status = 'paused'
-  prepared.loop.state.wait = { reason: 'debug', detail: 'ready to resume persisted run' }
+  prepared.loop.state.wait = { reason: 'operator', detail: 'ready to resume persisted run' }
   prepared.loop.state.completedAt = undefined
   prepared.loop.state.error = undefined
   prepared.recovery = { strategy: 'automatic' }

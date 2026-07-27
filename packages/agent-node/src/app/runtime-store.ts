@@ -1,15 +1,11 @@
 import type { WorkbenchStore } from '@aila/agent'
 import {
-  appendPlanRevision,
   appendRunEventAndTouchConversation,
   createConversation,
-  createPlan,
   deleteConversation,
   getConversation,
-  getPlan,
   getRunCheckpoint,
   listConversations,
-  listPlans,
   listRunArtifacts,
   listRunCheckpoints,
   listRunEvents,
@@ -20,7 +16,6 @@ import {
   saveRunCheckpoint,
   setConversationContextCheckpoint,
   setConversationUsage,
-  updatePlan,
   upsertMessage,
 } from './conversations'
 
@@ -42,11 +37,6 @@ export function createPersistedRuntimeStore(): WorkbenchStore {
     listRunCheckpoints: listRunCheckpoints,
     saveRunArtifact: saveRunArtifact,
     listRunArtifacts: listRunArtifacts,
-    createPlan,
-    getPlan,
-    listPlans,
-    updatePlan,
-    appendPlanRevision,
     deleteConversation,
   }
 }

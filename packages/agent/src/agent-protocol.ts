@@ -1,7 +1,6 @@
 import type { AgentContextPlan } from './context'
 import type { PersistedImageBlock, PersistedMessage } from './conversation-core'
 import type { ModelDescriptor, ProviderId } from './models'
-import type { PlanArtifact } from './plan-core'
 import type { RunContinuationReason, RunIdentity } from './run-machine'
 import type { RunArtifact, RunCheckpoint } from './run-persistence'
 import type { Settings } from './settings-types'
@@ -131,21 +130,6 @@ export type RunEventType =
   | 'tool.result.returned'
   | 'tool.approval.requested'
   | 'tool.approval.resolved'
-  | 'plan.started'
-  | 'plan.exploring'
-  | 'plan.question.requested'
-  | 'plan.question.answered'
-  | 'plan.updated'
-  | 'plan.ready'
-  | 'plan.approved'
-  | 'plan.rejected'
-  | 'plan.cancelled'
-  | 'plan.implementation.started'
-  | 'plan.task.started'
-  | 'plan.task.completed'
-  | 'plan.task.blocked'
-  | 'plan.drift.detected'
-  | 'plan.completed'
 
 export interface RunEvent {
   timestamp: number
@@ -203,8 +187,6 @@ export interface RunRequest {
     input: RunModelStepPreparationInput,
   ) => MaybePromise<RunModelStepPreparationResult | undefined>
   mode?: AilaExecutionMode
-  plan?: PlanArtifact
-  planOperation?: 'create' | 'revise' | 'implement'
   selection: ModelSelection
   signal: AbortSignal
   onRunEvent?: RunEventSink

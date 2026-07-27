@@ -232,7 +232,7 @@ async function testDesktopExposesRuntimeStateApi(): Promise<void> {
   )
 }
 
-async function testDesktopExposesRunInspectorApi(): Promise<void> {
+async function testDesktopKeepsRunControlsOutOfChatCanvas(): Promise<void> {
   const workbenchSource = await readFile(
     join(process.cwd(), 'apps/desktop/src/main/runtime-workbench.ts'),
     'utf-8',
@@ -247,10 +247,6 @@ async function testDesktopExposesRunInspectorApi(): Promise<void> {
   )
   const appSource = await readFile(
     join(process.cwd(), 'apps/desktop/src/renderer/src/App.tsx'),
-    'utf-8',
-  )
-  const inspectorSource = await readFile(
-    join(process.cwd(), 'apps/desktop/src/renderer/src/pages/chat/RunInspector.tsx'),
     'utf-8',
   )
   for (const action of ['list', 'inspect', 'step', 'continue', 'resume', 'abort', 'fork']) {
@@ -277,126 +273,14 @@ async function testDesktopExposesRunInspectorApi(): Promise<void> {
     'Desktop preload should expose run inspection and control methods',
   )
   assert(
-    chatPageSource.includes('loopMode: stepMode') &&
-      chatPageSource.includes("displayMode === 'debug' && conversationId") &&
-      chatPageSource.includes('<RunInspector') &&
-      inspectorSource.includes('ExecutionTree') &&
-      inspectorSource.includes('PanelHeader title="Trace"') &&
-      inspectorSource.includes('Run debugger') &&
-      inspectorSource.includes('type InspectionScope') &&
-      inspectorSource.includes("{ type: 'run'; runId: string }") &&
-      inspectorSource.includes("{ type: 'step'; runId: string; stepId: string }") &&
-      inspectorSource.includes("setScope({ type: 'run', runId })") &&
-      inspectorSource.includes("setScope({ type: 'step', runId, stepId })") &&
-      inspectorSource.includes("type DetailTab = 'overview' | 'trace' | 'events' | 'raw'") &&
-      inspectorSource.includes("{ id: 'trace', label: 'Input / Output'") &&
-      inspectorSource.includes("type TraceFilter = 'all' | 'model' | 'tools'") &&
-      inspectorSource.includes('ArtifactChain') &&
-      inspectorSource.includes('Entire run events') &&
-      inspectorSource.includes('Selected step events') &&
-      inspectorSource.includes('modelResponseTokenUsage') &&
-      inspectorSource.includes('Checkpoint') &&
-      inspectorSource.includes('MessageBlock') &&
-      chatPageSource.includes("export type WorkbenchDisplayMode = 'agent' | 'debug'") &&
-      chatPageSource.includes('<ModeSwitch value={displayMode}') &&
-      chatPageSource.includes('Continuous next') &&
-      appSource.includes('displayMode={displayMode}') &&
-      appSource.includes('onDisplayModeChange={handleDisplayModeChange}') &&
-      inspectorSource.includes('getRunArtifact') &&
-      inspectorSource.includes('onRunEvent') &&
-      inspectorSource.includes("control('step')") &&
-      inspectorSource.includes("control('continue')") &&
-      inspectorSource.includes("control('fork')") &&
-      inspectorSource.includes("control('abort')"),
-    'Desktop should expose step-armed sends and a functional Run Inspector',
-  )
-}
-
-async function testDesktopExposesPlanRuntimeApi(): Promise<void> {
-  const workbenchSource = await readFile(
-    join(process.cwd(), 'apps/desktop/src/main/runtime-workbench.ts'),
-    'utf-8',
-  )
-  const preloadSource = await readFile(
-    join(process.cwd(), 'apps/desktop/src/preload/index.ts'),
-    'utf-8',
-  )
-  const chatPageSource = await readFile(
-    join(process.cwd(), 'apps/desktop/src/renderer/src/pages/chat/ChatPage.tsx'),
-    'utf-8',
-  )
-  const composerSource = await readFile(
-    join(process.cwd(), 'apps/desktop/src/renderer/src/pages/chat/Composer.tsx'),
-    'utf-8',
-  )
-  const streamsSource = await readFile(
-    join(process.cwd(), 'apps/desktop/src/renderer/src/pages/chat/useChatStreams.ts'),
-    'utf-8',
-  )
-
-  assert(
-    workbenchSource.includes('mode?: AilaExecutionMode') &&
-      workbenchSource.includes('planId?: string') &&
-      workbenchSource.includes('return runtime.listPlans(conversationId)') &&
-      workbenchSource.includes('return runtime.getPlan(conversationId, planId)') &&
-      workbenchSource.includes('return runtime.savePlanMarkdown(input)') &&
-      workbenchSource.includes('return runtime.revisePlan(input)') &&
-      workbenchSource.includes('return runtime.approvePlan(input)') &&
-      workbenchSource.includes('return runtime.cancelPlan(input)'),
-    'Desktop runtime workbench should expose typed Plan API methods and send mode/plan ids',
-  )
-  assert(
-    workbenchSource.includes("'runtime:plans:list'") &&
-      workbenchSource.includes("'runtime:plans:get'") &&
-      workbenchSource.includes("'runtime:plans:save-markdown'") &&
-      workbenchSource.includes("'runtime:plans:revise'") &&
-      workbenchSource.includes("'runtime:plans:approve'") &&
-      workbenchSource.includes("'runtime:plans:cancel'"),
-    'Desktop runtime workbench should register Plan API IPC handlers',
-  )
-  assert(
-    preloadSource.includes('listPlans:') &&
-      preloadSource.includes("'runtime:plans:list'") &&
-      preloadSource.includes('getPlan:') &&
-      preloadSource.includes("'runtime:plans:get'") &&
-      preloadSource.includes('savePlanMarkdown:') &&
-      preloadSource.includes("'runtime:plans:save-markdown'") &&
-      preloadSource.includes('revisePlan:') &&
-      preloadSource.includes("'runtime:plans:revise'") &&
-      preloadSource.includes('approvePlan:') &&
-      preloadSource.includes("'runtime:plans:approve'") &&
-      preloadSource.includes('cancelPlan:') &&
-      preloadSource.includes("'runtime:plans:cancel'"),
-    'Desktop preload should expose Plan API methods through window.api.runtime',
-  )
-  assert(
-    preloadSource.includes("'plan.ready'") &&
-      preloadSource.includes("'plan.implementation.started'") &&
-      preloadSource.includes('plan?: ConversationRuntimeReplayPlan'),
-    'Desktop preload runtime types should include plan lifecycle events and replay state',
-  )
-  assert(
-    streamsSource.includes('plans: PlanArtifact[]') &&
-      streamsSource.includes('const { record, events, runtimeState, activeTurn, plans }') &&
-      streamsSource.includes('window.api.runtime.approvePlan({') &&
-      streamsSource.includes('window.api.runtime.listPlans(id)') &&
-      streamsSource.includes('event.type.startsWith'),
-    'Desktop chat streams should hydrate plans and refresh them from plan lifecycle events',
-  )
-  assert(
-    chatPageSource.includes('PlanReviewPanel') &&
-      chatPageSource.includes('streams.enqueueApprovePlan') &&
-      chatPageSource.includes('window.api.runtime.savePlanMarkdown') &&
-      chatPageSource.includes('window.api.runtime.cancelPlan') &&
-      chatPageSource.includes("executionMode === 'plan'") &&
-      chatPageSource.includes('onExecutionModeChange={setExecutionMode}') &&
-      composerSource.includes('function PlanModeToggle') &&
-      composerSource.includes('executionMode?: AilaExecutionMode') &&
-      composerSource.includes('onExecutionModeChange?: (mode: AilaExecutionMode) => void') &&
-      composerSource.includes("onChange(active ? 'agent' : 'plan')") &&
-      composerSource.includes('executionMode && onExecutionModeChange') &&
-      !chatPageSource.includes('ModeSegmentedControl'),
-    'Desktop chat page should keep plan review controls while Composer owns the Plan mode toggle',
+    !chatPageSource.includes('ExecutionInspector') &&
+      !chatPageSource.includes('stepMode') &&
+      !chatPageSource.includes('inspectorOpen') &&
+      !chatPageSource.includes('PanelRight') &&
+      !chatPageSource.includes('WorkbenchDisplayMode') &&
+      !chatPageSource.includes('<ModeSwitch') &&
+      !appSource.includes('displayMode='),
+    'Desktop chat canvas should stay full-width without an embedded run inspector or step controls',
   )
 }
 
@@ -2218,8 +2102,7 @@ async function main(): Promise<void> {
   await testDesktopMainUsesEsmSafeRuntimePaths()
   await testDesktopUsesSharedRuntimeFactory()
   await testDesktopExposesRuntimeStateApi()
-  await testDesktopExposesRunInspectorApi()
-  await testDesktopExposesPlanRuntimeApi()
+  await testDesktopKeepsRunControlsOutOfChatCanvas()
   await testDesktopExposesEmbeddedTerminalApi()
   await testRendererUsesRuntimeHydrationApi()
   await testDesktopExposesMcpIntegrationOAuthApi()

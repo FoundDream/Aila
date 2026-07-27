@@ -1,16 +1,9 @@
-import {
-  MessageSquareIcon,
-  PanelLeftCloseIcon,
-  PanelLeftOpenIcon,
-  PlusIcon,
-  SettingsIcon,
-  TerminalIcon,
-} from 'lucide-react'
+import { PanelLeftCloseIcon, PanelLeftOpenIcon, SettingsIcon } from 'lucide-react'
 import { lazy, type ReactElement, Suspense, useCallback, useEffect, useMemo, useState } from 'react'
 import { SettingsModal } from '@/components/SettingsModal'
 import { ToolApprovalDialog } from '@/components/ToolApprovalDialog'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
-import { ChatPage, type WorkbenchDisplayMode } from '@/pages/chat/ChatPage'
+import { ChatPage } from '@/pages/chat/ChatPage'
 import { ConversationList } from '@/pages/chat/ConversationList'
 import { useChatStreams } from '@/pages/chat/useChatStreams'
 import { useConversations } from '@/pages/chat/useConversations'
@@ -45,7 +38,6 @@ function readSidebarExpanded(): boolean {
 }
 
 export default function App(): ReactElement {
-  const [displayMode, setDisplayMode] = useState<WorkbenchDisplayMode>('agent')
   const [sidebarExpanded, setSidebarExpanded] = useState(readSidebarExpanded)
   const conversationsState = useConversations()
   const chatStreams = useChatStreams(
@@ -91,11 +83,14 @@ export default function App(): ReactElement {
       if ((event.metaKey || event.ctrlKey) && event.key === '\\') {
         event.preventDefault()
         setSidebarExpanded((expanded) => !expanded)
+      } else if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault()
+        conversationsState.deselect()
       }
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [])
+  }, [conversationsState.deselect])
 
   useEffect(() => {
     let cancelled = false
@@ -146,132 +141,87 @@ export default function App(): ReactElement {
     setToolApprovalsState((current) => resolveToolApprovalsForConversation(current, conversationId))
   }, [])
 
-  const handleDisplayModeChange = useCallback((mode: WorkbenchDisplayMode): void => {
-    setDisplayMode(mode)
-  }, [])
-
-  const activeWorkspace = conversationsState.activeRecord?.meta.workspace ?? null
-
   return (
     <TooltipProvider delayDuration={220}>
       <div className="aila-shell flex h-full overflow-hidden text-[var(--text)]">
         <aside
-          className={`aila-sidebar flex shrink-0 flex-col border-r border-[var(--border)] transition-[width] duration-200 ease-out ${
-            sidebarIsExpanded ? 'w-[240px]' : 'w-12'
+          className={`aila-sidebar flex shrink-0 flex-col overflow-hidden transition-[width] duration-200 ease-out ${
+            sidebarIsExpanded ? 'w-[260px]' : 'w-0'
           }`}
         >
-          <div className="h-10 shrink-0 [-webkit-app-region:drag]" />
+          <div className="h-[42px] shrink-0 [-webkit-app-region:drag]" />
 
-          {sidebarIsExpanded ? (
-            <>
-              <div className="flex h-10 shrink-0 items-center justify-between px-3">
-                <button
-                  type="button"
-                  onClick={() => conversationsState.deselect()}
-                  className="flex min-w-0 items-center gap-2.5 text-left"
-                >
-                  <span className="grid size-6 shrink-0 place-items-center rounded-md bg-[var(--signal)] font-mono text-[10px] font-bold text-white">
-                    A
-                  </span>
-                  <span className="truncate text-[13px] font-medium">Aila</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => conversationsState.deselect()}
-                  aria-label="New task"
-                  title="New task"
-                  className="grid size-7 place-items-center rounded-md text-[var(--text-dim)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
-                >
-                  <PlusIcon className="size-3.5" />
-                </button>
-              </div>
-              <div className="mx-3 my-1.5 h-px bg-[var(--border)]" />
-              <div className="min-h-0 flex-1">
-                <ConversationList
-                  conversations={conversationsState.conversations}
-                  activeId={conversationsState.activeId}
-                  busyIds={chatStreams.busyIds}
-                  pendingApprovalIds={pendingApprovalConversationIds}
-                  onSelect={conversationsState.select}
-                  onCreate={(workspace) => {
-                    void conversationsState.create(workspace)
-                  }}
-                  onCreateWorkspaceChat={() => {
-                    void conversationsState.createWorkspaceChat()
-                  }}
-                  onOpenTerminal={openWorkspaceTerminal}
-                  onRename={(id, title) => {
-                    void conversationsState.rename(id, title)
-                  }}
-                  onDelete={(id) => {
-                    void (async () => {
-                      try {
-                        await conversationsState.remove(id)
-                        clearConversationApprovals(id)
-                        chatStreams.drop(id)
-                      } catch (error) {
-                        console.warn('[conversations] delete failed:', error)
-                      }
-                    })()
-                  }}
-                />
-              </div>
-            </>
-          ) : (
-            <nav className="flex min-h-0 flex-1 flex-col items-center gap-1 px-1.5 pt-3">
-              <RailButton
-                active
-                label="Tasks"
-                icon={<MessageSquareIcon className="size-[17px]" />}
-                onClick={() => {
-                  setDisplayMode('agent')
-                  setSidebarExpanded(true)
+          {sidebarIsExpanded && (
+            <div className="min-h-0 flex-1">
+              <ConversationList
+                conversations={conversationsState.conversations}
+                activeId={conversationsState.activeId}
+                busyIds={chatStreams.busyIds}
+                pendingApprovalIds={pendingApprovalConversationIds}
+                onSelect={conversationsState.select}
+                onCreate={(workspace) => {
+                  void conversationsState.create(workspace)
+                }}
+                onCreateWorkspaceChat={() => {
+                  void conversationsState.createWorkspaceChat()
+                }}
+                onOpenTerminal={openWorkspaceTerminal}
+                onRename={(id, title) => {
+                  void conversationsState.rename(id, title)
+                }}
+                onDelete={(id) => {
+                  void (async () => {
+                    try {
+                      await conversationsState.remove(id)
+                      clearConversationApprovals(id)
+                      chatStreams.drop(id)
+                    } catch (error) {
+                      console.warn('[conversations] delete failed:', error)
+                    }
+                  })()
                 }}
               />
-              <RailButton
-                label="New task"
-                icon={<PlusIcon className="size-[17px]" />}
-                onClick={() => {
-                  conversationsState.deselect()
-                  setDisplayMode('agent')
-                  setSidebarExpanded(true)
-                }}
-              />
-              <RailButton
-                label="Terminal"
-                disabled={!activeWorkspace}
-                icon={<TerminalIcon className="size-[17px]" />}
-                onClick={() => {
-                  if (activeWorkspace) openWorkspaceTerminal(activeWorkspace)
-                }}
-              />
-            </nav>
+            </div>
           )}
 
-          <div className="shrink-0 px-1.5 pb-2">
-            {sidebarIsExpanded ? (
+          {sidebarIsExpanded && (
+            <div className="shrink-0 px-1.5 pb-2">
               <div className="space-y-1 border-t border-[var(--border)] px-1 pt-2">
                 <button
                   type="button"
                   onClick={() => setSettingsOpen(true)}
-                  className="flex h-8 w-full items-center gap-2 rounded-md px-2 text-[12px] text-[var(--sidebar-text-soft)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
+                  className="flex h-8 w-full items-center gap-2 rounded-lg px-2 text-[12px] text-[var(--sidebar-text-soft)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
                 >
                   <SettingsIcon className="size-4 text-[var(--sidebar-text-dim)]" />
                   Settings
                 </button>
               </div>
-            ) : (
-              <RailButton
-                label="Settings"
-                icon={<SettingsIcon className="size-[17px]" />}
-                onClick={() => setSettingsOpen(true)}
-              />
-            )}
-          </div>
+            </div>
+          )}
         </aside>
 
-        <main className="min-w-0 flex-1 bg-[var(--bg)]">
-          <div className="flex h-full min-h-0 flex-col">
+        <main className={`min-w-0 flex-1 p-2 ${sidebarIsExpanded ? 'pl-0' : ''}`}>
+          <div className="aila-main-panel flex h-full min-h-0 flex-col overflow-hidden rounded-[14px] border border-[var(--border)] bg-[var(--bg)]">
+            <header className="relative flex h-[34px] shrink-0 items-center [-webkit-app-region:drag]">
+              <div
+                className={`flex min-w-0 translate-y-0.5 items-center gap-2.5 transition-[padding] duration-200 ${
+                  sidebarIsExpanded ? 'px-5' : 'pl-[128px] pr-5'
+                }`}
+              >
+                {conversationsState.activeRecord && (
+                  <>
+                    <span className="min-w-0 truncate text-[13.5px] font-semibold">
+                      {conversationsState.activeRecord.meta.title || 'New session'}
+                    </span>
+                    {conversationsState.activeRecord.meta.workspace?.label && (
+                      <span className="hidden truncate rounded-md border border-[var(--border)] bg-[var(--bg-soft)] px-2 py-0.5 text-[10.5px] text-[var(--text-dim)] xl:inline">
+                        {conversationsState.activeRecord.meta.workspace.label}
+                      </span>
+                    )}
+                  </>
+                )}
+              </div>
+            </header>
             <div className="min-h-0 flex-1">
               <ChatPage
                 conversation={conversationsState.activeRecord}
@@ -281,8 +231,6 @@ export default function App(): ReactElement {
                 configuredProviders={settingsState?.configuredProviders ?? ([] as ProviderId[])}
                 onUpdateSettings={updateSettings}
                 onOpenSettings={() => setSettingsOpen(true)}
-                displayMode={displayMode}
-                onDisplayModeChange={handleDisplayModeChange}
               />
             </div>
             {terminalWorkspace && (
@@ -313,9 +261,7 @@ export default function App(): ReactElement {
               type="button"
               onClick={() => setSidebarExpanded((expanded) => !expanded)}
               aria-label={sidebarIsExpanded ? 'Collapse sidebar' : 'Expand sidebar'}
-              className={`fixed top-[7px] z-50 grid size-7 place-items-center rounded-md text-[var(--sidebar-text-dim)] transition-colors [-webkit-app-region:no-drag] hover:bg-[var(--surface-hover)] hover:text-[var(--text)] ${
-                sidebarIsExpanded ? 'left-[202px]' : 'left-[10px]'
-              }`}
+              className="fixed left-[96px] top-[13px] z-20 grid size-7 place-items-center rounded-lg text-[var(--sidebar-text-dim)] transition-colors [-webkit-app-region:no-drag] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
             >
               {sidebarIsExpanded ? (
                 <PanelLeftCloseIcon className="size-3.5" />
@@ -345,40 +291,5 @@ export default function App(): ReactElement {
         />
       </div>
     </TooltipProvider>
-  )
-}
-
-function RailButton({
-  active = false,
-  disabled = false,
-  label,
-  icon,
-  onClick,
-}: {
-  active?: boolean
-  disabled?: boolean
-  label: string
-  icon: ReactElement
-  onClick: () => void
-}): ReactElement {
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <button
-          type="button"
-          disabled={disabled}
-          onClick={onClick}
-          aria-label={label}
-          className={`grid size-9 place-items-center rounded-md border transition-colors disabled:cursor-not-allowed disabled:opacity-25 ${
-            active
-              ? 'border-[var(--signal-border)] bg-[var(--signal-soft)] text-[var(--signal)]'
-              : 'border-transparent text-[var(--sidebar-text-dim)] hover:border-[var(--border)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]'
-          }`}
-        >
-          {icon}
-        </button>
-      </TooltipTrigger>
-      <TooltipContent side="right">{label}</TooltipContent>
-    </Tooltip>
   )
 }

@@ -1,20 +1,15 @@
 import type {
   AilaExecutionMode,
   ConversationWorkspaceRef,
-  PlanArtifact,
   ProviderId,
   RunArtifact,
   RunCheckpoint,
-  RuntimeApprovePlanInput,
-  RuntimeCancelPlanInput,
   RuntimeForkRunInput,
-  RuntimeRevisePlanInput,
   RuntimeRunArtifactDescriptor,
   RuntimeRunArtifactInput,
   RuntimeRunControlInput,
   RuntimeRunInspection,
   RuntimeRunSummary,
-  RuntimeSavePlanMarkdownInput,
 } from '@aila/agent'
 import { contextBridge, ipcRenderer } from 'electron'
 import type { OrCatalog } from '../shared/openrouter'
@@ -23,20 +18,15 @@ export type { OrCatalog, OrFamily, OrModel } from '../shared/openrouter'
 export type {
   AilaExecutionMode,
   ConversationWorkspaceRef,
-  PlanArtifact,
   ProviderId,
   RunArtifact,
   RunCheckpoint,
-  RuntimeApprovePlanInput,
-  RuntimeCancelPlanInput,
   RuntimeForkRunInput,
-  RuntimeRevisePlanInput,
   RuntimeRunArtifactDescriptor,
   RuntimeRunArtifactInput,
   RuntimeRunControlInput,
   RuntimeRunInspection,
   RuntimeRunSummary,
-  RuntimeSavePlanMarkdownInput,
 }
 
 export const AILA_CONVERSATION_META_SCHEMA_VERSION = 1
@@ -142,21 +132,6 @@ export type RunEventType =
   | 'tool.result.returned'
   | 'tool.approval.requested'
   | 'tool.approval.resolved'
-  | 'plan.started'
-  | 'plan.exploring'
-  | 'plan.question.requested'
-  | 'plan.question.answered'
-  | 'plan.updated'
-  | 'plan.ready'
-  | 'plan.approved'
-  | 'plan.rejected'
-  | 'plan.cancelled'
-  | 'plan.implementation.started'
-  | 'plan.task.started'
-  | 'plan.task.completed'
-  | 'plan.task.blocked'
-  | 'plan.drift.detected'
-  | 'plan.completed'
 
 export interface PersistedRunEvent {
   schemaVersion: number
@@ -568,9 +543,6 @@ export interface ConversationContextState {
 }
 
 export type ConversationActivityState =
-  | 'planning'
-  | 'plan_ready'
-  | 'implementing_plan'
   | 'running'
   | 'paused'
   | 'approval'
@@ -591,9 +563,6 @@ export interface ConversationActivity {
 
 export type ConversationRuntimeStatePhase =
   | 'idle'
-  | 'planning'
-  | 'plan_ready'
-  | 'implementing_plan'
   | 'running'
   | 'paused'
   | 'approval'
@@ -620,21 +589,10 @@ export interface ConversationRuntimeReplayTurn {
   pendingApproval?: ConversationRuntimePendingApproval
 }
 
-export interface ConversationRuntimeReplayPlan {
-  planId: string
-  status?: string
-  title?: string
-  updatedAt: number
-  taskId?: string
-  questionId?: string
-  driftId?: string
-}
-
 export interface ConversationRuntimeReplayState {
   phase: ConversationRuntimeStatePhase
   active: boolean
   turn?: ConversationRuntimeReplayTurn
-  plan?: ConversationRuntimeReplayPlan
 }
 
 export interface ConversationRuntimeStateSnapshot {
@@ -718,7 +676,6 @@ export interface RuntimeSendRequest {
   selection: ModelSelection
   mode?: AilaExecutionMode
   loopMode?: 'continuous' | 'step'
-  planId?: string
   attachments?: ChatAttachmentInput[]
 }
 
@@ -726,7 +683,6 @@ export interface RuntimeRetryLastRequest {
   conversationId: string
   selection: ModelSelection
   mode?: AilaExecutionMode
-  planId?: string
 }
 
 export interface RuntimeCompactConversationRequest {
@@ -768,7 +724,6 @@ export interface RuntimeConversationHydration {
   events: PersistedRunEvent[]
   runtimeState: ConversationRuntimeReplayState
   activeTurn: ActiveAssistantTurn | null
-  plans: PlanArtifact[]
 }
 
 export interface TerminalCreateRequest {
@@ -839,18 +794,6 @@ const api = {
       ipcRenderer.invoke('runtime:conversations:list-runtime-states'),
     getTokenUsageStats: (): Promise<TokenUsageStats> =>
       ipcRenderer.invoke('runtime:token-usage-stats'),
-    listPlans: (conversationId: string): Promise<PlanArtifact[]> =>
-      ipcRenderer.invoke('runtime:plans:list', conversationId),
-    getPlan: (conversationId: string, planId: string): Promise<PlanArtifact> =>
-      ipcRenderer.invoke('runtime:plans:get', conversationId, planId),
-    savePlanMarkdown: (request: RuntimeSavePlanMarkdownInput): Promise<PlanArtifact> =>
-      ipcRenderer.invoke('runtime:plans:save-markdown', request),
-    revisePlan: (request: RuntimeRevisePlanInput): Promise<SendResult> =>
-      ipcRenderer.invoke('runtime:plans:revise', request),
-    approvePlan: (request: RuntimeApprovePlanInput): Promise<SendResult> =>
-      ipcRenderer.invoke('runtime:plans:approve', request),
-    cancelPlan: (request: RuntimeCancelPlanInput): Promise<PlanArtifact> =>
-      ipcRenderer.invoke('runtime:plans:cancel', request),
     onTextDelta: (cb: (event: TextDeltaEvent) => void) => on<TextDeltaEvent>('chat:text-delta', cb),
     onReasoningDelta: (cb: (event: ReasoningDeltaEvent) => void) =>
       on<ReasoningDeltaEvent>('chat:reasoning-delta', cb),

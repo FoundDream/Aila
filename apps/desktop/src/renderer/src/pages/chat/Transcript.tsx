@@ -1,5 +1,6 @@
 import {
   AlertCircleIcon,
+  ArrowDownIcon,
   CheckIcon,
   ChevronRightIcon,
   CopyIcon,
@@ -53,11 +54,11 @@ export function Transcript({
     <div className="relative flex min-h-0 flex-1 flex-col">
       <div
         ref={scrollRef}
-        className={`flex-1 overflow-y-auto ${compact ? 'px-3 py-3' : 'px-6 py-6'}`}
+        className={`flex-1 overflow-y-auto ${compact ? 'px-3 py-3' : 'px-6 py-7'}`}
       >
         <div
           ref={contentRef}
-          className={`mx-auto flex flex-col ${compact ? 'max-w-none gap-3' : 'max-w-[820px] gap-4'}`}
+          className={`mx-auto flex flex-col ${compact ? 'max-w-none gap-3' : 'max-w-[820px] gap-6'}`}
         >
           {messages.map((message) => (
             <MessageRow key={message.id} message={message} compact={compact} />
@@ -71,9 +72,9 @@ export function Transcript({
           type="button"
           onClick={() => scrollToBottom()}
           aria-label="Jump to latest"
-          className="absolute bottom-4 left-1/2 -translate-x-1/2 rounded-full border border-[var(--border)] bg-[var(--surface)] px-2 py-1 text-[12px] shadow-[0_2px_10px_rgba(0,0,0,0.08)"
+          className="absolute bottom-4 left-1/2 grid size-8 -translate-x-1/2 place-items-center rounded-lg border border-[var(--border-strong)] bg-[var(--surface-raised)] text-[var(--text-soft)] shadow-[var(--shadow-sm)] transition-colors hover:bg-[var(--bg-soft)] hover:text-[var(--text)]"
         >
-          ↓
+          <ArrowDownIcon className="size-3.5" />
         </button>
       )}
     </div>
@@ -86,7 +87,7 @@ function RetryLastTurn({ onRetryLast }: { onRetryLast: () => void }): ReactEleme
       <button
         type="button"
         onClick={onRetryLast}
-        className="inline-flex items-center gap-1.5 rounded-full border border-[var(--border)] px-3.5 py-1.5 text-[12.5px] text-[var(--text-soft)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
+        className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3.5 py-1.5 text-[12.5px] text-[var(--text-soft)] shadow-[var(--shadow-xs)] transition-colors hover:border-[var(--border-strong)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
       >
         <RotateCcwIcon className="h-3.5 w-3.5" />
         Resume last turn
@@ -107,15 +108,12 @@ function MessageRow({ message, compact }: { message: Message; compact: boolean }
 
   if (isUser) {
     return (
-      <article className="group relative flex flex-col gap-2 rounded-lg border border-[var(--border)] bg-[var(--textarea)] px-3 py-3">
-        <div className="self-start rounded-md border border-[var(--border)] bg-[var(--surface-hover)] px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.08em] text-[var(--text-dim)]">
-          You
-        </div>
+      <article className="group relative ml-auto flex w-fit max-w-[min(88%,680px)] flex-col gap-2 rounded-[18px] bg-[var(--bg-soft)] px-4 py-2.5">
         <div
           className={
             isQueued
-              ? 'pr-7 text-[13.5px] text-[var(--text-soft)] opacity-70'
-              : 'pr-7 text-[13.5px] text-[var(--text)]'
+              ? 'pr-7 text-[15px] text-[var(--text-soft)] opacity-70'
+              : 'pr-7 text-[15px] text-[var(--text)]'
           }
         >
           <div className="flex flex-col gap-3">
@@ -136,53 +134,55 @@ function MessageRow({ message, compact }: { message: Message; compact: boolean }
             Queued
           </div>
         )}
-        {canCopy && <CopyButton message={message} />}
+        {canCopy && <CopyButton message={message} position="right-2 top-2" />}
       </article>
     )
   }
 
   return (
-    <article className="group relative flex flex-col gap-2 rounded-lg border border-[var(--border)] bg-[var(--textarea)] px-3 py-3">
-      <div className="self-start rounded-md border border-[var(--signal-border)] bg-[var(--signal-soft)] px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.08em] text-[var(--signal)]">
-        Aila
-      </div>
-      <div className="flex flex-col gap-3 pr-7 text-[13.5px]">
-        {visibleBlocks.length === 0 && isStreaming ? (
-          <StreamingDots />
-        ) : (
-          visibleBlocks.map((block, index) => (
-            <BlockView
-              // biome-ignore lint/suspicious/noArrayIndexKey: blocks are append-only per message
-              key={index}
-              block={block}
-              isStreaming={isStreaming}
-              compact={compact}
-            />
-          ))
-        )}
-        {message.status === 'error' && message.error && (
-          <p className="text-sm text-[var(--error)]">Error: {message.error}</p>
-        )}
-      </div>
-      {compact && toolStepCount > 0 && (
-        <div className="mt-1 flex items-center gap-2 border-t border-[var(--border)] pt-2 font-mono text-[9.5px] text-[var(--text-dim)]">
-          {isStreaming ? (
-            <LoaderCircleIcon className="size-3 animate-spin text-[var(--signal)]" />
+    <article className="group relative py-1">
+      <div className="min-w-0">
+        <div className="flex flex-col gap-3 pr-7 text-[13.5px]">
+          {visibleBlocks.length === 0 && isStreaming ? (
+            <StreamingDots />
           ) : (
-            <CheckIcon className="size-3 text-[var(--success)]" />
+            visibleBlocks.map((block, index) => (
+              <BlockView
+                // biome-ignore lint/suspicious/noArrayIndexKey: blocks are append-only per message
+                key={index}
+                block={block}
+                isStreaming={isStreaming}
+                compact={compact}
+              />
+            ))
           )}
-          <span>
-            {toolStepCount} {toolStepCount === 1 ? 'step' : 'steps'} ·{' '}
-            {isStreaming ? 'Running' : message.status === 'error' ? 'Failed' : 'Completed'}
-          </span>
+          {message.status === 'error' && message.error && (
+            <p className="flex items-start gap-2 rounded-lg border border-[var(--error-border)] bg-[var(--error-soft)] px-3 py-2 text-[12.5px] text-[var(--error)]">
+              <AlertCircleIcon className="mt-0.5 size-3.5 shrink-0" />
+              <span>{message.error}</span>
+            </p>
+          )}
         </div>
-      )}
-      {canCopy && <CopyButton message={message} />}
+        {compact && toolStepCount > 0 && (
+          <div className="mt-3 flex items-center gap-2 border-t border-[var(--border)] pt-2 text-[11px] text-[var(--text-dim)]">
+            {isStreaming ? (
+              <LoaderCircleIcon className="size-3 animate-spin text-[var(--signal)]" />
+            ) : (
+              <CheckIcon className="size-3 text-[var(--success)]" />
+            )}
+            <span>
+              {toolStepCount} {toolStepCount === 1 ? 'step' : 'steps'},{' '}
+              {isStreaming ? 'running' : message.status === 'error' ? 'failed' : 'completed'}
+            </span>
+          </div>
+        )}
+      </div>
+      {canCopy && <CopyButton message={message} position="right-0 top-0" />}
     </article>
   )
 }
 
-function CopyButton({ message }: { message: Message }): ReactElement {
+function CopyButton({ message, position }: { message: Message; position: string }): ReactElement {
   const [copied, setCopied] = useState(false)
   const onCopy = useCallback(async () => {
     const text = messageToPlainText(message)
@@ -192,7 +192,7 @@ function CopyButton({ message }: { message: Message }): ReactElement {
       setCopied(true)
       window.setTimeout(() => setCopied(false), 1500)
     } catch {
-      // ignore — clipboard may be unavailable
+      // Ignore clipboard failures, which can happen in restricted environments.
     }
   }, [message])
   return (
@@ -201,7 +201,7 @@ function CopyButton({ message }: { message: Message }): ReactElement {
       onClick={onCopy}
       aria-label={copied ? 'Copied' : 'Copy message'}
       title={copied ? 'Copied' : 'Copy'}
-      className={`absolute right-2 top-2 grid size-6 place-items-center rounded-md text-[var(--text-dim)] transition-opacity hover:bg-[var(--surface-hover)] hover:text-[var(--text)] ${
+      className={`absolute ${position} grid size-6 place-items-center rounded-lg text-[var(--text-dim)] transition-opacity hover:bg-[var(--surface-hover)] hover:text-[var(--text)] ${
         copied ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 focus:opacity-100'
       }`}
     >

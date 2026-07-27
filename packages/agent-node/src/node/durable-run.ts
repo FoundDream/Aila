@@ -253,16 +253,6 @@ export function createDurableRunExecutor(
         ...(contextPlan ? { contextPlan: cloneAgentValue(contextPlan) } : {}),
         assistantMessage: builder.build(assistantMessageId, 'error', selection, message),
         ...(lastUsage ? { usage: cloneAgentValue(lastUsage) } : {}),
-        ...(runCheckpoint?.plan
-          ? { plan: cloneAgentValue(runCheckpoint.plan) }
-          : req.plan
-            ? {
-                plan: {
-                  id: req.plan.id,
-                  ...(req.planOperation ? { operation: req.planOperation } : {}),
-                },
-              }
-            : {}),
         recovery: runRecoveryFromCursor(loop),
         revision: (runCheckpoint?.revision ?? 0) + 1,
         createdAt: runCheckpoint?.createdAt ?? timestamp,
@@ -402,14 +392,6 @@ export function createDurableRunExecutor(
             messageError,
           ),
           ...(lastUsage ? { usage: cloneAgentValue(lastUsage) } : {}),
-          ...(req.plan
-            ? {
-                plan: {
-                  id: req.plan.id,
-                  ...(req.planOperation ? { operation: req.planOperation } : {}),
-                },
-              }
-            : {}),
           recovery: runRecoveryFromCursor(loop),
           revision: checkpointRevision + 1,
           createdAt: checkpointCreatedAt,

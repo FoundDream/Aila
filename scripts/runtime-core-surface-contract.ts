@@ -36,7 +36,6 @@ import {
   type ConversationContextTokenPreflight,
   type ConversationContextTurnLedgerEntry,
   type ConversationRecord,
-  type ConversationRuntimeReplayPlan,
   type ConversationRuntimeReplayState,
   type ConversationSummary,
   type ConversationUsage,
@@ -56,8 +55,6 @@ import {
   parseSkillDocument,
   type RunEvent,
   type RunIdentity,
-  type RuntimeApprovePlanInput,
-  type RuntimeCancelPlanInput,
   type RuntimeCompactConversationInput,
   type RuntimeCompactConversationResult,
   type RuntimeContextCompactArtifactInput,
@@ -65,8 +62,6 @@ import {
   type RuntimeContextTokenCountInput,
   type RuntimeContextTokenCountResult,
   type RuntimeModelInfoResolver,
-  type RuntimeRevisePlanInput,
-  type RuntimeSavePlanMarkdownInput,
   type RuntimeStableInstructionsInput,
   requestToolApprovalWithActivity,
   type Settings,
@@ -110,7 +105,6 @@ export type RuntimeCorePublicSurfaceContract = {
   api: Workbench
   chatMessage: ChatMessage
   conversationRecord: ConversationRecord
-  conversationRuntimePlan: ConversationRuntimeReplayPlan
   conversationRuntimeState: ConversationRuntimeReplayState
   conversationSummary: ConversationSummary
   conversationUsage: ConversationUsage
@@ -137,16 +131,12 @@ export type RuntimeCorePublicSurfaceContract = {
   persistedMessage: PersistedMessage
   persistedToolResultRef: PersistedToolResultRef
   runtime: WorkbenchRuntime
-  runtimeApprovePlanInput: RuntimeApprovePlanInput
-  runtimeCancelPlanInput: RuntimeCancelPlanInput
   runtimeCompactConversationInput: RuntimeCompactConversationInput
   runtimeCompactConversationResult: RuntimeCompactConversationResult
   runtimeContextCompactArtifactInput: RuntimeContextCompactArtifactInput
   runtimeContextCompactArtifactResult: RuntimeContextCompactArtifactResult
   runtimeContextTokenCountInput: RuntimeContextTokenCountInput
   runtimeContextTokenCountResult: RuntimeContextTokenCountResult
-  runtimeRevisePlanInput: RuntimeRevisePlanInput
-  runtimeSavePlanMarkdownInput: RuntimeSavePlanMarkdownInput
   stableInstructionsInput: RuntimeStableInstructionsInput
   settings: Settings
   shellRequest: ToolShellRequest

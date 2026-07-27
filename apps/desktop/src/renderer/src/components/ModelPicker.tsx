@@ -50,7 +50,7 @@ export function ModelPicker({
       <button
         type="button"
         onClick={onOpenSettings}
-        className="flex min-w-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-[12px] text-[var(--text-soft)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
+        className="flex min-w-0 items-center gap-1.5 rounded-lg px-2.5 py-1 text-[12px] text-[var(--text-soft)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
       >
         <SettingsIcon className="size-3.5 shrink-0" />
         <span className="truncate">Configure API key</span>
@@ -63,7 +63,7 @@ export function ModelPicker({
       <PopoverTrigger asChild>
         <button
           type="button"
-          className="flex min-w-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-[12px] text-[var(--text-soft)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
+          className="flex min-w-0 items-center gap-1.5 rounded-lg px-2.5 py-1 text-[12px] text-[var(--text-soft)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
         >
           {selection ? <ProviderLogo id={selection.providerId} size={12} /> : null}
           <span className="truncate">
@@ -347,7 +347,7 @@ function OpenRouterView({
                 ))}
                 {f.models.length > 20 && (
                   <div className="px-2 py-1 text-[10px] text-[var(--text-dim)]">
-                    +{f.models.length - 20} more — refine search
+                    +{f.models.length - 20} more, refine search
                   </div>
                 )}
               </Section>

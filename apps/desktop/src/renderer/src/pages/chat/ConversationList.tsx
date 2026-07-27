@@ -190,7 +190,7 @@ export function ConversationList({
             actionLabel="Open workspace"
             onAction={onCreateWorkspaceChat}
           />
-          {projects.length > 0 && (
+          {projects.length > 0 ? (
             <ul className="flex flex-col gap-px">
               {projects.map((project) => {
                 const isExpanded = expandedProjectIds.has(project.id)
@@ -203,7 +203,7 @@ export function ConversationList({
 
                 return (
                   <li key={project.id}>
-                    <div className="group/project flex h-7 items-center rounded-md transition-colors hover:bg-[var(--surface-hover)]">
+                    <div className="group/project flex h-8 items-center rounded-lg transition-colors hover:bg-[var(--surface-hover)]">
                       <button
                         type="button"
                         onClick={() => toggleProjectExpanded(project.id)}
@@ -225,7 +225,7 @@ export function ConversationList({
                         }}
                         aria-label={`Open Terminal in ${project.label}`}
                         title="Open Terminal"
-                        className="grid size-5 shrink-0 cursor-pointer place-items-center rounded-md text-[var(--sidebar-text-dim)] opacity-0 transition group-hover/project:opacity-100 hover:bg-[var(--surface)] hover:text-[var(--text)]"
+                        className="grid size-5 shrink-0 cursor-pointer place-items-center rounded-md text-[var(--sidebar-text-dim)] opacity-0 transition group-hover/project:opacity-100 hover:bg-[var(--surface)] hover:text-[var(--text)] focus:opacity-100"
                       >
                         <TerminalIcon className="size-3.5" />
                       </button>
@@ -234,7 +234,7 @@ export function ConversationList({
                         onClick={() => onCreate(workspace)}
                         aria-label={`New thread in ${project.label}`}
                         title={`New thread in ${project.label}`}
-                        className="mr-1 grid size-5 shrink-0 cursor-pointer place-items-center rounded-md text-[var(--sidebar-text-dim)] opacity-0 transition group-hover/project:opacity-100 hover:bg-[var(--surface)] hover:text-[var(--text)]"
+                        className="mr-1 grid size-5 shrink-0 cursor-pointer place-items-center rounded-md text-[var(--sidebar-text-dim)] opacity-0 transition group-hover/project:opacity-100 hover:bg-[var(--surface)] hover:text-[var(--text)] focus:opacity-100"
                       >
                         <PlusIcon className="size-3.5" />
                       </button>
@@ -280,16 +280,31 @@ export function ConversationList({
                 )
               })}
             </ul>
+          ) : (
+            <button
+              type="button"
+              onClick={onCreateWorkspaceChat}
+              className="flex h-8 w-full items-center gap-2 rounded-lg px-2 text-left text-[12.5px] text-[var(--sidebar-text-dim)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--sidebar-text-soft)]"
+            >
+              <FolderPlusIcon className="size-3.5" />
+              Open a workspace
+            </button>
           )}
           <div className="mt-4">
-            <SectionHeader label="Threads" />
+            <SectionHeader
+              label="Threads"
+              actionLabel="New session"
+              actionIcon={<PlusIcon className="size-3.5" />}
+              onAction={() => onCreate(null)}
+            />
           </div>
           {chats.length === 0 ? (
             <button
               type="button"
               onClick={() => onCreate(null)}
-              className="mt-2 flex h-7 w-full cursor-pointer items-center rounded-md px-2 text-left text-[13.5px] text-[var(--sidebar-text-dim)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--sidebar-text-soft)]"
+              className="mt-1 flex h-8 w-full cursor-pointer items-center gap-2 rounded-lg px-2 text-left text-[12.5px] text-[var(--sidebar-text-dim)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--sidebar-text-soft)]"
             >
+              <PlusIcon className="size-3.5" />
               New thread
             </button>
           ) : (
@@ -320,15 +335,17 @@ export function ConversationList({
 function SectionHeader({
   label,
   actionLabel,
+  actionIcon,
   onAction,
 }: {
   label: string
   actionLabel?: string
+  actionIcon?: ReactElement
   onAction?: () => void
 }): ReactElement {
   return (
-    <div className="group/section mb-2 flex h-7 items-center">
-      <h2 className="min-w-0 flex-1 px-2 text-[11px] font-medium tracking-wide text-[var(--sidebar-text-dim)]">
+    <div className="group/section mb-1 flex h-7 items-center">
+      <h2 className="min-w-0 flex-1 px-2 text-[11px] font-semibold text-[var(--sidebar-text-dim)]">
         {label}
       </h2>
       {onAction && actionLabel && (
@@ -339,7 +356,7 @@ function SectionHeader({
           title={actionLabel}
           className="grid size-5 shrink-0 cursor-pointer place-items-center rounded-md text-[var(--sidebar-text-dim)] opacity-60 transition group-hover/section:opacity-100 hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
         >
-          <FolderPlusIcon className="size-3.5" />
+          {actionIcon ?? <FolderPlusIcon className="size-3.5" />}
         </button>
       )}
     </div>
@@ -382,8 +399,10 @@ function ConversationRow({
 
   return (
     <li
-      className={`group flex h-7 items-center rounded-md transition-colors ${
-        isActive ? 'bg-[var(--surface-hover)]' : 'hover:bg-[var(--surface-hover)]'
+      className={`group relative flex h-8 items-center rounded-lg transition-colors before:absolute before:inset-y-1.5 before:left-0 before:w-[3px] before:rounded-full before:bg-transparent ${
+        isActive
+          ? 'bg-[var(--surface)] shadow-[var(--shadow-xs)] before:bg-[var(--signal)]'
+          : 'hover:bg-[var(--surface-hover)]'
       }`}
     >
       {isRenaming ? (
@@ -405,12 +424,12 @@ function ConversationRow({
             onClick={() => onSelect(conversation.id)}
             onDoubleClick={() => onStartRename(conversation.id)}
             className={`flex min-w-0 flex-1 cursor-pointer items-center gap-2 text-left ${
-              indented ? 'pl-7 pr-2' : 'px-2'
+              indented ? 'pl-7 pr-2' : 'pl-2.5 pr-2'
             }`}
           >
             <span
               className={`min-w-0 flex-1 truncate text-[13.5px] ${
-                isActive ? 'font-medium text-[var(--text)]' : 'text-[var(--sidebar-text-soft)]'
+                isActive ? 'font-semibold text-[var(--signal)]' : 'text-[var(--sidebar-text-soft)]'
               }`}
             >
               {title}

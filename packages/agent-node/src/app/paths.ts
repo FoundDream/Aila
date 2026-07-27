@@ -18,10 +18,6 @@ export function getImagesDir(): string {
   return join(getDataDir(), 'images')
 }
 
-export function getPlansDir(): string {
-  return join(getDataDir(), 'plans')
-}
-
 export function getRunsDir(): string {
   return join(getDataDir(), 'runs')
 }

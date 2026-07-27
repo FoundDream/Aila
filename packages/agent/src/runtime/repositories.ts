@@ -9,7 +9,6 @@ import type {
   PersistedRunEvent,
   RunEventAppendResult,
 } from '../conversation-core'
-import type { PlanArtifact, PlanRevisionInput } from '../plan-core'
 import type { RunArtifact, RunCheckpoint } from '../run-persistence'
 
 export interface SessionRepository {
@@ -44,17 +43,5 @@ export interface RunRepository {
   listRunArtifacts?: (conversationId: string, runId: string) => Promise<readonly RunArtifact[]>
 }
 
-export interface PlanRepository {
-  createPlan?: (plan: PlanArtifact) => Promise<PlanArtifact>
-  getPlan?: (conversationId: string, planId: string) => Promise<PlanArtifact>
-  listPlans?: (conversationId: string) => Promise<readonly PlanArtifact[]>
-  updatePlan?: (plan: PlanArtifact) => Promise<PlanArtifact>
-  appendPlanRevision?: (input: PlanRevisionInput) => Promise<PlanArtifact>
-}
-
 /** Store composition consumed by the Workbench product layer. */
-export interface WorkbenchStore
-  extends SessionRepository,
-    EventRepository,
-    RunRepository,
-    PlanRepository {}
+export interface WorkbenchStore extends SessionRepository, EventRepository, RunRepository {}

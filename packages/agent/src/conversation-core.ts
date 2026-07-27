@@ -194,9 +194,6 @@ export interface ConversationContextState {
 }
 
 export type ConversationActivityState =
-  | 'planning'
-  | 'plan_ready'
-  | 'implementing_plan'
   | 'running'
   | 'paused'
   | 'approval'
@@ -217,9 +214,6 @@ export interface ConversationActivity {
 
 export type ConversationRuntimeStatePhase =
   | 'idle'
-  | 'planning'
-  | 'plan_ready'
-  | 'implementing_plan'
   | 'running'
   | 'paused'
   | 'approval'
@@ -246,23 +240,10 @@ export interface ConversationRuntimeReplayTurn {
   pendingApproval?: ConversationRuntimePendingApproval
 }
 
-export interface ConversationRuntimeReplayPlan {
-  planId: string
-  updatedAt: number
-  eventType: RunEvent['type']
-  title?: string
-  status?: string
-  taskId?: string
-  questionId?: string
-  driftId?: string
-  summary?: string
-}
-
 export interface ConversationRuntimeReplayState {
   phase: ConversationRuntimeStatePhase
   active: boolean
   turn?: ConversationRuntimeReplayTurn
-  plan?: ConversationRuntimeReplayPlan
 }
 
 export interface ConversationInterruptedRecoveryOptions {
@@ -308,9 +289,6 @@ export interface RunEventAppendResult {
 }
 
 const CONVERSATION_ACTIVITY_STATES = new Set<ConversationActivityState>([
-  'planning',
-  'plan_ready',
-  'implementing_plan',
   'running',
   'paused',
   'approval',
@@ -1145,115 +1123,6 @@ export function activityFromRunEvent(event: PersistedRunEvent): ConversationActi
         detail: dataString(data, 'reason'),
       }
     }
-    case 'plan.started':
-      return {
-        ...base,
-        state: 'planning',
-        title: 'Planning started',
-        detail: joinDetail(dataString(data, 'title'), dataString(data, 'planId')),
-      }
-    case 'plan.exploring':
-      return {
-        ...base,
-        state: 'planning',
-        title: 'Exploring plan',
-        detail: joinDetail(dataString(data, 'summary'), dataString(data, 'planId')),
-      }
-    case 'plan.question.requested':
-      return {
-        ...base,
-        state: 'planning',
-        title: 'Plan needs input',
-        detail: joinDetail(
-          dataString(data, 'questionId'),
-          dataString(data, 'prompt'),
-          dataString(data, 'summary'),
-        ),
-      }
-    case 'plan.question.answered':
-      return {
-        ...base,
-        state: 'planning',
-        title: 'Plan input answered',
-        detail: joinDetail(dataString(data, 'questionId'), dataString(data, 'summary')),
-      }
-    case 'plan.updated':
-      return {
-        ...base,
-        state: 'planning',
-        title: 'Plan updated',
-        detail: joinDetail(dataString(data, 'title'), dataString(data, 'summary')),
-      }
-    case 'plan.ready':
-      return {
-        ...base,
-        state: 'plan_ready',
-        title: 'Plan ready',
-        detail: joinDetail(dataString(data, 'title'), dataString(data, 'summary')),
-      }
-    case 'plan.approved':
-      return {
-        ...base,
-        state: 'plan_ready',
-        title: 'Plan approved',
-        detail: joinDetail(dataString(data, 'title'), dataString(data, 'summary')),
-      }
-    case 'plan.rejected':
-      return {
-        ...base,
-        state: 'cancelled',
-        title: 'Plan rejected',
-        detail: dataString(data, 'reason'),
-      }
-    case 'plan.cancelled':
-      return {
-        ...base,
-        state: 'cancelled',
-        title: 'Plan cancelled',
-        detail: dataString(data, 'reason'),
-      }
-    case 'plan.implementation.started':
-      return {
-        ...base,
-        state: 'implementing_plan',
-        title: 'Implementing plan',
-        detail: joinDetail(dataString(data, 'title'), dataString(data, 'planId')),
-      }
-    case 'plan.task.started':
-      return {
-        ...base,
-        state: 'implementing_plan',
-        title: 'Plan task started',
-        detail: joinDetail(dataString(data, 'taskId'), dataString(data, 'summary')),
-      }
-    case 'plan.task.completed':
-      return {
-        ...base,
-        state: 'implementing_plan',
-        title: 'Plan task completed',
-        detail: joinDetail(dataString(data, 'taskId'), dataString(data, 'summary')),
-      }
-    case 'plan.task.blocked':
-      return {
-        ...base,
-        state: 'implementing_plan',
-        title: 'Plan task blocked',
-        detail: joinDetail(dataString(data, 'taskId'), dataString(data, 'summary')),
-      }
-    case 'plan.drift.detected':
-      return {
-        ...base,
-        state: 'implementing_plan',
-        title: 'Plan drift detected',
-        detail: joinDetail(dataString(data, 'driftId'), dataString(data, 'summary')),
-      }
-    case 'plan.completed':
-      return {
-        ...base,
-        state: 'completed',
-        title: 'Plan completed',
-        detail: joinDetail(dataString(data, 'title'), dataString(data, 'summary')),
-      }
   }
 }
 
@@ -1271,25 +1140,17 @@ export function replayConversationActivity(
 }
 
 function isActiveRuntimePhase(phase: ConversationRuntimeStatePhase): boolean {
-  return (
-    phase === 'planning' ||
-    phase === 'implementing_plan' ||
-    phase === 'running' ||
-    phase === 'approval' ||
-    phase === 'cancelling'
-  )
+  return phase === 'running' || phase === 'approval' || phase === 'cancelling'
 }
 
 function runtimeReplayState(
   phase: ConversationRuntimeStatePhase,
   turn?: ConversationRuntimeReplayTurn,
-  plan?: ConversationRuntimeReplayPlan,
 ): ConversationRuntimeReplayState {
   return {
     phase,
     active: isActiveRuntimePhase(phase),
     ...(turn ? { turn } : {}),
-    ...(plan ? { plan } : {}),
   }
 }
 
@@ -1334,35 +1195,9 @@ function runtimeTurnFromEvent(
   return turn
 }
 
-function runtimePlanFromEvent(
-  state: ConversationRuntimeReplayState,
-  event: PersistedRunEvent,
-): ConversationRuntimeReplayPlan | undefined {
-  const planId = dataString(event.data, 'planId') ?? state.plan?.planId
-  if (!planId) return undefined
-  const title = dataString(event.data, 'title') ?? state.plan?.title
-  const status = dataString(event.data, 'status') ?? state.plan?.status
-  const taskId = dataString(event.data, 'taskId') ?? state.plan?.taskId
-  const questionId = dataString(event.data, 'questionId') ?? state.plan?.questionId
-  const driftId = dataString(event.data, 'driftId') ?? state.plan?.driftId
-  const summary = dataString(event.data, 'summary') ?? state.plan?.summary
-  return {
-    planId,
-    updatedAt: event.timestamp,
-    eventType: event.type,
-    ...(title ? { title } : {}),
-    ...(status ? { status } : {}),
-    ...(taskId ? { taskId } : {}),
-    ...(questionId ? { questionId } : {}),
-    ...(driftId ? { driftId } : {}),
-    ...(summary ? { summary } : {}),
-  }
-}
-
 function nonTerminalToolPhase(
   state: ConversationRuntimeReplayState,
 ): ConversationRuntimeStatePhase {
-  if (state.phase === 'implementing_plan') return 'implementing_plan'
   return state.phase === 'cancelling' ? 'cancelling' : 'running'
 }
 
@@ -1375,27 +1210,24 @@ export function replayConversationRuntimeState(
     switch (event.type) {
       case 'turn.started':
         state = runtimeReplayState(
-          state.phase === 'implementing_plan' && state.plan ? 'implementing_plan' : 'running',
+          'running',
           runtimeTurnFromEvent(state, event, {
             startedAt: event.timestamp,
             selection: dataSelection(event.data),
             clearPendingApproval: true,
           }),
-          state.plan,
         )
         break
       case 'turn.completed':
         state = runtimeReplayState(
           'completed',
           runtimeTurnFromEvent(state, event, { clearPendingApproval: true }),
-          state.plan,
         )
         break
       case 'turn.failed':
         state = runtimeReplayState(
           'failed',
           runtimeTurnFromEvent(state, event, { clearPendingApproval: true }),
-          state.plan,
         )
         break
       case 'turn.cancelled': {
@@ -1403,7 +1235,6 @@ export function replayConversationRuntimeState(
         state = runtimeReplayState(
           phase,
           runtimeTurnFromEvent(state, event, { clearPendingApproval: true }),
-          state.plan,
         )
         break
       }
@@ -1411,7 +1242,6 @@ export function replayConversationRuntimeState(
         state = runtimeReplayState(
           'interrupted',
           runtimeTurnFromEvent(state, event, { clearPendingApproval: true }),
-          state.plan,
         )
         break
       case 'run.started':
@@ -1419,35 +1249,30 @@ export function replayConversationRuntimeState(
         state = runtimeReplayState(
           'running',
           runtimeTurnFromEvent(state, event, { clearPendingApproval: true }),
-          state.plan,
         )
         break
       case 'run.paused':
         state = runtimeReplayState(
           'paused',
           runtimeTurnFromEvent(state, event, { clearPendingApproval: true }),
-          state.plan,
         )
         break
       case 'run.completed':
         state = runtimeReplayState(
           'completed',
           runtimeTurnFromEvent(state, event, { clearPendingApproval: true }),
-          state.plan,
         )
         break
       case 'run.failed':
         state = runtimeReplayState(
           'failed',
           runtimeTurnFromEvent(state, event, { clearPendingApproval: true }),
-          state.plan,
         )
         break
       case 'run.cancelled':
         state = runtimeReplayState(
           'cancelled',
           runtimeTurnFromEvent(state, event, { clearPendingApproval: true }),
-          state.plan,
         )
         break
       case 'tool.approval.requested':
@@ -1456,14 +1281,12 @@ export function replayConversationRuntimeState(
           runtimeTurnFromEvent(state, event, {
             pendingApproval: pendingApprovalFromEvent(event),
           }),
-          state.plan,
         )
         break
       case 'tool.approval.resolved':
         state = runtimeReplayState(
           nonTerminalToolPhase(state),
           runtimeTurnFromEvent(state, event, { clearPendingApproval: true }),
-          state.plan,
         )
         break
       case 'tool.execution.started':
@@ -1473,62 +1296,12 @@ export function replayConversationRuntimeState(
         state = runtimeReplayState(
           nonTerminalToolPhase(state),
           runtimeTurnFromEvent(state, event, { clearPendingApproval: true }),
-          state.plan,
         )
         break
       case 'tool.requested':
       case 'tool.input.delta':
       case 'tool.input.completed':
-        state = runtimeReplayState(
-          nonTerminalToolPhase(state),
-          runtimeTurnFromEvent(state, event),
-          state.plan,
-        )
-        break
-      case 'plan.started':
-      case 'plan.exploring':
-      case 'plan.question.requested':
-      case 'plan.question.answered':
-      case 'plan.updated':
-        state = runtimeReplayState(
-          'planning',
-          runtimeTurnFromEvent(state, event),
-          runtimePlanFromEvent(state, event),
-        )
-        break
-      case 'plan.ready':
-      case 'plan.approved':
-        state = runtimeReplayState(
-          'plan_ready',
-          runtimeTurnFromEvent(state, event, { clearPendingApproval: true }),
-          runtimePlanFromEvent(state, event),
-        )
-        break
-      case 'plan.implementation.started':
-      case 'plan.task.started':
-      case 'plan.task.completed':
-      case 'plan.task.blocked':
-      case 'plan.drift.detected':
-        state = runtimeReplayState(
-          'implementing_plan',
-          runtimeTurnFromEvent(state, event, { clearPendingApproval: true }),
-          runtimePlanFromEvent(state, event),
-        )
-        break
-      case 'plan.rejected':
-      case 'plan.cancelled':
-        state = runtimeReplayState(
-          'cancelled',
-          runtimeTurnFromEvent(state, event, { clearPendingApproval: true }),
-          runtimePlanFromEvent(state, event),
-        )
-        break
-      case 'plan.completed':
-        state = runtimeReplayState(
-          'completed',
-          runtimeTurnFromEvent(state, event, { clearPendingApproval: true }),
-          runtimePlanFromEvent(state, event),
-        )
+        state = runtimeReplayState(nonTerminalToolPhase(state), runtimeTurnFromEvent(state, event))
         break
     }
   }
@@ -1574,13 +1347,7 @@ export function interruptedRecoveryEventFromLegacyActivity(
   activity: ConversationActivity | undefined,
   reason: string,
 ): RunEvent | null {
-  if (
-    !activity ||
-    (activity.state !== 'planning' &&
-      activity.state !== 'implementing_plan' &&
-      activity.state !== 'running' &&
-      activity.state !== 'approval')
-  ) {
+  if (!activity || (activity.state !== 'running' && activity.state !== 'approval')) {
     return null
   }
   return {

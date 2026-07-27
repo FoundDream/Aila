@@ -1,17 +1,14 @@
-import { CheckIcon, ListChecksIcon, SaveIcon, XIcon } from 'lucide-react'
-import { type ReactElement, useCallback, useEffect, useMemo, useState } from 'react'
+import { type ReactElement, useCallback, useEffect, useState } from 'react'
+import homeAssistantImage from '@/assets/home-assistant.png'
 import type {
-  AilaExecutionMode,
   ChatAttachmentInput,
   ConversationRecord,
   ConversationSummary,
   ConversationWorkspaceRef,
-  PlanArtifact,
   ProviderId,
   Settings,
 } from '../../types'
 import { Composer } from './Composer'
-import { RunInspector } from './RunInspector'
 import { Transcript } from './Transcript'
 import type { ChatStreamsApi } from './useChatStreams'
 import { useModelSelection } from './useModelSelection'
@@ -26,11 +23,7 @@ interface ChatPageProps {
   configuredProviders: ProviderId[]
   onUpdateSettings: (settings: Settings) => Promise<void>
   onOpenSettings: () => void
-  displayMode: WorkbenchDisplayMode
-  onDisplayModeChange: (mode: WorkbenchDisplayMode) => void
 }
-
-export type WorkbenchDisplayMode = 'agent' | 'debug'
 
 export function ChatPage({
   conversation,
@@ -40,8 +33,6 @@ export function ChatPage({
   configuredProviders,
   onUpdateSettings,
   onOpenSettings,
-  displayMode,
-  onDisplayModeChange,
 }: ChatPageProps): ReactElement {
   const { selection, selectionRef, contextLength, handleSelectionChange } = useModelSelection(
     settings,
@@ -49,12 +40,10 @@ export function ChatPage({
     onUpdateSettings,
   )
   const [submitScrollKey, setSubmitScrollKey] = useState(0)
-  const [executionMode, setExecutionMode] = useState<AilaExecutionMode>('agent')
-  const [stepMode, setStepMode] = useState(false)
 
   const conversationId = conversation?.meta.id ?? null
 
-  // Hydrate on conversation switch. Switching is purely a view change — we do
+  // Hydrate on conversation switch. Switching is purely a view change, so we do
   // NOT abort the previous conversation's in-flight stream; it keeps running
   // in main and shows up the next time the user navigates back.
   useEffect(() => {
@@ -65,7 +54,6 @@ export function ChatPage({
   const stream = conversationId ? streams.getStream(conversationId) : null
   const messages = stream?.messages ?? []
   const events = stream?.events ?? []
-  const plans = stream?.plans ?? []
   const isStreaming = stream?.runningMessageId !== null && stream?.runningMessageId !== undefined
   const usage = stream?.usage ?? null
   const queuedRuns = stream?.queue ?? []
@@ -76,7 +64,6 @@ export function ChatPage({
     (lastMessage?.role === 'assistant' && lastMessage.status === 'error')
   const canRetryLast =
     Boolean(conversationId) && !isStreaming && queuedCount === 0 && hasRetryableLastTurn
-  const activePlan = useMemo(() => selectActivePlan(plans), [plans])
 
   const handleSubmit = useCallback(
     async (text: string, attachments: ChatAttachmentInput[]) => {
@@ -93,28 +80,15 @@ export function ChatPage({
       if (!id) {
         const summary = await onCreateConversation()
         id = summary.id
-        // We just created it — disk is empty. Mark hydrated synchronously so
+        // We just created it, and disk is empty. Mark hydrated synchronously so
         // the deferred hydrate effect doesn't race with our enqueueSend.
         streams.markHydrated(id)
       }
 
-      streams.enqueueSend(id, trimmed, currentSelection, attachments, {
-        mode: executionMode,
-        loopMode: stepMode ? 'step' : 'continuous',
-        ...(executionMode === 'plan' && activePlan ? { planId: activePlan.id } : {}),
-      })
+      streams.enqueueSend(id, trimmed, currentSelection, attachments)
       setSubmitScrollKey((key) => key + 1)
     },
-    [
-      activePlan,
-      conversationId,
-      executionMode,
-      onCreateConversation,
-      streams,
-      onOpenSettings,
-      selectionRef,
-      stepMode,
-    ],
+    [conversationId, onCreateConversation, streams, onOpenSettings, selectionRef],
   )
 
   const handleAbort = useCallback(() => {
@@ -140,51 +114,8 @@ export function ChatPage({
       onOpenSettings()
       return
     }
-    streams.enqueueRetryLast(conversationId, currentSelection, {
-      mode: executionMode,
-      ...(executionMode === 'plan' && activePlan ? { planId: activePlan.id } : {}),
-    })
-  }, [activePlan, conversationId, executionMode, streams, onOpenSettings, selectionRef])
-
-  const handleSavePlanMarkdown = useCallback(
-    async (plan: PlanArtifact, markdown: string): Promise<void> => {
-      if (!conversationId) return
-      await window.api.runtime.savePlanMarkdown({
-        conversationId,
-        planId: plan.id,
-        markdown,
-        expectedRevisionId: plan.latestRevisionId,
-      })
-      await streams.refreshPlans(conversationId)
-    },
-    [conversationId, streams],
-  )
-
-  const handleApprovePlan = useCallback(
-    (plan: PlanArtifact): void => {
-      if (!conversationId || isStreaming || queuedCount > 0) return
-      const currentSelection = selectionRef.current
-      if (!currentSelection) {
-        onOpenSettings()
-        return
-      }
-      streams.enqueueApprovePlan(conversationId, plan.id, currentSelection, plan.latestRevisionId)
-    },
-    [conversationId, isStreaming, queuedCount, streams, onOpenSettings, selectionRef],
-  )
-
-  const handleCancelPlan = useCallback(
-    async (plan: PlanArtifact): Promise<void> => {
-      if (!conversationId) return
-      await window.api.runtime.cancelPlan({
-        conversationId,
-        planId: plan.id,
-        reason: 'desktop',
-      })
-      await streams.refreshPlans(conversationId)
-    },
-    [conversationId, streams],
-  )
+    streams.enqueueRetryLast(conversationId, currentSelection)
+  }, [conversationId, streams, onOpenSettings, selectionRef])
 
   const handleApprovalModeChange = useCallback(
     async (approvalMode: NonNullable<Settings['approvalMode']>) => {
@@ -213,94 +144,24 @@ export function ChatPage({
       recentOpenRouterModels={settings?.recentOpenRouterModels ?? []}
       approvalMode={settings?.approvalMode ?? 'safe'}
       onApprovalModeChange={handleApprovalModeChange}
-      executionMode={executionMode}
-      onExecutionModeChange={setExecutionMode}
-      compact={displayMode === 'debug'}
     />
   )
 
   return (
     <div className="flex h-full flex-col bg-[var(--bg)] text-[var(--text)]">
-      <header className="relative grid h-12 shrink-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center border-b border-[var(--border)] bg-[var(--bg)] px-4 [-webkit-app-region:drag]">
-        <div className="flex min-w-0 items-center gap-2.5">
-          <span className="min-w-0 truncate text-[13px] font-medium">
-            {conversation?.meta.title ?? 'New task'}
-          </span>
-          {conversation?.meta.workspace?.label && (
-            <span className="hidden truncate text-[10.5px] text-[var(--text-dim)] xl:inline">
-              ·{conversation.meta.workspace.label}
-            </span>
-          )}
-        </div>
-
-        <ModeSwitch value={displayMode} onChange={onDisplayModeChange} />
-
-        <div className="flex min-w-0 items-center justify-end gap-2 [-webkit-app-region:no-drag]">
-          {displayMode === 'debug' && conversationId && (
-            <button
-              type="button"
-              onClick={() => setStepMode((enabled) => !enabled)}
-              className={`h-7 rounded-md border px-2.5 font-mono text-[9px] uppercase tracking-[0.06em] transition-colors ${
-                stepMode
-                  ? 'border-[var(--warning-border)] bg-[var(--warning-soft)] text-[var(--warning)]'
-                  : 'border-[var(--border)] text-[var(--text-dim)] hover:bg-[var(--surface-hover)]'
-              }`}
-              title="Execution mode for the next message"
-            >
-              {stepMode ? 'Step next' : 'Continuous next'}
-            </button>
-          )}
-          <span
-            className="max-w-44 truncate rounded-md bg-[var(--surface-hover)] px-2 py-1 font-mono text-[9.5px] text-[var(--text-dim)]"
-            title={selection ? `${selection.providerId}:${selection.modelId}` : 'No model selected'}
-          >
-            {selection?.modelId ?? 'Select model'}
-          </span>
-        </div>
-      </header>
-
-      <main
-        className={`grid min-h-0 flex-1 overflow-hidden ${
-          displayMode === 'debug' && conversationId
-            ? 'grid-cols-[minmax(320px,38%)_minmax(0,1fr)]'
-            : 'grid-cols-1'
-        }`}
-      >
-        <section
-          className={`flex min-w-0 flex-col overflow-hidden ${
-            displayMode === 'debug' && conversationId ? 'border-r border-[var(--border)]' : ''
-          }`}
-        >
-          {activePlan && (
-            <PlanReviewPanel
-              plan={activePlan}
-              mode={executionMode}
-              busy={isStreaming || queuedCount > 0}
-              onSave={handleSavePlanMarkdown}
-              onApprove={handleApprovePlan}
-              onCancel={handleCancelPlan}
-            />
-          )}
+      <main className="min-h-0 flex-1 overflow-hidden">
+        <section className="flex h-full min-w-0 flex-col overflow-hidden">
           {messages.length === 0 ? (
-            <div className="flex min-h-0 flex-1 flex-col justify-center pb-10">
-              <div
-                className={`mx-auto mb-7 flex w-full items-end justify-between px-1 ${
-                  displayMode === 'debug' ? 'max-w-[560px] px-4' : 'max-w-[820px]'
-                }`}
-              >
-                <div>
-                  <div className="mb-4 flex items-center gap-2 font-mono text-[9px] uppercase tracking-[0.17em] text-[var(--text-dim)]">
-                    <span className="size-1.5 rounded-full bg-[var(--success)] shadow-[0_0_0_4px_var(--success-soft)]" />
-                    Ready
-                  </div>
-                  <h1 className="text-[26px] font-normal leading-none tracking-[-0.035em]">
-                    What are we building?
-                  </h1>
-                  <p className="mt-3 max-w-lg text-[13px] leading-relaxed text-[var(--text-dim)]">
-                    Describe the outcome. Aila will inspect the workspace and use the tools it
-                    needs.
-                  </p>
-                </div>
+            <div className="flex min-h-0 flex-1 flex-col justify-center">
+              <div className="mx-auto mb-12 flex w-full max-w-[720px] items-center justify-center gap-5 px-6">
+                <img
+                  src={homeAssistantImage}
+                  alt="Aila assistant"
+                  className="h-auto w-28 shrink-0 object-contain"
+                />
+                <h1 className="text-[40px] font-medium leading-tight tracking-[-0.035em]">
+                  What will we build?
+                </h1>
               </div>
               {composer}
             </div>
@@ -312,234 +173,12 @@ export function ChatPage({
                 canRetryLast={canRetryLast}
                 onRetryLast={handleRetryLast}
                 submitScrollKey={submitScrollKey}
-                compact={displayMode === 'debug'}
               />
               {composer}
             </>
           )}
         </section>
-        {displayMode === 'debug' && conversationId && (
-          <RunInspector conversationId={conversationId} />
-        )}
       </main>
     </div>
-  )
-}
-
-function ModeSwitch({
-  value,
-  onChange,
-}: {
-  value: WorkbenchDisplayMode
-  onChange: (mode: WorkbenchDisplayMode) => void
-}): ReactElement {
-  return (
-    <div className="flex h-7 items-center rounded-md bg-[var(--surface-hover)] p-0.5 [-webkit-app-region:no-drag]">
-      {(['agent', 'debug'] as const).map((mode) => (
-        <button
-          key={mode}
-          type="button"
-          aria-pressed={value === mode}
-          onClick={() => onChange(mode)}
-          className={`h-6 min-w-[68px] rounded-[5px] px-3 text-[11.5px] font-medium capitalize transition-colors ${
-            value === mode
-              ? 'bg-[var(--surface)] text-[var(--text)] shadow-[0_1px_4px_rgba(0,0,0,0.25)]'
-              : 'text-[var(--text-dim)] hover:text-[var(--text-soft)]'
-          }`}
-        >
-          {mode}
-        </button>
-      ))}
-    </div>
-  )
-}
-
-const ACTIVE_PLAN_STATUSES = new Set<PlanArtifact['status']>([
-  'draft',
-  'needs_input',
-  'ready',
-  'approved',
-  'implementing',
-])
-
-function selectActivePlan(plans: PlanArtifact[]): PlanArtifact | null {
-  return plans.find((plan) => ACTIVE_PLAN_STATUSES.has(plan.status)) ?? plans[0] ?? null
-}
-
-function PlanReviewPanel({
-  plan,
-  mode,
-  busy,
-  onSave,
-  onApprove,
-  onCancel,
-}: {
-  plan: PlanArtifact | null
-  mode: AilaExecutionMode
-  busy: boolean
-  onSave: (plan: PlanArtifact, markdown: string) => Promise<void>
-  onApprove: (plan: PlanArtifact) => void
-  onCancel: (plan: PlanArtifact) => Promise<void>
-}): ReactElement {
-  const [draftMarkdown, setDraftMarkdown] = useState(plan?.markdown ?? '')
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
-    setDraftMarkdown(plan?.markdown ?? '')
-    setError(null)
-  }, [plan])
-
-  const dirty = Boolean(plan && draftMarkdown !== plan.markdown)
-  const canApprove = Boolean(plan && plan.status === 'ready' && !busy && !saving)
-  const canCancel = Boolean(plan && !busy && !saving && plan.status !== 'cancelled')
-  const canSave = Boolean(plan && dirty && !busy && !saving)
-
-  const save = useCallback(async (): Promise<void> => {
-    if (!plan || !canSave) return
-    setSaving(true)
-    setError(null)
-    try {
-      await onSave(plan, draftMarkdown)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setSaving(false)
-    }
-  }, [canSave, draftMarkdown, onSave, plan])
-
-  const cancel = useCallback(async (): Promise<void> => {
-    if (!plan || !canCancel) return
-    setSaving(true)
-    setError(null)
-    try {
-      await onCancel(plan)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setSaving(false)
-    }
-  }, [canCancel, onCancel, plan])
-
-  return (
-    <section className="shrink-0 border-y border-[var(--border)] bg-[var(--surface)]/88 px-8 py-3">
-      <div className="mx-auto flex max-w-[880px] gap-4">
-        <div className="min-w-0 flex-1">
-          <div className="mb-2 flex items-center gap-2">
-            <ListChecksIcon className="size-4 shrink-0 text-[var(--text-soft)]" />
-            <h2 className="min-w-0 truncate text-[13px] font-semibold text-[var(--text)]">
-              {plan?.title ?? (mode === 'plan' ? 'Planning' : 'Plan')}
-            </h2>
-            <PlanStatusPill status={plan?.status ?? (mode === 'plan' ? 'draft' : 'cancelled')} />
-            {plan?.latestRevisionId && (
-              <span className="truncate text-[11px] text-[var(--text-dim)]">
-                {plan.latestRevisionId}
-              </span>
-            )}
-          </div>
-
-          {plan ? (
-            <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_260px]">
-              <textarea
-                value={draftMarkdown}
-                onChange={(event) => setDraftMarkdown(event.target.value)}
-                spellCheck={false}
-                className="h-32 min-h-24 resize-y rounded-md border border-[var(--border)] bg-[var(--bg)] px-3 py-2 font-mono text-[12px] leading-5 text-[var(--text)] outline-none transition-colors focus:border-[var(--border-strong)]"
-              />
-              <div className="min-w-0">
-                <div className="mb-1.5 text-[11px] font-medium uppercase text-[var(--text-dim)]">
-                  Tasks
-                </div>
-                <div className="flex max-h-32 flex-col gap-1 overflow-y-auto pr-1">
-                  {plan.tasks.length === 0 ? (
-                    <p className="text-[12px] text-[var(--text-dim)]">No tasks recorded.</p>
-                  ) : (
-                    plan.tasks.map((task) => (
-                      <div key={task.id} className="flex min-w-0 items-start gap-2 text-[12px]">
-                        <span className="mt-1 size-1.5 shrink-0 rounded-full bg-[var(--text-dim)]" />
-                        <div className="min-w-0">
-                          <div className="truncate text-[var(--text)]">{task.title}</div>
-                          <div className="text-[11px] text-[var(--text-dim)]">{task.status}</div>
-                        </div>
-                      </div>
-                    ))
-                  )}
-                </div>
-              </div>
-            </div>
-          ) : (
-            <p className="text-[12.5px] text-[var(--text-soft)]">
-              Plan mode is active for the next prompt.
-            </p>
-          )}
-
-          {error && <p className="mt-2 text-[12px] text-[var(--error)]">{error}</p>}
-        </div>
-
-        {plan && (
-          <div className="flex shrink-0 flex-col gap-1.5">
-            <PlanActionButton
-              icon={<SaveIcon className="size-3.5" />}
-              label={saving ? 'Saving' : 'Save'}
-              disabled={!canSave}
-              onClick={save}
-            />
-            <PlanActionButton
-              icon={<CheckIcon className="size-3.5" />}
-              label="Approve"
-              disabled={!canApprove}
-              onClick={() => onApprove(plan)}
-            />
-            <PlanActionButton
-              icon={<XIcon className="size-3.5" />}
-              label="Cancel"
-              disabled={!canCancel}
-              onClick={cancel}
-            />
-          </div>
-        )}
-      </div>
-    </section>
-  )
-}
-
-function PlanStatusPill({ status }: { status: PlanArtifact['status'] }): ReactElement {
-  const tone =
-    status === 'ready'
-      ? 'border-[var(--success-border)] bg-[var(--success-soft)] text-[var(--success)]'
-      : status === 'implementing' || status === 'approved'
-        ? 'border-[var(--signal-border)] bg-[var(--signal-soft)] text-[var(--blue)]'
-        : status === 'cancelled' || status === 'superseded'
-          ? 'border-[var(--border)] bg-[var(--bg-soft)] text-[var(--text-dim)]'
-          : 'border-[var(--warning-border)] bg-[var(--warning-soft)] text-[var(--warning)]'
-
-  return (
-    <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-medium ${tone}`}>
-      {status.replaceAll('_', ' ')}
-    </span>
-  )
-}
-
-function PlanActionButton({
-  icon,
-  label,
-  disabled,
-  onClick,
-}: {
-  icon: ReactElement
-  label: string
-  disabled: boolean
-  onClick: () => void
-}): ReactElement {
-  return (
-    <button
-      type="button"
-      disabled={disabled}
-      onClick={onClick}
-      className="inline-flex h-7 items-center justify-center gap-1.5 rounded-md border border-[var(--border)] px-2.5 text-[12px] font-medium text-[var(--text-soft)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)] disabled:cursor-not-allowed disabled:opacity-45"
-    >
-      {icon}
-      {label}
-    </button>
   )
 }

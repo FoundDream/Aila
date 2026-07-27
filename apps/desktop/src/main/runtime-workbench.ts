@@ -8,19 +8,14 @@ import {
   type ConversationSummary,
   type ConversationWorkspaceRef,
   type ModelSelection,
-  type PlanArtifact,
   type RunArtifact,
   type RunCheckpoint,
-  type RuntimeApprovePlanInput,
-  type RuntimeCancelPlanInput,
   type RuntimeCompactConversationResult,
   type RuntimeForkRunInput,
-  type RuntimeRevisePlanInput,
   type RuntimeRunArtifactInput,
   type RuntimeRunControlInput,
   type RuntimeRunInspection,
   type RuntimeRunSummary,
-  type RuntimeSavePlanMarkdownInput,
   type RuntimeSendResult,
   type ToolApprovalRequest,
   type ToolApprovalRequestPayload,
@@ -44,7 +39,6 @@ export interface RuntimeWorkbenchSendInput {
   selection: ModelSelection
   mode?: AilaExecutionMode
   loopMode?: 'continuous' | 'step'
-  planId?: string
   attachments?: ChatAttachmentInput[]
 }
 
@@ -52,7 +46,6 @@ export interface RuntimeWorkbenchRetryLastInput {
   conversationId: string
   selection: ModelSelection
   mode?: AilaExecutionMode
-  planId?: string
 }
 
 export interface RuntimeWorkbenchCompactInput {
@@ -97,13 +90,6 @@ export interface DesktopRuntimeWorkbench {
   listConversationRuntimeStates(): Promise<ConversationRuntimeStateSnapshot[]>
   renameConversation(conversationId: string, title: string): Promise<ConversationSummary>
   deleteConversation(conversationId: string): Promise<void>
-
-  listPlans(conversationId: string): Promise<PlanArtifact[]>
-  getPlan(conversationId: string, planId: string): Promise<PlanArtifact>
-  savePlanMarkdown(input: RuntimeSavePlanMarkdownInput): Promise<PlanArtifact>
-  revisePlan(input: RuntimeRevisePlanInput): Promise<RuntimeSendResult>
-  approvePlan(input: RuntimeApprovePlanInput): Promise<RuntimeSendResult>
-  cancelPlan(input: RuntimeCancelPlanInput): Promise<PlanArtifact>
 
   listPendingApprovals(): ToolApprovalRequestPayload[]
   resolveToolApproval(requestId: string, approved: boolean): void
@@ -160,7 +146,6 @@ export function createDesktopRuntimeWorkbench(
         selection: input.selection,
         ...(input.mode ? { mode: input.mode } : {}),
         ...(input.loopMode ? { loopMode: input.loopMode } : {}),
-        ...(input.planId ? { planId: input.planId } : {}),
         ...(input.attachments && input.attachments.length > 0
           ? { attachments: input.attachments }
           : {}),
@@ -244,25 +229,6 @@ export function createDesktopRuntimeWorkbench(
       return runtime.deleteConversation(conversationId)
     },
 
-    listPlans(conversationId) {
-      return runtime.listPlans(conversationId)
-    },
-    getPlan(conversationId, planId) {
-      return runtime.getPlan(conversationId, planId)
-    },
-    savePlanMarkdown(input) {
-      return runtime.savePlanMarkdown(input)
-    },
-    revisePlan(input) {
-      return runtime.revisePlan(input)
-    },
-    approvePlan(input) {
-      return runtime.approvePlan(input)
-    },
-    cancelPlan(input) {
-      return runtime.cancelPlan(input)
-    },
-
     listPendingApprovals() {
       return toolApprovals.list()
     },
@@ -334,24 +300,6 @@ export function registerRuntimeWorkbenchIpcHandlers(
   )
   ipc.handle('runtime:conversations:list-runtime-states', () =>
     workbench.listConversationRuntimeStates(),
-  )
-  ipc.handle('runtime:plans:list', (_event, conversationId: string) =>
-    workbench.listPlans(conversationId),
-  )
-  ipc.handle('runtime:plans:get', (_event, conversationId: string, planId: string) =>
-    workbench.getPlan(conversationId, planId),
-  )
-  ipc.handle('runtime:plans:save-markdown', (_event, request: RuntimeSavePlanMarkdownInput) =>
-    workbench.savePlanMarkdown(request),
-  )
-  ipc.handle('runtime:plans:revise', (_event, request: RuntimeRevisePlanInput) =>
-    workbench.revisePlan(request),
-  )
-  ipc.handle('runtime:plans:approve', (_event, request: RuntimeApprovePlanInput) =>
-    workbench.approvePlan(request),
-  )
-  ipc.handle('runtime:plans:cancel', (_event, request: RuntimeCancelPlanInput) =>
-    workbench.cancelPlan(request),
   )
   ipc.handle('tools:list-pending-approvals', () => workbench.listPendingApprovals())
   ipc.on('tools:approval-response', (_event, payload: { requestId: string; approved: boolean }) => {

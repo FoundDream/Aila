@@ -13,7 +13,6 @@ export {
   getConversationsDir,
   getDataDir,
   getImagesDir,
-  getPlansDir,
   getSettingsPath,
   getSkillsDir,
   getToolPacksDir,

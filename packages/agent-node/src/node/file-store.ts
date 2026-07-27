@@ -6,7 +6,6 @@ import {
   AILA_CONVERSATION_META_SCHEMA_VERSION,
   AILA_RUN_EVENT_SCHEMA_VERSION,
   appendConversationContextTurnLedgerEntry,
-  appendPlanRevisionToPlan,
   type ConversationRecord,
   type ConversationSummary,
   type ConversationWorkspaceRef,
@@ -19,9 +18,7 @@ import {
   orderedUniqueRunEvents,
   type PersistedMessage,
   type PersistedRunEvent,
-  type PlanArtifact,
   preparePersistedMessage,
-  preparePlanArtifact,
   prepareRunArtifact,
   prepareRunCheckpoint,
   prepareRunEventAppend,
@@ -42,7 +39,6 @@ export interface FileRuntimeStoreOptions {
 export function createFileRuntimeStore(options: FileRuntimeStoreOptions): WorkbenchStore {
   const conversationsDir = join(options.dataDir, 'conversations')
   const eventsDir = join(options.dataDir, 'events')
-  const plansDir = join(options.dataDir, 'plans')
   const runsDir = join(options.dataDir, 'runs')
   const createId = options.createId ?? randomUUID
   const createEventId = options.createEventId ?? randomUUID
@@ -92,10 +88,6 @@ export function createFileRuntimeStore(options: FileRuntimeStoreOptions): Workbe
       `${JSON.stringify(orderedUniqueRunEvents(events), null, 2)}\n`,
       'utf-8',
     )
-  }
-
-  function planConversationDir(conversationId: string): string {
-    return join(plansDir, conversationId)
   }
 
   function runConversationDir(conversationId: string): string {
@@ -155,37 +147,6 @@ export function createFileRuntimeStore(options: FileRuntimeStoreOptions): Workbe
       await rm(temporaryPath, { force: true }).catch(() => {})
       throw error
     }
-  }
-
-  function planJsonPath(conversationId: string, planId: string): string {
-    return join(planConversationDir(conversationId), `${planId}.json`)
-  }
-
-  function planMarkdownPath(conversationId: string, planId: string): string {
-    return join(planConversationDir(conversationId), `${planId}.md`)
-  }
-
-  async function readPlan(conversationId: string, planId: string): Promise<PlanArtifact> {
-    const raw = await readFile(planJsonPath(conversationId, planId), 'utf-8')
-    return preparePlanArtifact(JSON.parse(raw) as PlanArtifact)
-  }
-
-  async function writePlan(plan: PlanArtifact): Promise<PlanArtifact> {
-    const prepared = preparePlanArtifact(plan)
-    await mkdir(planConversationDir(prepared.conversationId), { recursive: true })
-    await Promise.all([
-      writeFile(
-        planJsonPath(prepared.conversationId, prepared.id),
-        `${JSON.stringify(prepared, null, 2)}\n`,
-        'utf-8',
-      ),
-      writeFile(
-        planMarkdownPath(prepared.conversationId, prepared.id),
-        `${prepared.markdown}\n`,
-        'utf-8',
-      ),
-    ])
-    return prepared
   }
 
   async function updateRecord(
@@ -436,47 +397,6 @@ export function createFileRuntimeStore(options: FileRuntimeStoreOptions): Workbe
         .map((artifact) => structuredClone(artifact))
         .sort((left, right) => left.createdAt - right.createdAt)
     },
-    async createPlan(plan): Promise<PlanArtifact> {
-      await readRecord(plan.conversationId)
-      const prepared = preparePlanArtifact(plan)
-      try {
-        await readPlan(prepared.conversationId, prepared.id)
-        throw new Error(`plan already exists: ${prepared.conversationId}/${prepared.id}`)
-      } catch (error) {
-        if (!isErrnoCode(error, 'ENOENT')) throw error
-      }
-      return structuredClone(await writePlan(prepared))
-    },
-    async getPlan(conversationId, planId): Promise<PlanArtifact> {
-      return structuredClone(await readPlan(conversationId, planId))
-    },
-    async listPlans(conversationId): Promise<readonly PlanArtifact[]> {
-      await mkdir(planConversationDir(conversationId), { recursive: true })
-      const files = await readdir(planConversationDir(conversationId))
-      const plans = await Promise.all(
-        files
-          .filter((file) => file.endsWith('.json'))
-          .map((file) =>
-            readPlan(conversationId, file.slice(0, -'.json'.length)).catch(() => null),
-          ),
-      )
-      return plans
-        .filter((plan): plan is PlanArtifact => plan !== null)
-        .map((plan) => structuredClone(plan))
-        .sort((left, right) => right.updatedAt - left.updatedAt)
-    },
-    async updatePlan(plan): Promise<PlanArtifact> {
-      await readRecord(plan.conversationId)
-      const prepared = preparePlanArtifact(plan)
-      await readPlan(prepared.conversationId, prepared.id)
-      return structuredClone(await writePlan(prepared))
-    },
-    async appendPlanRevision(input): Promise<PlanArtifact> {
-      await readRecord(input.conversationId)
-      const current = await readPlan(input.conversationId, input.planId)
-      const updated = appendPlanRevisionToPlan(current, input.revision, now())
-      return structuredClone(await writePlan(updated))
-    },
     async deleteConversation(conversationId): Promise<void> {
       const runWritePrefix = `${conversationId}\0`
       await Promise.all(
@@ -487,7 +407,6 @@ export function createFileRuntimeStore(options: FileRuntimeStoreOptions): Workbe
       await Promise.all([
         rm(join(conversationsDir, `${conversationId}.json`), { force: true }),
         rm(join(eventsDir, `${conversationId}.json`), { force: true }),
-        rm(planConversationDir(conversationId), { recursive: true, force: true }),
         rm(runConversationDir(conversationId), { recursive: true, force: true }),
         rm(getNodeToolResultsConversationDir(conversationId, options), {
           recursive: true,

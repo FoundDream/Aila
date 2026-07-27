@@ -38,8 +38,8 @@ export function ToolApprovalDialog({ request, pendingCount = 0, onResolve }: Pro
       }}
     >
       <DialogPrimitive.Portal>
-        <DialogPrimitive.Overlay className="fixed inset-0 z-[900] bg-black/60 data-[state=open]:animate-in data-[state=open]:fade-in-0" />
-        <DialogPrimitive.Content className="fixed top-1/2 left-1/2 z-[1000] w-[560px] max-w-[92vw] -translate-x-1/2 -translate-y-1/2 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-5 shadow-2xl outline-none data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95">
+        <DialogPrimitive.Overlay className="aila-dialog-overlay fixed inset-0 z-[900] data-[state=open]:animate-in data-[state=open]:fade-in-0" />
+        <DialogPrimitive.Content className="aila-dialog fixed top-1/2 left-1/2 z-[1000] w-[560px] max-w-[92vw] -translate-x-1/2 -translate-y-1/2 rounded-[16px] border border-[var(--border-strong)] bg-[var(--surface)] p-5 outline-none data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95">
           {request && (
             <>
               <div className="mb-4 flex items-center gap-2">
@@ -51,7 +51,7 @@ export function ToolApprovalDialog({ request, pendingCount = 0, onResolve }: Pro
                     Approve {request.name}
                   </DialogPrimitive.Title>
                   <DialogPrimitive.Description className="mt-0.5 text-[12px] text-[var(--text-dim)]">
-                    Pending approval · {request ? riskSummary(request) : 'Review requested action'}
+                    Pending approval. {request ? riskSummary(request) : 'Review requested action'}
                   </DialogPrimitive.Description>
                 </div>
               </div>
@@ -101,14 +101,14 @@ export function ToolApprovalDialog({ request, pendingCount = 0, onResolve }: Pro
                 <button
                   type="button"
                   onClick={() => resolve(false)}
-                  className="rounded-md border border-[var(--border)] px-3 py-1.5 text-[12px] hover:bg-[var(--surface-hover)]"
+                  className="h-8 rounded-lg border border-[var(--border)] px-3 text-[12px] text-[var(--text-soft)] hover:border-[var(--border-strong)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
                 >
                   Deny
                 </button>
                 <button
                   type="button"
                   onClick={() => resolve(true)}
-                  className="rounded-md bg-[var(--brand-ink)] px-3 py-1.5 text-[12px] text-[var(--brand-ink-fg)] transition-colors hover:opacity-90"
+                  className="h-8 rounded-lg bg-[var(--brand-ink)] px-3.5 text-[12px] font-medium text-[var(--brand-ink-fg)] transition-colors hover:opacity-90"
                 >
                   Approve
                 </button>

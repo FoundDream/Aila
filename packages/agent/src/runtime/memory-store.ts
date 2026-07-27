@@ -15,7 +15,6 @@ import {
   type RunEventAppendResult,
   replayConversationActivity,
 } from '../conversation-core'
-import { appendPlanRevisionToPlan, type PlanArtifact, preparePlanArtifact } from '../plan-core'
 import {
   prepareRunArtifact,
   prepareRunCheckpoint,
@@ -90,14 +89,13 @@ function sameActivity(
   )
 }
 
-/** In-memory implementation of the split Session, Event, Run and Plan repositories. */
+/** In-memory implementation of the split Session, Event and Run repositories. */
 export function createInMemoryRuntimeStore(input: InMemoryStoreOptions = {}): WorkbenchStore {
   const createId = input.createId ?? createIdDefault
   const createEventId = input.createEventId ?? createIdDefault
   const now = input.now ?? nowDefault
   const records = new Map<string, ConversationRecord>()
   const runEvents = new Map<string, PersistedRunEvent[]>()
-  const plans = new Map<string, PlanArtifact>()
   const checkpoints = new Map<string, RunCheckpoint>()
   const artifacts = new Map<string, RunArtifact>()
 
@@ -105,16 +103,6 @@ export function createInMemoryRuntimeStore(input: InMemoryStoreOptions = {}): Wo
     const record = records.get(sessionId)
     if (!record) throw new Error(`conversation not found: ${sessionId}`)
     return record
-  }
-
-  function planKey(sessionId: string, planId: string): string {
-    return `${sessionId}:${planId}`
-  }
-
-  function requirePlan(sessionId: string, planId: string): PlanArtifact {
-    const plan = plans.get(planKey(sessionId, planId))
-    if (!plan) throw new Error(`plan not found: ${sessionId}/${planId}`)
-    return plan
   }
 
   function runKey(sessionId: string, runId: string): string {
@@ -302,39 +290,6 @@ export function createInMemoryRuntimeStore(input: InMemoryStoreOptions = {}): Wo
         .map((artifact) => clone(artifact))
         .sort((left, right) => left.createdAt - right.createdAt)
     },
-    async createPlan(plan): Promise<PlanArtifact> {
-      requireRecord(plan.conversationId)
-      const prepared = preparePlanArtifact(plan)
-      const key = planKey(prepared.conversationId, prepared.id)
-      if (plans.has(key)) {
-        throw new Error(`plan already exists: ${prepared.conversationId}/${prepared.id}`)
-      }
-      plans.set(key, clone(prepared))
-      return clone(prepared)
-    },
-    async getPlan(sessionId, planId): Promise<PlanArtifact> {
-      return clone(requirePlan(sessionId, planId))
-    },
-    async listPlans(sessionId): Promise<readonly PlanArtifact[]> {
-      return [...plans.values()]
-        .filter((plan) => plan.conversationId === sessionId)
-        .map((plan) => clone(plan))
-        .sort((left, right) => right.updatedAt - left.updatedAt)
-    },
-    async updatePlan(plan): Promise<PlanArtifact> {
-      requireRecord(plan.conversationId)
-      const prepared = preparePlanArtifact(plan)
-      requirePlan(prepared.conversationId, prepared.id)
-      plans.set(planKey(prepared.conversationId, prepared.id), clone(prepared))
-      return clone(prepared)
-    },
-    async appendPlanRevision(input): Promise<PlanArtifact> {
-      requireRecord(input.conversationId)
-      const current = requirePlan(input.conversationId, input.planId)
-      const updated = appendPlanRevisionToPlan(current, input.revision, now())
-      plans.set(planKey(input.conversationId, input.planId), clone(updated))
-      return clone(updated)
-    },
     async deleteConversation(sessionId): Promise<void> {
       records.delete(sessionId)
       runEvents.delete(sessionId)
@@ -343,9 +298,6 @@ export function createInMemoryRuntimeStore(input: InMemoryStoreOptions = {}): Wo
       }
       for (const [artifactId, artifact] of artifacts) {
         if (artifact.conversationId === sessionId) artifacts.delete(artifactId)
-      }
-      for (const key of plans.keys()) {
-        if (key.startsWith(`${sessionId}:`)) plans.delete(key)
       }
     },
   }
