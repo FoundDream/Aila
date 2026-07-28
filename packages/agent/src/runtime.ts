@@ -105,6 +105,7 @@ interface QueuedSessionInput {
 
 interface RuntimeToolContextInput {
   conversationId?: string
+  record?: ConversationRecord
   messageId?: string
   toolCallId?: string
   mode?: AilaExecutionMode
@@ -523,6 +524,11 @@ export interface RuntimeExecuteToolInput {
   signal?: AbortSignal
 }
 
+export interface RuntimeWorkspaceResolverInput {
+  conversationId?: string
+  workspace?: ConversationWorkspaceRef | null
+}
+
 export {
   AILA_WORKBENCH_EVENT_SCHEMA_VERSION,
   AILA_WORKBENCH_EVENT_TYPES,
@@ -572,8 +578,12 @@ export interface WorkbenchHost {
   runShell?: ToolContext['runShell']
   fileSystem?: ToolContext['fileSystem']
   path?: ToolContext['path']
-  workspaceRoots?: ToolContext['workspaceRoots'] | (() => ToolContext['workspaceRoots'])
-  shellCwd?: ToolContext['shellCwd'] | (() => ToolContext['shellCwd'])
+  workspaceRoots?:
+    | ToolContext['workspaceRoots']
+    | ((input: RuntimeWorkspaceResolverInput) => ToolContext['workspaceRoots'])
+  shellCwd?:
+    | ToolContext['shellCwd']
+    | ((input: RuntimeWorkspaceResolverInput) => ToolContext['shellCwd'])
   getModelInfo?: RuntimeModelInfoResolver
   runAgent?: DurableRunExecutor
   sessionEntryTransforms?: SessionProjectionOptions['entryTransforms']
@@ -1001,6 +1011,7 @@ class WorkbenchServices {
       input.args,
       await this.buildToolContext({
         ...(input.conversationId ? { conversationId: input.conversationId } : {}),
+        ...(record ? { record } : {}),
         ...(input.messageId ? { messageId: input.messageId } : {}),
         ...(input.toolCallId ? { toolCallId: input.toolCallId } : {}),
         mode,
@@ -1011,7 +1022,8 @@ class WorkbenchServices {
   }
 
   async buildToolContext(input: RuntimeToolContextInput): Promise<ToolContext> {
-    const hostRoots = this.resolveWorkspaceRoots()
+    const workspaceInput = this.resolveWorkspaceInput(input)
+    const hostRoots = this.resolveWorkspaceRoots(workspaceInput)
     const skillRoots = (await this.getSkills()).map((skill) => ({
       path: skill.directory,
       label: `Skill: ${skill.definition.name}`,
@@ -1028,7 +1040,7 @@ class WorkbenchServices {
       ...(input.toolCallId ? { toolCallId: input.toolCallId } : {}),
       ...(input.signal ? { signal: input.signal } : {}),
       workspaceRoots: skillRoots.length > 0 ? [...(hostRoots ?? []), ...skillRoots] : hostRoots,
-      shellCwd: this.resolveShellCwd(),
+      shellCwd: this.resolveShellCwd(workspaceInput),
       ...(onToolPolicy ? { onToolPolicy } : {}),
       onToolApproval: this.host.onToolApproval,
       webSearch: this.host.webSearch,
@@ -1040,14 +1052,27 @@ class WorkbenchServices {
     }
   }
 
-  private resolveWorkspaceRoots(): ToolContext['workspaceRoots'] {
-    const roots = this.host.workspaceRoots
-    return cloneRuntimeWorkspaceRoots(typeof roots === 'function' ? roots() : roots)
+  private resolveWorkspaceInput(input: RuntimeToolContextInput): RuntimeWorkspaceResolverInput {
+    return {
+      ...(input.conversationId ? { conversationId: input.conversationId } : {}),
+      ...(input.record
+        ? { workspace: cloneRuntimeValue(input.record.meta.workspace ?? null) }
+        : {}),
+    }
   }
 
-  private resolveShellCwd(): ToolContext['shellCwd'] {
+  private resolveWorkspaceRoots(
+    input: RuntimeWorkspaceResolverInput,
+  ): ToolContext['workspaceRoots'] {
+    const roots = this.host.workspaceRoots
+    return cloneRuntimeWorkspaceRoots(
+      typeof roots === 'function' ? roots(cloneRuntimeValue(input)) : roots,
+    )
+  }
+
+  private resolveShellCwd(input: RuntimeWorkspaceResolverInput): ToolContext['shellCwd'] {
     const cwd = this.host.shellCwd
-    return typeof cwd === 'function' ? cwd() : cwd
+    return typeof cwd === 'function' ? cwd(cloneRuntimeValue(input)) : cwd
   }
 
   private async loadToolRegistry(input?: RuntimeToolPackLoadInput): Promise<ToolRegistry> {
@@ -1936,6 +1961,7 @@ class SessionRuntimeEngine {
       const toolRegistry = filterRuntimeToolRegistryForMode(baseToolRegistry, mode)
       const toolContext = await this.buildToolContext({
         conversationId: input.conversationId,
+        record,
         messageId: assistantMessageId,
         mode,
       })
@@ -2157,6 +2183,7 @@ class SessionRuntimeEngine {
       toolRegistry = filterRuntimeToolRegistryForMode(baseToolRegistry, mode)
       toolContext = await this.buildToolContext({
         conversationId,
+        record,
         messageId: assistantMessageId,
         mode,
       })

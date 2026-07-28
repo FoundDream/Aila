@@ -236,6 +236,7 @@ export {
   type RuntimeStableInstructionsInput,
   type RuntimeToolPackLoadInput,
   type RuntimeTransientContextInput,
+  type RuntimeWorkspaceResolverInput,
   type SessionInputQueueMode,
   type SessionInputQueueState,
   type SessionRepository,

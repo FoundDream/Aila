@@ -23,6 +23,7 @@ import {
 } from '@aila/agent-node/app'
 import {
   buildDesktopWorkspaceContextFromRecord,
+  getDesktopShellCwd,
   getDesktopWorkspaceRoots,
 } from '../apps/desktop/src/main/workspace-context'
 import type { ConversationSummary, ConversationWorkspaceRef } from '../apps/desktop/src/preload'
@@ -96,11 +97,38 @@ async function testWorkspaceConversationContext(): Promise<void> {
 
 async function testDesktopWorkspaceRoots(): Promise<void> {
   await withTempDataDir(async () => {
-    const roots = getDesktopWorkspaceRoots()
+    const workspace: ConversationWorkspaceRef = {
+      id: '/tmp/aila-desktop-workspace-roots',
+      path: '/tmp/aila-desktop-workspace-roots',
+      label: 'Desktop Contract',
+    }
+    const resolverInput = {
+      conversationId: 'desktop-workspace-conversation',
+      workspace,
+    }
+    const roots = getDesktopWorkspaceRoots(resolverInput)
     assertEqual(roots?.length, 1, 'Desktop should expose only the project root')
     const root = roots?.[0]
     assert(root && typeof root !== 'string', 'Desktop project root should keep a label')
-    assertEqual(root.path, process.cwd(), 'Desktop project root path')
+    assertEqual(root.path, workspace.path, 'Desktop project root path')
+    assertEqual(root.label, workspace.label, 'Desktop project root label')
+    assertEqual(
+      getDesktopShellCwd(resolverInput),
+      workspace.path,
+      'Desktop shell should start in the conversation workspace',
+    )
+
+    const unboundInput = { conversationId: 'desktop-unbound-conversation' }
+    assertEqual(
+      getDesktopWorkspaceRoots(unboundInput)?.length,
+      0,
+      'unbound Desktop conversations should not inherit process.cwd()',
+    )
+    assertEqual(
+      getDesktopShellCwd(unboundInput),
+      undefined,
+      'unbound Desktop conversations should not get an implicit shell cwd',
+    )
   })
 }
 

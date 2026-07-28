@@ -244,7 +244,7 @@ const BUILTIN_TOOL_SPECS: ToolSpec[] = [
     function: {
       name: 'bash',
       description:
-        'Run a shell command via /bin/sh in the app working directory. Returns stdout, stderr, and exit code. 30s timeout.',
+        'Run an approved shell command via /bin/sh with its working directory inside the workspace. Shell commands are not a filesystem sandbox and may access external paths. Returns stdout, stderr, and exit code. 30s timeout.',
       parameters: {
         type: 'object',
         properties: {
@@ -570,6 +570,29 @@ function resolveWorkspacePath(
   }
   assertNotSensitivePath(normalized, operation, pathHost)
   return normalized
+}
+
+function resolveWorkspaceShellCwd(ctx: ToolContext): string {
+  const pathHost = requireToolPath(ctx)
+  const roots = normalizeWorkspaceRoots(ctx)
+  if (roots.length === 0) {
+    throw new Error('shell denied: no workspace roots configured')
+  }
+
+  const configuredCwd = ctx.shellCwd
+  if (configuredCwd === undefined) {
+    throw new Error('shell denied: no workspace working directory configured')
+  }
+  if (!pathHost.isAbsolute(configuredCwd)) {
+    throw new Error('shell denied: `shellCwd` must be absolute')
+  }
+  const cwd = pathHost.resolve(configuredCwd)
+  if (!roots.some((root) => isInsideRoot(cwd, root, pathHost))) {
+    throw new Error(
+      `shell denied outside workspace roots: ${cwd} (allowed roots: ${roots.join(', ')})`,
+    )
+  }
+  return cwd
 }
 
 function assertBashCommandAllowed(command: string): void {
@@ -947,10 +970,11 @@ async function runBash(args: { command?: unknown }, ctx: ToolContext): Promise<s
   if (!ctx.runShell) {
     throw new Error('shell host is not available')
   }
+  const cwd = resolveWorkspaceShellCwd(ctx)
 
   const result = await ctx.runShell({
     command,
-    ...(ctx.shellCwd && { cwd: requireToolPath(ctx).resolve(ctx.shellCwd) }),
+    cwd,
     timeoutMs: BASH_TIMEOUT_MS,
     maxBufferBytes: BASH_MAX_BUFFER_BYTES,
     ...(ctx.signal && { signal: ctx.signal }),

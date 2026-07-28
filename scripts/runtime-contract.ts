@@ -10515,6 +10515,7 @@ async function testBashToolShellCwdContract(): Promise<void> {
     { command: 'printf shell-cwd' },
     {
       settings,
+      workspaceRoots: [dir],
       shellCwd: dir,
       path: runtimePackageNodeSdk.nodePath,
       signal: abortController.signal,
@@ -10538,6 +10539,32 @@ async function testBashToolShellCwdContract(): Promise<void> {
   assertEqual(seenRequest.timeoutMs, 30_000, 'bash shell request timeout')
   assertEqual(seenRequest.maxBufferBytes, 128 * 1024, 'bash shell request max buffer')
   assertEqual(seenRequest.signal, abortController.signal, 'bash shell request abort signal')
+
+  let outsideRunnerCalled = false
+  try {
+    await executeTool(
+      'bash',
+      { command: 'printf outside-cwd' },
+      {
+        settings,
+        workspaceRoots: [dir],
+        shellCwd: join(tmpdir(), 'aila-tool-shell-outside'),
+        path: runtimePackageNodeSdk.nodePath,
+        onToolApproval: async () => true,
+        runShell: async () => {
+          outsideRunnerCalled = true
+          return { exitCode: 0 }
+        },
+      },
+    )
+    throw new Error('bash unexpectedly accepted a cwd outside workspace roots')
+  } catch (error) {
+    assert(
+      error instanceof Error && error.message.includes('outside workspace roots'),
+      'bash should reject a shell cwd outside workspace roots',
+    )
+  }
+  assertEqual(outsideRunnerCalled, false, 'rejected shell cwd should not reach the runner')
 }
 
 async function testBashToolRequiresHostDependency(): Promise<void> {
@@ -11371,6 +11398,103 @@ async function testWorkbenchSharesExtensionCachesAcrossSessionsContract(): Promi
   await runtime.shutdown()
 }
 
+async function testRuntimeWorkspaceResolversAreConversationScoped(): Promise<void> {
+  const resolvedWorkspaces = new Map<string, string>()
+  const runWorkspaces = new Map<string, { root: string | null; shellCwd: string | null }>()
+  const runtime = new WorkbenchRuntime({
+    store: createInMemoryRuntimeStore(),
+    logger: { warn() {}, error() {} },
+    workspaceRoots: ({ conversationId, workspace }) => {
+      if (!conversationId || !workspace) {
+        throw new Error('workspace resolver requires a bound conversation workspace')
+      }
+      resolvedWorkspaces.set(conversationId, workspace.path)
+      return [{ path: workspace.path, label: workspace.label }]
+    },
+    shellCwd: ({ conversationId, workspace }) => {
+      if (!conversationId || !workspace) {
+        throw new Error('shell cwd resolver requires a bound conversation workspace')
+      }
+      return workspace.path
+    },
+    runAgent: async (request, handlers) => {
+      const root = request.workspaceRoots?.[0]
+      runWorkspaces.set(request.conversationId, {
+        root: typeof root === 'string' ? root : (root?.path ?? null),
+        shellCwd: request.shellCwd ?? null,
+      })
+      await handlers.onDone({
+        conversationId: request.conversationId,
+        messageId: request.assistantMessageId,
+        message: {
+          schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+          id: request.assistantMessageId,
+          role: 'assistant',
+          blocks: [{ type: 'text', content: 'workspace captured' }],
+          status: 'done',
+          model: request.selection,
+        },
+      })
+    },
+  })
+  const firstWorkspace = {
+    id: '/workspace/runtime-first',
+    path: '/workspace/runtime-first',
+    label: 'Runtime First',
+  }
+  const secondWorkspace = {
+    id: '/workspace/runtime-second',
+    path: '/workspace/runtime-second',
+    label: 'Runtime Second',
+  }
+  const [first, second] = await Promise.all([
+    runtime.createConversation({ workspace: firstWorkspace }),
+    runtime.createConversation({ workspace: secondWorkspace }),
+  ])
+  const selection = { providerId: 'openrouter', modelId: 'contract/mock' } as const
+
+  await Promise.all([
+    runtime.send({ conversationId: first.id, userText: 'first workspace', selection }),
+    runtime.send({ conversationId: second.id, userText: 'second workspace', selection }),
+  ])
+  await Promise.all([
+    runtime.getSessionRuntime(first.id).waitForIdle(),
+    runtime.getSessionRuntime(second.id).waitForIdle(),
+  ])
+
+  assertEqual(
+    resolvedWorkspaces.get(first.id),
+    firstWorkspace.path,
+    'first conversation should resolve its own workspace',
+  )
+  assertEqual(
+    resolvedWorkspaces.get(second.id),
+    secondWorkspace.path,
+    'second conversation should resolve its own workspace',
+  )
+  assertEqual(
+    runWorkspaces.get(first.id)?.root,
+    firstWorkspace.path,
+    'first run should receive only its conversation workspace',
+  )
+  assertEqual(
+    runWorkspaces.get(first.id)?.shellCwd,
+    firstWorkspace.path,
+    'first run shell cwd should use its conversation workspace',
+  )
+  assertEqual(
+    runWorkspaces.get(second.id)?.root,
+    secondWorkspace.path,
+    'second run should receive only its conversation workspace',
+  )
+  assertEqual(
+    runWorkspaces.get(second.id)?.shellCwd,
+    secondWorkspace.path,
+    'second run shell cwd should use its conversation workspace',
+  )
+  await runtime.shutdown()
+}
+
 async function testSessionInputQueuesContract(): Promise<void> {
   let firstRequest: runtimeSdk.RunRequest | undefined
   let secondRequestMessages: ChatMessage[] | undefined
@@ -11611,6 +11735,7 @@ async function main(): Promise<void> {
   await testRuntimeStreamHandlerSnapshots()
   await testRuntimeConversationStoreFacadeContract()
   await testWorkbenchSharesExtensionCachesAcrossSessionsContract()
+  await testRuntimeWorkspaceResolversAreConversationScoped()
   await testSessionInputQueuesContract()
   await testSingleSessionRuntimeBoundaryContract()
   await testRuntimeConversationRuntimeStateApiUsesEventReplay()

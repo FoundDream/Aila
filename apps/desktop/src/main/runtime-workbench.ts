@@ -30,6 +30,7 @@ import { cleanupConversationImages, createPersistedWorkbench } from '@aila/agent
 import type { IpcMain } from 'electron'
 import {
   buildDesktopWorkspaceContextFromRecord,
+  getDesktopShellCwd,
   getDesktopWorkspaceRoots,
 } from './workspace-context'
 
@@ -141,6 +142,7 @@ export function createDesktopRuntimeWorkbench(
       cleanupConversationAssets: cleanupConversationImages,
       loadTransientContext: ({ record }) => buildDesktopWorkspaceContextFromRecord(record),
       workspaceRoots: getDesktopWorkspaceRoots,
+      shellCwd: getDesktopShellCwd,
       logger,
     },
   })

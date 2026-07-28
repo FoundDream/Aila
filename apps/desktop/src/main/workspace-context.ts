@@ -1,7 +1,33 @@
-import type { ChatMessage, ConversationRecord, ToolContext } from '@aila/agent'
+import { isAbsolute } from 'node:path'
+import type {
+  ChatMessage,
+  ConversationRecord,
+  ConversationWorkspaceRef,
+  RuntimeWorkspaceResolverInput,
+  ToolContext,
+} from '@aila/agent'
 
-export function getDesktopWorkspaceRoots(): ToolContext['workspaceRoots'] {
-  return [{ path: process.cwd(), label: 'Project' }]
+function resolveDesktopWorkspace(
+  input: RuntimeWorkspaceResolverInput,
+): ConversationWorkspaceRef | undefined {
+  const workspace = input.workspace
+  if (!workspace) return undefined
+  if (!isAbsolute(workspace.path)) {
+    throw new Error(`desktop workspace path must be absolute: ${workspace.path}`)
+  }
+  return workspace
+}
+
+export function getDesktopWorkspaceRoots(
+  input: RuntimeWorkspaceResolverInput,
+): ToolContext['workspaceRoots'] {
+  const workspace = resolveDesktopWorkspace(input)
+  if (!workspace) return []
+  return [{ path: workspace.path, label: workspace.label ?? 'Project' }]
+}
+
+export function getDesktopShellCwd(input: RuntimeWorkspaceResolverInput): ToolContext['shellCwd'] {
+  return resolveDesktopWorkspace(input)?.path
 }
 
 export async function buildDesktopWorkspaceContextFromRecord(
