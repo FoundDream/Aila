@@ -1,21 +1,9 @@
-export {
-  AgentRuntime,
-  type AgentRuntimeInputQueue,
-  type AgentRuntimeRunOptions,
-  defaultAgentRuntime,
-} from './agent-runtime'
-export {
-  applyFindReplace,
-  type FindReplaceEdit,
-  type FindReplaceFailure,
-  type FindReplacePatch,
-  type FindReplaceResult,
-  formatFindReplaceErrors,
-} from './find-replace'
+export { defaultAgentRuntime } from './agent-runtime'
 /**
  * Internal durability primitives shared with @aila/agent-node.
  *
- * Product and extension consumers should use the root Agent and Workbench APIs.
+ * Product and extension consumers should use the root Agent and Workbench
+ * APIs; tool execution lives behind @aila/agent/host.
  */
 export {
   type AdvanceRunOptions,
@@ -49,16 +37,3 @@ export {
   replayRunState,
   runDurableRun,
 } from './run-machine'
-export {
-  authorizeTool,
-  BUILTIN_TOOL_PACKS,
-  createDefaultToolRegistry,
-  createToolRegistry,
-  evaluateToolPolicy,
-  executeAuthorizedTool,
-  executeTool,
-  getToolDefinitions,
-  summarizeToolTarget,
-  TOOL_DEFINITIONS,
-  TOOL_SPECS,
-} from './tools'
