@@ -240,7 +240,7 @@ export function ConversationList({
                         <PlusIcon className="size-3.5" />
                       </button>
                     </div>
-                    {isExpanded && (
+                    {isExpanded && project.conversations.length > 0 && (
                       <ul className="mt-0.5 flex flex-col gap-px">
                         {visibleConversations.map((conversation) => (
                           <ConversationRow
