@@ -46,29 +46,14 @@ export type RunPayloadKind =
   | 'compaction'
   | 'inspection'
 
-/**
- * Journal vocabulary written before the API unification. Never written today;
- * tolerated on read forever because old journals do not migrate.
- */
-export type LegacyRunPayloadKind = 'provider_request' | 'provider_response' | 'context_compaction'
-
-export function normalizeRunPayloadKind(
-  kind: RunPayloadKind | LegacyRunPayloadKind,
-): RunPayloadKind {
-  if (kind === 'provider_request') return 'model_request'
-  if (kind === 'provider_response') return 'model_response'
-  if (kind === 'context_compaction') return 'compaction'
-  return kind
-}
-
 export interface RunPayloadData {
-  kind: RunPayloadKind | LegacyRunPayloadKind
+  kind: RunPayloadKind
   label: string
   modelMessage?: ChatMessage
   assistantMessage?: PersistedMessage
 }
 
-export type SessionPhase = 'idle' | 'turn' | 'compaction' | 'branch_summary' | 'retry'
+export type SessionPhase = 'idle' | 'turn' | 'compaction' | 'retry'
 
 export interface SessionOrigin {
   sessionId: string
@@ -99,7 +84,6 @@ export interface SessionEntryDataMap {
   'run.payload': RunPayloadData
   'context.compacted': { checkpoint: ConversationContextCheckpoint }
   'context.turn.recorded': { entry: ConversationContextTurnLedgerEntry }
-  'context.branch.summary': { summary: string }
   'extension.custom': SessionExtensionData
   'extension.message': SessionExtensionMessageData
 }
@@ -176,7 +160,6 @@ const SEMANTIC_ENTRY_TYPES = new Set<SessionEntryType>([
   'session.created',
   'message.committed',
   'context.compacted',
-  'context.branch.summary',
   'extension.message',
 ])
 

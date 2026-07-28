@@ -5,7 +5,7 @@ type MaybePromise<T> = T | Promise<T>
 export type RunMode = 'continuous' | 'step'
 export type RunStatus = 'idle' | 'running' | 'paused' | 'completed' | 'failed' | 'cancelled'
 
-export type RunStepKind = 'model' | 'tool' | 'tool_batch' | 'compact'
+export type RunStepKind = 'model' | 'tool' | 'compact'
 export type RunStepStatus = 'running' | 'completed' | 'failed' | 'cancelled'
 export type RunContinuationReason =
   | 'user'
@@ -480,10 +480,7 @@ function transitionFromRunEvent(event: RunEvent): RunTransition | null {
     if (!event.stepId) return null
     const kind = eventString(event, 'kind')
     const index = eventNumber(event, 'index')
-    if (
-      (kind !== 'model' && kind !== 'tool' && kind !== 'tool_batch' && kind !== 'compact') ||
-      index === undefined
-    ) {
+    if ((kind !== 'model' && kind !== 'tool' && kind !== 'compact') || index === undefined) {
       return null
     }
     return {

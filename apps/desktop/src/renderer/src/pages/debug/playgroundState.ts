@@ -293,8 +293,7 @@ export function selectTranscript(tree: SessionTree | null): TranscriptCard[] {
       provenance: 'none' as const,
       timestamp: entry.timestamp,
       message: null,
-      markerLabel:
-        entry.type === 'context.compacted' ? 'Context compacted here' : 'Summary checkpoint',
+      markerLabel: 'Context compacted here',
     }
   })
 }

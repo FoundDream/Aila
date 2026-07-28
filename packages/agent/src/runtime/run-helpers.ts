@@ -6,7 +6,7 @@ import {
   type RunPayload,
   type RunSnapshot,
 } from '../run-persistence'
-import { normalizeRunPayloadKind, type SessionEntry } from '../session-journal'
+import type { SessionEntry } from '../session-journal'
 import type { Settings } from '../settings-types'
 import type { RuntimeRunAllowedControls, RuntimeRunPayloadDescriptor } from './api-types'
 import { cloneRuntimeValue } from './clone'
@@ -119,7 +119,7 @@ export function runPayloadFromEntry(entry: SessionEntry<'run.payload'>, data: un
     turnId: entry.turnId,
     runId: entry.runId,
     stepId: entry.stepId,
-    kind: normalizeRunPayloadKind(entry.data.kind),
+    kind: entry.data.kind,
     createdAt: entry.timestamp,
     contentType: entry.payloadRef?.contentType === 'text/plain' ? 'text/plain' : 'application/json',
     data: cloneRuntimeValue(data),

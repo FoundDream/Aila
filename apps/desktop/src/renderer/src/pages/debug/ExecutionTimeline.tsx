@@ -144,7 +144,6 @@ function MetaItem({
 const STEP_ICON: Record<RunStepState['kind'], typeof SparklesIcon> = {
   model: SparklesIcon,
   tool: WrenchIcon,
-  tool_batch: WrenchIcon,
   compact: FoldVerticalIcon,
 }
 

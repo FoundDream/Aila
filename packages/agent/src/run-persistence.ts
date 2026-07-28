@@ -82,10 +82,7 @@ export function normalizeRunSnapshot(value: unknown): RunSnapshot {
 }
 
 export function runRecoveryFromCursor(loop: RunCursor<ModelCallToolCall>): RunRecovery {
-  if (
-    (loop.state.currentStep?.kind === 'tool' || loop.state.currentStep?.kind === 'tool_batch') &&
-    loop.state.currentStep.status === 'running'
-  ) {
+  if (loop.state.currentStep?.kind === 'tool' && loop.state.currentStep.status === 'running') {
     return {
       strategy: 'manual_review',
       reason: 'process stopped while a tool was running; side effects may have occurred',

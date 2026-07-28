@@ -269,8 +269,6 @@ export {
   getSessionBranch,
   getSessionLeafId,
   getSessionPhase,
-  type LegacyRunPayloadKind,
-  normalizeRunPayloadKind,
   orderedSessionEntries,
   prepareSessionEntry,
   projectConversation,

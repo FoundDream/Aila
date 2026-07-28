@@ -127,7 +127,7 @@ export function stepHeading(
     const name = request.label.split('·')[1]?.trim()
     if (name) return name
   }
-  return step.kind === 'tool_batch' ? 'Tool batch' : 'Tool call'
+  return 'Tool call'
 }
 
 export function describeNextAction(

@@ -14,12 +14,7 @@ import type {
   UsageInfo,
   WorkbenchStore,
 } from '@aila/agent'
-import {
-  AILA_RUN_PAYLOAD_SCHEMA_VERSION,
-  normalizeRunPayloadKind,
-  sessionRunEvents,
-  sessionRunPayloads,
-} from '@aila/agent'
+import { AILA_RUN_PAYLOAD_SCHEMA_VERSION, sessionRunEvents, sessionRunPayloads } from '@aila/agent'
 import { createFileRuntimeStore } from '../node/file-store'
 import { getDataDir } from './paths'
 
@@ -309,7 +304,7 @@ async function resolvePayload(entry: SessionEntry<'run.payload'>): Promise<RunPa
     turnId: entry.turnId ?? '',
     runId: entry.runId ?? '',
     stepId: entry.stepId ?? '',
-    kind: normalizeRunPayloadKind(entry.data.kind),
+    kind: entry.data.kind,
     createdAt: entry.timestamp,
     contentType: entry.payloadRef?.contentType === 'text/plain' ? 'text/plain' : 'application/json',
     data: structuredClone(blob?.data ?? null),

@@ -37,11 +37,9 @@ there is deliberately no test suite (see AGENTS.md).
   written (byte-identical duplicates are idempotent; any difference throws).
 - Run events are schema-versioned, deduped by `eventId`, and replay
   deterministically; append order is stable at equal timestamps.
-- `run.payload` entries are written in API vocabulary only (`model_request`,
+- `run.payload` entries use the API vocabulary (`model_request`,
   `model_response`, `tool_batch`, `tool_request`, `tool_result`, `compaction`,
-  `inspection`). Legacy journal vocabulary (`provider_request`,
-  `provider_response`, `context_compaction`) is normalized on read via
-  `normalizeRunPayloadKind` and must never be written or compared raw.
+  `inspection`); there is no legacy vocabulary and no read-time normalization.
 - Session fork copies only the selected root-to-leaf semantic path.
 - Structural session operations (navigate, fork, garbage-collect, compact)
   require the idle phase.
@@ -97,9 +95,7 @@ stateDiagram-v2
     compaction --> idle: checkpoint persisted / failed
 ```
 
-`branch_summary` remains in the `SessionPhase` type for old-journal read
-tolerance only; nothing writes or reads it (deprecated). Crash recovery bulk-
-resets non-idle phases to `idle` at startup.
+Crash recovery bulk-resets non-idle phases to `idle` at startup.
 
 ### Turn pipeline and firing points
 
