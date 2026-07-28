@@ -50,23 +50,7 @@ export function registerBuiltInProtocolAdapters(registry: ProtocolRegistry): voi
   })
 
   registry.register({
-    api: 'openai-responses',
-    createModelStreamClient: () => unsupportedNativeProtocol('openai-responses'),
-  })
-
-  registry.register({
     api: 'google-generative-ai',
     createModelStreamClient: ({ imageDir }) => createGoogleModelStreamClient({ imageDir }),
   })
-}
-
-function unsupportedNativeProtocol(api: ModelApi): ModelStreamClient {
-  return {
-    async *stream() {
-      yield {
-        type: 'error',
-        error: new Error(`No native model stream client registered for api "${api}"`),
-      }
-    },
-  }
 }

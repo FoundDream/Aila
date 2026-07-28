@@ -37,8 +37,6 @@ export interface CreateDefaultNodeRuntimeHostInput
   cwd?: string
   modelRegistry?: ModelRegistry
   modelRegistryOptions?: CreateModelRegistryInput
-  store?: WorkbenchStore
-  enableFileStore?: boolean
   enableShell?: boolean
   enableFileSystem?: boolean
   enableImages?: boolean
@@ -49,6 +47,8 @@ export interface CreateDefaultNodeRuntimeHostInput
 export interface CreateNodeWorkbenchInput extends CreateDefaultNodeRuntimeHostInput {
   options?: Omit<WorkbenchOptions, 'host' | 'store'>
   model?: ModelSelection
+  store?: WorkbenchStore
+  enableFileStore?: boolean
 }
 
 export function createDefaultNodeRuntimeHost(
@@ -114,6 +114,6 @@ export function createNodeWorkbench(input: CreateNodeWorkbenchInput = {}): Workb
   return new WorkbenchRuntime({
     ...(input.options ?? {}),
     store,
-    host: createDefaultNodeRuntimeHost({ ...input, dataDir, store }),
+    host: createDefaultNodeRuntimeHost({ ...input, dataDir }),
   })
 }

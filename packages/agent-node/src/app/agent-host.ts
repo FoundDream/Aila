@@ -11,7 +11,6 @@ export {
 } from './extensions'
 export {
   configureDataDir,
-  getConversationsDir,
   getDataDir,
   getImagesDir,
   getSettingsPath,

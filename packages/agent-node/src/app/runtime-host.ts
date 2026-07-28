@@ -106,7 +106,6 @@ export function createDefaultRuntimeHost(overrides: WorkbenchHost = {}): Workben
       dataDir: getDataDir(),
       imageDir: getImagesDir(),
       loadSettings,
-      enableFileStore: false,
     }),
     loadSettings,
     onToolPolicy: (request) => createToolPolicy(loadSettings().approvalMode)(request),

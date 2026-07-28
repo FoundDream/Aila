@@ -11,10 +11,6 @@ export function getDataDir(): string {
   return configuredDataDir ?? process.env.AILA_DATA_DIR ?? defaultAilaDataDir()
 }
 
-export function getConversationsDir(): string {
-  return join(getDataDir(), 'sessions')
-}
-
 export function getImagesDir(): string {
   return join(getDataDir(), 'images')
 }
