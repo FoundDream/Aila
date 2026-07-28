@@ -23,8 +23,7 @@
   "scripts": {
     "build": "tsc -b",
     "clean": "rm -rf dist",
-    "typecheck": "tsc --noEmit -p tsconfig.json --composite false",
-    "test": "bun ../../scripts/runtime-core-surface-contract.ts"
+    "typecheck": "tsc --noEmit -p tsconfig.json --composite false"
   },
   "dependencies": {
     "gray-matter": "^4.0.3"

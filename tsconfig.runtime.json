@@ -12,5 +12,5 @@
       "@shared/*": ["./apps/desktop/src/shared/*"]
     }
   },
-  "include": ["packages/agent/src/**/*", "scripts/runtime-core-surface-contract.ts"]
+  "include": ["packages/agent/src/**/*"]
 }

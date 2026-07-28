@@ -17,6 +17,7 @@
     "baseUrl": ".",
     "paths": {
       "@aila/agent/host": ["../agent/src/host.ts"],
+      "@aila/agent/internal": ["../agent/src/internal.ts"],
       "@aila/agent": ["../agent/src/index.ts"]
     }
   },
