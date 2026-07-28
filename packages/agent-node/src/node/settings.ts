@@ -14,7 +14,7 @@ export interface NodeSettingsOptions {
 }
 
 export function defaultAilaDataDir(): string {
-  return join(process.cwd(), '.aila')
+  return join(process.cwd(), '.aila-data')
 }
 
 export function getNodeSettingsPath(options: NodeSettingsOptions = {}): string {

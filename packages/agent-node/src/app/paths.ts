@@ -1,4 +1,5 @@
 import { join } from 'node:path'
+import { defaultAilaDataDir } from '../node/settings'
 
 let configuredDataDir: string | null = null
 
@@ -7,7 +8,7 @@ export function configureDataDir(path: string): void {
 }
 
 export function getDataDir(): string {
-  return configuredDataDir ?? process.env.AILA_DATA_DIR ?? join(process.cwd(), '.aila-data')
+  return configuredDataDir ?? process.env.AILA_DATA_DIR ?? defaultAilaDataDir()
 }
 
 export function getConversationsDir(): string {
