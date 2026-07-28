@@ -41,6 +41,11 @@ export default defineConfig({
   },
   preload: {
     resolve: { alias: sharedAlias },
+    build: {
+      externalizeDeps: {
+        exclude: ['@aila/agent', '@aila/agent-node'],
+      },
+    },
   },
   renderer: {
     root: resolve(CONFIG_DIR, 'src/renderer'),

@@ -120,12 +120,6 @@ export type {
   WebSearchSettings,
 } from '@aila/agent'
 
-// Runtime and persistence types re-export from @aila/agent — hand-copied
-// duplicates are forbidden (CLAUDE.md): they drift.
-export {
-  AILA_CONVERSATION_META_SCHEMA_VERSION,
-  AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
-} from '@aila/agent'
 // App-host types owned by the Node package (allowed for preload; the renderer
 // still may not import @aila/agent-node).
 export type {
