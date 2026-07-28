@@ -75,3 +75,68 @@ there is deliberately no test suite (see AGENTS.md).
   assistant message.
 - `turn.interrupted` completes the adapters with an error and preserves
   partial text.
+
+## Runtime Lifecycle
+
+Hosts observe the runtime through `WorkbenchHost.hooks`
+(`RuntimeLifecycleHooks`): typed, stage-grouped callbacks that are dispatched
+synchronously, never awaited, isolated by try/catch, and handed cloned
+payloads. Hooks observe; they never decide. Decision points remain the
+dedicated host fields (`onToolPolicy`, `onToolApproval`).
+
+### Session phase state machine
+
+```mermaid
+stateDiagram-v2
+    [*] --> idle
+    idle --> turn: send / resumeRun
+    idle --> retry: retryLastUserMessage
+    idle --> compaction: compactConversation
+    turn --> idle: stream settled
+    retry --> idle: stream settled
+    compaction --> idle: checkpoint persisted / failed
+```
+
+`branch_summary` remains in the `SessionPhase` type for old-journal read
+tolerance only; nothing writes or reads it (deprecated). Crash recovery bulk-
+resets non-idle phases to `idle` at startup.
+
+### Turn pipeline and firing points
+
+One turn flows: guards → `turn.onStarting` → phase write
+(`session.onPhaseChanged`) → context assembly (`context.onAssembled`) →
+durable run loop — every persisted run event fans out through one funnel that
+also drives the `turn.*` / `run.*` / `step.*` hooks — → assistant message
+commit (`turn.onCommitted`) → idle phase write. Save points fire
+`run.onSavePoint` after the journal flush. Two event channels predate hooks
+and are unchanged: `host.onEvent` (process-wide workbench events) and the
+per-session subscription used by `SessionRuntime.subscribe`; hooks are a
+third, purely additive observation channel.
+
+### Stage table
+
+| Hook | Seam | Fires on replay/recovery |
+| --- | --- | --- |
+| session.onCreated / onRenamed / onDeleted / onNavigated / onForked | the corresponding engine/catalog operation, after persistence | no |
+| session.onPhaseChanged | every `session.phase.changed` append (incl. crash-recovery reset) | recovery reset only |
+| turn.onStarting | turn setup, before the phase write | no |
+| turn.onCommitted | every committed transcript message (user and assistant) | no |
+| turn.onStarted / onCompleted / onFailed / onAborted | run-event funnel (`turn.*` events; `interrupted` maps to onAborted) | yes |
+| run.onStarted / onPaused / onResumed / onCompleted / onFailed / onCancelled | run-event funnel (`run.*` events) | yes |
+| run.onSavePoint | durable-run save point, after journal flush | no |
+| step.onStarted / onCompleted / onFailed / onCancelled | run-event funnel (`step.*` events) | yes |
+| tool.onPolicy / onApprovalRequested / onApprovalResolved | live wrappers around the host policy/approval calls | no |
+| tool.onExecutionStarted / onExecutionCompleted | durable-run stream handlers | no |
+| context.onAssembled | after context token preflight in turn setup | no |
+| context.onCompacting / onCompacted | checkpoint persistence (manual and auto) | no |
+
+Tool and context **run events** are deliberately excluded from the run-event
+funnel mapping — their hooks fire from the live seams above and would
+double-fire otherwise.
+
+### Kernel ports are not host hooks
+
+`RunMachineOptions` callbacks (`prepareModelStep`, `executeToolStep`,
+`onTransition`, …) and `RunPolicy.afterModel/afterTools` are executor
+internals owned by the durable-run layer. Embedders extend the runtime through
+`WorkbenchHost` and `hooks`, never by reaching into kernel ports.

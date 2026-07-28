@@ -33,6 +33,7 @@ export class ConversationCatalog {
       await store.createConversation(input.workspace ?? undefined),
     )
     this.services.emit(createWorkbenchEvent('conversations:updated', summary))
+    this.services.lifecycle.dispatch('session', 'onCreated', { summary })
     return summary
   }
 
@@ -138,6 +139,11 @@ export class ConversationCatalog {
           type: 'session.phase.changed',
           timestamp: this.services.now(),
           data: { phase: 'idle' },
+        })
+        this.services.lifecycle.dispatch('session', 'onPhaseChanged', {
+          conversationId: summary.id,
+          phase: 'idle',
+          previous: tree.phase,
         })
         // Advisory availability snapshot after crash recovery; no engine exists
         // for the session yet, so this reflects the reset journal phase only.

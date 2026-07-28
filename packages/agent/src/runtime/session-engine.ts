@@ -102,7 +102,7 @@ import {
   runtimeRunAllowedControls,
   withTurnSelection,
 } from './run-helpers'
-import type { WorkbenchServices } from './services'
+import type { LifecycleDispatcher, WorkbenchServices } from './services'
 import {
   type CoordinatedTurn,
   SessionTurnCoordinator,
@@ -165,6 +165,7 @@ export class SessionRuntimeEngine {
   private readonly host: WorkbenchHost
   private readonly store: WorkbenchStore
   private readonly logger: Pick<Console, 'error' | 'warn'>
+  private readonly lifecycle: LifecycleDispatcher
   private readonly createId: () => string
   private readonly createRunId: () => string
   private readonly createEventId: () => string
@@ -183,6 +184,7 @@ export class SessionRuntimeEngine {
     this.host = services.host
     this.store = services.store
     this.logger = services.logger
+    this.lifecycle = services.lifecycle
     this.createId = services.createId
     this.createRunId = services.createRunId
     this.createEventId = services.createEventId
@@ -224,6 +226,10 @@ export class SessionRuntimeEngine {
       const appended = await this.store.setSessionLeaf(input.conversationId, input.entryId)
       const record = await this.getConversation(input.conversationId)
       this.emit(createWorkbenchEvent('conversations:updated', appended.summary))
+      this.lifecycle.dispatch('session', 'onNavigated', {
+        conversationId: input.conversationId,
+        entryId: input.entryId,
+      })
       return record
     })
   }
@@ -241,6 +247,10 @@ export class SessionRuntimeEngine {
       )
       const cloned = cloneRuntimeConversationSummary(summary)
       this.emit(createWorkbenchEvent('conversations:updated', cloned))
+      this.lifecycle.dispatch('session', 'onForked', {
+        sourceConversationId: input.conversationId,
+        summary: cloned,
+      })
       return cloned
     })
   }
@@ -362,6 +372,7 @@ export class SessionRuntimeEngine {
     })
     const summary = cloneRuntimeConversationSummary(appended)
     this.emit(createWorkbenchEvent('conversations:updated', summary))
+    this.lifecycle.dispatch('session', 'onRenamed', { conversationId, title, summary })
     return summary
   }
 
@@ -1029,6 +1040,13 @@ export class SessionRuntimeEngine {
       runId: this.createRunId(),
     }
     this.assertCanStartTurn(conversationId)
+    this.lifecycle.dispatch('turn', 'onStarting', {
+      conversationId,
+      turnId: run.turnId,
+      runId: run.runId,
+      assistantMessageId,
+      source,
+    })
     await this.setSessionPhase(conversationId, source === 'retry' ? 'retry' : 'turn')
 
     const controller = new AbortController()
@@ -1086,6 +1104,11 @@ export class SessionRuntimeEngine {
         selection,
         messages,
         contextPlan: context.plan,
+      })
+      this.lifecycle.dispatch('context', 'onAssembled', {
+        conversationId,
+        runId: run.runId,
+        plan: contextPlan,
       })
       await this.persistRecommendedContextCheckpoint({
         conversationId,
@@ -1344,6 +1367,7 @@ export class SessionRuntimeEngine {
       this.nextTurnQueue = []
       this.emitQueueUpdate()
       removed = true
+      this.lifecycle.dispatch('session', 'onDeleted', { conversationId })
     } catch (error) {
       this.deleted = false
       if (slot) {
@@ -1380,6 +1404,7 @@ export class SessionRuntimeEngine {
     const summary = cloneRuntimeConversationSummary(appended.summary)
     if (this.deleted) return false
     this.emit(createWorkbenchEvent('conversations:updated', summary))
+    this.lifecycle.dispatch('turn', 'onCommitted', { conversationId, message })
     return true
   }
 
@@ -1538,6 +1563,7 @@ export class SessionRuntimeEngine {
     const { event: persisted, summary } = result
     this.emit(createWorkbenchEvent('run:event', persisted))
     if (summary) this.emit(createWorkbenchEvent('conversations:updated', summary))
+    this.lifecycle.dispatchFromRunEvent(event.conversationId, persisted)
     return result
   }
 
@@ -1697,6 +1723,11 @@ export class SessionRuntimeEngine {
         data: { phase },
       })
       this.emitAvailability(phase)
+      this.lifecycle.dispatch('session', 'onPhaseChanged', {
+        conversationId,
+        phase,
+        previous: previous ?? null,
+      })
       return appended.entry.seq
     } catch (error) {
       this.sessionPhase = previous
@@ -1995,6 +2026,10 @@ export class SessionRuntimeEngine {
     trigger?: 'auto' | 'manual'
   }): Promise<ConversationContextCheckpoint | null> {
     const { conversationId, messageId, record, selection, contextPlan, recommended } = input
+    this.lifecycle.dispatch('context', 'onCompacting', {
+      conversationId,
+      trigger: input.trigger ?? 'auto',
+    })
     await this.recordContextCompactionEvent({
       conversationId,
       messageId,
@@ -2041,6 +2076,11 @@ export class SessionRuntimeEngine {
         semantic,
         reason: input.reason ?? contextPlan.compaction.reason,
         trigger: input.trigger ?? 'auto',
+      })
+      this.lifecycle.dispatch('context', 'onCompacted', {
+        conversationId,
+        trigger: input.trigger ?? 'auto',
+        checkpoint,
       })
       return checkpoint
     } catch (error) {
@@ -2303,7 +2343,7 @@ export class SessionRuntimeEngine {
           onToolPolicy: toolContext.onToolPolicy,
           onToolApproval: toolContext.onToolApproval,
           onRunEvent: queueRunEvent,
-          onSavePoint: async () => {
+          onSavePoint: async (reason) => {
             await eventLogChain
             if (eventLogFailure) throw eventLogFailure
             const pendingSeq = await this.flushPendingSessionWrites(conversationId)
@@ -2311,6 +2351,11 @@ export class SessionRuntimeEngine {
               lastJournalSeq = Math.max(lastJournalSeq, pendingSeq)
               currentSessionLeafId = (await this.store.getSessionTree(conversationId)).leafId
             }
+            this.lifecycle.dispatch('run', 'onSavePoint', {
+              conversationId,
+              runId: run.runId,
+              reason,
+            })
           },
           saveRunSnapshot: (snapshot: RunSnapshot) =>
             this.store.saveRunSnapshot({
@@ -2341,24 +2386,28 @@ export class SessionRuntimeEngine {
               controller,
               createWorkbenchEvent('chat:reasoning-delta', event),
             ),
-          onToolCallStart: (event) =>
+          onToolCallStart: (event) => {
+            this.lifecycle.dispatch('tool', 'onExecutionStarted', { conversationId, event })
             this.emitStreamEvent(
               conversationId,
               controller,
               createWorkbenchEvent('chat:tool-call-start', event),
-            ),
+            )
+          },
           onToolCallArgsDelta: (event) =>
             this.emitStreamEvent(
               conversationId,
               controller,
               createWorkbenchEvent('chat:tool-call-args-delta', event),
             ),
-          onToolCallResult: (event) =>
+          onToolCallResult: (event) => {
+            this.lifecycle.dispatch('tool', 'onExecutionCompleted', { conversationId, event })
             this.emitStreamEvent(
               conversationId,
               controller,
               createWorkbenchEvent('chat:tool-call-result', event),
-            ),
+            )
+          },
           onImageBlock: (event) =>
             this.emitStreamEvent(
               conversationId,

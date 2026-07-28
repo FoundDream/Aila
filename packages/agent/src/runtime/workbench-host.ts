@@ -1,5 +1,14 @@
-import type { ChatMessage, DurableRunExecutor, RuntimeModelInfoResolver } from '../agent-protocol'
 import type {
+  ChatMessage,
+  DurableRunExecutor,
+  RunSavePointReason,
+  RuntimeModelInfoResolver,
+  ToolCallEvent,
+  ToolResultEvent,
+} from '../agent-protocol'
+import type { AgentContextPlan } from '../context'
+import type {
+  ConversationContextCheckpoint,
   ConversationRecord,
   ConversationRuntimeReplayState,
   ConversationSummary,
@@ -9,12 +18,19 @@ import type {
 import type { RunPayload, RunSnapshot } from '../run-persistence'
 import type {
   BlobGarbageCollectionResult,
+  SessionPhase,
   SessionProjectionOptions,
   SessionTree,
 } from '../session-journal'
 import type { Settings } from '../settings-types'
 import type { LoadedSkill } from '../skills'
-import type { ToolContext, ToolPack, ToolRegistry } from '../tools'
+import type {
+  ToolApprovalRequest,
+  ToolContext,
+  ToolPack,
+  ToolPolicyDecision,
+  ToolRegistry,
+} from '../tools'
 import type {
   SessionInputQueueMode,
   SessionInputQueueState,
@@ -64,6 +80,157 @@ import type { SessionRuntime } from './session-runtime'
 
 export type MaybePromise<T> = T | Promise<T>
 
+export interface SessionCreatedHookEvent {
+  summary: ConversationSummary
+}
+
+export interface SessionRenamedHookEvent {
+  conversationId: string
+  title: string
+  summary: ConversationSummary
+}
+
+export interface SessionDeletedHookEvent {
+  conversationId: string
+}
+
+export interface SessionNavigatedHookEvent {
+  conversationId: string
+  entryId: string
+}
+
+export interface SessionForkedHookEvent {
+  sourceConversationId: string
+  summary: ConversationSummary
+}
+
+export interface SessionPhaseChangedHookEvent {
+  conversationId: string
+  phase: SessionPhase
+  previous: SessionPhase | null
+}
+
+export interface TurnStartingHookEvent {
+  conversationId: string
+  turnId: string
+  runId: string
+  assistantMessageId: string
+  source: 'send' | 'retry'
+}
+
+export interface MessageCommittedHookEvent {
+  conversationId: string
+  message: PersistedMessage
+}
+
+/** Turn/run/step observations carry the persisted run event verbatim. */
+export interface RunEventHookEvent {
+  conversationId: string
+  event: PersistedRunEvent
+}
+
+export interface RunSavePointHookEvent {
+  conversationId: string
+  runId: string
+  reason: RunSavePointReason
+}
+
+export interface ToolPolicyHookEvent {
+  request: ToolApprovalRequest
+  decision: ToolPolicyDecision | null
+}
+
+export interface ToolApprovalRequestedHookEvent {
+  request: ToolApprovalRequest
+}
+
+export interface ToolApprovalResolvedHookEvent {
+  request: ToolApprovalRequest
+  approved: boolean
+}
+
+export interface ToolExecutionStartedHookEvent {
+  conversationId: string
+  event: ToolCallEvent
+}
+
+export interface ToolExecutionCompletedHookEvent {
+  conversationId: string
+  event: ToolResultEvent
+}
+
+export interface ContextAssembledHookEvent {
+  conversationId: string
+  runId: string
+  plan: AgentContextPlan
+}
+
+export interface ContextCompactingHookEvent {
+  conversationId: string
+  trigger: 'auto' | 'manual'
+}
+
+export interface ContextCompactedHookEvent {
+  conversationId: string
+  trigger: 'auto' | 'manual'
+  checkpoint: ConversationContextCheckpoint
+}
+
+/**
+ * Host extension point: typed, observational lifecycle callbacks. Every hook
+ * is fire-and-forget — dispatched synchronously, never awaited, and isolated
+ * from the turn (a throwing hook is logged and swallowed). Payloads are cloned
+ * per dispatch, so hooks cannot mutate runtime state. Decision-bearing
+ * behavior stays on the dedicated host fields (`onToolPolicy`,
+ * `onToolApproval`); kernel ports (`RunMachineOptions`, `RunPolicy`) are
+ * executor internals, not host hooks.
+ */
+export interface RuntimeLifecycleHooks {
+  session?: {
+    onCreated?: (event: SessionCreatedHookEvent) => void
+    onRenamed?: (event: SessionRenamedHookEvent) => void
+    onDeleted?: (event: SessionDeletedHookEvent) => void
+    onNavigated?: (event: SessionNavigatedHookEvent) => void
+    onForked?: (event: SessionForkedHookEvent) => void
+    onPhaseChanged?: (event: SessionPhaseChangedHookEvent) => void
+  }
+  turn?: {
+    onStarting?: (event: TurnStartingHookEvent) => void
+    onStarted?: (event: RunEventHookEvent) => void
+    onCommitted?: (event: MessageCommittedHookEvent) => void
+    onCompleted?: (event: RunEventHookEvent) => void
+    onFailed?: (event: RunEventHookEvent) => void
+    onAborted?: (event: RunEventHookEvent) => void
+  }
+  run?: {
+    onStarted?: (event: RunEventHookEvent) => void
+    onPaused?: (event: RunEventHookEvent) => void
+    onResumed?: (event: RunEventHookEvent) => void
+    onCompleted?: (event: RunEventHookEvent) => void
+    onFailed?: (event: RunEventHookEvent) => void
+    onCancelled?: (event: RunEventHookEvent) => void
+    onSavePoint?: (event: RunSavePointHookEvent) => void
+  }
+  step?: {
+    onStarted?: (event: RunEventHookEvent) => void
+    onCompleted?: (event: RunEventHookEvent) => void
+    onFailed?: (event: RunEventHookEvent) => void
+    onCancelled?: (event: RunEventHookEvent) => void
+  }
+  tool?: {
+    onPolicy?: (event: ToolPolicyHookEvent) => void
+    onApprovalRequested?: (event: ToolApprovalRequestedHookEvent) => void
+    onApprovalResolved?: (event: ToolApprovalResolvedHookEvent) => void
+    onExecutionStarted?: (event: ToolExecutionStartedHookEvent) => void
+    onExecutionCompleted?: (event: ToolExecutionCompletedHookEvent) => void
+  }
+  context?: {
+    onAssembled?: (event: ContextAssembledHookEvent) => void
+    onCompacting?: (event: ContextCompactingHookEvent) => void
+    onCompacted?: (event: ContextCompactedHookEvent) => void
+  }
+}
+
 export interface WorkbenchHost {
   createId?: () => string
   createRunId?: () => string
@@ -111,6 +278,7 @@ export interface WorkbenchHost {
   runAgent?: DurableRunExecutor
   sessionEntryTransforms?: SessionProjectionOptions['entryTransforms']
   sessionCustomEntryProjectors?: SessionProjectionOptions['customEntryProjectors']
+  hooks?: RuntimeLifecycleHooks
   logger?: Pick<Console, 'error' | 'warn'>
 }
 
@@ -186,91 +354,60 @@ export interface WorkbenchExtensionApi {
 
 export interface Workbench extends WorkbenchSessionApi, WorkbenchRunApi, WorkbenchExtensionApi {}
 
+/**
+ * Every WorkbenchHost field must be classified: merged here, or deliberately
+ * excluded (`toolPacks` / `skills` flow through resolveStaticToolPacks /
+ * resolveStaticSkills instead). The exported assertion type below turns an
+ * unclassified new field into a compile error.
+ */
+const WORKBENCH_HOST_MERGE_KEYS = [
+  'createId',
+  'createRunId',
+  'createEventId',
+  'now',
+  'onEvent',
+  'onToolPolicy',
+  'onToolApproval',
+  'onConversationAbort',
+  'cleanupConversationAssets',
+  'persistAttachment',
+  'loadToolPacks',
+  'loadSkills',
+  'loadSettings',
+  'loadStableInstructions',
+  'loadTransientContext',
+  'countContextTokens',
+  'generateContextCompactArtifact',
+  'webSearch',
+  'generateImage',
+  'saveImage',
+  'runShell',
+  'fileSystem',
+  'path',
+  'workspaceRoots',
+  'shellCwd',
+  'getModelInfo',
+  'runAgent',
+  'sessionEntryTransforms',
+  'sessionCustomEntryProjectors',
+  'hooks',
+  'logger',
+] as const satisfies readonly (keyof WorkbenchHost)[]
+
+type UnmergedHostKeys = Exclude<keyof WorkbenchHost, (typeof WORKBENCH_HOST_MERGE_KEYS)[number]>
+type AssertStaticPacksOnly<T extends 'toolPacks' | 'skills'> = T
+export type _WorkbenchHostUnmergedKeys = AssertStaticPacksOnly<UnmergedHostKeys>
+
 export function normalizeRuntimeHost(options: WorkbenchOptions): WorkbenchHost {
   const host: WorkbenchHost = {}
-  if (options.createId) host.createId = options.createId
-  if (options.createRunId) host.createRunId = options.createRunId
-  if (options.createEventId) host.createEventId = options.createEventId
-  if (options.now) host.now = options.now
-  if (options.onEvent) host.onEvent = options.onEvent
-  if (options.onToolPolicy) host.onToolPolicy = options.onToolPolicy
-  if (options.onToolApproval) host.onToolApproval = options.onToolApproval
-  if (options.onConversationAbort) host.onConversationAbort = options.onConversationAbort
-  if (options.cleanupConversationAssets) {
-    host.cleanupConversationAssets = options.cleanupConversationAssets
+  for (const layer of [options, options.host]) {
+    if (!layer) continue
+    for (const key of WORKBENCH_HOST_MERGE_KEYS) {
+      const value = layer[key]
+      if (value !== undefined) {
+        ;(host as Record<(typeof WORKBENCH_HOST_MERGE_KEYS)[number], unknown>)[key] = value
+      }
+    }
   }
-  if (options.persistAttachment) host.persistAttachment = options.persistAttachment
-  if (options.loadToolPacks) host.loadToolPacks = options.loadToolPacks
-  if (options.loadSkills) host.loadSkills = options.loadSkills
-  if (options.loadSettings) host.loadSettings = options.loadSettings
-  if (options.loadStableInstructions) {
-    host.loadStableInstructions = options.loadStableInstructions
-  }
-  if (options.loadTransientContext) host.loadTransientContext = options.loadTransientContext
-  if (options.countContextTokens) host.countContextTokens = options.countContextTokens
-  if (options.generateContextCompactArtifact) {
-    host.generateContextCompactArtifact = options.generateContextCompactArtifact
-  }
-  if (options.webSearch) host.webSearch = options.webSearch
-  if (options.generateImage) host.generateImage = options.generateImage
-  if (options.saveImage) host.saveImage = options.saveImage
-  if (options.runShell) host.runShell = options.runShell
-  if (options.fileSystem) host.fileSystem = options.fileSystem
-  if (options.path) host.path = options.path
-  if (options.workspaceRoots !== undefined) host.workspaceRoots = options.workspaceRoots
-  if (options.shellCwd !== undefined) host.shellCwd = options.shellCwd
-  if (options.getModelInfo) host.getModelInfo = options.getModelInfo
-  if (options.runAgent) host.runAgent = options.runAgent
-  if (options.sessionEntryTransforms) {
-    host.sessionEntryTransforms = options.sessionEntryTransforms
-  }
-  if (options.sessionCustomEntryProjectors) {
-    host.sessionCustomEntryProjectors = options.sessionCustomEntryProjectors
-  }
-  if (options.logger) host.logger = options.logger
-
-  if (!options.host) return host
-  if (options.host.createId) host.createId = options.host.createId
-  if (options.host.createRunId) host.createRunId = options.host.createRunId
-  if (options.host.createEventId) host.createEventId = options.host.createEventId
-  if (options.host.now) host.now = options.host.now
-  if (options.host.onEvent) host.onEvent = options.host.onEvent
-  if (options.host.onToolPolicy) host.onToolPolicy = options.host.onToolPolicy
-  if (options.host.onToolApproval) host.onToolApproval = options.host.onToolApproval
-  if (options.host.onConversationAbort) host.onConversationAbort = options.host.onConversationAbort
-  if (options.host.cleanupConversationAssets) {
-    host.cleanupConversationAssets = options.host.cleanupConversationAssets
-  }
-  if (options.host.persistAttachment) host.persistAttachment = options.host.persistAttachment
-  if (options.host.loadToolPacks) host.loadToolPacks = options.host.loadToolPacks
-  if (options.host.loadSkills) host.loadSkills = options.host.loadSkills
-  if (options.host.loadSettings) host.loadSettings = options.host.loadSettings
-  if (options.host.loadStableInstructions) {
-    host.loadStableInstructions = options.host.loadStableInstructions
-  }
-  if (options.host.loadTransientContext) {
-    host.loadTransientContext = options.host.loadTransientContext
-  }
-  if (options.host.countContextTokens) host.countContextTokens = options.host.countContextTokens
-  if (options.host.generateContextCompactArtifact) {
-    host.generateContextCompactArtifact = options.host.generateContextCompactArtifact
-  }
-  if (options.host.webSearch) host.webSearch = options.host.webSearch
-  if (options.host.generateImage) host.generateImage = options.host.generateImage
-  if (options.host.saveImage) host.saveImage = options.host.saveImage
-  if (options.host.runShell) host.runShell = options.host.runShell
-  if (options.host.fileSystem) host.fileSystem = options.host.fileSystem
-  if (options.host.path) host.path = options.host.path
-  if (options.host.workspaceRoots !== undefined) host.workspaceRoots = options.host.workspaceRoots
-  if (options.host.shellCwd !== undefined) host.shellCwd = options.host.shellCwd
-  if (options.host.getModelInfo) host.getModelInfo = options.host.getModelInfo
-  if (options.host.runAgent) host.runAgent = options.host.runAgent
-  if (options.host.sessionEntryTransforms) {
-    host.sessionEntryTransforms = options.host.sessionEntryTransforms
-  }
-  if (options.host.sessionCustomEntryProjectors) {
-    host.sessionCustomEntryProjectors = options.host.sessionCustomEntryProjectors
-  }
-  if (options.host.logger) host.logger = options.host.logger
   return host
 }

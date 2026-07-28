@@ -1,4 +1,4 @@
-import type { ConversationRecord } from '../conversation-core'
+import type { ConversationRecord, PersistedRunEvent } from '../conversation-core'
 import { createSkillToolPack, type LoadedSkill } from '../skills'
 import { createExecutionModeToolPolicy, normalizeAilaExecutionMode } from '../tool-policy'
 import {
@@ -28,7 +28,90 @@ import { createInMemoryRuntimeStore } from './memory-store'
 import type { WorkbenchStore } from './repositories'
 import { defaultCreateRuntimeId, defaultRuntimeNow, EMPTY_RUNTIME_SETTINGS } from './run-helpers'
 import type { RuntimeToolContextInput } from './session-engine'
-import { normalizeRuntimeHost, type WorkbenchHost, type WorkbenchOptions } from './workbench-host'
+import {
+  normalizeRuntimeHost,
+  type RuntimeLifecycleHooks,
+  type WorkbenchHost,
+  type WorkbenchOptions,
+} from './workbench-host'
+
+type LifecycleHookGroup = keyof RuntimeLifecycleHooks
+type LifecycleHookHandlers<G extends LifecycleHookGroup> = NonNullable<RuntimeLifecycleHooks[G]>
+type LifecycleHookPayload<
+  G extends LifecycleHookGroup,
+  N extends keyof LifecycleHookHandlers<G>,
+> = LifecycleHookHandlers<G>[N] extends ((event: infer E) => void) | undefined ? E : never
+
+/**
+ * Maps turn/run/step run-event types onto lifecycle hooks. Tool and context
+ * run events are excluded: their hooks fire from the live seams (tool policy
+ * and approval wrappers, checkpoint persistence) and would double-fire here.
+ */
+const RUN_EVENT_HOOKS: Partial<
+  Record<
+    PersistedRunEvent['type'],
+    | { group: 'turn'; name: 'onStarted' | 'onCompleted' | 'onFailed' | 'onAborted' }
+    | {
+        group: 'run'
+        name: 'onStarted' | 'onPaused' | 'onResumed' | 'onCompleted' | 'onFailed' | 'onCancelled'
+      }
+    | { group: 'step'; name: 'onStarted' | 'onCompleted' | 'onFailed' | 'onCancelled' }
+  >
+> = {
+  'turn.started': { group: 'turn', name: 'onStarted' },
+  'turn.completed': { group: 'turn', name: 'onCompleted' },
+  'turn.failed': { group: 'turn', name: 'onFailed' },
+  'turn.cancelled': { group: 'turn', name: 'onAborted' },
+  'turn.interrupted': { group: 'turn', name: 'onAborted' },
+  'run.started': { group: 'run', name: 'onStarted' },
+  'run.paused': { group: 'run', name: 'onPaused' },
+  'run.resumed': { group: 'run', name: 'onResumed' },
+  'run.completed': { group: 'run', name: 'onCompleted' },
+  'run.failed': { group: 'run', name: 'onFailed' },
+  'run.cancelled': { group: 'run', name: 'onCancelled' },
+  'step.started': { group: 'step', name: 'onStarted' },
+  'step.completed': { group: 'step', name: 'onCompleted' },
+  'step.failed': { group: 'step', name: 'onFailed' },
+  'step.cancelled': { group: 'step', name: 'onCancelled' },
+}
+
+/**
+ * Fire-and-forget hook dispatch: never awaited, never throws into callers,
+ * payloads cloned per delivery so hooks cannot mutate runtime state. Zero
+ * cost when the hook is unregistered.
+ */
+export class LifecycleDispatcher {
+  constructor(
+    private readonly hooks: RuntimeLifecycleHooks | undefined,
+    private readonly logger: Pick<Console, 'error' | 'warn'>,
+  ) {}
+
+  dispatch<G extends LifecycleHookGroup, N extends keyof LifecycleHookHandlers<G>>(
+    group: G,
+    name: N,
+    payload: LifecycleHookPayload<G, N>,
+  ): void {
+    const handlers = this.hooks?.[group] as
+      | Record<string, ((event: unknown) => void) | undefined>
+      | undefined
+    const handler = handlers?.[name as string]
+    if (!handler) return
+    try {
+      handler(cloneRuntimeValue(payload))
+    } catch (error) {
+      this.logger.warn(`[lifecycle hook] ${group}.${String(name)} failed:`, error)
+    }
+  }
+
+  dispatchFromRunEvent(conversationId: string, event: PersistedRunEvent): void {
+    const target = RUN_EVENT_HOOKS[event.type]
+    if (!target) return
+    const payload = { conversationId, event }
+    if (target.group === 'turn') this.dispatch('turn', target.name, payload)
+    else if (target.group === 'run') this.dispatch('run', target.name, payload)
+    else this.dispatch('step', target.name, payload)
+  }
+}
 
 export function resolveStaticToolPacks(options: WorkbenchOptions): readonly ToolPack[] {
   return (options.host?.toolPacks ?? options.toolPacks ?? []).map(cloneRuntimeToolPack)
@@ -47,6 +130,7 @@ export class WorkbenchServices {
   readonly host: WorkbenchHost
   readonly store: WorkbenchStore
   readonly logger: Pick<Console, 'error' | 'warn'>
+  readonly lifecycle: LifecycleDispatcher
   readonly createId: () => string
   readonly createRunId: () => string
   readonly createEventId: () => string
@@ -71,6 +155,7 @@ export class WorkbenchServices {
         now: this.now,
       })
     this.logger = this.host.logger ?? console
+    this.lifecycle = new LifecycleDispatcher(this.host.hooks, this.logger)
     this.staticToolPacks = resolveStaticToolPacks(options)
     this.staticSkills = resolveStaticSkills(options)
     this.fallbackToolRegistry = createDefaultToolRegistry([
@@ -132,10 +217,11 @@ export class WorkbenchServices {
       label: `Skill: ${skill.definition.name}`,
     }))
     const mode = normalizeAilaExecutionMode(input.mode)
-    const onToolPolicy =
+    const composedToolPolicy =
       mode === 'agent' && !this.host.onToolPolicy
         ? undefined
         : createExecutionModeToolPolicy(mode, this.host.onToolPolicy)
+    const onToolPolicy = composedToolPolicy && this.observeToolPolicy(composedToolPolicy)
     return {
       settings: cloneRuntimeSettings((await this.host.loadSettings?.()) ?? EMPTY_RUNTIME_SETTINGS),
       ...(input.conversationId ? { conversationId: input.conversationId } : {}),
@@ -145,13 +231,44 @@ export class WorkbenchServices {
       workspaceRoots: skillRoots.length > 0 ? [...(hostRoots ?? []), ...skillRoots] : hostRoots,
       shellCwd: this.resolveShellCwd(workspaceInput),
       ...(onToolPolicy ? { onToolPolicy } : {}),
-      onToolApproval: this.host.onToolApproval,
+      onToolApproval:
+        this.host.onToolApproval && this.observeToolApproval(this.host.onToolApproval),
       webSearch: this.host.webSearch,
       generateImage: this.host.generateImage,
       saveImage: this.host.saveImage,
       runShell: this.host.runShell,
       fileSystem: this.host.fileSystem,
       path: this.host.path,
+    }
+  }
+
+  /** Observational echo of policy decisions; never alters the evaluator's result. */
+  private observeToolPolicy(
+    evaluator: NonNullable<ToolContext['onToolPolicy']>,
+  ): NonNullable<ToolContext['onToolPolicy']> {
+    return (request) => {
+      const result = evaluator(request)
+      void Promise.resolve(result).then(
+        (decision) =>
+          this.lifecycle.dispatch('tool', 'onPolicy', { request, decision: decision ?? null }),
+        () => {},
+      )
+      return result
+    }
+  }
+
+  /** Observational echo of approval requests/resolutions around the host's approver. */
+  private observeToolApproval(
+    approve: NonNullable<ToolContext['onToolApproval']>,
+  ): NonNullable<ToolContext['onToolApproval']> {
+    return (request) => {
+      this.lifecycle.dispatch('tool', 'onApprovalRequested', { request })
+      const result = approve(request)
+      void Promise.resolve(result).then(
+        (approved) => this.lifecycle.dispatch('tool', 'onApprovalResolved', { request, approved }),
+        () => {},
+      )
+      return result
     }
   }
 

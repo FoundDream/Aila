@@ -14,7 +14,30 @@ export type {
   WorkbenchStore,
 } from './runtime/repositories'
 export { SessionRuntime, type SessionRuntimeOptions } from './runtime/session-runtime'
-export type { Workbench, WorkbenchHost, WorkbenchOptions } from './runtime/workbench-host'
+export type {
+  ContextAssembledHookEvent,
+  ContextCompactedHookEvent,
+  ContextCompactingHookEvent,
+  MessageCommittedHookEvent,
+  RunEventHookEvent,
+  RunSavePointHookEvent,
+  RuntimeLifecycleHooks,
+  SessionCreatedHookEvent,
+  SessionDeletedHookEvent,
+  SessionForkedHookEvent,
+  SessionNavigatedHookEvent,
+  SessionPhaseChangedHookEvent,
+  SessionRenamedHookEvent,
+  ToolApprovalRequestedHookEvent,
+  ToolApprovalResolvedHookEvent,
+  ToolExecutionCompletedHookEvent,
+  ToolExecutionStartedHookEvent,
+  ToolPolicyHookEvent,
+  TurnStartingHookEvent,
+  Workbench,
+  WorkbenchHost,
+  WorkbenchOptions,
+} from './runtime/workbench-host'
 export { WorkbenchRuntime } from './runtime/workbench-runtime'
 export {
   AILA_WORKBENCH_EVENT_SCHEMA_VERSION,
