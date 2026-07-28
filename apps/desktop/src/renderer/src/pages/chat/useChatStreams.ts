@@ -746,7 +746,8 @@ function reducer(state: State, action: Action): State {
 }
 
 function persistedToMessage(message: PersistedMessage): Message {
-  return message as unknown as Message
+  const { schemaVersion: _schemaVersion, ...rest } = message
+  return rest
 }
 
 export interface ChatStreamsApi {
