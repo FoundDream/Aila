@@ -1,7 +1,10 @@
 import type { ModelSelection, UsageInfo } from './agent-protocol'
 import type { ModelCallToolCall } from './model-call'
 import { assertRunStateInvariant, type RunCursor, type RunIdentity } from './run-machine'
-import type { BlobRef } from './session-journal'
+import type { BlobRef, RunPayloadKind } from './session-journal'
+
+export type { RunPayloadKind } from './session-journal'
+
 import type { AilaExecutionMode } from './tool-policy'
 
 export const AILA_RUN_SNAPSHOT_SCHEMA_VERSION = 2
@@ -36,16 +39,6 @@ export interface RunSnapshot {
   updatedAt: number
   throughSeq: number
 }
-
-export type RunPayloadKind =
-  | 'model_request'
-  | 'model_response'
-  | 'model_call'
-  | 'tool_batch'
-  | 'tool_request'
-  | 'tool_result'
-  | 'compaction'
-  | 'inspection'
 
 /** Reader view resolved from a run.payload journal entry and its BlobRef. */
 export interface RunPayload {

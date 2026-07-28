@@ -38,16 +38,31 @@ export interface BlobGarbageCollectionResult {
 }
 
 export type RunPayloadKind =
-  | 'provider_request'
-  | 'provider_response'
+  | 'model_request'
+  | 'model_response'
   | 'tool_batch'
   | 'tool_request'
   | 'tool_result'
-  | 'context_compaction'
+  | 'compaction'
   | 'inspection'
 
+/**
+ * Journal vocabulary written before the API unification. Never written today;
+ * tolerated on read forever because old journals do not migrate.
+ */
+export type LegacyRunPayloadKind = 'provider_request' | 'provider_response' | 'context_compaction'
+
+export function normalizeRunPayloadKind(
+  kind: RunPayloadKind | LegacyRunPayloadKind,
+): RunPayloadKind {
+  if (kind === 'provider_request') return 'model_request'
+  if (kind === 'provider_response') return 'model_response'
+  if (kind === 'context_compaction') return 'compaction'
+  return kind
+}
+
 export interface RunPayloadData {
-  kind: RunPayloadKind
+  kind: RunPayloadKind | LegacyRunPayloadKind
   label: string
   modelMessage?: ChatMessage
   assistantMessage?: PersistedMessage

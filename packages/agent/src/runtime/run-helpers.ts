@@ -4,10 +4,9 @@ import type { ConversationRecord, PersistedMessage } from '../conversation-core'
 import {
   AILA_RUN_PAYLOAD_SCHEMA_VERSION,
   type RunPayload,
-  type RunPayloadKind,
   type RunSnapshot,
 } from '../run-persistence'
-import type { SessionEntry } from '../session-journal'
+import { normalizeRunPayloadKind, type SessionEntry } from '../session-journal'
 import type { Settings } from '../settings-types'
 import type { RuntimeRunAllowedControls, RuntimeRunPayloadDescriptor } from './api-types'
 import { cloneRuntimeValue } from './clone'
@@ -109,15 +108,6 @@ export function isRunContextBlobData(value: unknown): value is RunContextBlobDat
   )
 }
 
-export function runPayloadKindFromEntry(
-  kind: SessionEntry<'run.payload'>['data']['kind'],
-): RunPayloadKind {
-  if (kind === 'provider_request') return 'model_request'
-  if (kind === 'provider_response') return 'model_response'
-  if (kind === 'context_compaction') return 'compaction'
-  return kind
-}
-
 export function runPayloadFromEntry(entry: SessionEntry<'run.payload'>, data: unknown): RunPayload {
   if (!entry.runId || !entry.turnId || !entry.stepId) {
     throw new Error(`run payload entry is missing execution identity: ${entry.entryId}`)
@@ -129,7 +119,7 @@ export function runPayloadFromEntry(entry: SessionEntry<'run.payload'>, data: un
     turnId: entry.turnId,
     runId: entry.runId,
     stepId: entry.stepId,
-    kind: runPayloadKindFromEntry(entry.data.kind),
+    kind: normalizeRunPayloadKind(entry.data.kind),
     createdAt: entry.timestamp,
     contentType: entry.payloadRef?.contentType === 'text/plain' ? 'text/plain' : 'application/json',
     data: cloneRuntimeValue(data),

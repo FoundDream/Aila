@@ -29,6 +29,7 @@ import { prepareRunSnapshotForResume, type RunPayload, type RunSnapshot } from '
 import {
   type BlobGarbageCollectionResult,
   type BlobRef,
+  normalizeRunPayloadKind,
   projectConversation,
   type SessionEntryInput,
   type SessionPhase,
@@ -991,7 +992,9 @@ export class SessionRuntimeEngine {
           error: undefined,
         }
       }
-      if (payload.data.kind !== 'provider_response' || !payload.payloadRef) continue
+      if (normalizeRunPayloadKind(payload.data.kind) !== 'model_response' || !payload.payloadRef) {
+        continue
+      }
       const blob = await this.store.getBlob(
         snapshot.identity.conversationId,
         payload.payloadRef.blobId,

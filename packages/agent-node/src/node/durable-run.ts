@@ -427,7 +427,7 @@ export function createDurableRunExecutor(
           stepId: input.stepId,
           ...(payloadRef ? { payloadRef: cloneAgentValue(payloadRef) } : {}),
           data: {
-            kind: runPayloadEntryKind(input.kind),
+            kind: input.kind,
             label: input.label,
             ...(input.modelMessage ? { modelMessage: cloneAgentValue(input.modelMessage) } : {}),
             assistantMessage: builder.build(assistantMessageId, 'streaming', selection),
@@ -1505,22 +1505,6 @@ function previewEventValue(value: unknown): { preview: string; size: number } {
     preview: text.length > EVENT_PREVIEW_CHARS ? `${text.slice(0, EVENT_PREVIEW_CHARS)}...` : text,
     size: text.length,
   }
-}
-
-function runPayloadEntryKind(
-  kind: RunPayloadKind,
-):
-  | 'provider_request'
-  | 'provider_response'
-  | 'tool_batch'
-  | 'tool_request'
-  | 'tool_result'
-  | 'context_compaction'
-  | 'inspection' {
-  if (kind === 'model_request' || kind === 'model_call') return 'provider_request'
-  if (kind === 'model_response') return 'provider_response'
-  if (kind === 'compaction') return 'context_compaction'
-  return kind
 }
 
 function inspectableModelDescriptor(descriptor: ModelDescriptor): Record<string, unknown> {

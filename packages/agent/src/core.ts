@@ -269,11 +269,12 @@ export {
   getSessionBranch,
   getSessionLeafId,
   getSessionPhase,
+  type LegacyRunPayloadKind,
+  normalizeRunPayloadKind,
   orderedSessionEntries,
   prepareSessionEntry,
   projectConversation,
   type RunPayloadData,
-  type RunPayloadKind as SessionRunPayloadKind,
   type SessionEntry,
   type SessionEntryAppendResult,
   type SessionEntryDataMap,
@@ -303,6 +304,7 @@ export {
   type PromptCacheTtl,
   type Settings,
   type VisionFallbackMode,
+  type WebSearchSettings,
 } from './settings-types'
 export {
   AILA_SKILL_FILE,

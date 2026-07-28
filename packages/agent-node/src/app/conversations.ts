@@ -14,7 +14,12 @@ import type {
   UsageInfo,
   WorkbenchStore,
 } from '@aila/agent'
-import { AILA_RUN_PAYLOAD_SCHEMA_VERSION, sessionRunEvents, sessionRunPayloads } from '@aila/agent'
+import {
+  AILA_RUN_PAYLOAD_SCHEMA_VERSION,
+  normalizeRunPayloadKind,
+  sessionRunEvents,
+  sessionRunPayloads,
+} from '@aila/agent'
 import { createFileRuntimeStore } from '../node/file-store'
 import { getDataDir } from './paths'
 
@@ -274,7 +279,7 @@ export async function saveRunPayload(payload: RunPayload): Promise<RunPayload> {
     stepId: payload.stepId,
     payloadRef,
     data: {
-      kind: sessionPayloadKind(payload.kind),
+      kind: payload.kind,
       label: payload.kind.replaceAll('_', ' '),
     },
   })
@@ -304,25 +309,11 @@ async function resolvePayload(entry: SessionEntry<'run.payload'>): Promise<RunPa
     turnId: entry.turnId ?? '',
     runId: entry.runId ?? '',
     stepId: entry.stepId ?? '',
-    kind:
-      entry.data.kind === 'provider_request'
-        ? 'model_request'
-        : entry.data.kind === 'provider_response'
-          ? 'model_response'
-          : entry.data.kind === 'context_compaction'
-            ? 'compaction'
-            : entry.data.kind,
+    kind: normalizeRunPayloadKind(entry.data.kind),
     createdAt: entry.timestamp,
     contentType: entry.payloadRef?.contentType === 'text/plain' ? 'text/plain' : 'application/json',
     data: structuredClone(blob?.data ?? null),
   }
-}
-
-function sessionPayloadKind(kind: RunPayload['kind']): SessionEntry<'run.payload'>['data']['kind'] {
-  if (kind === 'model_request' || kind === 'model_call') return 'provider_request'
-  if (kind === 'model_response') return 'provider_response'
-  if (kind === 'compaction') return 'context_compaction'
-  return kind
 }
 
 function emptyUsageDay(date: string): TokenUsageDay {
