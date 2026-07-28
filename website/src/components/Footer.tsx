@@ -1,3 +1,5 @@
+import { BrandLogo } from './BrandLogo'
+
 const githubUrl = 'https://github.com/aila-hq/aila'
 
 const footerColumns = [
@@ -69,9 +71,8 @@ export function Footer() {
       <div className="footer-inner">
         <div className="footer-top reveal">
           <div className="footer-brand">
-            <a className="footer-logo" href="#top">
-              <span className="nav-logo-mark">A</span>
-              <span>Aila</span>
+            <a className="footer-logo" href="#top" aria-label="Aila home">
+              <BrandLogo className="footer-brand-lockup" />
             </a>
             <p className="footer-tagline">
               The open-source, local-first agent runtime and workbench for code, documents, and

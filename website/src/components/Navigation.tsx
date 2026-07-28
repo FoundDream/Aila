@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { BrandLogo } from './BrandLogo'
 
 const githubUrl = 'https://github.com/aila-hq/aila'
 
@@ -24,8 +25,7 @@ export function Navigation() {
     <header className={`nav${isScrolled ? ' is-scrolled' : ''}`}>
       <div className="nav-shell">
         <a className="nav-logo" href="#top" aria-label="Aila home">
-          <span className="nav-logo-mark">A</span>
-          <span>Aila</span>
+          <BrandLogo className="nav-brand-lockup" />
         </a>
         <div className="nav-actions">
           <a className="nav-pill" href={githubUrl} target="_blank" rel="noopener">
