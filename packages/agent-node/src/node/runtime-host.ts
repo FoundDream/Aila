@@ -56,6 +56,7 @@ export function createDefaultNodeRuntimeHost(
 ): WorkbenchHost {
   const dataDir = input.dataDir ?? defaultAilaDataDir()
   const cwd = input.cwd ?? process.cwd()
+  const loadSettings = input.loadSettings ?? (() => input.settings ?? loadNodeSettings(input))
   const modelRegistry =
     input.modelRegistry ??
     createModelRegistry(input.modelRegistryOptions ?? { providers: input.providers })
@@ -70,16 +71,16 @@ export function createDefaultNodeRuntimeHost(
       ...input,
       modelRegistry,
       imageDir: imageStore?.imageDir,
-      loadSettings: () => input.settings ?? loadNodeSettings(input),
+      loadSettings,
     })
   const contextServiceOptions: NodeContextServiceOptions = {
     ...input,
     modelRegistry,
-    loadSettings: () => input.settings ?? loadNodeSettings(input),
+    loadSettings,
   }
 
   return {
-    loadSettings: () => input.settings ?? loadNodeSettings(input),
+    loadSettings,
     getModelInfo: createModelInfoResolver(modelRegistry),
     countContextTokens: createNodeContextTokenCounter(contextServiceOptions),
     generateContextCompactArtifact: createNodeSemanticCompactGenerator(contextServiceOptions),

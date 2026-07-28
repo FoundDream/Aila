@@ -1,20 +1,14 @@
 /**
  * Plain-text settings.json next to conversations data.
  *
- * Reads fall back to environment variables for unset API keys so dev workflows
- * with .env keep working. Writes are best-effort synchronous.
+ * Delegates to the node-layer implementation bound to the app data dir. Reads
+ * fall back to environment variables for unset API keys so dev workflows with
+ * .env keep working. Writes are best-effort synchronous.
  */
 
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { dirname } from 'node:path'
-import {
-  normalizePromptCacheSettings,
-  normalizeToolApprovalMode,
-  normalizeVisionFallbackMode,
-  type ProviderId,
-  type Settings,
-} from '@aila/agent'
-import { getDataDir, getSettingsPath } from './paths'
+import type { ProviderId, Settings } from '@aila/agent'
+import { loadNodeSettings, saveNodeSettings } from '../node/settings'
+import { getDataDir } from './paths'
 
 export type { Settings } from '@aila/agent'
 
@@ -26,55 +20,12 @@ const ENV_KEY_BY_PROVIDER: Record<string, string> = {
   openrouter: 'OPENROUTER_API_KEY',
 }
 
-function emptySettings(): Settings {
-  return {
-    apiKeys: {},
-    defaultModel: null,
-    defaultImageModel: null,
-    defaultVisionModel: null,
-    visionFallbackMode: 'auto',
-    promptCache: normalizePromptCacheSettings(undefined),
-    approvalMode: 'safe',
-  }
-}
-
-function inferDefaultVisionModel(parsed: Partial<Settings>): Settings['defaultVisionModel'] {
-  if (parsed.defaultVisionModel !== undefined) return parsed.defaultVisionModel
-  const fromSettings = parsed.apiKeys?.openrouter
-  const fromEnv = process.env.OPENROUTER_API_KEY
-  if (fromSettings?.trim() || fromEnv?.trim()) {
-    return { providerId: 'openrouter', modelId: 'openrouter/free' }
-  }
-  return null
-}
-
 export function loadSettings(): Settings {
-  try {
-    const raw = readFileSync(getSettingsPath(), 'utf-8')
-    const parsed = JSON.parse(raw) as Partial<Settings>
-    return {
-      apiKeys: parsed.apiKeys ?? {},
-      defaultModel: parsed.defaultModel ?? null,
-      defaultImageModel: parsed.defaultImageModel ?? null,
-      defaultVisionModel: inferDefaultVisionModel(parsed),
-      visionFallbackMode: normalizeVisionFallbackMode(parsed.visionFallbackMode),
-      promptCache: normalizePromptCacheSettings(parsed.promptCache),
-      approvalMode: normalizeToolApprovalMode(parsed.approvalMode),
-      webSearch: parsed.webSearch ?? {},
-      recentOpenRouterModels: parsed.recentOpenRouterModels ?? [],
-    }
-  } catch {
-    return emptySettings()
-  }
+  return loadNodeSettings({ dataDir: getDataDir() })
 }
 
 export function saveSettings(settings: Settings): Settings {
-  const path = getSettingsPath()
-  mkdirSync(dirname(path), { recursive: true })
-  // Touch the data dir too in case it's the dev sentinel
-  mkdirSync(getDataDir(), { recursive: true })
-  writeFileSync(path, `${JSON.stringify(settings, null, 2)}\n`, 'utf-8')
-  return settings
+  return saveNodeSettings(settings, { dataDir: getDataDir() })
 }
 
 /**

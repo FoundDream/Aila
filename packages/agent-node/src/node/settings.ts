@@ -2,6 +2,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import {
   normalizePromptCacheSettings,
+  normalizeToolApprovalMode,
   normalizeVisionFallbackMode,
   type Settings,
 } from '@aila/agent'
@@ -28,6 +29,7 @@ export function emptySettings(): Settings {
     defaultVisionModel: null,
     visionFallbackMode: 'auto',
     promptCache: normalizePromptCacheSettings(undefined),
+    approvalMode: 'safe',
     recentOpenRouterModels: [],
   }
 }
@@ -53,6 +55,7 @@ export function loadNodeSettings(options: NodeSettingsOptions = {}): Settings {
       defaultVisionModel: inferDefaultVisionModel(parsed),
       visionFallbackMode: normalizeVisionFallbackMode(parsed.visionFallbackMode),
       promptCache: normalizePromptCacheSettings(parsed.promptCache),
+      approvalMode: normalizeToolApprovalMode(parsed.approvalMode),
       webSearch: parsed.webSearch ?? {},
       recentOpenRouterModels: parsed.recentOpenRouterModels ?? [],
     }
