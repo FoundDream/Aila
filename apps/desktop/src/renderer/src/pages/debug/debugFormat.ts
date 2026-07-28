@@ -146,13 +146,12 @@ export function describeNextAction(
 export function describeWait(reason: string): string {
   if (reason === 'approval') return 'waiting for tool approval'
   if (reason === 'user_input') return 'waiting for user input'
-  return 'waiting for the debugger'
+  return 'paused by the debugger'
 }
 
 const PAYLOAD_NAMES: Record<string, string> = {
   model_request: 'Request',
   model_response: 'Response',
-  model_call: 'Model exchange',
   tool_request: 'Arguments',
   tool_result: 'Result',
   tool_batch: 'Batch summary',
@@ -167,7 +166,6 @@ export function payloadName(kind: RunPayloadKind): string {
 const PAYLOAD_RANK: Record<string, number> = {
   model_request: 0,
   tool_request: 0,
-  model_call: 1,
   model_response: 2,
   tool_result: 2,
   tool_batch: 3,

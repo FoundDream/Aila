@@ -1,57 +1,150 @@
 import type {
-  AilaExecutionMode,
+  ActiveAssistantTurn,
   BlobGarbageCollectionResult,
+  DoneEvent as ChatDoneEvent,
+  ErrorEvent as ChatErrorEvent,
+  ConversationRecord,
+  ConversationRuntimeStateSnapshot,
+  ConversationSummary,
   ConversationWorkspaceRef,
+  ImageBlockEvent,
+  ModelInfo,
+  PersistedMessage,
+  PersistedRunEvent,
   ProviderId,
   RunPayload,
   RunSnapshot,
+  RuntimeCompactConversationInput as RuntimeCompactConversationRequest,
+  RuntimeCompactConversationResult,
+  ConversationRuntimeHydration as RuntimeConversationHydration,
   RuntimeForkRunInput,
   RuntimeForkSessionInput,
   RuntimeNavigateSessionInput,
+  RuntimeRetryLastInput as RuntimeRetryLastRequest,
   RuntimeRunControlInput,
   RuntimeRunInspection,
-  RuntimeRunPayloadDescriptor,
   RuntimeRunPayloadInput,
   RuntimeRunSummary,
+  RuntimeSendInput as RuntimeSendRequest,
   RuntimeSessionAvailability,
+  RuntimeSendResult as SendResult,
   SessionTree,
+  Settings,
+  ToolApprovalRequestPayload as ToolApprovalRequestEvent,
+  ToolApprovalResolvedPayload as ToolApprovalResolvedEvent,
+  ToolCallArgsDeltaEvent,
+  ToolResultEvent as ToolCallResultEvent,
+  ToolCallEvent as ToolCallStartEvent,
 } from '@aila/agent'
+import type {
+  IntegrationDefinition as ExtensionIntegrationDefinition,
+  SaveIntegrationRequest as ExtensionIntegrationSaveRequest,
+  McpServerProbeResult as ExtensionMcpTestResult,
+  ExtensionReport,
+  TokenUsageStats,
+} from '@aila/agent-node/app'
 import { contextBridge, ipcRenderer } from 'electron'
 import type { OrCatalog } from '../shared/openrouter'
 
-export type { OrCatalog, OrFamily, OrModel } from '../shared/openrouter'
 export type {
+  ActiveAssistantTurn,
   AilaExecutionMode,
   BlobGarbageCollectionResult,
+  ChatAttachmentInput,
+  ChatMessage,
+  ConversationActivity,
+  ConversationActivityState,
+  ConversationCompactArtifact,
+  ConversationCompactFileArtifact,
+  ConversationCompactToolActivity,
+  ConversationCompactToolResultArtifact,
+  ConversationContextCheckpoint,
+  ConversationContextLedgerSection,
+  ConversationContextState,
+  ConversationContextTokenPreflight,
+  ConversationContextTurnLedgerEntry,
+  ConversationRecord,
+  ConversationRuntimeHydration as RuntimeConversationHydration,
+  ConversationRuntimePendingApproval,
+  ConversationRuntimeReplayState,
+  ConversationRuntimeReplayTurn,
+  ConversationRuntimeStatePhase,
+  ConversationRuntimeStateSnapshot,
+  ConversationSummary,
+  ConversationUsage,
   ConversationWorkspaceRef,
+  DoneEvent as ChatDoneEvent,
+  ErrorEvent as ChatErrorEvent,
+  ImageBlockEvent,
+  ModelInfo,
+  ModelSelection,
+  PersistedBlock,
+  PersistedFileBlock,
+  PersistedImageBlock,
+  PersistedMessage,
+  PersistedRunEvent,
+  PersistedTextBlock,
+  PersistedToolCallBlock,
+  PersistedToolResultRef,
+  PromptCacheMode,
+  PromptCacheSettings,
+  PromptCacheTtl,
   ProviderId,
+  RunEventType,
   RunPayload,
   RunSnapshot,
+  RuntimeCompactConversationInput as RuntimeCompactConversationRequest,
+  RuntimeCompactConversationResult,
+  RuntimeCreateConversationInput as RuntimeCreateConversationRequest,
   RuntimeForkRunInput,
   RuntimeForkSessionInput,
   RuntimeNavigateSessionInput,
+  RuntimeRetryLastInput as RuntimeRetryLastRequest,
   RuntimeRunControlInput,
   RuntimeRunInspection,
   RuntimeRunPayloadDescriptor,
   RuntimeRunPayloadInput,
   RuntimeRunSummary,
+  RuntimeSendInput as RuntimeSendRequest,
+  RuntimeSendResult as SendResult,
   RuntimeSessionAvailability,
   SessionTree,
-}
+  Settings,
+  ToolApprovalRequestPayload as ToolApprovalRequestEvent,
+  ToolApprovalResolvedPayload as ToolApprovalResolvedEvent,
+  ToolCall as ToolCallPayload,
+  ToolCallArgsDeltaEvent,
+  ToolCallEvent as ToolCallStartEvent,
+  ToolResultEvent as ToolCallResultEvent,
+  UsageInfo,
+  WebSearchSettings,
+} from '@aila/agent'
 
-export const AILA_CONVERSATION_META_SCHEMA_VERSION = 1
-export const AILA_PERSISTED_MESSAGE_SCHEMA_VERSION = 1
+// Runtime and persistence types re-export from @aila/agent — hand-copied
+// duplicates are forbidden (CLAUDE.md): they drift.
+export {
+  AILA_CONVERSATION_META_SCHEMA_VERSION,
+  AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+} from '@aila/agent'
+// App-host types owned by the Node package (allowed for preload; the renderer
+// still may not import @aila/agent-node).
+export type {
+  ExtensionIntegrationReport,
+  ExtensionMcpServerReport,
+  ExtensionReport,
+  ExtensionReportError,
+  ExtensionReportErrorKind,
+  ExtensionSkillReport,
+  IntegrationDefinition as ExtensionIntegrationDefinition,
+  McpServerProbeResult as ExtensionMcpTestResult,
+  PublicMcpOAuthStatus as ExtensionMcpOAuthReport,
+  SaveIntegrationRequest as ExtensionIntegrationSaveRequest,
+  TokenUsageDay,
+  TokenUsageStats,
+} from '@aila/agent-node/app'
+export type { OrCatalog, OrFamily, OrModel } from '../shared/openrouter'
 
-export interface ToolCallPayload {
-  id: string
-  type: 'function'
-  function: { name: string; arguments: string }
-}
-
-export type ChatMessage =
-  | { role: 'system' | 'user'; content: string }
-  | { role: 'assistant'; content: string; tool_calls?: ToolCallPayload[] }
-  | { role: 'tool'; tool_call_id: string; content: string }
+// --- Genuinely preload-local shapes (IPC wire contracts) ---
 
 export interface ChatStreamEventBase {
   conversationId: string
@@ -66,208 +159,9 @@ export interface ReasoningDeltaEvent extends ChatStreamEventBase {
   delta: string
 }
 
-export interface ToolCallStartEvent extends ChatStreamEventBase {
-  toolCallId: string
-  name: string
-  arguments: string
-}
-
-export interface ToolCallArgsDeltaEvent extends ChatStreamEventBase {
-  toolCallId: string
-  delta: string
-}
-
-export interface ToolCallResultEvent extends ChatStreamEventBase {
-  toolCallId: string
-  name?: string
-  result: string
-  isError: boolean
-}
-
-export interface ToolApprovalRequestEvent {
-  requestId: string
-  name: string
-  args: Record<string, unknown>
-  conversationId?: string
-  messageId?: string
-  toolCallId?: string
-  requestedAt: number
-  expiresAt: number
-  metadata: {
-    name: string
-    readOnly: boolean
-    destructive: boolean
-    requiresApproval: boolean
-    access: string[]
-    scope: string[]
-    maxResultBytes?: number
-  }
-}
-
 export interface ToolApprovalResponse {
   requestId: string
   approved: boolean
-}
-
-export interface ToolApprovalResolvedEvent {
-  requestId: string
-  approved: boolean
-  reason: 'user' | 'timeout' | 'shutdown' | 'cancelled'
-}
-
-export type RunEventType =
-  | 'run.started'
-  | 'run.resumed'
-  | 'run.paused'
-  | 'run.completed'
-  | 'run.failed'
-  | 'run.cancelled'
-  | 'step.started'
-  | 'step.completed'
-  | 'step.failed'
-  | 'step.cancelled'
-  | 'turn.started'
-  | 'turn.completed'
-  | 'turn.failed'
-  | 'turn.cancelled'
-  | 'turn.interrupted'
-  | 'context:compacting'
-  | 'context:compacted'
-  | 'tool.requested'
-  | 'tool.input.delta'
-  | 'tool.input.completed'
-  | 'tool.execution.started'
-  | 'tool.execution.completed'
-  | 'tool.execution.failed'
-  | 'tool.result.returned'
-  | 'tool.approval.requested'
-  | 'tool.approval.resolved'
-
-export interface PersistedRunEvent {
-  schemaVersion: number
-  timestamp: number
-  conversationId: string
-  messageId: string
-  type: RunEventType
-  turnId?: string
-  runId?: string
-  stepId?: string
-  seq?: number
-  eventId?: string
-  data?: Record<string, unknown>
-}
-
-export interface PersistedTextBlock {
-  type: 'text' | 'reasoning'
-  content: string
-}
-
-export interface PersistedToolCallBlock {
-  type: 'tool_call'
-  id: string
-  name: string
-  arguments: string
-  status: 'running' | 'done' | 'error'
-  result?: string
-  resultRef?: PersistedToolResultRef
-}
-
-export interface PersistedToolResultRef {
-  kind: 'file'
-  path: string
-  relativePath: string
-  sizeChars: number
-  preview: string
-}
-
-export interface PersistedImageBlock {
-  type: 'image'
-  url: string
-  mime: string
-  prompt?: string
-}
-
-/** A text file (or doc reference) the user attached to their message. */
-export interface PersistedFileBlock {
-  type: 'file'
-  name: string
-  content: string
-}
-
-export type PersistedBlock =
-  | PersistedTextBlock
-  | PersistedToolCallBlock
-  | PersistedImageBlock
-  | PersistedFileBlock
-
-/** Attachment payload sent with a user message. */
-export interface ChatAttachmentInput {
-  kind: 'image' | 'text'
-  name: string
-  mime: string
-  /** kind 'image': base64-encoded bytes (no data: prefix). kind 'text': raw content. */
-  data: string
-}
-
-export interface ImageBlockEvent extends ChatStreamEventBase {
-  block: PersistedImageBlock
-}
-
-export interface ModelSelection {
-  providerId: ProviderId
-  modelId: string
-}
-
-export type PromptCacheMode = 'off' | 'auto' | 'explicit'
-export type PromptCacheTtl = '5m' | '1h'
-
-export interface PromptCacheSettings {
-  mode?: PromptCacheMode
-  ttl?: PromptCacheTtl
-  openRouterStickySession?: boolean
-  showDiagnostics?: boolean
-}
-
-export interface PersistedMessage {
-  schemaVersion: typeof AILA_PERSISTED_MESSAGE_SCHEMA_VERSION
-  id: string
-  role: 'user' | 'assistant'
-  blocks: PersistedBlock[]
-  status: 'streaming' | 'done' | 'error'
-  error?: string
-  model?: ModelSelection
-}
-
-export interface Settings {
-  apiKeys: {
-    anthropic?: string
-    openai?: string
-    google?: string
-    deepseek?: string
-    openrouter?: string
-  }
-  defaultModel: ModelSelection | null
-  defaultImageModel?: ModelSelection | null
-  defaultVisionModel?: ModelSelection | null
-  visionFallbackMode?: 'auto' | 'ask' | 'disabled'
-  promptCache?: PromptCacheSettings
-  approvalMode?: 'safe' | 'yolo'
-  webSearch?: WebSearchSettings
-  recentOpenRouterModels?: string[]
-}
-
-export interface WebSearchSettings {
-  providers?: {
-    tavily?: { apiKey?: string }
-    searxng?: { baseUrl?: string }
-    brave?: { apiKey?: string }
-    google?: { apiKey?: string; cx?: string }
-    duckduckgo?: { enabled?: boolean }
-    wikimedia?: { enabled?: boolean }
-    hackernews?: { enabled?: boolean }
-    arxiv?: { enabled?: boolean }
-    stackexchange?: { enabled?: boolean; site?: string }
-  }
 }
 
 export interface SettingsState {
@@ -275,78 +169,13 @@ export interface SettingsState {
   configuredProviders: ProviderId[]
 }
 
-export type ExtensionReportErrorKind = 'skills' | 'mcp'
-
-export interface ExtensionReportError {
-  kind: ExtensionReportErrorKind
-  message: string
+export interface RuntimeAppendMessageRequest {
+  conversationId: string
+  message: PersistedMessage
 }
 
-export interface ExtensionSkillReport {
-  name: string
-  description: string
-  directory: string
-  skillPath: string
-}
-
-export interface ExtensionMcpServerReport {
-  name: string
-  transport: 'stdio' | 'http' | 'sse'
-  source: 'project' | 'claude-json' | 'claude-settings' | 'user'
-  sourcePath: string
-  enabled: boolean
-  status: 'connected' | 'connecting' | 'failed' | 'disabled' | 'not_connected'
-  tools: string[]
-  command?: string
-  args?: string[]
-  url?: string
-  integrationId?: string
-  auth?: ExtensionMcpOAuthReport
-  error?: string
-}
-
-export interface ExtensionMcpOAuthReport {
-  type: 'oauth'
-  configured: boolean
-  authorized: boolean
-  hasRefreshToken: boolean
-  scopes: string[]
-  clientIdSuffix?: string
-  redirectUri?: string
-  lastAuthorizedAt?: number
-  updatedAt?: number
-}
-
-export interface ExtensionIntegrationReport {
-  id: string
-  label: string
-  provider: string
-  mcpServerName: string
-  endpoint: string
-  requiredScopes: string[]
-  configured: boolean
-  docsUrl: string
-  server?: ExtensionMcpServerReport
-}
-
-export interface ExtensionReport {
-  ok: boolean
-  dataDir: string
-  skillsDir: string
-  mcpConfigPath: string
-  projectMcpConfigPath: string
-  skills: ExtensionSkillReport[]
-  integrations: ExtensionIntegrationReport[]
-  mcpServers: ExtensionMcpServerReport[]
-  errors: ExtensionReportError[]
-}
-
-export interface ExtensionReloadResult {
-  toolCount: number
-  skillCount: number
-  report: ExtensionReport
-}
-
+// MCP save/config inputs stay local: the desktop settings UI accepts a wider
+// transport union ('streamable-http') than the loaded-config types expose.
 export type ExtensionMcpTransport = 'stdio' | 'http' | 'sse' | 'streamable-http'
 export type ExtensionMcpApprovalPolicy = 'ask' | 'auto' | 'deny'
 
@@ -389,349 +218,11 @@ export interface ExtensionMcpSaveRequest {
   server: ExtensionMcpServerConfigInput
 }
 
-export interface ExtensionMcpTestResult {
-  ok: boolean
-  tools: string[]
-  error?: string
-}
-
-export interface ExtensionIntegrationDefinition {
-  id: string
-  label: string
-  provider: string
-  mcpServerName: string
-  endpoint: string
-  transport: 'http'
-  requiredScopes: string[]
-  tools: Array<{ name: string; approval: ExtensionMcpApprovalPolicy; risk: 'read' | 'write' }>
-  docsUrl: string
-}
-
-export interface ExtensionIntegrationSaveRequest {
-  id: 'gmail'
-  oauth?: {
-    clientId?: string
-    clientSecret?: string
-    redirectUri?: string
-    scopes?: string[]
-  }
-}
-
-export interface ConversationUsage {
-  promptTokens: number
-  completionTokens: number
-  totalTokens: number
-  modelCallCount?: number
-  maxInputTokens?: number
-  lastInputTokens?: number
-  lastOutputTokens?: number
-  lastCacheReadTokens?: number
-  lastCacheWriteTokens?: number
-  lastCacheMissTokens?: number
-  cacheReadTokens?: number
-  cacheWriteTokens?: number
-  cacheMissTokens?: number
-  reasoningTokens?: number
-  updatedAt: number
-  turnCount?: number
-  cumulativePromptTokens?: number
-  cumulativeCompletionTokens?: number
-  cumulativeTotalTokens?: number
-  cumulativeModelCallCount?: number
-  cumulativeCacheReadTokens?: number
-  cumulativeCacheWriteTokens?: number
-  cumulativeCacheMissTokens?: number
-  cumulativeReasoningTokens?: number
-}
-
-export interface ConversationCompactFileArtifact {
-  path: string
-  mentions: number
-}
-
-export interface ConversationCompactToolActivity {
-  name: string
-  count: number
-}
-
-export interface ConversationCompactToolResultArtifact {
-  toolCallId: string
-  toolName: string
-  sizeChars: number
-  preview: string
-  path?: string
-  relativePath?: string
-}
-
-export interface ConversationCompactArtifact {
-  schemaVersion: 1
-  summary: string
-  userRequests: string[]
-  decisions: string[]
-  files: ConversationCompactFileArtifact[]
-  toolActivity: ConversationCompactToolActivity[]
-  toolResults: ConversationCompactToolResultArtifact[]
-  nextSteps: string[]
-}
-
-export interface ConversationContextCheckpoint {
-  schemaVersion: 1
-  id: string
-  createdAt: number
-  boundaryMessageId: string
-  sourceMessageIds: string[]
-  omittedRoundCount: number
-  summary: string
-  charCost: number
-  artifact?: ConversationCompactArtifact
-}
-
-export interface ConversationContextLedgerSection {
-  kind: string
-  messageCount: number
-  charCost: number
-  estimatedTokens: number
-}
-
-export interface ConversationContextTokenPreflight {
-  inputTokens: number
-  method: string
-  providerId?: ProviderId | 'unknown'
-  model?: string
-  countedAt: number
-}
-
-export interface ConversationContextTurnLedgerEntry {
-  schemaVersion: 1
-  messageId: string
-  createdAt: number
-  providerId: ProviderId
-  modelId: string
-  estimatedInputTokens: number
-  inputBudgetTokens: number
-  remainingInputTokens: number
-  sectionCount: number
-  sections: ConversationContextLedgerSection[]
-  preflight?: ConversationContextTokenPreflight
-  usage?: {
-    promptTokens: number
-    completionTokens: number
-    totalTokens: number
-    modelCallCount?: number
-    maxInputTokens?: number
-    lastInputTokens?: number
-    lastOutputTokens?: number
-    lastCacheReadTokens?: number
-    lastCacheWriteTokens?: number
-    lastCacheMissTokens?: number
-    cacheReadTokens?: number
-    cacheWriteTokens?: number
-    cacheMissTokens?: number
-    reasoningTokens?: number
-  }
-  compaction: {
-    activeCheckpointId: string | null
-    recommendedCheckpointId: string | null
-    omittedRoundCount: number
-    shouldAutoCompact: boolean
-  }
-}
-
-export interface ConversationContextState {
-  checkpoint?: ConversationContextCheckpoint
-  turns?: ConversationContextTurnLedgerEntry[]
-}
-
-export type ConversationActivityState =
-  | 'running'
-  | 'paused'
-  | 'approval'
-  | 'completed'
-  | 'failed'
-  | 'cancelled'
-  | 'interrupted'
-
-export interface ConversationActivity {
-  state: ConversationActivityState
-  title: string
-  updatedAt: number
-  eventType: RunEventType
-  messageId: string
-  detail?: string
-  toolName?: string
-}
-
-export type ConversationRuntimeStatePhase =
-  | 'idle'
-  | 'running'
-  | 'paused'
-  | 'approval'
-  | 'cancelling'
-  | 'completed'
-  | 'failed'
-  | 'cancelled'
-  | 'interrupted'
-
-export interface ConversationRuntimePendingApproval {
-  requestedAt: number
-  requestId?: string
-  toolCallId?: string
-  toolName?: string
-}
-
-export interface ConversationRuntimeReplayTurn {
-  conversationId: string
-  assistantMessageId: string
-  updatedAt: number
-  eventType: RunEventType
-  startedAt?: number
-  selection?: ModelSelection
-  pendingApproval?: ConversationRuntimePendingApproval
-}
-
-export interface ConversationRuntimeReplayState {
-  phase: ConversationRuntimeStatePhase
-  active: boolean
-  turn?: ConversationRuntimeReplayTurn
-}
-
-export interface ConversationRuntimeStateSnapshot {
-  conversationId: string
-  state: ConversationRuntimeReplayState
-}
-
-export interface ConversationSummary {
-  schemaVersion: typeof AILA_CONVERSATION_META_SCHEMA_VERSION
-  id: string
-  title: string
-  createdAt: number
-  updatedAt: number
-  usage?: ConversationUsage
-  activity?: ConversationActivity
-  // Optional chat session workspace affinity used by Desktop grouping.
-  workspace?: ConversationWorkspaceRef | null
-  context?: ConversationContextState
-}
-
-export interface UsageInfo {
-  promptTokens: number
-  completionTokens: number
-  totalTokens: number
-  modelCallCount?: number
-  maxInputTokens?: number
-  lastInputTokens?: number
-  lastOutputTokens?: number
-  lastCacheReadTokens?: number
-  lastCacheWriteTokens?: number
-  lastCacheMissTokens?: number
-  cacheReadTokens?: number
-  cacheWriteTokens?: number
-  cacheMissTokens?: number
-  reasoningTokens?: number
-}
-
-export interface TokenUsageDay {
-  date: string
-  totalTokens: number
-  inputTokens: number
-  outputTokens: number
-  cacheReadTokens: number
-  cacheWriteTokens: number
-  cacheMissTokens: number
-  reasoningTokens: number
-  modelCallCount: number
-  turnCount: number
-}
-
-export interface TokenUsageStats {
-  generatedAt: number
-  today: TokenUsageDay
-  lifetime: TokenUsageDay
-  peakDay: TokenUsageDay | null
-  currentStreakDays: number
-  longestStreakDays: number
-  days: TokenUsageDay[]
-}
-
-export interface ChatDoneEvent extends ChatStreamEventBase {
-  message: PersistedMessage
-  usage?: UsageInfo
-}
-
-export interface ChatErrorEvent extends ChatStreamEventBase {
-  error: string
-  message: PersistedMessage
-}
-
-export interface SendResult {
-  userMessage: PersistedMessage
-  assistantMessageId: string
-  turnId: string
-  runId: string
-}
-
-export interface RuntimeSendRequest {
-  conversationId: string
-  userText: string
-  selection: ModelSelection
-  mode?: AilaExecutionMode
-  loopMode?: 'continuous' | 'step'
-  attachments?: ChatAttachmentInput[]
-  transientContext?: ChatMessage[]
-}
-
-export interface RuntimeRetryLastRequest {
-  conversationId: string
-  selection: ModelSelection
-  mode?: AilaExecutionMode
-  loopMode?: 'continuous' | 'step'
-  transientContext?: ChatMessage[]
-}
-
-export interface RuntimeAppendMessageRequest {
-  conversationId: string
-  message: PersistedMessage
-}
-
-export interface RuntimeCompactConversationRequest {
-  conversationId: string
-  selection: ModelSelection
-}
-
-export interface RuntimeCompactConversationResult {
-  compacted: boolean
-  summary: ConversationSummary
-  checkpoint?: ConversationContextCheckpoint
-  reason?: 'nothing_to_compact'
-}
-
-export interface RuntimeCreateConversationRequest {
-  workspace?: ConversationWorkspaceRef | null
-}
-
-export interface ActiveAssistantTurn {
-  conversationId: string
-  assistantMessageId: string
-  turnId: string
-  runId: string
-  selection: ModelSelection
-}
-
-export interface ModelInfo {
-  model: string
-  contextLength: number | null
-}
-
-export interface ConversationRecord {
-  meta: ConversationSummary
-  messages: PersistedMessage[]
-}
-
-export interface RuntimeConversationHydration {
-  record: ConversationRecord
-  events: PersistedRunEvent[]
-  runtimeState: ConversationRuntimeReplayState
-  activeTurn: ActiveAssistantTurn | null
+/** Composed in main (extensions:reload); wider than the agent-node reload result. */
+export interface ExtensionReloadResult {
+  toolCount: number
+  skillCount: number
+  report: ExtensionReport
 }
 
 function on<T>(channel: string, callback: (data: T) => void): () => void {

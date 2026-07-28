@@ -1,5 +1,7 @@
 export { getModelInfo } from './agent'
 export {
+  type ExtensionIntegrationReport,
+  type ExtensionMcpServerReport,
   type ExtensionReport,
   type ExtensionReportError,
   type ExtensionReportErrorKind,

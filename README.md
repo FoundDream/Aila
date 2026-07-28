@@ -12,22 +12,29 @@ The public runtime SDK entrypoint is `@aila/agent`; Node adapters live in
 `@aila/agent-node/app`. Consumers should use these exported entrypoints instead
 of importing workspace source files directly.
 
-The runtime is split into explicit scopes:
+The runtime is split into explicit scopes, one module each under
+`packages/agent/src/runtime/` (with `runtime.ts` as the public barrel:
+api-types, workbench-host, clone, run-helpers, services, catalog,
+session-engine, session-runtime, workbench-runtime):
 
 - `WorkbenchRuntime` is the multi-session process facade. It creates, retains,
   routes, recovers, and shuts down session runtimes.
 - `WorkbenchServices` is the process-scoped service container behind the
-  facade. Store, host integrations, tool/skill caches, clocks, and id factories
-  are shared by every session.
+  facade. Store, host integrations, tool/skill caches, clocks, id factories,
+  and the lifecycle-hook dispatcher are shared by every session.
 - `ConversationCatalog` owns global conversation creation, lookup, listing, and
   restart recovery; it does not execute turns.
 - `SessionRuntime` is bound to one durable conversation. It owns that session's
   turn lifecycle, phase, pending journal writes, context assembly, run controls,
-  navigation, compaction, event subscription, and steer/follow-up/next-turn
-  input queues.
+  navigation, compaction, event subscription, availability snapshots, and
+  steer/follow-up/next-turn input queues.
 - `AgentRuntime` orchestrates one model/tool loop, including queue timing and
   step policy.
 - `RunMachine` is the pure durable execution state machine.
+
+Hosts observe the runtime through `WorkbenchHost.hooks` and the
+`session:availability` event; the invariants that bind all of this together
+live in [CLAUDE.md](./CLAUDE.md).
 
 Desktop, TUI, and CLI can keep using the `Workbench` API. Code that already
 knows a conversation id can call `workbench.getSessionRuntime(id)` and use the
@@ -108,10 +115,10 @@ Desktop.
 ```sh
 bun run lint
 bun run typecheck
-bun run test
 bun run build
 ```
 
-`bun run test` runs the runtime contract suite plus CLI/TUI contract coverage
-for extension validation, local TUI commands, removed doc adapter commands, and
-retry-last recovery.
+There is deliberately no test suite. The architecture invariants that the
+former contract scripts enforced are documented as binding rules in
+[CLAUDE.md](./CLAUDE.md); verification is lint, typecheck, build, and manual
+smoke runs.

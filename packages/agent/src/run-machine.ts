@@ -144,9 +144,6 @@ export interface RunToolStepResult {
   error?: string
 }
 
-/** @deprecated Legacy type alias; execution is always per tool call. */
-export type RunToolBatchResult = RunToolStepResult
-
 export interface RunToolPreparation {
   outcome: 'ready' | 'rejected'
   error?: string
@@ -455,14 +452,9 @@ function eventWaitState(event: RunEvent): RunWait {
   if (value && typeof value === 'object') {
     const record = value as Record<string, unknown>
     const reason = record.reason
-    if (
-      reason === 'operator' ||
-      reason === 'debug' ||
-      reason === 'approval' ||
-      reason === 'user_input'
-    ) {
+    if (reason === 'operator' || reason === 'approval' || reason === 'user_input') {
       return {
-        reason: reason === 'debug' ? 'operator' : reason,
+        reason,
         ...(typeof record.requestId === 'string' ? { requestId: record.requestId } : {}),
         ...(typeof record.detail === 'string' ? { detail: record.detail } : {}),
       }

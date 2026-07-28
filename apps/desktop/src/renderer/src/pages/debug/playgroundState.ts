@@ -434,10 +434,3 @@ export function deriveRunControls(state: PlaygroundState, runId: string): Playgr
     leafMismatch,
   }
 }
-
-export const createPlaygroundStateForTest = createPlaygroundState
-export const reducePlaygroundForTest = reducePlayground
-export const selectTranscriptForTest = selectTranscript
-export const selectGuardsForTest = selectGuards
-export const selectRunForAssistantForTest = selectRunForAssistant
-export const deriveRunControlsForTest = deriveRunControls

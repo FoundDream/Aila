@@ -11,7 +11,12 @@ interface ContextPanelProps {
 type EditableRole = 'system' | 'user' | 'assistant'
 
 function rowContent(message: ChatMessage): string {
-  return 'content' in message ? message.content : ''
+  if (!('content' in message)) return ''
+  if (typeof message.content === 'string') return message.content
+  // The panel only authors plain text; render multimodal parts read-only.
+  return message.content
+    .map((part) => (part.type === 'text' ? part.text : `[${part.type}]`))
+    .join('\n')
 }
 
 function rowRole(message: ChatMessage): EditableRole {

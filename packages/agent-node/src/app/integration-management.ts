@@ -1,13 +1,12 @@
 import {
   buildIntegrationMcpServerConfig,
   getIntegrationDefinition,
-  type IntegrationId,
   listIntegrationDefinitions,
   type SaveIntegrationRequest,
 } from './integrations'
 import { upsertUserMcpServerConfig } from './mcp-config'
 
-export type { IntegrationId, SaveIntegrationRequest }
+export type { IntegrationDefinition, IntegrationId, SaveIntegrationRequest } from './integrations'
 export { listIntegrationDefinitions }
 
 export async function saveIntegrationMcpServerConfig(

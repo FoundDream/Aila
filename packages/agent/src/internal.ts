@@ -40,7 +40,6 @@ export {
   type RunStepKind,
   type RunStepState,
   type RunStepStatus,
-  type RunToolBatchResult,
   type RunToolPreparation,
   type RunToolStepResult,
   type RunTransition,
