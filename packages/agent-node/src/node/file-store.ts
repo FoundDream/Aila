@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { appendFile, mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { appendFile, mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type {
   BlobRef,
@@ -36,6 +36,12 @@ export interface FileRuntimeStoreOptions {
   createId?: () => string
   createEventId?: () => string
   now?: () => number
+  /**
+   * Upper bound on in-memory cached journals (LRU by touch). Unbounded when
+   * omitted. The cache assumes this process is the only writer to dataDir;
+   * out-of-process appends to a cached session are not observed.
+   */
+  maxCachedJournals?: number
 }
 
 export function createFileRuntimeStore(options: FileRuntimeStoreOptions): WorkbenchStore {
@@ -44,6 +50,28 @@ export function createFileRuntimeStore(options: FileRuntimeStoreOptions): Workbe
   const createEventId = options.createEventId ?? randomUUID
   const now = options.now ?? Date.now
   const writeChains = new Map<string, Promise<void>>()
+  // Parsed+validated journals, extended in place on append. Hits are verified
+  // against the journal's byte size, so appends by other store instances (or
+  // processes) invalidate instead of going stale. Insertion order doubles as
+  // LRU order; entries are shared refs — public outputs must clone.
+  interface CachedJournal {
+    entries: SessionEntry[]
+    maxSeq: number
+    sizeBytes: number
+  }
+  const journalCache = new Map<string, CachedJournal>()
+
+  function touchJournalCache(sessionId: string, cached: CachedJournal): void {
+    journalCache.delete(sessionId)
+    journalCache.set(sessionId, cached)
+    if (options.maxCachedJournals !== undefined) {
+      while (journalCache.size > Math.max(1, options.maxCachedJournals)) {
+        const oldest = journalCache.keys().next().value
+        if (oldest === undefined) break
+        journalCache.delete(oldest)
+      }
+    }
+  }
 
   function sessionDir(sessionId: string): string {
     return join(sessionsDir, encodeURIComponent(sessionId))
@@ -84,6 +112,21 @@ export function createFileRuntimeStore(options: FileRuntimeStoreOptions): Workbe
   }
 
   async function readJournal(sessionId: string): Promise<SessionEntry[]> {
+    const cached = journalCache.get(sessionId)
+    if (cached) {
+      let currentSize = -1
+      try {
+        currentSize = (await stat(journalPath(sessionId))).size
+      } catch {
+        // Missing or unreadable file: fall through to the full read below,
+        // which surfaces the same error the uncached path always threw.
+      }
+      if (currentSize === cached.sizeBytes) {
+        touchJournalCache(sessionId, cached)
+        return cached.entries
+      }
+      journalCache.delete(sessionId)
+    }
     const raw = await readFile(journalPath(sessionId), 'utf-8')
     const entries = raw
       .split('\n')
@@ -91,6 +134,11 @@ export function createFileRuntimeStore(options: FileRuntimeStoreOptions): Workbe
       .map((line) => JSON.parse(line) as SessionEntry)
       .sort((left, right) => left.seq - right.seq)
     validateSessionJournal(entries)
+    touchJournalCache(sessionId, {
+      entries,
+      maxSeq: entries.reduce((maximum, entry) => Math.max(maximum, entry.seq), 0),
+      sizeBytes: Buffer.byteLength(raw, 'utf-8'),
+    })
     return entries
   }
 
@@ -112,16 +160,30 @@ export function createFileRuntimeStore(options: FileRuntimeStoreOptions): Workbe
     ReturnType<WorkbenchStore['appendSessionEntry']> extends Promise<infer T> ? T : never
   > {
     return queueWrite(sessionId, async () => {
-      const entries = await readJournal(sessionId)
-      const prepared = prepareSessionEntry(sessionId, entries, input, createEventId)
-      if (!prepared.duplicate) {
-        await appendFile(journalPath(sessionId), `${JSON.stringify(prepared.entry)}\n`, 'utf-8')
-        entries.push(prepared.entry)
-      }
-      return {
-        entry: structuredClone(prepared.entry),
-        summary: structuredClone(projectConversation(entries).meta),
-        ...(prepared.duplicate ? { duplicate: true } : {}),
+      try {
+        const entries = await readJournal(sessionId)
+        const prepared = prepareSessionEntry(sessionId, entries, input, createEventId)
+        if (!prepared.duplicate) {
+          const line = `${JSON.stringify(prepared.entry)}\n`
+          await appendFile(journalPath(sessionId), line, 'utf-8')
+          entries.push(prepared.entry)
+          const cached = journalCache.get(sessionId)
+          if (cached && cached.entries === entries) {
+            cached.maxSeq = Math.max(cached.maxSeq, prepared.entry.seq)
+            cached.sizeBytes += Buffer.byteLength(line, 'utf-8')
+          } else {
+            journalCache.delete(sessionId)
+          }
+        }
+        return {
+          entry: structuredClone(prepared.entry),
+          summary: structuredClone(projectConversation(entries).meta),
+          ...(prepared.duplicate ? { duplicate: true } : {}),
+        }
+      } catch (error) {
+        // A failed write may leave cache and file out of sync; re-read next time.
+        journalCache.delete(sessionId)
+        throw error
       }
     })
   }
@@ -172,7 +234,13 @@ export function createFileRuntimeStore(options: FileRuntimeStoreOptions): Workbe
       },
       createEventId,
     ).entry
-    await writeFile(journalPath(id), `${JSON.stringify(created)}\n`, 'utf-8')
+    const createdLine = `${JSON.stringify(created)}\n`
+    await writeFile(journalPath(id), createdLine, 'utf-8')
+    touchJournalCache(id, {
+      entries: [created],
+      maxSeq: created.seq,
+      sizeBytes: Buffer.byteLength(createdLine, 'utf-8'),
+    })
     return structuredClone(summary)
   }
 
@@ -280,6 +348,7 @@ export function createFileRuntimeStore(options: FileRuntimeStoreOptions): Workbe
         }
         return structuredClone(projectConversation(await readJournal(created.id)).meta)
       } catch (error) {
+        journalCache.delete(created.id)
         await rm(sessionDir(created.id), { recursive: true, force: true }).catch(() => {})
         throw error
       }
@@ -454,6 +523,7 @@ export function createFileRuntimeStore(options: FileRuntimeStoreOptions): Workbe
         if (!moved && isErrnoCode(error, 'ENOENT')) return
         throw error
       } finally {
+        journalCache.delete(sessionId)
         writeChains.delete(sessionId)
       }
     },
