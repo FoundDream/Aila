@@ -37,6 +37,7 @@ import type {
   RuntimeRunSummary,
   RuntimeSendInput,
   RuntimeSendResult,
+  RuntimeSessionAvailability,
   RuntimeToolPackLoadInput,
 } from './api-types'
 import { ConversationCatalog } from './catalog'
@@ -111,6 +112,10 @@ export class WorkbenchRuntime implements Workbench {
 
   async getConversation(conversationId: string): Promise<ConversationRecord> {
     return this.getSessionRuntime(conversationId).getConversation()
+  }
+
+  async getAvailability(conversationId: string): Promise<RuntimeSessionAvailability> {
+    return this.getSessionRuntime(conversationId).getAvailability()
   }
 
   async getSessionTree(conversationId: string): Promise<SessionTree> {

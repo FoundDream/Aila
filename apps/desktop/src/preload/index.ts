@@ -13,6 +13,7 @@ import type {
   RuntimeRunPayloadDescriptor,
   RuntimeRunPayloadInput,
   RuntimeRunSummary,
+  RuntimeSessionAvailability,
   SessionTree,
 } from '@aila/agent'
 import { contextBridge, ipcRenderer } from 'electron'
@@ -34,6 +35,7 @@ export type {
   RuntimeRunPayloadDescriptor,
   RuntimeRunPayloadInput,
   RuntimeRunSummary,
+  RuntimeSessionAvailability,
   SessionTree,
 }
 
@@ -758,6 +760,10 @@ const api = {
       ipcRenderer.invoke('runtime:hydrate-conversation', conversationId),
     getSessionTree: (conversationId: string): Promise<SessionTree> =>
       ipcRenderer.invoke('runtime:sessions:tree', conversationId),
+    getAvailability: (conversationId: string): Promise<RuntimeSessionAvailability> =>
+      ipcRenderer.invoke('runtime:availability:get', conversationId),
+    onAvailability: (cb: (availability: RuntimeSessionAvailability) => void) =>
+      on<RuntimeSessionAvailability>('session:availability', cb),
     navigateSession: (request: RuntimeNavigateSessionInput): Promise<ConversationRecord> =>
       ipcRenderer.invoke('runtime:sessions:navigate', request),
     forkSession: (request: RuntimeForkSessionInput): Promise<ConversationSummary> =>

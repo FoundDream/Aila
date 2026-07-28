@@ -139,6 +139,25 @@ export class ConversationCatalog {
           timestamp: this.services.now(),
           data: { phase: 'idle' },
         })
+        // Advisory availability snapshot after crash recovery; no engine exists
+        // for the session yet, so this reflects the reset journal phase only.
+        this.services.emit(
+          createWorkbenchEvent('session:availability', {
+            conversationId: summary.id,
+            phase: 'idle',
+            activeTurn: null,
+            blocked: null,
+            allows: {
+              startTurn: true,
+              mutateSession: true,
+              resumeRun: true,
+              steer: false,
+              followUp: false,
+              nextTurn: true,
+              abort: false,
+            },
+          }),
+        )
       }),
     )
   }

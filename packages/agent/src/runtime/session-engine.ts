@@ -71,6 +71,7 @@ import type {
   RuntimeRunSummary,
   RuntimeSendInput,
   RuntimeSendResult,
+  RuntimeSessionAvailability,
   RuntimeStableInstructionsInput,
   RuntimeToolPackLoadInput,
   RuntimeTransientContextInput,
@@ -171,6 +172,7 @@ export class SessionRuntimeEngine {
   private readonly options: WorkbenchOptions
   private shutdownPromise: Promise<void> | null = null
   private shutdownStarted = false
+  private lastAvailabilityKey: string | null = null
 
   constructor(
     private readonly conversationId: string,
@@ -215,11 +217,10 @@ export class SessionRuntimeEngine {
 
   async navigateSession(input: RuntimeNavigateSessionInput): Promise<ConversationRecord> {
     return this.turns.withStartLock(async () => {
-      this.assertCanStartTurn(input.conversationId)
-      if (this.turns.has()) {
-        throw new Error('cannot navigate session while an assistant turn is running')
-      }
-      await this.requireIdleSession(input.conversationId)
+      await this.assertAvailableStructural(
+        input.conversationId,
+        'cannot navigate session while an assistant turn is running',
+      )
       const appended = await this.store.setSessionLeaf(input.conversationId, input.entryId)
       const record = await this.getConversation(input.conversationId)
       this.emit(createWorkbenchEvent('conversations:updated', appended.summary))
@@ -229,11 +230,10 @@ export class SessionRuntimeEngine {
 
   async forkSession(input: RuntimeForkSessionInput): Promise<ConversationSummary> {
     return this.turns.withStartLock(async () => {
-      this.assertCanStartTurn(input.conversationId)
-      if (this.turns.has()) {
-        throw new Error('cannot fork session while an assistant turn is running')
-      }
-      await this.requireIdleSession(input.conversationId)
+      await this.assertAvailableStructural(
+        input.conversationId,
+        'cannot fork session while an assistant turn is running',
+      )
       const summary = await this.store.forkConversation(
         input.conversationId,
         input.entryId,
@@ -246,11 +246,10 @@ export class SessionRuntimeEngine {
   }
 
   async collectSessionGarbage(conversationId: string): Promise<BlobGarbageCollectionResult> {
-    this.assertCanStartTurn(conversationId)
-    if (this.turns.has()) {
-      throw new Error('cannot collect session garbage while an assistant turn is running')
-    }
-    await this.requireIdleSession(conversationId)
+    await this.assertAvailableStructural(
+      conversationId,
+      'cannot collect session garbage while an assistant turn is running',
+    )
     return cloneRuntimeValue(await this.store.collectGarbageBlobs(conversationId))
   }
 
@@ -494,11 +493,10 @@ export class SessionRuntimeEngine {
   ): Promise<RuntimeCompactConversationResult> {
     return this.turns.withStartLock(async () => {
       const { conversationId, selection } = input
-      this.assertCanStartTurn(conversationId)
-      if (this.turns.has()) {
-        throw new Error('cannot compact while assistant turn is running')
-      }
-      await this.requireIdleSession(conversationId)
+      await this.assertAvailableStructural(
+        conversationId,
+        'cannot compact while assistant turn is running',
+      )
       await this.setSessionPhase(conversationId, 'compaction')
       try {
         const record = await this.getConversation(conversationId)
@@ -670,6 +668,8 @@ export class SessionRuntimeEngine {
     return this.resumeRun({ ...input, loopMode: 'continuous' })
   }
 
+  // Deliberately exempt from availability gating: aborting must work while a
+  // turn is active and during shutdown.
   async abortRun(input: RuntimeRunControlInput): Promise<RunSnapshot> {
     this.assertBoundConversation(input.conversationId)
     const active = this.turns.get()
@@ -728,11 +728,10 @@ export class SessionRuntimeEngine {
   }
 
   async forkRun(input: RuntimeForkRunInput): Promise<RunSnapshot> {
-    this.assertCanStartTurn(input.conversationId)
-    if (this.turns.has()) {
-      throw new Error('cannot fork a run while an assistant turn is running')
-    }
-    await this.requireIdleSession(input.conversationId)
+    await this.assertAvailableStructural(
+      input.conversationId,
+      'cannot fork a run while an assistant turn is running',
+    )
     const sessionTree = await this.store.getSessionTree(input.conversationId)
     const source = await this.store.getRunSnapshot(input.conversationId, input.runId)
     if (!source) {
@@ -897,7 +896,7 @@ export class SessionRuntimeEngine {
         resolveCleanup = resolve
       })
       await this.setSessionPhase(input.conversationId, 'turn')
-      this.turns.set({
+      this.activateTurn({
         controller,
         cleanup,
         assistantMessageId,
@@ -1037,7 +1036,7 @@ export class SessionRuntimeEngine {
     const cleanup = new Promise<void>((resolve) => {
       resolveCleanup = resolve
     })
-    this.turns.set({
+    this.activateTurn({
       controller,
       cleanup,
       assistantMessageId,
@@ -1143,7 +1142,7 @@ export class SessionRuntimeEngine {
         await this.setSessionPhase(conversationId, 'idle').catch((error) => {
           this.logger.warn('[runtime] idle phase persistence failed:', error)
         })
-        this.turns.deleteWhere((turn) => turn.controller === controller)
+        this.deactivateTurnWhere((turn) => turn.controller === controller)
         resolveCleanup()
       }
     }
@@ -1168,6 +1167,7 @@ export class SessionRuntimeEngine {
     return { userMessage, assistantMessageId, turnId: run.turnId, runId: run.runId }
   }
 
+  // Deliberately exempt from availability gating (see abortRun).
   async abort(conversationId: string): Promise<void> {
     this.assertBoundConversation(conversationId)
     this.clearActiveInputQueues()
@@ -1190,6 +1190,79 @@ export class SessionRuntimeEngine {
 
   resetRecoveredPhase(): void {
     this.sessionPhase = undefined
+  }
+
+  /**
+   * Pure availability derivation from the engine's three live sources:
+   * shutdown flag, deleted flag and the turn coordinator, given a phase.
+   * Advisory for clients; the assert* guards remain authoritative.
+   */
+  private computeAvailability(phase: SessionPhase): RuntimeSessionAvailability {
+    const activeTurn = this.listActiveStreams()[0] ?? null
+    const blocked = this.shutdownStarted
+      ? 'shutdown'
+      : this.deleted
+        ? 'deleted'
+        : activeTurn
+          ? 'turn_active'
+          : phase !== 'idle'
+            ? 'phase_busy'
+            : null
+    const open = !this.shutdownStarted && !this.deleted
+    const idle = blocked === null
+    return {
+      conversationId: this.conversationId,
+      phase,
+      activeTurn,
+      blocked,
+      allows: {
+        startTurn: idle,
+        mutateSession: idle,
+        resumeRun: idle,
+        steer: open && activeTurn !== null,
+        followUp: open && activeTurn !== null,
+        nextTurn: open,
+        abort: activeTurn !== null,
+      },
+    }
+  }
+
+  async getAvailability(conversationId: string): Promise<RuntimeSessionAvailability> {
+    this.assertBoundConversation(conversationId)
+    const phase = this.sessionPhase ?? (await this.store.getSessionTree(this.conversationId)).phase
+    return this.computeAvailability(phase)
+  }
+
+  /** Emits session:availability only when the snapshot materially changed. */
+  private emitAvailability(phase?: SessionPhase): void {
+    const snapshot = this.computeAvailability(phase ?? this.sessionPhase ?? 'idle')
+    const key = [
+      snapshot.phase,
+      snapshot.activeTurn?.runId ?? '',
+      snapshot.blocked ?? '',
+      Object.values(snapshot.allows)
+        .map((allowed) => (allowed ? '1' : '0'))
+        .join(''),
+    ].join('|')
+    if (key === this.lastAvailabilityKey) return
+    this.lastAvailabilityKey = key
+    this.emit(createWorkbenchEvent('session:availability', snapshot))
+  }
+
+  private activateTurn(slot: StreamSlot): void {
+    this.turns.set(slot)
+    this.emitAvailability()
+  }
+
+  private deactivateTurnWhere(predicate: (turn: StreamSlot) => boolean): boolean {
+    const removed = this.turns.deleteWhere(predicate)
+    if (removed) this.emitAvailability()
+    return removed
+  }
+
+  private clearTimedOutTurn(slot: StreamSlot): void {
+    this.turns.clearTimedOut(slot)
+    this.emitAvailability()
   }
 
   async waitForIdle(conversationId: string): Promise<void> {
@@ -1233,10 +1306,13 @@ export class SessionRuntimeEngine {
 
   shutdown(reason: ConversationAbortReason = 'shutdown'): Promise<void> {
     this.shutdownStarted = true
+    this.emitAvailability()
     if (!this.shutdownPromise) this.shutdownPromise = this.abortAll(reason)
     return this.shutdownPromise
   }
 
+  // Deliberately exempt from availability gating: deletion tears down any
+  // active turn itself.
   async deleteConversation(conversationId: string): Promise<void> {
     this.assertBoundConversation(conversationId)
     this.deleted = true
@@ -1254,7 +1330,7 @@ export class SessionRuntimeEngine {
         )
         streamCleanupTimedOut = !cleanedUp
         if (!cleanedUp) {
-          this.turns.clearTimedOut(slot)
+          this.clearTimedOutTurn(slot)
         }
       } else {
         await this.notifyConversationAbort(conversationId, 'delete')
@@ -1287,6 +1363,7 @@ export class SessionRuntimeEngine {
       throw error
     } finally {
       if (!removed) this.deleted = false
+      this.emitAvailability()
     }
   }
 
@@ -1619,6 +1696,7 @@ export class SessionRuntimeEngine {
         timestamp: this.now(),
         data: { phase },
       })
+      this.emitAvailability(phase)
       return appended.entry.seq
     } catch (error) {
       this.sessionPhase = previous
@@ -1633,6 +1711,22 @@ export class SessionRuntimeEngine {
         `session structural operation requires idle phase; current phase is ${tree.phase}`,
       )
     }
+  }
+
+  /**
+   * Structural-operation guard: the availability sources (shutdown/deleted,
+   * active turn, journal phase) checked in one place. busyMessage keeps each
+   * call site's historical error string.
+   */
+  private async assertAvailableStructural(
+    conversationId: string,
+    busyMessage: string,
+  ): Promise<void> {
+    this.assertCanStartTurn(conversationId)
+    if (this.turns.has()) {
+      throw new Error(busyMessage)
+    }
+    await this.requireIdleSession(conversationId)
   }
 
   private async appendOrQueueSessionWrite(
@@ -1682,7 +1776,7 @@ export class SessionRuntimeEngine {
     const cleanedUp = await this.waitForStreamCleanup(slot, this.cleanupTimeoutMs())
     if (cleanedUp) return
 
-    this.turns.clearTimedOut(slot)
+    this.clearTimedOutTurn(slot)
     await this.recordInterruptedStreamCleanup(conversationId, slot, 'aborted cleanup timed out')
   }
 
@@ -1695,7 +1789,7 @@ export class SessionRuntimeEngine {
     const cleanedUp = await this.waitForStreamCleanup(slot, timeoutMs)
     if (cleanedUp) return
 
-    this.turns.clearTimedOut(slot)
+    this.clearTimedOutTurn(slot)
     await this.recordInterruptedStreamCleanup(conversationId, slot, interruptedReason)
   }
 
@@ -2359,7 +2453,7 @@ export class SessionRuntimeEngine {
             this.logger.warn('[runtime] idle phase persistence failed:', error)
           })
         }
-        this.turns.deleteWhere((turn) => turn.controller === controller)
+        this.deactivateTurnWhere((turn) => turn.controller === controller)
         resolveCleanup()
       }
     }

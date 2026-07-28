@@ -12,7 +12,11 @@ import type {
   PersistedRunEvent,
 } from '../conversation-core'
 import type { RunPayload, RunSnapshot } from '../run-persistence'
-import type { SessionExtensionData, SessionExtensionMessageData } from '../session-journal'
+import type {
+  SessionExtensionData,
+  SessionExtensionMessageData,
+  SessionPhase,
+} from '../session-journal'
 import type { AilaExecutionMode } from '../tool-policy'
 
 export interface RuntimeToolPackLoadInput {
@@ -178,6 +182,30 @@ export interface ActiveAssistantTurn {
   turnId: string
   runId: string
   selection: ModelSelection
+}
+
+export type RuntimeAvailabilityBlockReason = 'shutdown' | 'deleted' | 'turn_active' | 'phase_busy'
+
+/**
+ * Engine-derived snapshot of what a session currently permits. Single source
+ * for the state clients previously recombined from phase, active turns and
+ * run summaries. Advisory for UIs; the engine guards remain authoritative.
+ */
+export interface RuntimeSessionAvailability {
+  conversationId: string
+  phase: SessionPhase
+  activeTurn: ActiveAssistantTurn | null
+  /** Primary blocker; priority shutdown > deleted > turn_active > phase_busy. */
+  blocked: RuntimeAvailabilityBlockReason | null
+  allows: {
+    startTurn: boolean
+    mutateSession: boolean
+    resumeRun: boolean
+    steer: boolean
+    followUp: boolean
+    nextTurn: boolean
+    abort: boolean
+  }
 }
 
 export interface RuntimeCreateConversationInput {

@@ -4,6 +4,7 @@ import type {
   RunPayload,
   RuntimeRunInspection,
   RuntimeRunSummary,
+  RuntimeSessionAvailability,
   SessionTree,
 } from '../../types'
 
@@ -25,6 +26,8 @@ export interface InjectedContextState {
 export interface PlaygroundState {
   conversationId: string | null
   tree: SessionTree | null
+  /** Engine-derived availability snapshot; null until first load. */
+  availability: RuntimeSessionAvailability | null
   runs: RuntimeRunSummary[]
   /** Learned runId → assistantMessageId linkage, filled by inspections. */
   runMessageIds: Record<string, string>
@@ -55,6 +58,7 @@ export type PlaygroundAction =
   | { type: 'refresh_started' }
   | { type: 'refresh_loaded'; tree: SessionTree | null; runs: RuntimeRunSummary[] }
   | { type: 'refresh_failed'; error: string }
+  | { type: 'availability_loaded'; availability: RuntimeSessionAvailability }
   | { type: 'inspection_loaded'; inspection: RuntimeRunInspection }
   | { type: 'inspection_failed'; error: string }
   | { type: 'toggle_trace'; key: string }
@@ -79,6 +83,7 @@ export function createPlaygroundState(conversationId: string | null): Playground
   return {
     conversationId,
     tree: null,
+    availability: null,
     runs: [],
     runMessageIds: {},
     inspections: {},
@@ -131,6 +136,8 @@ export function reducePlayground(
       return { ...state, tree: action.tree, runs: action.runs, loading: false }
     case 'refresh_failed':
       return { ...state, loading: false, error: action.error }
+    case 'availability_loaded':
+      return { ...state, availability: action.availability }
     case 'inspection_loaded': {
       const runId = action.inspection.snapshot.identity.runId
       return {
@@ -376,12 +383,16 @@ export interface PlaygroundGuards {
   blockedReason: string | null
 }
 
-export function selectGuards(state: PlaygroundState, streamsBusy: boolean): PlaygroundGuards {
+export function selectGuards(state: PlaygroundState): PlaygroundGuards {
   const cards = selectTranscript(state.tree)
-  const activeRun = selectActiveRun(state, cards)
-  const phaseIdle = state.tree?.phase === 'idle'
-  const busy = state.structuralBusy || state.launchingRun || streamsBusy || activeRun !== null
-  const canMutate = Boolean(state.conversationId && state.tree && phaseIdle && !busy)
+  // Paused-but-resumable runs stay a renderer concern: the engine reports the
+  // session idle once a step-mode run pauses, but mutating history would
+  // orphan it, so the playground keeps blocking until it settles.
+  const pendingRun = selectActiveRun(state, cards)
+  const availability = state.availability
+  const engineAllows = availability?.allows.mutateSession ?? false
+  const busyLocal = state.structuralBusy || state.launchingRun || pendingRun !== null
+  const canMutate = Boolean(state.conversationId && state.tree && engineAllows && !busyLocal)
   const trailing = [...cards].reverse().find((card) => card.kind === 'message')
   const canRunFromLeaf =
     canMutate &&
@@ -394,10 +405,10 @@ export function selectGuards(state: PlaygroundState, streamsBusy: boolean): Play
     ? null
     : !state.conversationId || !state.tree
       ? null
-      : activeRun !== null || streamsBusy
+      : pendingRun !== null || availability?.blocked === 'turn_active'
         ? 'A run is in progress — wait for it to pause or finish.'
-        : !phaseIdle
-          ? `Session is ${state.tree?.phase ?? 'busy'} — wait for it to settle.`
+        : availability?.blocked === 'phase_busy'
+          ? `Session is ${availability.phase} — wait for it to settle.`
           : 'Another operation is in flight.'
   return { canMutate, canRunFromLeaf, composerEnabled: canMutate, blockedReason }
 }

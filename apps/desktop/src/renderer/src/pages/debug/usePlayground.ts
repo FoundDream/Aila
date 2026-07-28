@@ -70,7 +70,7 @@ function fabricatedMessage(
   }
 }
 
-export function usePlayground(conversationId: string | null, streamsBusy: boolean): PlaygroundApi {
+export function usePlayground(conversationId: string | null): PlaygroundApi {
   const [state, dispatch] = useReducer(reducePlayground, conversationId, createPlaygroundState)
   const stateRef = useRef(state)
   stateRef.current = state
@@ -83,12 +83,14 @@ export function usePlayground(conversationId: string | null, streamsBusy: boolea
       const epoch = epochRef.current
       if (foreground) dispatch({ type: 'refresh_started' })
       try {
-        const [tree, runs] = await Promise.all([
+        const [tree, runs, availability] = await Promise.all([
           window.api.runtime.getSessionTree(conversationId),
           window.api.runtime.listRunSummaries(conversationId),
+          window.api.runtime.getAvailability(conversationId),
         ])
         if (epochRef.current !== epoch) return
         dispatch({ type: 'refresh_loaded', tree, runs })
+        dispatch({ type: 'availability_loaded', availability })
       } catch (reason) {
         if (epochRef.current !== epoch) return
         dispatch({ type: 'refresh_failed', error: messageFromError(reason) })
@@ -125,6 +127,10 @@ export function usePlayground(conversationId: string | null, streamsBusy: boolea
         if (summary.id !== conversationId) return
         schedule()
       }),
+      window.api.runtime.onAvailability((availability) => {
+        if (availability.conversationId !== conversationId) return
+        dispatch({ type: 'availability_loaded', availability })
+      }),
     ]
     return () => {
       if (timer) clearTimeout(timer)
@@ -135,7 +141,7 @@ export function usePlayground(conversationId: string | null, streamsBusy: boolea
   const cards = useMemo(() => selectTranscript(state.tree), [state.tree])
   const activeRun = useMemo(() => selectActiveRun(state, cards), [state, cards])
   const activeRunId = activeRun?.identity.runId ?? null
-  const guards = useMemo(() => selectGuards(state, streamsBusy), [state, streamsBusy])
+  const guards = useMemo(() => selectGuards(state), [state])
 
   const fetchInspection = useCallback(
     (runId: string): void => {

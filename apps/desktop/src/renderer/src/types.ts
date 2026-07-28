@@ -80,6 +80,7 @@ export type {
   RuntimeRunPayloadInput,
   RuntimeRunSummary,
   RuntimeSendRequest,
+  RuntimeSessionAvailability,
   SendResult,
   SessionTree,
   Settings,

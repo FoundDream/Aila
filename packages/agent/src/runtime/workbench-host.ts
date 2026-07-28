@@ -53,6 +53,7 @@ import type {
   RuntimeRunSummary,
   RuntimeSendInput,
   RuntimeSendResult,
+  RuntimeSessionAvailability,
   RuntimeStableInstructionsInput,
   RuntimeToolPackLoadInput,
   RuntimeTransientContextInput,
@@ -127,6 +128,7 @@ export interface WorkbenchSessionApi {
   listConversations(): Promise<ConversationSummary[]>
   getConversation(conversationId: string): Promise<ConversationRecord>
   getSessionTree(conversationId: string): Promise<SessionTree>
+  getAvailability(conversationId: string): Promise<RuntimeSessionAvailability>
   navigateSession(input: RuntimeNavigateSessionInput): Promise<ConversationRecord>
   forkSession(input: RuntimeForkSessionInput): Promise<ConversationSummary>
   collectSessionGarbage(conversationId: string): Promise<BlobGarbageCollectionResult>

@@ -37,6 +37,7 @@ import type {
   RuntimeRunSummary,
   RuntimeSendInput,
   RuntimeSendResult,
+  RuntimeSessionAvailability,
 } from './api-types'
 import { cloneRuntimeValue } from './clone'
 import type { WorkbenchStore } from './repositories'
@@ -92,6 +93,10 @@ export class SessionRuntime {
 
   async getConversation(): Promise<ConversationRecord> {
     return this.engine.getConversation(this.conversationId)
+  }
+
+  async getAvailability(): Promise<RuntimeSessionAvailability> {
+    return this.engine.getAvailability(this.conversationId)
   }
 
   async getSessionTree(): Promise<SessionTree> {

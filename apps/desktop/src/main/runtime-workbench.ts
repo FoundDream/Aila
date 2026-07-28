@@ -22,6 +22,7 @@ import {
   type RuntimeRunPayloadInput,
   type RuntimeRunSummary,
   type RuntimeSendResult,
+  type RuntimeSessionAvailability,
   type SessionTree,
   type ToolApprovalRequest,
   type ToolApprovalRequestPayload,
@@ -93,6 +94,7 @@ export interface DesktopRuntimeWorkbench {
   listConversations(): Promise<ConversationSummary[]>
   getConversation(conversationId: string): Promise<ConversationRecord>
   getSessionTree(conversationId: string): Promise<SessionTree>
+  getAvailability(conversationId: string): Promise<RuntimeSessionAvailability>
   navigateSession(input: RuntimeNavigateSessionInput): Promise<ConversationRecord>
   forkSession(input: RuntimeForkSessionInput): Promise<ConversationSummary>
   collectSessionGarbage(conversationId: string): Promise<BlobGarbageCollectionResult>
@@ -221,6 +223,9 @@ export function createDesktopRuntimeWorkbench(
     getSessionTree(conversationId) {
       return runtime.getSessionTree(conversationId)
     },
+    getAvailability(conversationId) {
+      return runtime.getAvailability(conversationId)
+    },
     navigateSession(input) {
       return runtime.navigateSession(input)
     },
@@ -302,6 +307,9 @@ export function registerRuntimeWorkbenchIpcHandlers(
   )
   ipc.handle('runtime:sessions:tree', (_event, conversationId: string) =>
     workbench.getSessionTree(conversationId),
+  )
+  ipc.handle('runtime:availability:get', (_event, conversationId: string) =>
+    workbench.getAvailability(conversationId),
   )
   ipc.handle('runtime:sessions:navigate', (_event, request: RuntimeNavigateSessionInput) =>
     workbench.navigateSession(request),

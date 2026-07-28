@@ -38,8 +38,7 @@ export function DebugPage({
     configuredProviders,
     onUpdateSettings,
   )
-  const streamsBusy = conversationId !== null && streams.busyIds.has(conversationId)
-  const api = usePlayground(conversationId, streamsBusy)
+  const api = usePlayground(conversationId)
   const { state, guards } = api
 
   // Keep the chat stream hydrated so playground sends merge into it and the
