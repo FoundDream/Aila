@@ -10922,12 +10922,21 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
       readFile(join(process.cwd(), 'packages/agent-node/src/node/runtime-host.ts'), 'utf-8'),
       readFile(join(process.cwd(), 'packages/agent-node/src/app/runtime-host.ts'), 'utf-8'),
     ])
+  const runtimeModuleDir = join(process.cwd(), 'packages/agent/src/runtime')
+  const runtimeModuleSources = await Promise.all(
+    (await readdir(runtimeModuleDir))
+      .filter((entry) => entry.endsWith('.ts'))
+      .map((entry) => readFile(join(runtimeModuleDir, entry), 'utf-8')),
+  )
+  const workbenchHostSource = await readFile(join(runtimeModuleDir, 'workbench-host.ts'), 'utf-8')
+  const servicesSource = await readFile(join(runtimeModuleDir, 'services.ts'), 'utf-8')
 
   assert(
     !runtimeSource.includes("from 'node:") &&
+      runtimeModuleSources.every((source) => !source.includes("from 'node:")) &&
       !toolsSource.includes("from 'node:") &&
-      runtimeSource.includes("path?: ToolContext['path']") &&
-      runtimeSource.includes('path: this.host.path'),
+      workbenchHostSource.includes("path?: ToolContext['path']") &&
+      servicesSource.includes('path: this.host.path'),
     'agent core should stay Node-free and receive path behavior through its host boundary',
   )
   assert(
@@ -10983,7 +10992,7 @@ async function testRuntimeCoreHostBoundarySourceContract(): Promise<void> {
   }
   assertEqual(
     JSON.stringify(rootPackage.workspaces),
-    JSON.stringify(['apps/*', 'packages/*']),
+    JSON.stringify(['apps/*', 'packages/*', 'website']),
     'root package should orchestrate apps and packages workspaces',
   )
   assert(!rootPackage.dependencies, 'root package should not own application runtime dependencies')
