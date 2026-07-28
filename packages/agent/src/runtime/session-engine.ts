@@ -83,7 +83,6 @@ import {
   cloneRuntimePersistedMessage,
   cloneRuntimePersistedRunEvents,
   cloneRuntimeSettings,
-  cloneRuntimeToolRegistry,
   cloneRuntimeValue,
   cloneRuntimeWorkspaceRoots,
   filterRuntimeToolRegistryForMode,
@@ -1467,9 +1466,8 @@ export class SessionRuntimeEngine {
 
   private async resolveModelInfo(selection: ModelSelection): Promise<ModelInfo> {
     const resolved = await this.host.getModelInfo?.(cloneRuntimeValue(selection))
-    const modelInfo = cloneRuntimeValue(
-      resolved ?? { ...FALLBACK_MODEL_CONTEXT, model: selection.modelId },
-    )
+    // Only scalars are read off the host's result; no defensive copy needed.
+    const modelInfo = resolved ?? { ...FALLBACK_MODEL_CONTEXT, model: selection.modelId }
     return {
       model: typeof modelInfo.model === 'string' ? modelInfo.model : selection.modelId,
       contextLength:
@@ -1644,9 +1642,11 @@ export class SessionRuntimeEngine {
     this.assertCanStartTurn(conversationId)
     const phase = this.sessionPhase ?? (await this.store.getSessionTree(conversationId)).phase
     if (phase === 'idle') {
-      await this.store.appendSessionEntry(conversationId, cloneRuntimeValue(entry))
+      // Store boundary clones on prepare; no engine-side copy needed.
+      await this.store.appendSessionEntry(conversationId, entry)
       return
     }
+    // Clone once at enqueue: the caller keeps its object, the queue owns this one.
     this.pendingSessionWrites.push(cloneRuntimeValue(entry))
   }
 
@@ -1659,11 +1659,11 @@ export class SessionRuntimeEngine {
       try {
         const appended = await this.store.appendSessionEntry(
           conversationId,
-          cloneRuntimeValue(pending[index] as SessionEntryInput),
+          pending[index] as SessionEntryInput,
         )
         lastSeq = appended.entry.seq
       } catch (error) {
-        this.pendingSessionWrites = pending.slice(index).map((entry) => cloneRuntimeValue(entry))
+        this.pendingSessionWrites = pending.slice(index)
         throw error
       }
     }
@@ -2133,7 +2133,8 @@ export class SessionRuntimeEngine {
     const queueRunEvent = (event: RunEventInput): Promise<void> => {
       const eventWithSelection = withTurnSelection(
         {
-          ...cloneRuntimeValue(event),
+          // Fresh envelope via spread; the store boundary clones on record.
+          ...event,
           turnId: event.turnId ?? run.turnId,
           runId: event.runId ?? run.runId,
           eventId: event.eventId ?? this.createEventId(),
@@ -2168,13 +2169,15 @@ export class SessionRuntimeEngine {
         {
           conversationId,
           assistantMessageId,
-          run: cloneRuntimeValue(run),
+          // The executor clones what it retains; these are not re-read here.
+          run,
           loopMode,
-          runContextRef: cloneRuntimeValue(runContextRef),
+          runContextRef,
           sessionLeafId,
-          ...(runSnapshot ? { runSnapshot: cloneRuntimeValue(runSnapshot) } : {}),
-          ...(resumeState ? { resumeState: cloneRuntimeValue(resumeState) } : {}),
-          messages: cloneRuntimeChatMessages(messages) ?? [],
+          ...(runSnapshot ? { runSnapshot } : {}),
+          ...(resumeState ? { resumeState } : {}),
+          messages: messages ?? [],
+          // Re-read after the run by persistContextTurnLedger — must stay owned.
           contextPlan: cloneRuntimeValue(contextPlan),
           prepareModelStep: ({ messages: currentMessages, contextPlan: currentPlan }) => ({
             messages: prepareRuntimeModelStepMessages(currentMessages, currentPlan),
@@ -2190,6 +2193,8 @@ export class SessionRuntimeEngine {
               currentSessionLeafId = nextLeafId
             }),
           mode,
+          // Hosts may mutate the request object; the engine's selection must
+          // stay isolated (contract-verified).
           selection: cloneRuntimeValue(selection),
           signal: controller.signal,
           workspaceRoots: cloneRuntimeWorkspaceRoots(toolContext.workspaceRoots),
@@ -2214,62 +2219,57 @@ export class SessionRuntimeEngine {
             }
           },
           saveRunSnapshot: (snapshot: RunSnapshot) =>
-            this.store.saveRunSnapshot(
-              cloneRuntimeValue({
-                ...snapshot,
-                sessionLeafId: currentSessionLeafId,
-                throughSeq: lastJournalSeq,
-              }),
-            ),
+            this.store.saveRunSnapshot({
+              ...snapshot,
+              sessionLeafId: currentSessionLeafId,
+              throughSeq: lastJournalSeq,
+            }),
           appendSessionEntry: async (entry: SessionEntryInput) => {
             await eventLogChain
             if (eventLogFailure) throw eventLogFailure
-            const appended = await this.store.appendSessionEntry(
-              conversationId,
-              cloneRuntimeValue(entry),
-            )
+            const appended = await this.store.appendSessionEntry(conversationId, entry)
             lastJournalSeq = appended.entry.seq
-            return cloneRuntimeValue(appended.entry)
+            return appended.entry
           },
-          putBlob: (blob) => this.store.putBlob(conversationId, cloneRuntimeValue(blob)),
-          toolRegistry: cloneRuntimeToolRegistry(toolRegistry),
+          putBlob: (blob) => this.store.putBlob(conversationId, blob),
+          toolRegistry,
         },
         {
           onTextDelta: (event) =>
             this.emitStreamEvent(
               conversationId,
               controller,
-              createWorkbenchEvent('chat:text-delta', cloneRuntimeValue(event)),
+              createWorkbenchEvent('chat:text-delta', event),
             ),
           onReasoningDelta: (event) =>
             this.emitStreamEvent(
               conversationId,
               controller,
-              createWorkbenchEvent('chat:reasoning-delta', cloneRuntimeValue(event)),
+              createWorkbenchEvent('chat:reasoning-delta', event),
             ),
           onToolCallStart: (event) =>
             this.emitStreamEvent(
               conversationId,
               controller,
-              createWorkbenchEvent('chat:tool-call-start', cloneRuntimeValue(event)),
+              createWorkbenchEvent('chat:tool-call-start', event),
             ),
           onToolCallArgsDelta: (event) =>
             this.emitStreamEvent(
               conversationId,
               controller,
-              createWorkbenchEvent('chat:tool-call-args-delta', cloneRuntimeValue(event)),
+              createWorkbenchEvent('chat:tool-call-args-delta', event),
             ),
           onToolCallResult: (event) =>
             this.emitStreamEvent(
               conversationId,
               controller,
-              createWorkbenchEvent('chat:tool-call-result', cloneRuntimeValue(event)),
+              createWorkbenchEvent('chat:tool-call-result', event),
             ),
           onImageBlock: (event) =>
             this.emitStreamEvent(
               conversationId,
               controller,
-              createWorkbenchEvent('chat:image-block', cloneRuntimeValue(event)),
+              createWorkbenchEvent('chat:image-block', event),
             ),
           onDone: async (event) => {
             const doneEvent = cloneRuntimeValue(event)
