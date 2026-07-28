@@ -287,7 +287,7 @@ export function selectTranscript(tree: SessionTree | null): TranscriptCard[] {
       timestamp: entry.timestamp,
       message: null,
       markerLabel:
-        entry.type === 'context.compacted' ? 'Context compacted here' : 'Branch summary recorded',
+        entry.type === 'context.compacted' ? 'Context compacted here' : 'Summary checkpoint',
     }
   })
 }
@@ -366,72 +366,8 @@ export function selectActiveRun(
   return candidates.reduce((newest, run) => (run.updatedAt > newest.updatedAt ? run : newest))
 }
 
-export interface BranchOption {
-  leafEntryId: string
-  active: boolean
-  messageCount: number
-  lastMessageSnippet: string
-  timestamp: number
-}
-
-export function selectBranches(tree: SessionTree | null): BranchOption[] {
-  if (!tree) return []
-  const byId = new Map(tree.nodes.map((node) => [node.entry.entryId, node]))
-  const leafIds = new Set(
-    tree.nodes.filter((node) => node.children.length === 0).map((node) => node.entry.entryId),
-  )
-  leafIds.add(tree.leafId)
-  const options: BranchOption[] = []
-  for (const leafEntryId of leafIds) {
-    let cursor = byId.get(leafEntryId)?.entry
-    if (!cursor) continue
-    let messageCount = 0
-    let lastMessageSnippet = ''
-    const timestamp = cursor.timestamp
-    while (cursor) {
-      const message = entryMessage(cursor)
-      if (message) {
-        messageCount += 1
-        if (!lastMessageSnippet) {
-          lastMessageSnippet = messageText(message).slice(0, 60) || `[${message.role} message]`
-        }
-      }
-      cursor = cursor.parentId === null ? undefined : byId.get(cursor.parentId)?.entry
-    }
-    options.push({
-      leafEntryId,
-      active: leafEntryId === tree.leafId,
-      messageCount,
-      lastMessageSnippet: lastMessageSnippet || 'Empty branch',
-      timestamp,
-    })
-  }
-  return options.sort((left, right) => right.timestamp - left.timestamp)
-}
-
-/** Leaves whose chain passes through the current leaf (truncated futures). */
-export function selectDescendantBranchCount(tree: SessionTree | null): number {
-  if (!tree) return 0
-  const byId = new Map(tree.nodes.map((node) => [node.entry.entryId, node]))
-  const current = byId.get(tree.leafId)
-  if (!current || current.children.length === 0) return 0
-  let count = 0
-  for (const node of tree.nodes) {
-    if (node.children.length > 0 || node.entry.entryId === tree.leafId) continue
-    let cursor: string | null = node.entry.entryId
-    while (cursor) {
-      if (cursor === tree.leafId) {
-        count += 1
-        break
-      }
-      cursor = byId.get(cursor)?.entry.parentId ?? null
-    }
-  }
-  return count
-}
-
 export interface PlaygroundGuards {
-  /** Structural mutations (edit/delete/insert/branch-switch) allowed. */
+  /** Structural mutations (edit/delete/insert/rewind) allowed. */
   canMutate: boolean
   /** The trailing card can be run via retry-last. */
   canRunFromLeaf: boolean

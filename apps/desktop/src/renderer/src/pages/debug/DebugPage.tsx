@@ -3,7 +3,6 @@ import { type ReactElement, useCallback, useEffect, useMemo } from 'react'
 import type { ConversationRecord, ProviderId, Settings } from '../../types'
 import type { ChatStreamsApi } from '../chat/useChatStreams'
 import { useModelSelection } from '../chat/useModelSelection'
-import { BranchSwitcher } from './BranchSwitcher'
 import { ContextPanel } from './ContextPanel'
 import { DebugComposer } from './DebugComposer'
 import { readableEnum } from './debugFormat'
@@ -121,12 +120,6 @@ export function DebugPage({
           </span>
         )}
         <div className="ml-auto flex items-center gap-1.5">
-          <BranchSwitcher
-            branches={api.branches}
-            descendantBranchCount={api.descendantBranchCount}
-            disabled={!guards.canMutate}
-            onSwitch={api.switchBranch}
-          />
           <button
             type="button"
             aria-label="Refresh"

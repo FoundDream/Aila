@@ -58,6 +58,10 @@ export interface ConversationStream {
   displayMessages: Message[]
   isHydrated: boolean
   queue: QueuedRun[]
+  startingRun: {
+    queued: QueuedRun
+    assistantMessageId: string | null
+  } | null
   runningMessageId: string | null
   usage: UsageInfo | null
   events: PersistedRunEvent[]
@@ -74,6 +78,7 @@ const EMPTY_STREAM: ConversationStreamState = {
   messages: [],
   isHydrated: false,
   queue: [],
+  startingRun: null,
   runningMessageId: null,
   usage: null,
   events: [],
@@ -90,7 +95,7 @@ type Action =
       runtimeState?: ConversationRuntimeReplayState
     }
   | { type: 'ENQUEUE'; conversationId: string; queued: QueuedRun }
-  | { type: 'POP_QUEUE_HEAD'; conversationId: string }
+  | { type: 'RUN_STARTING'; conversationId: string; queued: QueuedRun }
   | {
       type: 'RUN_STARTED'
       conversationId: string
@@ -274,7 +279,25 @@ function queuedSendToMessage(
 }
 
 function displayMessagesForStream(stream: ConversationStreamState): Message[] {
-  return stream.messages
+  const startingRun = stream.startingRun
+  if (startingRun?.queued.kind !== 'send') return stream.messages
+
+  const optimisticUserMessage = queuedSendToMessage(
+    startingRun.queued,
+    `starting:${startingRun.queued.id}`,
+    'done',
+  )
+  const assistantIndex = startingRun.assistantMessageId
+    ? stream.messages.findIndex((message) => message.id === startingRun.assistantMessageId)
+    : -1
+  if (assistantIndex >= 0) {
+    return [
+      ...stream.messages.slice(0, assistantIndex),
+      optimisticUserMessage,
+      ...stream.messages.slice(assistantIndex),
+    ]
+  }
+  return [...stream.messages, optimisticUserMessage]
 }
 
 function materializeStream(stream: ConversationStreamState): ConversationStream {
@@ -498,10 +521,14 @@ function reducer(state: State, action: Action): State {
         queue: [...current.queue, action.queued],
       }))
 
-    case 'POP_QUEUE_HEAD':
+    case 'RUN_STARTING':
       return withStream(state, action.conversationId, (current) => ({
         ...current,
-        queue: current.queue.slice(1),
+        queue: removeQueuedRun(current.queue, action.queued.id),
+        startingRun: {
+          queued: action.queued,
+          assistantMessageId: null,
+        },
       }))
 
     case 'RUN_STARTED':
@@ -519,6 +546,8 @@ function reducer(state: State, action: Action): State {
           ...current,
           messages,
           queue: removeQueuedRun(current.queue, action.queuedId),
+          startingRun:
+            current.startingRun?.queued.id === action.queuedId ? null : current.startingRun,
           runningMessageId:
             assistant?.status === 'streaming'
               ? action.assistantMessage.id
@@ -534,6 +563,8 @@ function reducer(state: State, action: Action): State {
           ...current,
           messages,
           queue: removeQueuedRun(current.queue, action.queuedId),
+          startingRun:
+            current.startingRun?.queued.id === action.queuedId ? null : current.startingRun,
           runningMessageId:
             assistant?.status === 'streaming'
               ? action.assistantMessage.id
@@ -691,6 +722,15 @@ function reducer(state: State, action: Action): State {
                   current.runningMessageId === action.event.messageId
                 ? null
                 : current.runningMessageId,
+          startingRun:
+            action.event.type === 'turn.started' &&
+            current.startingRun &&
+            !hasTerminalMessage(current.messages, action.event.messageId)
+              ? {
+                  ...current.startingRun,
+                  assistantMessageId: action.event.messageId,
+                }
+              : current.startingRun,
           events: mergeRunEvents(current.events, [action.event]),
         }
       })
@@ -727,6 +767,7 @@ export interface ChatStreamsApi {
     options?: { mode?: AilaExecutionMode },
   ) => void
   compact: (id: string, selection: ModelSelection) => Promise<RuntimeCompactConversationResult>
+  clearQueue: (id: string) => void
   abort: (id: string) => void
   drop: (id: string) => void
 }
@@ -740,9 +781,16 @@ export type ChatStreamsActionForTest = Action
 
 export function createChatStreamsStateForTest(): ChatStreamsStateForTest {
   return {
-    streams: new Map<string, ConversationStream>(),
+    streams: new Map<string, ConversationStreamState>(),
     droppedConversationIds: new Set<string>(),
   }
+}
+
+export function getChatStreamForTest(
+  state: ChatStreamsStateForTest,
+  conversationId: string,
+): ConversationStream {
+  return materializeStream(state.streams.get(conversationId) ?? EMPTY_STREAM)
 }
 
 export function reduceChatStreamsForTest(
@@ -754,7 +802,7 @@ export function reduceChatStreamsForTest(
 
 export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreamsApi {
   const [state, dispatch] = useReducer(reducer, {
-    streams: new Map<string, ConversationStream>(),
+    streams: new Map<string, ConversationStreamState>(),
     droppedConversationIds: new Set<string>(),
   })
   const stateRef = useRef(state)
@@ -763,10 +811,8 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
   const onConversationUpdatedRef = useRef(options.onConversationUpdated)
   onConversationUpdatedRef.current = options.onConversationUpdated
 
-  // Conversations with an in-flight startRun. The drain effect uses this to
-  // skip a second concurrent kick during the async window between
-  // POP_QUEUE_HEAD and RUN_STARTED, where runningMessageId is still null but
-  // a run is already on its way.
+  // Prevent the drain effect from kicking the same queued run twice before
+  // React commits RUN_STARTING.
   const startingRef = useRef<Set<string>>(new Set())
 
   const startRun = useCallback(async (id: string, queued: QueuedRun): Promise<void> => {
@@ -860,11 +906,13 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
     for (const [id, stream] of state.streams) {
       if (
         stream.runningMessageId === null &&
+        stream.startingRun === null &&
         stream.queue.length > 0 &&
         !startingRef.current.has(id)
       ) {
         const head = stream.queue[0]
         startingRef.current.add(id)
+        dispatch({ type: 'RUN_STARTING', conversationId: id, queued: head })
         void startRun(id, head).finally(() => {
           startingRef.current.delete(id)
         })
@@ -999,10 +1047,17 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
     })
   }, [])
 
-  const abort = useCallback((id: string): void => {
+  const clearQueue = useCallback((id: string): void => {
     dispatch({ type: 'CLEAR_QUEUE', conversationId: id })
-    void window.api.runtime.abort(id)
   }, [])
+
+  const abort = useCallback(
+    (id: string): void => {
+      clearQueue(id)
+      void window.api.runtime.abort(id)
+    },
+    [clearQueue],
+  )
 
   const drop = useCallback((id: string): void => {
     dispatch({ type: 'DROP', conversationId: id })
@@ -1106,7 +1161,13 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
   const busyIds = useMemo(() => {
     const set = new Set<string>()
     for (const [id, stream] of state.streams) {
-      if (stream.runningMessageId !== null || stream.queue.length > 0) set.add(id)
+      if (
+        stream.startingRun !== null ||
+        stream.runningMessageId !== null ||
+        stream.queue.length > 0
+      ) {
+        set.add(id)
+      }
     }
     return set
   }, [state])
@@ -1124,6 +1185,7 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
     enqueueSend,
     enqueueRetryLast,
     compact,
+    clearQueue,
     abort,
     drop,
   }

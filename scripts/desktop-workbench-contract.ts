@@ -33,6 +33,7 @@ import {
 } from '../apps/desktop/src/renderer/src/pages/chat/ConversationList'
 import {
   createChatStreamsStateForTest,
+  getChatStreamForTest,
   reduceChatStreamsForTest,
 } from '../apps/desktop/src/renderer/src/pages/chat/useChatStreams'
 import { mergeConversationSummaryUpdate } from '../apps/desktop/src/renderer/src/pages/chat/useConversations'
@@ -1405,6 +1406,107 @@ function testRendererFinishAppendsMissingAssistantMessage(): void {
   assertEqual(stream.messages[0]?.status, 'done', 'finish appended assistant status')
 }
 
+function testRendererPromotesQueueHeadWhileRunStarts(): void {
+  const selection = { providerId: 'openrouter' as const, modelId: 'contract/mock' }
+  const startingRun = {
+    id: 'queued-starting',
+    kind: 'send' as const,
+    text: 'first project message',
+    attachments: [],
+    selection,
+  }
+  const waitingRun = {
+    id: 'queued-waiting',
+    kind: 'send' as const,
+    text: 'follow-up message',
+    attachments: [],
+    selection,
+  }
+
+  let state = createChatStreamsStateForTest()
+  state = reduceChatStreamsForTest(state, {
+    type: 'ENQUEUE',
+    conversationId: 'conversation-starting',
+    queued: startingRun,
+  })
+  state = reduceChatStreamsForTest(state, {
+    type: 'ENQUEUE',
+    conversationId: 'conversation-starting',
+    queued: waitingRun,
+  })
+  state = reduceChatStreamsForTest(state, {
+    type: 'RUN_STARTING',
+    conversationId: 'conversation-starting',
+    queued: startingRun,
+  })
+
+  let stream = getChatStreamForTest(state, 'conversation-starting')
+  assertEqual(
+    stream.startingRun?.queued.id,
+    startingRun.id,
+    'starting run should be tracked separately',
+  )
+  assertEqual(stream.queue.length, 1, 'starting run should leave only later sends in the queue')
+  assertEqual(stream.queue[0]?.id, waitingRun.id, 'later send should remain queued')
+  assertEqual(stream.displayMessages.length, 1, 'starting send should appear in the transcript')
+  assertEqual(
+    stream.displayMessages[0]?.blocks[0]?.type === 'text'
+      ? stream.displayMessages[0].blocks[0].content
+      : undefined,
+    startingRun.text,
+    'starting transcript message should preserve the prompt',
+  )
+
+  state = reduceChatStreamsForTest(state, {
+    type: 'RUN_EVENT',
+    event: {
+      schemaVersion: AILA_RUN_EVENT_SCHEMA_VERSION,
+      timestamp: 1,
+      conversationId: 'conversation-starting',
+      messageId: 'assistant-started',
+      type: 'turn.started',
+      data: selection,
+    },
+  })
+  stream = getChatStreamForTest(state, 'conversation-starting')
+  assertEqual(
+    stream.displayMessages[0]?.id,
+    `starting:${startingRun.id}`,
+    'optimistic user message should stay before an early assistant event',
+  )
+  assertEqual(
+    stream.displayMessages[1]?.id,
+    'assistant-started',
+    'early assistant event should render after the optimistic user message',
+  )
+
+  state = reduceChatStreamsForTest(state, {
+    type: 'RUN_STARTED',
+    conversationId: 'conversation-starting',
+    queuedId: startingRun.id,
+    userMessage: {
+      id: 'persisted-user',
+      role: 'user',
+      blocks: [{ type: 'text', content: startingRun.text }],
+      status: 'done',
+    },
+    assistantMessage: {
+      id: 'assistant-started',
+      role: 'assistant',
+      blocks: [],
+      status: 'streaming',
+      model: selection,
+    },
+  })
+
+  stream = getChatStreamForTest(state, 'conversation-starting')
+  assertEqual(stream.startingRun, null, 'persisted run should replace the starting state')
+  assertEqual(stream.displayMessages.length, 2, 'persisted turn should replace optimistic display')
+  assertEqual(stream.displayMessages[0]?.id, 'persisted-user', 'persisted user message should win')
+  assertEqual(stream.displayMessages[1]?.id, 'assistant-started', 'assistant should follow user')
+  assertEqual(stream.queue[0]?.id, waitingRun.id, 'later send should stay queued while running')
+}
+
 function testRendererRunStartedDoesNotDuplicateFinishedAssistant(): void {
   let state = createChatStreamsStateForTest()
   state = reduceChatStreamsForTest(state, {
@@ -2131,6 +2233,7 @@ async function main(): Promise<void> {
   testRendererConversationListIgnoresRemovedSummaryUpdates()
   testRendererConversationListGroupsWorkspaceSessions()
   testRendererFinishAppendsMissingAssistantMessage()
+  testRendererPromotesQueueHeadWhileRunStarts()
   testRendererRunStartedDoesNotDuplicateFinishedAssistant()
   testRendererToolResultAppendsMissingAssistantMessage()
   await testInterruptedActivityRecovery()

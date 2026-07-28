@@ -1,13 +1,13 @@
 import {
   ArchiveIcon,
   ArrowUpIcon,
-  ClockIcon,
   FileTextIcon,
   ImageIcon,
+  ListEndIcon,
   PlusIcon,
   PuzzleIcon,
-  RotateCcwIcon,
   SquareIcon,
+  Trash2Icon,
   XIcon,
 } from 'lucide-react'
 import {
@@ -40,6 +40,7 @@ interface ComposerProps {
   onSubmit: (text: string, attachments: ChatAttachmentInput[]) => Promise<void> | void
   onCompact: () => Promise<{ compacted: boolean }> | { compacted: boolean }
   onAbort: () => void
+  onClearQueue?: () => void
   queuedRuns?: QueuedRun[]
   usage?: UsageInfo | null
   contextLength?: number | null
@@ -112,26 +113,11 @@ function compactTextPreview(value: string): string {
   return value.replace(/\s+/g, ' ').trim()
 }
 
-function pluralize(count: number, singular: string, plural = `${singular}s`): string {
-  return `${count} ${count === 1 ? singular : plural}`
-}
-
 function queuedRunPreview(queued: QueuedRun): string {
   if (queued.kind === 'retryLast') return 'Resume last turn'
   const text = compactTextPreview(queued.text)
   if (text) return text
   return queued.attachments.length > 0 ? 'Attachment-only prompt' : 'Empty prompt'
-}
-
-function queuedRunMeta(queued: QueuedRun): string | null {
-  if (queued.kind === 'retryLast') return 'Retry'
-  const images = queued.attachments.filter((attachment) => attachment.kind === 'image').length
-  const files = queued.attachments.length - images
-  const parts = [
-    images > 0 ? pluralize(images, 'image') : null,
-    files > 0 ? pluralize(files, 'file') : null,
-  ].filter((part): part is string => Boolean(part))
-  return parts.length > 0 ? parts.join(', ') : null
 }
 
 function getSlashState(text: string, cursor: number): SlashState | null {
@@ -379,47 +365,55 @@ function SlashCommandMenu({
   )
 }
 
-function QueuedRunsList({ queuedRuns }: { queuedRuns: QueuedRun[] }): ReactElement | null {
+function QueuedRunsList({
+  queuedRuns,
+  onClearQueue,
+}: {
+  queuedRuns: QueuedRun[]
+  onClearQueue?: () => void
+}): ReactElement | null {
   if (queuedRuns.length === 0) return null
 
+  const nextPreview = queuedRunPreview(queuedRuns[0])
+  const queueSummary = queuedRuns
+    .map((queued, index) => `${index + 1}. ${queuedRunPreview(queued)}`)
+    .join('\n')
+
   return (
-    <div className="border-b border-[var(--border)] px-4 py-2.5">
-      <div className="mb-1.5 flex items-center gap-1.5 px-1 text-[11.5px] font-medium text-[var(--text-dim)]">
-        <ClockIcon className="size-3.5" />
-        <span>Queue</span>
+    <section
+      aria-label={`${queuedRuns.length} queued ${queuedRuns.length === 1 ? 'message' : 'messages'}`}
+      title={queueSummary}
+      className="relative mx-5 -mb-3 flex h-[68px] items-start justify-between rounded-[18px] border border-[var(--border)] bg-[var(--surface)] px-4 pt-2.5 text-[var(--text-dim)]"
+    >
+      <div className="flex h-8 shrink-0 items-center gap-2">
+        <ListEndIcon className="size-3.5" />
+        <span className="text-[14px] font-medium tabular-nums text-[var(--text)]">
+          {queuedRuns.length}
+        </span>
       </div>
-      <div className="flex max-h-32 flex-col gap-1 overflow-y-auto pr-1">
-        {queuedRuns.map((queued, index) => {
-          const preview = queuedRunPreview(queued)
-          const meta = queuedRunMeta(queued)
-          return (
-            <div
-              key={queued.id}
-              className="flex min-h-7 items-center gap-2 rounded-lg px-2 py-1 text-[12px] text-[var(--text-soft)]"
-            >
-              <span className="w-9 shrink-0 text-[11px] text-[var(--text-dim)]">
-                {index === 0 ? 'Next' : `#${index + 1}`}
-              </span>
-              <span className="grid size-4 shrink-0 place-items-center text-[var(--text-dim)]">
-                {queued.kind === 'retryLast' ? (
-                  <RotateCcwIcon className="size-3.5" />
-                ) : (
-                  <ArrowUpIcon className="size-3.5" />
-                )}
-              </span>
-              <span className="min-w-0 flex-1 truncate" title={preview}>
-                {preview}
-              </span>
-              {meta && (
-                <span className="max-w-28 shrink-0 truncate text-[11px] text-[var(--text-dim)]">
-                  {meta}
-                </span>
-              )}
-            </div>
-          )
-        })}
+
+      <div className="flex min-w-0 items-center gap-2">
+        <span className="max-w-64 truncate text-[12px] text-[var(--text-dim)]">
+          <span className="mr-1.5 text-[var(--text-soft)]">Next</span>
+          {nextPreview}
+        </span>
+        {onClearQueue && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                onClick={onClearQueue}
+                aria-label="Clear queue"
+                className="grid size-8 shrink-0 place-items-center rounded-md text-[var(--text-dim)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--error)]"
+              >
+                <Trash2Icon className="size-3.5" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>Clear queue</TooltipContent>
+          </Tooltip>
+        )}
       </div>
-    </div>
+    </section>
   )
 }
 
@@ -428,6 +422,7 @@ export function Composer({
   onSubmit,
   onCompact,
   onAbort,
+  onClearQueue,
   queuedRuns = [],
   usage,
   contextLength,
@@ -792,10 +787,12 @@ export function Composer({
   return (
     <div className={`relative z-10 shrink-0 ${compact ? 'px-3 pb-3 pt-2' : 'px-6 pb-5 pt-2'}`}>
       <div className={`mx-auto ${compact ? 'max-w-none' : 'max-w-[720px]'}`}>
+        <QueuedRunsList queuedRuns={queuedRuns} onClearQueue={onClearQueue} />
+
         <div
           onDragOver={(e) => e.preventDefault()}
           onDrop={handleDrop}
-          className="aila-composer relative rounded-[22px] border border-[var(--border-strong)] bg-[var(--textarea)]"
+          className="aila-composer relative z-10 rounded-[22px] border border-[var(--border-strong)] bg-[var(--textarea)]"
         >
           {slashState && (
             <div
@@ -810,8 +807,6 @@ export function Composer({
               />
             </div>
           )}
-
-          <QueuedRunsList queuedRuns={queuedRuns} />
 
           {(attachments.length > 0 || attachError) && (
             <div className="flex flex-wrap items-center gap-2 px-4 pt-3">

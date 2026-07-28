@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useReducer, useRef } from 'react'
 import type { ModelSelection, PersistedMessage } from '../../types'
 import { messageFromError } from './debugFormat'
 import {
-  type BranchOption,
   createPlaygroundState,
   type InjectedContextState,
   type MessageRole,
@@ -11,8 +10,6 @@ import {
   type PlaygroundState,
   reducePlayground,
   selectActiveRun,
-  selectBranches,
-  selectDescendantBranchCount,
   selectGuards,
   selectRunForAssistant,
   selectTranscript,
@@ -28,8 +25,6 @@ export interface PlaygroundApi {
   state: PlaygroundState
   cards: TranscriptCard[]
   guards: PlaygroundGuards
-  branches: BranchOption[]
-  descendantBranchCount: number
   activeRunId: string | null
   resolveRun: (cardIndex: number) => ReturnType<typeof selectRunForAssistant>
   refresh: () => void
@@ -44,7 +39,6 @@ export interface PlaygroundApi {
   changeInsert: (patch: { role?: MessageRole; text?: string }) => void
   cancelInsert: () => void
   saveInsert: () => void
-  switchBranch: (leafEntryId: string) => void
   // run configuration
   setInjected: (injected: InjectedContextState) => void
   setLoopMode: (loopMode: PlaygroundLoopMode) => void
@@ -142,8 +136,6 @@ export function usePlayground(conversationId: string | null, streamsBusy: boolea
   const activeRun = useMemo(() => selectActiveRun(state, cards), [state, cards])
   const activeRunId = activeRun?.identity.runId ?? null
   const guards = useMemo(() => selectGuards(state, streamsBusy), [state, streamsBusy])
-  const branches = useMemo(() => selectBranches(state.tree), [state.tree])
-  const descendantBranchCount = useMemo(() => selectDescendantBranchCount(state.tree), [state.tree])
 
   const fetchInspection = useCallback(
     (runId: string): void => {
@@ -279,16 +271,6 @@ export function usePlayground(conversationId: string | null, streamsBusy: boolea
     })
   }, [conversationId, structural])
 
-  const switchBranch = useCallback(
-    (leafEntryId: string): void => {
-      if (!conversationId) return
-      void structural(async () => {
-        await window.api.runtime.navigateSession({ conversationId, entryId: leafEntryId })
-      })
-    },
-    [conversationId, structural],
-  )
-
   const launchRetry = useCallback(
     async (selection: ModelSelection): Promise<void> => {
       if (!conversationId) return
@@ -382,8 +364,6 @@ export function usePlayground(conversationId: string | null, streamsBusy: boolea
     state,
     cards,
     guards,
-    branches,
-    descendantBranchCount,
     activeRunId,
     resolveRun,
     refresh: useCallback(() => void refresh(true), [refresh]),
@@ -407,7 +387,6 @@ export function usePlayground(conversationId: string | null, streamsBusy: boolea
     ),
     cancelInsert: useCallback(() => dispatch({ type: 'insert_draft_cancelled' }), []),
     saveInsert,
-    switchBranch,
     setInjected: useCallback(
       (injected: InjectedContextState) => dispatch({ type: 'injected_changed', injected }),
       [],

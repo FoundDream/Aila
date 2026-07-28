@@ -8,9 +8,8 @@
 
 @theme {
   --font-sans:
-    -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable", "Segoe UI",
-    "Helvetica Neue", sans-serif;
-  --font-mono: "SFMono-Regular", "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    system-ui, "Segoe UI Variable", "Segoe UI", "Helvetica Neue", sans-serif;
+  --font-mono: ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
 }
 
 :root {

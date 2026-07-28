@@ -30,7 +30,7 @@ const ROLE_CHIP: Record<'user' | 'assistant', string> = {
 
 /**
  * One transcript message. The card is simultaneously the editable "what if"
- * surface (edit/rewind mint a new branch) and, for generated assistant
+ * surface (edits rewrite the transcript from that point) and, for generated assistant
  * messages, the anchor of the "what actually happened" trace.
  */
 export function MessageCard({
@@ -103,11 +103,11 @@ export function MessageCard({
           )}
           {mutable && !editing && (
             <>
-              <CardIconButton label="Edit (branches the conversation)" onClick={onStartEdit}>
+              <CardIconButton label="Edit this message" onClick={onStartEdit}>
                 <PencilIcon className="size-3.5" />
               </CardIconButton>
               <CardIconButton
-                label="Rewind to before this message (branches; removes it and everything after)"
+                label="Rewind to before this message (removes it and everything after)"
                 onClick={onRewind}
               >
                 <Undo2Icon className="size-3.5" />
@@ -127,7 +127,7 @@ export function MessageCard({
           />
           <div className="mt-2 flex items-center justify-between gap-3">
             <p className="text-[10.5px] text-[var(--text-dim)]">
-              Saving branches the conversation here — later messages move to the old branch.
+              Saving rewrites the conversation from here — later messages are removed.
             </p>
             <span className="flex shrink-0 gap-1.5">
               <button
@@ -143,7 +143,7 @@ export function MessageCard({
                 disabled={draftText.trim().length === 0}
                 className="h-7 rounded-md border border-[var(--signal)] bg-[var(--signal)] px-2.5 text-[11px] font-medium text-white hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-35"
               >
-                Save as branch
+                Save
               </button>
             </span>
           </div>

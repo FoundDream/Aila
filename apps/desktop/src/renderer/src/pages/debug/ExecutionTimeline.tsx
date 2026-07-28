@@ -530,9 +530,8 @@ function OutcomeCard({
         )}
         {controls.leafMismatch && (
           <p className="mt-2 rounded-md bg-[var(--warning-soft)] px-2.5 py-1.5 text-[11px] leading-relaxed text-[var(--warning)]">
-            This run was recorded on a session branch that is no longer current — the conversation
-            moved on (new turn, retry, compaction or branch navigation). It stays inspectable, but
-            resuming it would write onto the wrong branch, so Step and Continue are unavailable.
+            This run belongs to a version of the conversation that has since been edited or moved
+            past. It stays inspectable, but Step and Continue are unavailable.
           </p>
         )}
         {runEvents.length > 0 && (

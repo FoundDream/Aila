@@ -42,7 +42,7 @@ export function TranscriptCanvas({
     <div className="mx-auto w-full max-w-[880px] space-y-2.5 pb-6">
       {cards.length === 0 && !activeRunId && (
         <div className="rounded-xl border border-dashed border-[var(--border-strong)] bg-[var(--surface)] px-6 py-10 text-center">
-          <p className="text-[13px] font-semibold text-[var(--text)]">Empty branch</p>
+          <p className="text-[13px] font-semibold text-[var(--text)]">Empty conversation</p>
           <p className="mt-1 text-[11.5px] text-[var(--text-dim)]">
             Fabricate a message below to construct a state, or send one from the composer.
           </p>
@@ -62,8 +62,8 @@ export function TranscriptCanvas({
               {guards.canMutate && (
                 <button
                   type="button"
-                  title="Rewind the branch to this point"
-                  onClick={() => api.switchBranch(card.entryId)}
+                  title="Rewind to this point"
+                  onClick={() => api.rewindTo(card.entryId)}
                   className="flex items-center gap-1 rounded-md px-1.5 py-0.5 transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
                 >
                   <Undo2Icon className="size-3" />
@@ -258,7 +258,7 @@ function InsertEditor({
           disabled={text.trim().length === 0}
           className="h-7 rounded-md border border-[var(--warning)] bg-[var(--warning)] px-2.5 text-[11px] font-medium text-white hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-35"
         >
-          Append to branch
+          Append
         </button>
       </div>
     </div>

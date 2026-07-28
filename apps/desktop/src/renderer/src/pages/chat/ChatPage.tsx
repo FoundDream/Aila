@@ -55,8 +55,11 @@ export function ChatPage({
 
   const stream = conversationId ? streams.getStream(conversationId) : null
   const messages = stream?.messages ?? []
+  const displayMessages = stream?.displayMessages ?? []
   const events = stream?.events ?? []
-  const isStreaming = stream?.runningMessageId !== null && stream?.runningMessageId !== undefined
+  const isStreaming =
+    Boolean(stream?.startingRun) ||
+    (stream?.runningMessageId !== null && stream?.runningMessageId !== undefined)
   const usage = stream?.usage ?? null
   const queuedRuns = stream?.queue ?? []
   const queuedCount = queuedRuns.length
@@ -98,6 +101,11 @@ export function ChatPage({
     streams.abort(conversationId)
   }, [conversationId, streams])
 
+  const handleClearQueue = useCallback(() => {
+    if (!conversationId) return
+    streams.clearQueue(conversationId)
+  }, [conversationId, streams])
+
   const handleCompact = useCallback(async (): Promise<{ compacted: boolean }> => {
     if (!conversationId) return { compacted: false }
     if (isStreaming) throw new Error('Wait for the current response before compacting.')
@@ -136,6 +144,7 @@ export function ChatPage({
       onSubmit={handleSubmit}
       onCompact={handleCompact}
       onAbort={handleAbort}
+      onClearQueue={handleClearQueue}
       queuedRuns={queuedRuns}
       usage={usage}
       contextLength={contextLength}
@@ -153,7 +162,7 @@ export function ChatPage({
     <div className="flex h-full flex-col bg-[var(--bg)] text-[var(--text)]">
       <main className="min-h-0 flex-1 overflow-hidden">
         <section className="flex h-full min-w-0 flex-col overflow-hidden">
-          {messages.length === 0 ? (
+          {displayMessages.length === 0 ? (
             <div className="flex min-h-0 flex-1 flex-col justify-center">
               <div className="mx-auto mb-12 flex w-full max-w-[720px] items-center justify-center gap-5 px-6">
                 <img
@@ -170,7 +179,7 @@ export function ChatPage({
           ) : (
             <>
               <Transcript
-                messages={messages}
+                messages={displayMessages}
                 events={events}
                 canRetryLast={canRetryLast}
                 onRetryLast={handleRetryLast}
