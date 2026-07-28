@@ -169,14 +169,29 @@ export function sessionEntryAdvancesLeaf(entry: Pick<SessionEntry, 'type'>): boo
   return SEMANTIC_ENTRY_TYPES.has(entry.type)
 }
 
+function sortSessionEntryRefs(entries: readonly SessionEntry[]): SessionEntry[] {
+  return [...entries].sort(
+    (left, right) => left.seq - right.seq || left.timestamp - right.timestamp,
+  )
+}
+
+/**
+ * Sorted, deduplicated entry references without cloning. Internal fast path;
+ * callers own nothing and must not mutate the results.
+ */
+function orderSessionEntryRefs(entries: readonly SessionEntry[]): SessionEntry[] {
+  const seen = new Set<string>()
+  const refs: SessionEntry[] = []
+  for (const entry of sortSessionEntryRefs(entries)) {
+    if (seen.has(entry.entryId)) continue
+    seen.add(entry.entryId)
+    refs.push(entry)
+  }
+  return refs
+}
+
 export function orderedSessionEntries(entries: readonly SessionEntry[]): SessionEntry[] {
-  return [...entries]
-    .sort((left, right) => left.seq - right.seq || left.timestamp - right.timestamp)
-    .filter(
-      (entry, index, ordered) =>
-        ordered.findIndex((candidate) => candidate.entryId === entry.entryId) === index,
-    )
-    .map((entry) => structuredClone(entry))
+  return orderSessionEntryRefs(entries).map((entry) => structuredClone(entry))
 }
 
 function canonicalJson(value: unknown): string {
@@ -204,9 +219,12 @@ function assertExtensionIdentity(
 }
 
 export function validateSessionJournal(entries: readonly SessionEntry[]): void {
-  const ordered = [...entries]
-    .sort((left, right) => left.seq - right.seq || left.timestamp - right.timestamp)
-    .map((entry) => structuredClone(entry))
+  // Sorted but NOT deduplicated: duplicate entry ids must still throw here.
+  validateOrderedRefs(sortSessionEntryRefs(entries))
+}
+
+/** Validation over pre-ordered references; reads only, never clones. */
+function validateOrderedRefs(ordered: readonly SessionEntry[]): void {
   if (ordered.length === 0) return
   const byId = new Map<string, SessionEntry>()
   let root: SessionEntry<'session.created'> | undefined
@@ -254,10 +272,7 @@ export function validateSessionJournal(entries: readonly SessionEntry[]): void {
   if (!root) throw new Error('session journal is missing session.created')
 }
 
-export function getSessionLeafId(entries: readonly SessionEntry[]): string | null {
-  const ordered = orderedSessionEntries(entries)
-  if (ordered.length === 0) return null
-  validateSessionJournal(ordered)
+function getSessionLeafIdFromOrdered(ordered: readonly SessionEntry[]): string | null {
   let leafId: string | null = null
   for (const entry of ordered) {
     if (entry.type === 'session.leaf.changed') {
@@ -269,24 +284,30 @@ export function getSessionLeafId(entries: readonly SessionEntry[]): string | nul
   return leafId
 }
 
-export function getSessionPhase(entries: readonly SessionEntry[]): SessionPhase {
+export function getSessionLeafId(entries: readonly SessionEntry[]): string | null {
+  const ordered = orderSessionEntryRefs(entries)
+  if (ordered.length === 0) return null
+  validateOrderedRefs(ordered)
+  return getSessionLeafIdFromOrdered(ordered)
+}
+
+function getSessionPhaseFromOrdered(ordered: readonly SessionEntry[]): SessionPhase {
   let phase: SessionPhase = 'idle'
-  for (const entry of orderedSessionEntries(entries)) {
+  for (const entry of ordered) {
     if (entry.type === 'session.phase.changed') phase = entry.data.phase
   }
   return phase
 }
 
-export function getActiveSessionBranch(entries: readonly SessionEntry[]): SessionEntry[] {
-  const ordered = orderedSessionEntries(entries)
-  const leafId = getSessionLeafId(ordered)
-  if (!leafId) return []
-  return getSessionBranch(ordered, leafId)
+export function getSessionPhase(entries: readonly SessionEntry[]): SessionPhase {
+  return getSessionPhaseFromOrdered(orderSessionEntryRefs(entries))
 }
 
-export function getSessionBranch(entries: readonly SessionEntry[], leafId: string): SessionEntry[] {
-  const ordered = orderedSessionEntries(entries)
-  validateSessionJournal(ordered)
+/** Root-to-leaf references over pre-validated ordered refs; output is cloned. */
+function getSessionBranchFromOrdered(
+  ordered: readonly SessionEntry[],
+  leafId: string,
+): SessionEntry[] {
   const byId = new Map(ordered.map((entry) => [entry.entryId, entry]))
   const requestedLeaf = byId.get(leafId)
   if (!requestedLeaf || !sessionEntryAdvancesLeaf(requestedLeaf)) {
@@ -303,13 +324,28 @@ export function getSessionBranch(entries: readonly SessionEntry[], leafId: strin
   return branch.reverse()
 }
 
+export function getActiveSessionBranch(entries: readonly SessionEntry[]): SessionEntry[] {
+  const ordered = orderSessionEntryRefs(entries)
+  if (ordered.length === 0) return []
+  validateOrderedRefs(ordered)
+  const leafId = getSessionLeafIdFromOrdered(ordered)
+  if (!leafId) return []
+  return getSessionBranchFromOrdered(ordered, leafId)
+}
+
+export function getSessionBranch(entries: readonly SessionEntry[], leafId: string): SessionEntry[] {
+  const ordered = orderSessionEntryRefs(entries)
+  validateOrderedRefs(ordered)
+  return getSessionBranchFromOrdered(ordered, leafId)
+}
+
 export function createSessionTree(entries: readonly SessionEntry[]): SessionTree {
-  const ordered = orderedSessionEntries(entries)
-  validateSessionJournal(ordered)
+  const ordered = orderSessionEntryRefs(entries)
+  validateOrderedRefs(ordered)
   const root = ordered.find(
     (entry): entry is SessionEntry<'session.created'> => entry.type === 'session.created',
   )
-  const leafId = getSessionLeafId(ordered)
+  const leafId = getSessionLeafIdFromOrdered(ordered)
   if (!root || !leafId) throw new Error('session journal has no active branch')
   const children = new Map<string, string[]>()
   for (const entry of ordered) {
@@ -322,7 +358,7 @@ export function createSessionTree(entries: readonly SessionEntry[]): SessionTree
     sessionId: root.sessionId,
     rootId: root.entryId,
     leafId,
-    phase: getSessionPhase(ordered),
+    phase: getSessionPhaseFromOrdered(ordered),
     nodes: ordered.filter(sessionEntryAdvancesLeaf).map((entry) => ({
       entry: structuredClone(entry),
       children: [...(children.get(entry.entryId) ?? [])],
@@ -365,9 +401,12 @@ export function prepareSessionEntry(
     return { entry: structuredClone(duplicate), duplicate: true }
   }
 
+  const ordered = orderSessionEntryRefs(existing)
   const seq = existing.reduce((maximum, entry) => Math.max(maximum, entry.seq), 0) + 1
   const parentId =
-    input.type === 'session.created' ? null : (input.parentId ?? getSessionLeafId(existing))
+    input.type === 'session.created'
+      ? null
+      : (input.parentId ?? getSessionLeafIdFromOrdered(ordered))
   const prepared = {
     ...structuredClone(input),
     schemaVersion: AILA_SESSION_ENTRY_SCHEMA_VERSION,
@@ -384,23 +423,86 @@ export function prepareSessionEntry(
       seq,
     } as PersistedRunEvent
   }
-  validateSessionJournal([...existing, prepared])
+  assertAppendedEntry(ordered, prepared)
   return { entry: prepared, duplicate: false }
 }
 
-function transformedActiveBranch(
-  entries: readonly SessionEntry[],
+/**
+ * Incremental validation of a single appended entry against an already
+ * validated journal — replaces re-validating the whole array per append.
+ * Error messages mirror validateOrderedRefs exactly.
+ */
+function assertAppendedEntry(ordered: readonly SessionEntry[], prepared: SessionEntry): void {
+  if (prepared.schemaVersion !== AILA_SESSION_ENTRY_SCHEMA_VERSION) {
+    throw new Error(`unsupported session entry schema: ${prepared.schemaVersion}`)
+  }
+  const maxSeq = ordered.length === 0 ? 0 : ordered[ordered.length - 1].seq
+  if (!Number.isInteger(prepared.seq) || prepared.seq <= maxSeq) {
+    throw new Error(`invalid session journal sequence: ${prepared.seq}`)
+  }
+  if (prepared.type === 'session.created') {
+    if (ordered.length > 0 || prepared.parentId !== null || prepared.seq !== 1) {
+      throw new Error('session journal must have exactly one root session.created entry')
+    }
+  } else {
+    const root = ordered[0]
+    if (!root || root.type !== 'session.created') {
+      throw new Error('session journal is missing session.created')
+    }
+    if (prepared.sessionId !== root.sessionId) {
+      throw new Error(`session entry belongs to another session: ${prepared.entryId}`)
+    }
+    const byId = new Map(ordered.map((entry) => [entry.entryId, entry]))
+    if (prepared.parentId === null || !byId.has(prepared.parentId)) {
+      throw new Error(`session entry parent not found: ${prepared.entryId}`)
+    }
+    const parent = byId.get(prepared.parentId)
+    if (!parent || !sessionEntryAdvancesLeaf(parent)) {
+      throw new Error(`session entry parent is not a semantic entry: ${prepared.entryId}`)
+    }
+    if (prepared.type === 'session.leaf.changed') {
+      const target = prepared.data.targetEntryId
+      const targetEntry = target ? byId.get(target) : undefined
+      if (target === null || !targetEntry || !sessionEntryAdvancesLeaf(targetEntry)) {
+        throw new Error(`invalid session leaf target: ${target ?? 'null'}`)
+      }
+    }
+  }
+  if (prepared.type === 'extension.custom' || prepared.type === 'extension.message') {
+    assertExtensionIdentity(prepared)
+  }
+}
+
+function transformedActiveBranchFromOrdered(
+  ordered: readonly SessionEntry[],
   options: SessionProjectionOptions,
 ): SessionEntry[] {
-  const semanticBranch = getActiveSessionBranch(entries)
-  const semanticIds = new Set(semanticBranch.map((entry) => entry.entryId))
-  let branch = orderedSessionEntries(entries).filter(
-    (entry) =>
-      semanticIds.has(entry.entryId) ||
-      (entry.type === 'extension.custom' &&
-        entry.parentId !== null &&
-        semanticIds.has(entry.parentId)),
-  )
+  const leafId = getSessionLeafIdFromOrdered(ordered)
+  if (!leafId) return []
+  const byId = new Map(ordered.map((entry) => [entry.entryId, entry]))
+  const requestedLeaf = byId.get(leafId)
+  if (!requestedLeaf || !sessionEntryAdvancesLeaf(requestedLeaf)) {
+    throw new Error(`invalid session branch leaf: ${leafId}`)
+  }
+  const semanticIds = new Set<string>()
+  let cursor: string | null = requestedLeaf.entryId
+  while (cursor) {
+    const entry = byId.get(cursor)
+    if (!entry) throw new Error(`session branch entry not found: ${cursor}`)
+    semanticIds.add(entry.entryId)
+    cursor = entry.parentId
+  }
+  // The clone here establishes ownership for the projection and for the
+  // caller-supplied transforms; entries upstream are shared references.
+  let branch = ordered
+    .filter(
+      (entry) =>
+        semanticIds.has(entry.entryId) ||
+        (entry.type === 'extension.custom' &&
+          entry.parentId !== null &&
+          semanticIds.has(entry.parentId)),
+    )
+    .map((entry) => structuredClone(entry))
   for (const transform of options.entryTransforms ?? []) {
     branch = [...transform(branch)].map((entry) => structuredClone(entry))
   }
@@ -411,8 +513,8 @@ export function projectConversation(
   entries: readonly SessionEntry[],
   options: SessionProjectionOptions = {},
 ): ConversationRecord {
-  const ordered = orderedSessionEntries(entries)
-  validateSessionJournal(ordered)
+  const ordered = orderSessionEntryRefs(entries)
+  validateOrderedRefs(ordered)
   const created = ordered.find(
     (entry): entry is SessionEntry<'session.created'> => entry.type === 'session.created',
   )
@@ -430,7 +532,11 @@ export function projectConversation(
         meta.title = entry.data.title.trim() || DEFAULT_CONVERSATION_TITLE
         break
       case 'usage.recorded':
-        meta.usage = createConversationUsageSnapshot(meta.usage, entry.data.usage, entry.timestamp)
+        meta.usage = createConversationUsageSnapshot(
+          meta.usage,
+          structuredClone(entry.data.usage),
+          entry.timestamp,
+        )
         break
       case 'run.event':
         runEvents.push(structuredClone(entry.data.event) as PersistedRunEvent)
@@ -445,7 +551,7 @@ export function projectConversation(
   }
 
   // Context-bearing state is projected only from the active root-to-leaf branch.
-  for (const entry of transformedActiveBranch(ordered, options)) {
+  for (const entry of transformedActiveBranchFromOrdered(ordered, options)) {
     switch (entry.type) {
       case 'message.committed': {
         const message = preparePersistedMessage(entry.data.message)
@@ -481,7 +587,7 @@ export function projectConversation(
 }
 
 export function sessionRunEvents(entries: readonly SessionEntry[]): PersistedRunEvent[] {
-  return orderedSessionEntries(entries).flatMap((entry) =>
+  return orderSessionEntryRefs(entries).flatMap((entry) =>
     entry.type === 'run.event' ? [structuredClone(entry.data.event) as PersistedRunEvent] : [],
   )
 }
@@ -490,8 +596,10 @@ export function sessionRunPayloads(
   entries: readonly SessionEntry[],
   runId?: string,
 ): Array<SessionEntry<'run.payload'>> {
-  return orderedSessionEntries(entries).filter(
-    (entry): entry is SessionEntry<'run.payload'> =>
-      entry.type === 'run.payload' && (!runId || entry.runId === runId),
-  )
+  return orderSessionEntryRefs(entries)
+    .filter(
+      (entry): entry is SessionEntry<'run.payload'> =>
+        entry.type === 'run.payload' && (!runId || entry.runId === runId),
+    )
+    .map((entry) => structuredClone(entry))
 }
