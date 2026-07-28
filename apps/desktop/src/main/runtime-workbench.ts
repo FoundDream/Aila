@@ -29,7 +29,7 @@ import {
   ToolApprovalStore,
   type Workbench,
 } from '@aila/agent'
-import { cleanupConversationImages, createPersistedWorkbench } from '@aila/agent-node/app'
+import { createPersistedWorkbench } from '@aila/agent-node/app'
 import type { IpcMain } from 'electron'
 import {
   buildDesktopWorkspaceContextFromRecord,
@@ -152,7 +152,6 @@ export function createDesktopRuntimeWorkbench(
       onEvent: (event) => input.emit(event.type, event.data),
       onToolApproval: requestToolApproval,
       onConversationAbort: cancelConversationApprovals,
-      cleanupConversationAssets: cleanupConversationImages,
       loadTransientContext: ({ record }) => buildDesktopWorkspaceContextFromRecord(record),
       workspaceRoots: getDesktopWorkspaceRoots,
       shellCwd: getDesktopShellCwd,
