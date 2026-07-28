@@ -44,6 +44,9 @@ export default defineConfig({
   },
   renderer: {
     root: resolve(CONFIG_DIR, 'src/renderer'),
+    // Pinned off vite's default 5173: the website dev server binds it on IPv4
+    // and a dual-stack split leaves Electron loading the wrong app.
+    server: { port: 5183, host: '127.0.0.1' },
     resolve: {
       alias: [{ find: '@', replacement: resolve(CONFIG_DIR, 'src/renderer/src') }, ...sharedAlias],
     },
