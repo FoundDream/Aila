@@ -7,7 +7,7 @@ import {
   Trash2Icon,
 } from 'lucide-react'
 import { type ReactElement, useEffect, useMemo, useRef, useState } from 'react'
-import type { ConversationSummary, ConversationWorkspaceRef } from '../../../../preload/index'
+import type { ConversationSummary, ConversationWorkspaceRef } from '../../types'
 import { type ConversationStatusTone, getConversationStatus } from './conversationStatus'
 
 interface ConversationListProps {

@@ -38,9 +38,6 @@ type RunInspectionEvent = RuntimeRunInspection['events'][number]
 
 interface ExecutionTimelineProps {
   inspection: RuntimeRunInspection
-  runLabel?: string
-  /** Embedded mode drops the outer width constraint for use inside a card. */
-  embedded?: boolean
   controls: PlaygroundRunControls
   expandedStepIds: string[]
   payloads: Record<string, RunPayload>
@@ -61,8 +58,6 @@ interface ExecutionTimelineProps {
  */
 export function ExecutionTimeline({
   inspection,
-  runLabel,
-  embedded = false,
   controls,
   expandedStepIds,
   payloads,
@@ -80,11 +75,8 @@ export function ExecutionTimeline({
   const runEvents = inspection.events.filter((event) => !event.stepId)
 
   return (
-    <div className={embedded ? 'w-full pb-2' : 'mx-auto w-full max-w-[880px] pb-6'}>
+    <div className="w-full pb-2">
       <div className="mb-4 flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-[var(--border)] pb-3 text-[10.5px] text-[var(--text-dim)]">
-        {runLabel && (
-          <span className="text-[12px] font-semibold text-[var(--text)]">{runLabel}</span>
-        )}
         <MetaItem label="run" value={truncatedId(snapshot.identity.runId)} mono />
         <MetaItem label="mode" value={state.mode} />
         <MetaItem label="revision" value={String(snapshot.revision)} mono />

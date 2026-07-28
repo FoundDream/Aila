@@ -777,30 +777,6 @@ interface UseChatStreamsOptions {
   onConversationUpdated?: (summary: ConversationSummary) => void
 }
 
-export type ChatStreamsStateForTest = State
-export type ChatStreamsActionForTest = Action
-
-export function createChatStreamsStateForTest(): ChatStreamsStateForTest {
-  return {
-    streams: new Map<string, ConversationStreamState>(),
-    droppedConversationIds: new Set<string>(),
-  }
-}
-
-export function getChatStreamForTest(
-  state: ChatStreamsStateForTest,
-  conversationId: string,
-): ConversationStream {
-  return materializeStream(state.streams.get(conversationId) ?? EMPTY_STREAM)
-}
-
-export function reduceChatStreamsForTest(
-  state: ChatStreamsStateForTest,
-  action: ChatStreamsActionForTest,
-): ChatStreamsStateForTest {
-  return reducer(state, action)
-}
-
 export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreamsApi {
   const [state, dispatch] = useReducer(reducer, {
     streams: new Map<string, ConversationStreamState>(),

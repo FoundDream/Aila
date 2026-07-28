@@ -45,7 +45,6 @@ export function RunTraceSection({
   return (
     <div className="mt-2 rounded-lg border border-[var(--border)] bg-[var(--bg)] px-3 pt-3">
       <ExecutionTimeline
-        embedded
         inspection={inspection}
         controls={controls}
         expandedStepIds={expandedStepIds}

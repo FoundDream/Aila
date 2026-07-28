@@ -68,10 +68,9 @@ if (is.dev) {
 registerImageProtocolScheme()
 registerWidgetProtocolScheme()
 
-// electron-vite injects the renderer dev server's *actual* URL here. Don't
-// hardcode the port: if another Vite app already holds 5173, our renderer
-// falls back to 5174 and a hardcoded 5173 would load the wrong app (or fail).
-const DEV_RENDERER_URL = process.env.ELECTRON_RENDERER_URL ?? 'http://localhost:5173'
+// electron-vite injects the renderer dev server's *actual* URL here. The
+// fallback matches the port pinned in electron.vite.config.ts.
+const DEV_RENDERER_URL = process.env.ELECTRON_RENDERER_URL ?? 'http://localhost:5183'
 
 let mainWindow: BrowserWindow | null = null
 let gracefulShutdownStarted = false

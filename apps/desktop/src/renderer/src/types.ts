@@ -71,6 +71,7 @@ export type {
   RuntimeCompactConversationRequest,
   RuntimeCompactConversationResult,
   RuntimeConversationHydration,
+  RuntimeForkRunInput,
   RuntimeForkSessionInput,
   RuntimeNavigateSessionInput,
   RuntimeRetryLastRequest,

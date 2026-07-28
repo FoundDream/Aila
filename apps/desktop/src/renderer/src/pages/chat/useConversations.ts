@@ -1,9 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type {
-  ConversationRecord,
-  ConversationSummary,
-  ConversationWorkspaceRef,
-} from '../../../../preload/index'
+import type { ConversationRecord, ConversationSummary, ConversationWorkspaceRef } from '../../types'
 
 export interface ConversationsState {
   conversations: ConversationSummary[]

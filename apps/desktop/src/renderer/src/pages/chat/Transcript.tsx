@@ -23,14 +23,12 @@ export function Transcript({
   canRetryLast = false,
   onRetryLast,
   submitScrollKey = 0,
-  compact = false,
 }: {
   messages: Message[]
   events?: PersistedRunEvent[]
   canRetryLast?: boolean
   onRetryLast?: () => void
   submitScrollKey?: number
-  compact?: boolean
 }): ReactElement {
   const { scrollRef, contentRef, isAtBottom, scrollToBottom } = useStickToBottom({
     initial: 'instant',
@@ -52,16 +50,10 @@ export function Transcript({
 
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
-      <div
-        ref={scrollRef}
-        className={`flex-1 overflow-y-auto ${compact ? 'px-3 py-3' : 'px-6 py-7'}`}
-      >
-        <div
-          ref={contentRef}
-          className={`mx-auto flex flex-col ${compact ? 'max-w-none gap-3' : 'max-w-[720px] gap-6'}`}
-        >
+      <div ref={scrollRef} className="flex-1 overflow-y-auto px-6 py-7">
+        <div ref={contentRef} className="mx-auto flex max-w-[720px] flex-col gap-6">
           {messages.map((message) => (
-            <MessageRow key={message.id} message={message} compact={compact} />
+            <MessageRow key={message.id} message={message} />
           ))}
           <ContextCompactionStatus events={events} />
           {canRetryLast && onRetryLast && <RetryLastTurn onRetryLast={onRetryLast} />}
@@ -96,15 +88,12 @@ function RetryLastTurn({ onRetryLast }: { onRetryLast: () => void }): ReactEleme
   )
 }
 
-function MessageRow({ message, compact }: { message: Message; compact: boolean }): ReactElement {
+function MessageRow({ message }: { message: Message }): ReactElement {
   const isUser = message.role === 'user'
   const isStreaming = message.status === 'streaming'
   const isQueued = message.status === 'queued'
   const canCopy = !isStreaming && messageToPlainText(message).length > 0
-  const toolStepCount = message.blocks.filter((block) => block.type === 'tool_call').length
-  const visibleBlocks = compact
-    ? message.blocks.filter((block) => block.type !== 'tool_call')
-    : message.blocks
+  const visibleBlocks = message.blocks
 
   if (isUser) {
     return (
@@ -124,7 +113,6 @@ function MessageRow({ message, compact }: { message: Message; compact: boolean }
                   key={index}
                   block={block}
                   isStreaming={isStreaming}
-                  compact={compact}
                 />
               ))}
             </div>
@@ -154,7 +142,6 @@ function MessageRow({ message, compact }: { message: Message; compact: boolean }
                 key={index}
                 block={block}
                 isStreaming={isStreaming}
-                compact={compact}
               />
             ))
           )}
@@ -165,19 +152,6 @@ function MessageRow({ message, compact }: { message: Message; compact: boolean }
             </p>
           )}
         </div>
-        {compact && toolStepCount > 0 && (
-          <div className="mt-3 flex items-center gap-2 border-t border-[var(--border)] pt-2 text-[11px] text-[var(--text-dim)]">
-            {isStreaming ? (
-              <LoaderCircleIcon className="size-3 animate-spin text-[var(--signal)]" />
-            ) : (
-              <CheckIcon className="size-3 text-[var(--success)]" />
-            )}
-            <span>
-              {toolStepCount} {toolStepCount === 1 ? 'step' : 'steps'},{' '}
-              {isStreaming ? 'running' : message.status === 'error' ? 'failed' : 'completed'}
-            </span>
-          </div>
-        )}
         {canCopy && <CopyButton message={message} className="mt-2" />}
       </div>
     </article>
@@ -226,15 +200,7 @@ function messageToPlainText(message: Message): string {
     .trim()
 }
 
-function BlockView({
-  block,
-  isStreaming,
-  compact,
-}: {
-  block: Block
-  isStreaming: boolean
-  compact: boolean
-}): ReactElement {
+function BlockView({ block, isStreaming }: { block: Block; isStreaming: boolean }): ReactElement {
   if (block.type === 'reasoning') {
     return <ReasoningView content={block.content} isStreaming={isStreaming} />
   }
@@ -272,7 +238,7 @@ function BlockView({
       lineNumbers={false}
       parseIncompleteMarkdown
       plugins={markdownPlugins}
-      className={`aila-md leading-[1.7] ${compact ? 'text-[13.5px]' : 'text-[15px]'}`}
+      className="aila-md text-[15px] leading-[1.7]"
     >
       {block.content}
     </Streamdown>

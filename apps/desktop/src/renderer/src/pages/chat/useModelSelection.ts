@@ -22,9 +22,9 @@ function pickInitialSelection(
   return fallback ? { providerId: first, modelId: fallback.modelId } : null
 }
 
-// Shared selection logic for any view that needs a model picker (chat tab,
-// docs sidebar). The selection itself isn't local state — it's derived from
-// settings, and changes write straight back to settings via onUpdateSettings.
+// Shared selection logic for any view that needs a model picker. The selection
+// itself isn't local state — it's derived from settings, and changes write
+// straight back to settings via onUpdateSettings.
 export function useModelSelection(
   settings: Settings | null,
   configuredProviders: ProviderId[],

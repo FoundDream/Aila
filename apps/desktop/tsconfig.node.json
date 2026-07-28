@@ -6,6 +6,7 @@
     "tsBuildInfoFile": "out/tsconfig.node.tsbuildinfo",
     "types": ["electron-vite/node"],
     "paths": {
+      "@aila/agent/internal": ["../../packages/agent/src/internal.ts"],
       "@aila/agent/host": ["../../packages/agent/src/host.ts"],
       "@aila/agent": ["../../packages/agent/src/index.ts"],
       "@aila/agent-node/app": ["../../packages/agent-node/src/app/index.ts"],
