@@ -22,7 +22,7 @@ const interfaceItems = [
   {
     iconClass: 'i-desktop',
     name: 'Desktop',
-    description: 'workbench · docs · sessions',
+    description: 'interactive workbench · sessions',
     icon: (
       <>
         <rect x="2" y="4" width="20" height="14" rx="2" />
@@ -33,7 +33,7 @@ const interfaceItems = [
   {
     iconClass: 'i-tui',
     name: 'TUI',
-    description: 'full-screen terminal adapter',
+    description: 'full-screen terminal',
     icon: (
       <>
         <rect x="3" y="4" width="18" height="16" rx="2" />
@@ -44,7 +44,7 @@ const interfaceItems = [
   {
     iconClass: 'i-cli',
     name: 'CLI',
-    description: 'scripts · automation · NDJSON',
+    description: 'scripts · NDJSON events',
     icon: <path d="M4 17l6-5-6-5M12 19h8" />,
   },
 ] as const
@@ -72,7 +72,7 @@ function InterfaceDemo() {
       </div>
       <div className="demo-core">
         <span className="pulse" />
-        @aila/agent — AgentRuntime · tools · storage · events
+        @aila/agent — sessions · tools · events
       </div>
     </>
   )
@@ -104,53 +104,53 @@ export function WhySection() {
     <section className="section section--why" id="why">
       <div className="home-container">
         <h2 className="section-title reveal">
-          Why a runtime, <span className="title-serif">not another chat app?</span>
+          One workbench, <span className="title-serif">wherever you work.</span>
         </h2>
         <p className="section-sub reveal">
-          Most agent tools stop at the conversation. Aila owns the whole lifecycle — sessions,
-          tools, persistence, and recovery — in one open engine.
+          Aila keeps conversations, tools, and run state together. Move between Desktop, TUI, and
+          CLI without learning three different systems.
         </p>
         <div className="usecase-list">
           <UseCase
-            eyebrow="One engine"
-            title="Desktop, TUI, and CLI share the same runtime."
-            description="Every interface is a thin adapter over the shared AgentRuntime — same tools, same storage, same event contract. Start a task in the terminal, review it on the Desktop, automate it from a script."
+            eyebrow="Shared core"
+            title="Three interfaces. One set of capabilities."
+            description="Desktop, TUI, and CLI use the same runtime, tool contract, and event model. Work interactively, stay in the terminal, or call Aila from a script."
           >
             <InterfaceDemo />
           </UseCase>
           <UseCase
-            eyebrow="Durable by default"
-            title="Every turn survives a restart."
-            description="Turns are journaled to disk as they run. Close the app mid-turn, crash the machine, lose power — resume exactly where you left off with one flag."
+            eyebrow="Durable sessions"
+            title="Resume work without rebuilding context."
+            description="Aila journals conversation state to disk. Reopen a session, retry an interrupted last turn, or continue from a known conversation ID."
             reverse
           >
             <div className="demo-term">
-              <div className="t-cmd">bun run tui -- --resume --retry-last</div>
-              <div className="t-out">restored conversation 8f3a…c2 · 14 turns</div>
-              <div className="t-out">found persisted user message without response</div>
-              <div className="t-ok">▶ resuming last turn — queue intact</div>
-              <div className="t-cmd">bun run cli -- --resume --json &quot;continue&quot;</div>
-              <div className="t-ok">✓ turn completed · events written to journal</div>
+              <div className="t-cmd">bun run tui -- --resume</div>
+              <div className="t-out">restored latest conversation · 14 turns</div>
+              <div className="t-out">conversation state loaded from local journal</div>
+              <div className="t-ok">▶ session ready · waiting for input</div>
+              <div className="t-cmd">bun run cli -- --resume --retry-last --json</div>
+              <div className="t-ok">✓ retry started · runtime events streaming</div>
             </div>
           </UseCase>
           <UseCase
             eyebrow="Steerable"
-            title="Queue follow-ups while the agent works."
-            description="Don’t wait for the turn to end. Steer the current run, line up the next instruction, or abort cleanly — input queues are part of the runtime, not a UI trick."
+            title="Add the next instruction while a turn runs."
+            description="Queue a follow-up, steer an active turn, or abort when needed. Input queues are part of the runtime, so interfaces do not need to fake the behavior."
           >
             <div className="demo-steer">
               <div className="bubble agent">
-                Running the test suite across packages now — 6 contract suites queued.
+                Reading the workspace and mapping the affected files.
               </div>
-              <div className="bubble user">While that runs: also check the CLI contract.</div>
+              <div className="bubble user">Also check the CLI entrypoint before you finish.</div>
               <div className="bubble queued">
                 <span className="badge">Queued</span>
-                Will steer into the active turn
+                Will join the active turn
               </div>
+              <div className="bubble agent">Added the CLI entrypoint to the review.</div>
               <div className="bubble agent">
-                Picked up your steer mid-turn. Adding the CLI contract to the run.
+                Done. The affected paths and follow-ups are summarized.
               </div>
-              <div className="bubble agent">All 7 suites green. Summary posted above.</div>
             </div>
           </UseCase>
         </div>
@@ -163,7 +163,7 @@ const architectureItems = [
   {
     title: 'WorkbenchRuntime',
     description:
-      'The multi-session process facade. It creates, retains, routes, recovers, and shuts down session runtimes — backed by one shared service container.',
+      'Coordinates conversations and shared services across a process: storage, host integrations, tools, skills, recovery, and shutdown.',
     tag: 'process scope',
     icon: (
       <>
@@ -177,7 +177,7 @@ const architectureItems = [
   {
     title: 'SessionRuntime',
     description:
-      'Bound to one durable conversation. Owns turn lifecycle, pending journal writes, context assembly, compaction, and the steer / follow-up input queues.',
+      'Owns one durable conversation: context, navigation, compaction, turn state, event subscriptions, and input queues.',
     tag: 'conversation scope',
     icon: (
       <>
@@ -189,7 +189,7 @@ const architectureItems = [
   {
     title: 'AgentRuntime & RunMachine',
     description:
-      'AgentRuntime orchestrates one model/tool loop with queue timing and step policy. RunMachine is the pure, durable execution state machine underneath it.',
+      'Drive one model/tool loop while preserving the execution state needed for events, policy decisions, retry, and recovery.',
     tag: 'turn scope',
     icon: (
       <>
@@ -205,11 +205,11 @@ export function ArchitectureSection() {
     <section className="section section--architecture" id="architecture">
       <div className="home-container">
         <h2 className="section-title reveal">
-          <span>Designed to</span> <span className="title-serif">run forever.</span>
+          <span>Clear scopes,</span> <span className="title-serif">durable state.</span>
         </h2>
         <p className="section-sub reveal">
-          Explicit scopes, each with one job. The architecture is the documentation — and it’s all
-          open.
+          The runtime separates process, conversation, and turn responsibilities so each layer stays
+          inspectable and replaceable.
         </p>
         <div className="collab-grid">
           {architectureItems.map((item) => (
@@ -238,13 +238,11 @@ const interfaceModels = [
 ] as const
 
 const modelProviders = [
-  ['C', 'Claude', '#d97706'],
-  ['G', 'GPT', '#059669'],
-  ['G', 'Gemini', '#2563eb'],
-  ['K', 'Kimi', '#111827'],
+  ['A', 'Anthropic', '#d97706'],
+  ['O', 'OpenAI', '#059669'],
+  ['G', 'Google', '#2563eb'],
   ['D', 'DeepSeek', '#4f46e5'],
-  ['Q', 'Qwen', '#7c2d12'],
-  ['O', 'Ollama', '#0f766e'],
+  ['R', 'OpenRouter', '#7c3aed'],
 ] as const
 
 function ModelGroup({
@@ -266,8 +264,8 @@ function ModelGroup({
             {name}
           </span>
         ))}
-        {label === 'Models' ? (
-          <span className="model-chip model-chip--dashed">Bring your own</span>
+        {label === 'Providers' ? (
+          <span className="model-chip model-chip--dashed">More via OpenRouter</span>
         ) : null}
       </div>
     </div>
@@ -279,15 +277,15 @@ export function ModelsSection() {
     <section className="section section--models" id="models">
       <div className="home-container">
         <h2 className="section-title reveal">
-          One runtime, <span className="title-serif">every model.</span>
+          Choose the model <span className="title-serif">for the task.</span>
         </h2>
         <p className="section-sub reveal">
-          Swap models per session without changing tools, storage, or habits. Bring your own
-          provider keys — or your own provider.
+          Configure Anthropic, OpenAI, Google, DeepSeek, or OpenRouter, then switch models per
+          conversation without changing how Aila works.
         </p>
         <div className="models-board reveal">
           <ModelGroup label="Interfaces" items={interfaceModels} />
-          <ModelGroup label="Models" items={modelProviders} />
+          <ModelGroup label="Providers" items={modelProviders} />
         </div>
       </div>
     </section>
@@ -344,12 +342,12 @@ export function FeaturesSection() {
     <section className="features">
       <div className="home-container">
         <h2 className="section-title reveal">
-          <span>Real work</span> <span className="title-serif">your agents can ship.</span>
+          <span>From quick edits</span> <span className="title-serif">to repeatable runs.</span>
         </h2>
         <div className="feature-grid">
           <FeatureCard
             title="Code changes"
-            description="Reads, edits, and runs checks inside your real repo — with an approval gate before anything touches disk."
+            description="Inspect a repository, edit files, and run commands through the host’s tool policy. You decide when writes and shell commands need approval."
           >
             <ShotBar title="session-store.ts — diff" />
             <div className="shot-body shot-code">
@@ -378,8 +376,8 @@ export function FeaturesSection() {
             </div>
           </FeatureCard>
           <FeatureCard
-            title="Documents"
-            description="Draft, revise, and polish docs in the Desktop workbench — the agent writes where you read."
+            title="File-aware conversations"
+            description="Attach images or files, read project docs, and keep that context with the conversation instead of rebuilding it in every prompt."
           >
             <ShotBar title="onboarding.md" />
             <div className="shot-body shot-doc">
@@ -392,23 +390,23 @@ export function FeaturesSection() {
             </div>
           </FeatureCard>
           <FeatureCard
-            title="Reports"
-            description="Recurring summaries and KPI digests, generated on a schedule from the CLI — review them anywhere."
+            title="Review-ready summaries"
+            description="Summarize a working tree, explain changes, and produce a handoff that another person or tool can review."
           >
-            <ShotBar title="weekly-report — 07:00 cron" />
+            <ShotBar title="workspace-summary.md" />
             <div className="shot-body shot-report">
               <div className="kpis">
                 <div className="kpi">
-                  <b>128</b>
-                  <span>commits</span>
+                  <b>18</b>
+                  <span>files changed</span>
                 </div>
                 <div className="kpi">
-                  <b>42</b>
-                  <span>PRs merged</span>
+                  <b>6</b>
+                  <span>risks found</span>
                 </div>
                 <div className="kpi">
-                  <b>99.2%</b>
-                  <span>checks green</span>
+                  <b>4</b>
+                  <span>next steps</span>
                 </div>
               </div>
               <div className="bars">
@@ -419,29 +417,29 @@ export function FeaturesSection() {
             </div>
           </FeatureCard>
           <FeatureCard
-            title="Personal workflows"
-            description="Chain prompts, tools, and scripts into repeatable jobs — same runtime, headless when you need it."
+            title="Scriptable runs"
+            description="Use the CLI in shell scripts and existing job runners. Stream machine-readable events as NDJSON, and opt into approvals only when automation needs it."
           >
-            <ShotBar title="nightly.pipeline" />
+            <ShotBar title="review-changes.sh" />
             <div className="shot-body shot-flow">
               <div className="step">
                 <span className="no">1</span>
-                git pull --rebase
+                git status --short
                 <span className="ok">ok</span>
               </div>
               <div className="step">
                 <span className="no">2</span>
-                aila cli &quot;summarize changes&quot;
+                bun run cli -- &quot;summarize changes&quot;
                 <span className="ok">ok</span>
               </div>
               <div className="step">
                 <span className="no">3</span>
-                aila cli --events &gt; log.ndjson
+                bun run cli -- --events &quot;review risks&quot;
                 <span className="ok">ok</span>
               </div>
               <div className="step">
                 <span className="no">4</span>
-                post digest to inbox
+                archive the NDJSON output
                 <span className="ok">ok</span>
               </div>
             </div>
@@ -454,15 +452,15 @@ export function FeaturesSection() {
 
 const securityItems = [
   {
-    title: 'Local-first storage',
+    title: 'Local conversation storage',
     description:
-      'Conversations and settings live in ~/.aila on your machine. Nothing syncs anywhere unless you make it.',
+      'TUI and CLI use ~/.aila by default; Desktop uses its app-data directory. Aila does not require a hosted sync service.',
     icon: <path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7l8-4z" />,
   },
   {
-    title: 'Explicit approvals',
+    title: 'Approval is a policy',
     description:
-      'Tool executions are denied by default in the CLI. Auto-approval is a deliberate, per-run opt-in.',
+      'CLI denies tool approvals by default. Desktop and TUI surface approval flows; automation can opt in explicitly.',
     icon: (
       <>
         <rect x="4" y="10" width="16" height="10" rx="2" />
@@ -471,15 +469,15 @@ const securityItems = [
     ),
   },
   {
-    title: 'Auditable events',
+    title: 'Machine-readable events',
     description:
-      'Every run can emit a full NDJSON event stream — who did what, when, and why, in a format scripts can read.',
+      'CLI can stream runtime events as NDJSON, so scripts can capture what happened without scraping terminal output.',
     icon: <path d="M4 6h16M4 12h16M4 18h10" />,
   },
   {
-    title: 'Fully open source',
+    title: 'Open-source core',
     description:
-      'The runtime, the adapters, and the contracts are all in the repo. Audit the code, fork it, own it.',
+      'The runtime, Node adapters, Desktop, TUI, and CLI live in one repository, so you can inspect and adapt the code you run.',
     icon: <path d="M8 9l-4 3 4 3M16 9l4 3-4 3M13 5l-2 14" />,
   },
 ] as const
@@ -489,11 +487,11 @@ export function SecuritySection() {
     <section className="section" id="security">
       <div className="home-container">
         <h2 className="section-title reveal">
-          Your data <span className="title-serif">stays yours.</span>
+          Local state, <span className="title-serif">clear boundaries.</span>
         </h2>
         <p className="section-sub reveal">
-          Local-first isn’t a setting — it’s the architecture. There is no Aila cloud holding your
-          conversations.
+          Conversation history is stored locally by default. Model requests still go to the provider
+          you configure; Aila itself does not require a hosted conversation service.
         </p>
         <div className="security-grid">
           {securityItems.map((item) => (
@@ -518,10 +516,11 @@ export function FinalCta() {
     <section className="final-cta">
       <div className="home-container">
         <h2 className="reveal">
-          Start building <span className="title-serif">with Aila.</span>
+          Try Aila <span className="title-serif">from the source.</span>
         </h2>
         <p className="reveal">
-          Open source, local-first, and free forever. Your agents are waiting.
+          The project is under active development. Expect rough edges and breaking changes — and
+          help shape what comes next on GitHub.
         </p>
         <DownloadCluster reveal />
         <div className="final-cta-shot reveal">

@@ -1,7 +1,6 @@
 import { Footer } from './components/Footer'
 import { Hero } from './components/Hero'
 import { Navigation } from './components/Navigation'
-import { ProductPreview } from './components/ProductPreview'
 import {
   ArchitectureSection,
   FeaturesSection,
@@ -22,7 +21,6 @@ export default function App() {
       <Navigation />
       <main id="top">
         <Hero />
-        <ProductPreview />
         <WhySection />
         <ArchitectureSection />
         <ModelsSection />

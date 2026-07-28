@@ -117,7 +117,8 @@ function queuedRunPreview(queued: QueuedRun): string {
   if (queued.kind === 'retryLast') return 'Resume last turn'
   const text = compactTextPreview(queued.text)
   if (text) return text
-  return queued.attachments.length > 0 ? 'Attachment-only prompt' : 'Empty prompt'
+  const attachmentNames = queued.attachments.map((attachment) => attachment.name).join(', ')
+  return attachmentNames || 'Empty prompt'
 }
 
 function getSlashState(text: string, cursor: number): SlashState | null {
@@ -374,7 +375,6 @@ function QueuedRunsList({
 }): ReactElement | null {
   if (queuedRuns.length === 0) return null
 
-  const nextPreview = queuedRunPreview(queuedRuns[0])
   const queueSummary = queuedRuns
     .map((queued, index) => `${index + 1}. ${queuedRunPreview(queued)}`)
     .join('\n')
@@ -383,20 +383,15 @@ function QueuedRunsList({
     <section
       aria-label={`${queuedRuns.length} queued ${queuedRuns.length === 1 ? 'message' : 'messages'}`}
       title={queueSummary}
-      className="relative mx-5 -mb-3 flex h-[68px] items-start justify-between rounded-[18px] border border-[var(--border)] bg-[var(--surface)] px-4 pt-2.5 text-[var(--text-dim)]"
+      className="relative mx-5 -mb-3 rounded-[18px] border border-[var(--border)] bg-[var(--surface)] px-3 pb-5 pt-2.5 text-[var(--text-dim)]"
     >
-      <div className="flex h-8 shrink-0 items-center gap-2">
-        <ListEndIcon className="size-3.5" />
-        <span className="text-[14px] font-medium tabular-nums text-[var(--text)]">
-          {queuedRuns.length}
-        </span>
-      </div>
-
-      <div className="flex min-w-0 items-center gap-2">
-        <span className="max-w-64 truncate text-[12px] text-[var(--text-dim)]">
-          <span className="mr-1.5 text-[var(--text-soft)]">Next</span>
-          {nextPreview}
-        </span>
+      <div className="flex h-8 items-center justify-between px-1">
+        <div className="flex shrink-0 items-center gap-2">
+          <ListEndIcon className="size-3.5" />
+          <span className="text-[14px] font-medium tabular-nums text-[var(--text)]">
+            {queuedRuns.length}
+          </span>
+        </div>
         {onClearQueue && (
           <Tooltip>
             <TooltipTrigger asChild>
@@ -413,6 +408,31 @@ function QueuedRunsList({
           </Tooltip>
         )}
       </div>
+
+      <ol className="mt-0.5 flex max-h-28 flex-col gap-px overflow-y-auto pr-1">
+        {queuedRuns.map((queued, index) => {
+          const preview = queuedRunPreview(queued)
+          const attachmentCount = queued.kind === 'send' ? queued.attachments.length : 0
+          return (
+            <li
+              key={queued.id}
+              className="flex min-h-8 items-center gap-2 rounded px-2 py-1 text-[12px] hover:bg-[var(--surface-hover)]"
+            >
+              <span className="w-9 shrink-0 text-[11px] text-[var(--text-dim)]">
+                {index === 0 ? 'Next' : `#${index + 1}`}
+              </span>
+              <span className="min-w-0 flex-1 truncate text-[var(--text-soft)]" title={preview}>
+                {preview}
+              </span>
+              {attachmentCount > 0 && (
+                <span className="shrink-0 text-[10.5px] text-[var(--text-dim)]">
+                  +{attachmentCount} {attachmentCount === 1 ? 'file' : 'files'}
+                </span>
+              )}
+            </li>
+          )
+        })}
+      </ol>
     </section>
   )
 }
