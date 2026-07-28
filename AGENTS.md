@@ -1,5 +1,8 @@
 # Development Rules
 
+Architecture invariants live in [CLAUDE.md](./CLAUDE.md); this file covers
+process only.
+
 ## Communication
 
 - Keep responses concise, direct, and technical.
