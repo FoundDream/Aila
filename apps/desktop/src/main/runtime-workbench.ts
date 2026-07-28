@@ -1,26 +1,25 @@
 import {
   type ActiveAssistantTurn,
-  type AilaExecutionMode,
   type BlobGarbageCollectionResult,
-  type ChatAttachmentInput,
-  type ChatMessage,
   type ConversationRecord,
   type ConversationRuntimeHydration,
   type ConversationRuntimeStateSnapshot,
   type ConversationSummary,
-  type ConversationWorkspaceRef,
-  type ModelSelection,
   type PersistedMessage,
   type RunPayload,
   type RunSnapshot,
+  type RuntimeCompactConversationInput,
   type RuntimeCompactConversationResult,
+  type RuntimeCreateConversationInput,
   type RuntimeForkRunInput,
   type RuntimeForkSessionInput,
   type RuntimeNavigateSessionInput,
+  type RuntimeRetryLastInput,
   type RuntimeRunControlInput,
   type RuntimeRunInspection,
   type RuntimeRunPayloadInput,
   type RuntimeRunSummary,
+  type RuntimeSendInput,
   type RuntimeSendResult,
   type RuntimeSessionAvailability,
   type SessionTree,
@@ -41,36 +40,11 @@ const TOOL_APPROVAL_TIMEOUT_MS = 60_000
 
 type DesktopRuntimeEmitter = (channel: string, data?: unknown) => void
 
-export interface RuntimeWorkbenchSendInput {
-  conversationId: string
-  userText: string
-  selection: ModelSelection
-  mode?: AilaExecutionMode
-  loopMode?: 'continuous' | 'step'
-  attachments?: ChatAttachmentInput[]
-  transientContext?: ChatMessage[]
-}
-
-export interface RuntimeWorkbenchRetryLastInput {
-  conversationId: string
-  selection: ModelSelection
-  mode?: AilaExecutionMode
-  loopMode?: 'continuous' | 'step'
-  transientContext?: ChatMessage[]
-}
-
+// The append input is deliberately narrower than the agent's session-custom
+// input: namespace and version are pinned host-side.
 export interface RuntimeWorkbenchAppendMessageInput {
   conversationId: string
   message: PersistedMessage
-}
-
-export interface RuntimeWorkbenchCompactInput {
-  conversationId: string
-  selection: ModelSelection
-}
-
-export interface RuntimeWorkbenchCreateConversationInput {
-  workspace?: ConversationWorkspaceRef | null
 }
 
 export interface RuntimeWorkbenchReloadResult {
@@ -78,11 +52,11 @@ export interface RuntimeWorkbenchReloadResult {
 }
 
 export interface DesktopRuntimeWorkbench {
-  send(input: RuntimeWorkbenchSendInput): Promise<RuntimeSendResult>
-  retryLastUserMessage(input: RuntimeWorkbenchRetryLastInput): Promise<RuntimeSendResult>
+  send(input: RuntimeSendInput): Promise<RuntimeSendResult>
+  retryLastUserMessage(input: RuntimeRetryLastInput): Promise<RuntimeSendResult>
   appendPlaygroundMessage(input: RuntimeWorkbenchAppendMessageInput): Promise<string>
   compactConversation(
-    input: RuntimeWorkbenchCompactInput,
+    input: RuntimeCompactConversationInput,
   ): Promise<RuntimeCompactConversationResult>
   abort(conversationId: string): Promise<void>
   listActiveTurns(): ActiveAssistantTurn[]
@@ -90,7 +64,7 @@ export interface DesktopRuntimeWorkbench {
   shutdown(): Promise<void>
   reloadExtensions(): Promise<RuntimeWorkbenchReloadResult>
 
-  createConversation(input?: RuntimeWorkbenchCreateConversationInput): Promise<ConversationSummary>
+  createConversation(input?: RuntimeCreateConversationInput): Promise<ConversationSummary>
   listConversations(): Promise<ConversationSummary[]>
   getConversation(conversationId: string): Promise<ConversationRecord>
   getSessionTree(conversationId: string): Promise<SessionTree>
@@ -287,16 +261,14 @@ export function registerRuntimeWorkbenchIpcHandlers(
   ipc: Pick<IpcMain, 'handle' | 'on'>,
   workbench: DesktopRuntimeWorkbench,
 ): void {
-  ipc.handle('runtime:send', (_event, request: RuntimeWorkbenchSendInput) =>
-    workbench.send(request),
-  )
-  ipc.handle('runtime:retry-last', (_event, request: RuntimeWorkbenchRetryLastInput) =>
+  ipc.handle('runtime:send', (_event, request: RuntimeSendInput) => workbench.send(request))
+  ipc.handle('runtime:retry-last', (_event, request: RuntimeRetryLastInput) =>
     workbench.retryLastUserMessage(request),
   )
   ipc.handle('runtime:messages:append', (_event, request: RuntimeWorkbenchAppendMessageInput) =>
     workbench.appendPlaygroundMessage(request),
   )
-  ipc.handle('runtime:compact-conversation', (_event, request: RuntimeWorkbenchCompactInput) =>
+  ipc.handle('runtime:compact-conversation', (_event, request: RuntimeCompactConversationInput) =>
     workbench.compactConversation(request),
   )
   ipc.handle('runtime:abort', (_event, conversationId: string) => workbench.abort(conversationId))
@@ -350,10 +322,8 @@ export function registerRuntimeWorkbenchIpcHandlers(
   ipc.handle('runtime:conversations:get', (_event, conversationId: string) =>
     workbench.getConversation(conversationId),
   )
-  ipc.handle(
-    'runtime:conversations:create',
-    (_event, input?: RuntimeWorkbenchCreateConversationInput) =>
-      workbench.createConversation(input ?? {}),
+  ipc.handle('runtime:conversations:create', (_event, input?: RuntimeCreateConversationInput) =>
+    workbench.createConversation(input ?? {}),
   )
   ipc.handle('runtime:conversations:rename', (_event, conversationId: string, title: string) =>
     workbench.renameConversation(conversationId, title),
