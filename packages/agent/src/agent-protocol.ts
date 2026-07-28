@@ -216,6 +216,7 @@ export interface RunRequest {
   }) => MaybePromise<BlobRef>
   workspaceRoots?: ToolContext['workspaceRoots']
   shellCwd?: ToolContext['shellCwd']
+  path?: ToolContext['path']
   onToolPolicy?: ToolContext['onToolPolicy']
   onToolApproval?: ToolContext['onToolApproval']
   settings?: Settings

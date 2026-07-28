@@ -1271,6 +1271,7 @@ async function testRuntimeHostBoundaryContract(): Promise<void> {
     let workspaceRootPath: string | null = null
     let workspaceRootLabel: string | null = null
     let fileSystemPassed = false
+    let pathHostPassed = false
     let shellCwdPath: string | null = null
     let shellRunnerPassed = false
     let settingsLoaded = false
@@ -1307,10 +1308,12 @@ async function testRuntimeHostBoundaryContract(): Promise<void> {
       },
       workspaceRoots: () => [{ path: '/host/workspace', label: 'host-root' }],
       fileSystem,
+      path: runtimePackageNodeSdk.nodePath,
       shellCwd: () => '/host/shell',
       runShell,
       runAgent: async (req, handlers) => {
         fileSystemPassed = req.fileSystem === fileSystem
+        pathHostPassed = req.path === runtimePackageNodeSdk.nodePath
         shellCwdPath = req.shellCwd ?? null
         shellRunnerPassed = req.runShell === runShell
         streamSettingsKey = req.settings?.apiKeys.openrouter ?? null
@@ -1412,6 +1415,7 @@ async function testRuntimeHostBoundaryContract(): Promise<void> {
     assertEqual(workspaceRootPath, '/host/workspace', 'host workspace root path')
     assertEqual(workspaceRootLabel, 'host-root', 'host workspace root label')
     assertEqual(fileSystemPassed, true, 'host filesystem should pass to runAgent')
+    assertEqual(pathHostPassed, true, 'host path implementation should pass to runAgent')
     assertEqual(shellCwdPath, '/host/shell', 'host shell cwd should pass to runAgent')
     assertEqual(shellRunnerPassed, true, 'host shell runner should pass to runAgent')
     assertEqual(
@@ -9103,6 +9107,7 @@ async function testProviderStreamChatOwnsToolLoopContract(): Promise<void> {
   const toolResults: string[] = []
   const doneMessages: PersistedMessage[] = []
   let toolRunCount = 0
+  let toolPathPassed = false
   let doneUsage:
     | {
         promptTokens: number
@@ -9194,8 +9199,9 @@ async function testProviderStreamChatOwnsToolLoopContract(): Promise<void> {
             scope: ['workspace'],
           },
         },
-        async run(args) {
+        async run(args, context) {
           toolRunCount += 1
+          toolPathPassed = context.path === runtimePackageNodeSdk.nodePath
           return `echo:${String(args.message ?? '')}`
         },
       },
@@ -9219,6 +9225,7 @@ async function testProviderStreamChatOwnsToolLoopContract(): Promise<void> {
       messages: [{ role: 'user', content: 'hello' }],
       selection: { providerId: 'openrouter', modelId: 'contract/mock' },
       signal: new AbortController().signal,
+      path: runtimePackageNodeSdk.nodePath,
       onRunEvent: (event) => agentEvents.push(event),
       toolRegistry: createDefaultToolRegistry([toolPack]),
     },
@@ -9243,6 +9250,7 @@ async function testProviderStreamChatOwnsToolLoopContract(): Promise<void> {
 
   assertEqual(modelRequests.length, 2, 'provider stream loop should perform the second model step')
   assertEqual(toolRunCount, 1, 'provider stream loop should execute each tool once')
+  assertEqual(toolPathPassed, true, 'provider stream loop should preserve the path host')
   assertEqual(toolResults[0], 'echo:hello', 'provider stream loop should emit the tool result')
   assertEqual(doneUsage?.totalTokens, 17, 'provider stream loop should accumulate step usage')
   assertEqual(doneUsage?.modelCallCount, 2, 'provider stream loop should count model calls')

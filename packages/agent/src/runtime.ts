@@ -3241,6 +3241,7 @@ class SessionRuntimeEngine {
           signal: controller.signal,
           workspaceRoots: cloneRuntimeWorkspaceRoots(toolContext.workspaceRoots),
           shellCwd: toolContext.shellCwd,
+          path: toolContext.path,
           settings: cloneRuntimeSettings(toolContext.settings),
           webSearch: toolContext.webSearch,
           generateImage: toolContext.generateImage,
