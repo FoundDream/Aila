@@ -1057,14 +1057,14 @@ export function activityFromRunEvent(event: PersistedRunEvent): ConversationActi
         title: 'Image inspection failed',
         detail: joinDetail(dataString(data, 'modelId'), dataString(data, 'error')),
       }
-    case 'context:compacting':
+    case 'context.compacting':
       return {
         ...base,
         state: 'running',
         title: 'Compacting context',
         detail: joinDetail(dataString(data, 'reason'), dataString(data, 'checkpointId')),
       }
-    case 'context:compacted':
+    case 'context.compacted':
       return {
         ...base,
         state: 'completed',

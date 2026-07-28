@@ -3,7 +3,7 @@ import type { ReactElement } from 'react'
 import type { PersistedRunEvent } from '../../types'
 
 type ContextCompactionEvent = PersistedRunEvent & {
-  type: 'context:compacting' | 'context:compacted'
+  type: 'context.compacting' | 'context.compacted'
 }
 
 interface ContextCompactionStatusProps {
@@ -16,7 +16,7 @@ export function ContextCompactionStatus({
   const event = latestCompactionEvent(events)
   if (!event) return null
 
-  const isCompacted = event.type === 'context:compacted'
+  const isCompacted = event.type === 'context.compacted'
 
   return (
     <div aria-live="polite" className="flex justify-center">
@@ -37,7 +37,7 @@ export function ContextCompactionStatus({
 function latestCompactionEvent(events: PersistedRunEvent[]): ContextCompactionEvent | null {
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index]
-    if (event.type === 'context:compacting' || event.type === 'context:compacted') {
+    if (event.type === 'context.compacting' || event.type === 'context.compacted') {
       return event as ContextCompactionEvent
     }
   }

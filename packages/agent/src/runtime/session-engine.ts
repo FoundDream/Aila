@@ -2032,7 +2032,7 @@ export class SessionRuntimeEngine {
       conversationId,
       messageId,
       selection,
-      type: 'context:compacting',
+      type: 'context.compacting',
       contextPlan,
       recommended,
       reason: input.reason ?? contextPlan.compaction.reason,
@@ -2067,7 +2067,7 @@ export class SessionRuntimeEngine {
         conversationId,
         messageId,
         selection,
-        type: 'context:compacted',
+        type: 'context.compacted',
         contextPlan,
         recommended,
         checkpoint,
@@ -2091,7 +2091,7 @@ export class SessionRuntimeEngine {
     conversationId: string
     messageId: string
     selection: ModelSelection
-    type: 'context:compacting' | 'context:compacted'
+    type: 'context.compacting' | 'context.compacted'
     contextPlan: AgentContextPlan
     recommended: AgentContextRecommendedCheckpoint
     checkpoint?: ConversationContextCheckpoint
