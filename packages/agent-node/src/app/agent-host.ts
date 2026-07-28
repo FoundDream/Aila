@@ -22,7 +22,7 @@ export {
   createDefaultRuntimeHost,
   createPersistedWorkbench,
 } from './runtime-host'
-export { createPersistedRuntimeStore } from './runtime-store'
+export { getPersistedRuntimeStore } from './runtime-store'
 export {
   configuredProviders,
   loadSettings,

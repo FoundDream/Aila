@@ -15,7 +15,7 @@ import { createDefaultNodeRuntimeHost } from '../node/runtime-host'
 import { saveImage } from './image-store'
 import { loadMcpToolPack } from './mcp-tool-pack'
 import { getDataDir, getImagesDir } from './paths'
-import { createPersistedRuntimeStore } from './runtime-store'
+import { getPersistedRuntimeStore } from './runtime-store'
 import { loadSettings } from './settings'
 import { loadSkillsFromDir } from './skill-loader'
 import { webSearch } from './web-search'
@@ -136,7 +136,7 @@ export function createPersistedWorkbench(
 ): WorkbenchRuntime {
   return new WorkbenchRuntime({
     ...(input.options ?? {}),
-    store: input.store ?? createPersistedRuntimeStore(),
+    store: input.store ?? getPersistedRuntimeStore(),
     host: createDefaultRuntimeHost(input.host),
   })
 }
