@@ -9313,6 +9313,72 @@ async function testProviderStreamChatOwnsToolLoopContract(): Promise<void> {
   assertEqual(replayed?.steps[2]?.kind, 'model', 'replayed final step should be the model')
 }
 
+async function testProviderStreamFollowUpMessageOrderingContract(): Promise<void> {
+  const modelRequests: ChatMessage[][] = []
+  let followUpDequeues = 0
+  const modelStreamClient: runtimePackageNodeSdk.ModelStreamClient = {
+    async *stream(input) {
+      modelRequests.push(structuredClone(input.messages))
+      if (modelRequests.length === 1) {
+        yield { type: 'text-delta', text: 'first answer' }
+        return
+      }
+      yield { type: 'text-delta', text: 'second answer' }
+    },
+  }
+  const runAgent = runtimePackageNodeSdk.createDurableRunExecutor({
+    modelStreamClient,
+    settings: { apiKeys: { openrouter: 'contract-key' }, defaultModel: null },
+  })
+
+  await runAgent(
+    {
+      conversationId: 'follow-up-conversation',
+      assistantMessageId: 'follow-up-assistant',
+      run: {
+        conversationId: 'follow-up-conversation',
+        turnId: 'follow-up-turn',
+        runId: 'follow-up-run',
+      },
+      messages: [{ role: 'user', content: 'initial question' }],
+      getFollowUpMessages: () => {
+        followUpDequeues += 1
+        return followUpDequeues === 1 ? [{ role: 'user', content: 'queued follow-up' }] : []
+      },
+      selection: { providerId: 'openrouter', modelId: 'contract/mock' },
+      signal: new AbortController().signal,
+      toolRegistry: createDefaultToolRegistry(),
+    },
+    {
+      onTextDelta() {},
+      onReasoningDelta() {},
+      onToolCallStart() {},
+      onToolCallArgsDelta() {},
+      onToolCallResult() {},
+      onImageBlock() {},
+      onDone() {},
+      onError(event) {
+        throw new Error(event.error)
+      },
+    },
+  )
+
+  assertEqual(modelRequests.length, 2, 'a queued follow-up should trigger another model step')
+  const continuedMessages = modelRequests[1] ?? []
+  const assistantIndex = continuedMessages.findIndex(
+    (message) => message.role === 'assistant' && message.content === 'first answer',
+  )
+  const followUpIndex = continuedMessages.findIndex(
+    (message) => message.role === 'user' && message.content === 'queued follow-up',
+  )
+  assert(assistantIndex >= 0, 'the completed assistant response should enter continued context')
+  assertEqual(
+    followUpIndex,
+    assistantIndex + 1,
+    'the queued follow-up should be appended after the completed assistant response',
+  )
+}
+
 async function testProviderToolApprovalPausesBeforeSideEffectContract(): Promise<void> {
   let modelCallCount = 0
   let toolRunCount = 0
@@ -11258,6 +11324,151 @@ async function testSkillExtensionReportContract(): Promise<void> {
   })
 }
 
+async function testWorkbenchSharesExtensionCachesAcrossSessionsContract(): Promise<void> {
+  let skillLoads = 0
+  let toolPackLoads = 0
+  const runtime = new WorkbenchRuntime({
+    store: createInMemoryRuntimeStore(),
+    logger: { warn() {}, error() {} },
+    loadSkills: async () => {
+      skillLoads += 1
+      return []
+    },
+    loadToolPacks: async () => {
+      toolPackLoads += 1
+      return []
+    },
+  })
+  const first = await runtime.createConversation()
+  const second = await runtime.createConversation()
+  const firstSession = runtime.getSessionRuntime(first.id)
+  const secondSession = runtime.getSessionRuntime(second.id)
+
+  await Promise.all([
+    runtime.getToolRegistry(),
+    firstSession.getToolRegistry(),
+    secondSession.getToolRegistry(),
+    runtime.getSkills(),
+    firstSession.getSkills(),
+    secondSession.getSkills(),
+  ])
+  assertEqual(toolPackLoads, 1, 'all sessions should share the initial tool registry load')
+  assertEqual(skillLoads, 1, 'all sessions should share the initial skill load')
+
+  await firstSession.reloadToolPacks()
+  await secondSession.getToolRegistry()
+  await secondSession.getSkills()
+  assertEqual(toolPackLoads, 2, 'reloading one session should refresh one shared tool registry')
+  assertEqual(skillLoads, 2, 'reloading one session should refresh one shared skill snapshot')
+  await runtime.shutdown()
+}
+
+async function testSessionInputQueuesContract(): Promise<void> {
+  let firstRequest: runtimeSdk.RunRequest | undefined
+  let secondRequestMessages: ChatMessage[] | undefined
+  let runCount = 0
+  const runtime = new WorkbenchRuntime({
+    store: createInMemoryRuntimeStore(),
+    logger: { warn() {}, error() {} },
+    runAgent: async (request, handlers) => {
+      runCount += 1
+      if (runCount === 1) {
+        firstRequest = request
+        await new Promise<void>((resolve) => {
+          if (request.signal.aborted) resolve()
+          else request.signal.addEventListener('abort', () => resolve(), { once: true })
+        })
+        throw new Error('aborted')
+      }
+      secondRequestMessages = structuredClone(request.messages)
+      await handlers.onDone({
+        conversationId: request.conversationId,
+        messageId: request.assistantMessageId,
+        message: {
+          schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+          id: request.assistantMessageId,
+          role: 'assistant',
+          blocks: [{ type: 'text', content: 'completed' }],
+          status: 'done',
+          model: request.selection,
+        },
+      })
+    },
+  })
+  const conversation = await runtime.createConversation()
+  const session = runtime.getSessionRuntime(conversation.id)
+  const queueEvents: WorkbenchEvent[] = []
+  const unsubscribe = session.subscribe((event) => {
+    if (event.type === 'session:queue-updated') queueEvents.push(event)
+  })
+  const selection = { providerId: 'openrouter', modelId: 'contract/mock' } as const
+
+  await session.send({ userText: 'first turn', selection })
+  await waitFor(() => firstRequest !== undefined, 'first session run should start')
+  const request = firstRequest
+  assert(request, 'first session run request should be captured')
+  assert(request.getSteeringMessages, 'session runtime should wire a steering dequeue hook')
+  assert(request.getFollowUpMessages, 'session runtime should wire a follow-up dequeue hook')
+
+  session.setSteeringMode('one-at-a-time')
+  session.setFollowUpMode('all')
+  await session.steer({ text: 'steer one' })
+  await session.steer({ text: 'steer two' })
+  await session.followUp({ text: 'follow one' })
+  await session.followUp({ text: 'follow two' })
+
+  const steering = await request.getSteeringMessages()
+  assertEqual(steering.length, 1, 'one-at-a-time steering should drain one input')
+  assertEqual(
+    steering[0]?.role === 'user' ? steering[0].content : undefined,
+    'steer one',
+    'steering should preserve FIFO order',
+  )
+  const followUp = await request.getFollowUpMessages()
+  assertEqual(followUp.length, 2, 'all-mode follow-up should drain the complete queue')
+  assertEqual(
+    session.getInputQueueState().steering.length,
+    1,
+    'undrained steering should remain queued',
+  )
+
+  await session.nextTurn({ text: 'scheduled next turn' })
+  await session.steer({ text: 'discard on abort' })
+  await session.followUp({ text: 'discard follow-up on abort' })
+  await session.abort()
+  const afterAbort = session.getInputQueueState()
+  assertEqual(afterAbort.steering.length, 0, 'abort should clear steering inputs')
+  assertEqual(afterAbort.followUp.length, 0, 'abort should clear follow-up inputs')
+  assertEqual(afterAbort.nextTurn.length, 1, 'abort should preserve next-turn inputs')
+
+  await session.send({ userText: 'explicit next turn', selection })
+  await session.waitForIdle()
+  const secondMessages = secondRequestMessages
+  assert(secondMessages, 'second session run request should be captured')
+  const secondUserTexts = secondMessages.flatMap((message) =>
+    message.role === 'user' && typeof message.content === 'string' ? [message.content] : [],
+  )
+  assertEqual(
+    secondUserTexts.at(-2),
+    'scheduled next turn',
+    'next-turn input should be inserted before the next explicit send',
+  )
+  assertEqual(
+    secondUserTexts.at(-1),
+    'explicit next turn',
+    'the explicit send should remain the latest user input',
+  )
+  assertEqual(
+    session.getInputQueueState().nextTurn.length,
+    0,
+    'next-turn queue should be empty after the next send starts',
+  )
+  assert(queueEvents.length > 0, 'session input queue changes should emit observable events')
+
+  unsubscribe()
+  await runtime.shutdown()
+}
+
 async function testSingleSessionRuntimeBoundaryContract(): Promise<void> {
   const releases = new Map<string, () => void>()
   const runtime = new WorkbenchRuntime({
@@ -11391,6 +11602,8 @@ async function main(): Promise<void> {
   await testRuntimeManualCompactConversation()
   await testRuntimeStreamHandlerSnapshots()
   await testRuntimeConversationStoreFacadeContract()
+  await testWorkbenchSharesExtensionCachesAcrossSessionsContract()
+  await testSessionInputQueuesContract()
   await testSingleSessionRuntimeBoundaryContract()
   await testRuntimeConversationRuntimeStateApiUsesEventReplay()
   await testRuntimeOptionalStoreCapabilitiesFailClosed()
@@ -11454,6 +11667,7 @@ async function main(): Promise<void> {
   await testNativeAnthropicModelStreamContract()
   await testNativeGoogleModelStreamContract()
   await testProviderStreamChatOwnsToolLoopContract()
+  await testProviderStreamFollowUpMessageOrderingContract()
   await testProviderToolApprovalPausesBeforeSideEffectContract()
   await testProviderStreamChatVisionFallbackContract()
   await testProviderStreamChatVisionFallbackUsesLatestImageContract()

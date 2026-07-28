@@ -12,13 +12,19 @@ The public runtime SDK entrypoint is `@aila/agent`; Node adapters live in
 `@aila/agent-node/app`. Consumers should use these exported entrypoints instead
 of importing workspace source files directly.
 
-The runtime is split into four explicit scopes:
+The runtime is split into explicit scopes:
 
 - `WorkbenchRuntime` is the multi-session process facade. It creates, retains,
   routes, recovers, and shuts down session runtimes.
+- `WorkbenchServices` is the process-scoped service container behind the
+  facade. Store, host integrations, tool/skill caches, clocks, and id factories
+  are shared by every session.
+- `ConversationCatalog` owns global conversation creation, lookup, listing, and
+  restart recovery; it does not execute turns.
 - `SessionRuntime` is bound to one durable conversation. It owns that session's
   turn lifecycle, phase, pending journal writes, context assembly, run controls,
-  navigation, compaction, and event subscription.
+  navigation, compaction, event subscription, and steer/follow-up/next-turn
+  input queues.
 - `AgentRuntime` orchestrates one model/tool loop, including queue timing and
   step policy.
 - `RunMachine` is the pure durable execution state machine.

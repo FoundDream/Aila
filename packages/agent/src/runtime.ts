@@ -47,7 +47,7 @@ import { createInMemoryRuntimeStore } from './runtime/memory-store'
 import type { WorkbenchStore } from './runtime/repositories'
 import {
   type CoordinatedTurn,
-  TurnCoordinator,
+  SessionTurnCoordinator,
   type TurnStartLock,
 } from './runtime/turn-coordinator'
 import {
@@ -79,9 +79,13 @@ import {
   type ToolContext,
   type ToolPack,
   type ToolRegistry,
-  type ToolWorkspaceRoot,
 } from './tools'
-import { createWorkbenchEvent, type WorkbenchEvent } from './workbench-events'
+import {
+  createWorkbenchEvent,
+  type SessionInputQueueMode,
+  type SessionInputQueueState,
+  type WorkbenchEvent,
+} from './workbench-events'
 
 interface StreamSlot extends CoordinatedTurn {
   controller: AbortController
@@ -92,6 +96,11 @@ interface StreamSlot extends CoordinatedTurn {
   abortRecorded: boolean
   cleanupInterruptedRecorded: boolean
   turnStartLock: TurnStartLock
+}
+
+interface QueuedSessionInput {
+  message: PersistedMessage
+  chatMessage: ChatMessage
 }
 
 interface RuntimeToolContextInput {
@@ -329,6 +338,14 @@ export interface RuntimeRetryLastInput {
   transientContext?: ChatMessage[]
 }
 
+export interface RuntimeQueueInput {
+  text: string
+}
+
+export interface RuntimeQueueControlInput extends RuntimeQueueInput {
+  conversationId: string
+}
+
 export interface RuntimeCompactConversationInput {
   conversationId: string
   selection: ModelSelection
@@ -511,6 +528,8 @@ export {
   AILA_WORKBENCH_EVENT_TYPES,
   createWorkbenchEvent,
   isWorkbenchEventType,
+  type SessionInputQueueMode,
+  type SessionInputQueueState,
   type WorkbenchEvent,
   type WorkbenchEventMap,
   type WorkbenchEventType,
@@ -626,6 +645,13 @@ interface WorkbenchRunApi {
   abortRun(input: RuntimeRunControlInput): Promise<RunSnapshot>
   forkRun(input: RuntimeForkRunInput): Promise<RunSnapshot>
   abort(conversationId: string): Promise<void>
+  steer(input: RuntimeQueueControlInput): Promise<string>
+  followUp(input: RuntimeQueueControlInput): Promise<string>
+  nextTurn(input: RuntimeQueueControlInput): Promise<string>
+  getInputQueueState(conversationId: string): SessionInputQueueState
+  clearInputQueue(conversationId: string): SessionInputQueueState
+  setSteeringMode(conversationId: string, mode: SessionInputQueueMode): void
+  setFollowUpMode(conversationId: string, mode: SessionInputQueueMode): void
   abortAll(reason?: ConversationAbortReason): Promise<void>
   shutdown(reason?: ConversationAbortReason): Promise<void>
   listActiveTurns(): ActiveAssistantTurn[]
@@ -904,27 +930,21 @@ function createRuntimeSkillToolPacks(skills: readonly LoadedSkill[]): ToolPack[]
   return pack ? [pack] : []
 }
 
-class SessionRuntimeEngine {
-  private readonly turns = new TurnCoordinator<StreamSlot>()
-  private readonly deletedConversations = new Set<string>()
-  private readonly sessionPhases = new Map<string, SessionPhase>()
-  private readonly pendingSessionWrites = new Map<string, SessionEntryInput[]>()
-  private readonly host: WorkbenchHost
-  private readonly store: WorkbenchStore
-  private readonly logger: Pick<Console, 'error' | 'warn'>
-  private readonly createId: () => string
-  private readonly createRunId: () => string
-  private readonly createEventId: () => string
-  private readonly now: () => number
+class WorkbenchServices {
+  readonly host: WorkbenchHost
+  readonly store: WorkbenchStore
+  readonly logger: Pick<Console, 'error' | 'warn'>
+  readonly createId: () => string
+  readonly createRunId: () => string
+  readonly createEventId: () => string
+  readonly now: () => number
   private readonly staticToolPacks: readonly ToolPack[]
   private readonly staticSkills: readonly LoadedSkill[]
   private readonly fallbackToolRegistry: ToolRegistry
-  private shutdownPromise: Promise<void> | null = null
-  private shutdownStarted = false
   private toolRegistryLoad: Promise<ToolRegistry> | null = null
   private skillsLoad: Promise<readonly LoadedSkill[]> | null = null
 
-  constructor(private readonly options: WorkbenchOptions = {}) {
+  constructor(readonly options: WorkbenchOptions = {}) {
     this.host = normalizeRuntimeHost(options)
     this.createId = this.host.createId ?? defaultCreateRuntimeId
     this.createRunId = this.host.createRunId ?? defaultCreateRuntimeId
@@ -946,13 +966,15 @@ class SessionRuntimeEngine {
     ])
   }
 
+  emit(event: WorkbenchEvent): void {
+    this.host.onEvent?.(cloneRuntimeValue(event))
+  }
+
   async getToolRegistry(input?: RuntimeToolPackLoadInput): Promise<ToolRegistry> {
     if (!this.host.loadToolPacks && !this.host.loadSkills) {
       return cloneRuntimeToolRegistry(this.fallbackToolRegistry)
     }
-    if (input) {
-      return cloneRuntimeToolRegistry(await this.loadToolRegistry(input))
-    }
+    if (input) return cloneRuntimeToolRegistry(await this.loadToolRegistry(input))
     if (!this.toolRegistryLoad) this.toolRegistryLoad = this.loadToolRegistry()
     return cloneRuntimeToolRegistry(await this.toolRegistryLoad)
   }
@@ -963,29 +985,270 @@ class SessionRuntimeEngine {
     return cloneRuntimeSkills(await this.skillsLoad)
   }
 
-  // Reloads dynamic extension and skill caches, then rebuilds the tool registry.
   async reloadToolPacks(): Promise<ToolRegistry> {
     this.toolRegistryLoad = null
     this.skillsLoad = null
     return this.getToolRegistry()
   }
 
+  async executeTool(input: RuntimeExecuteToolInput, record?: ConversationRecord): Promise<string> {
+    const mode = normalizeAilaExecutionMode(input.mode)
+    const registry = await this.getToolRegistry(
+      record && input.conversationId ? { conversationId: input.conversationId, record } : undefined,
+    )
+    return executeRegisteredTool(
+      input.name,
+      input.args,
+      await this.buildToolContext({
+        ...(input.conversationId ? { conversationId: input.conversationId } : {}),
+        ...(input.messageId ? { messageId: input.messageId } : {}),
+        ...(input.toolCallId ? { toolCallId: input.toolCallId } : {}),
+        mode,
+        ...(input.signal ? { signal: input.signal } : {}),
+      }),
+      registry,
+    )
+  }
+
+  async buildToolContext(input: RuntimeToolContextInput): Promise<ToolContext> {
+    const hostRoots = this.resolveWorkspaceRoots()
+    const skillRoots = (await this.getSkills()).map((skill) => ({
+      path: skill.directory,
+      label: `Skill: ${skill.definition.name}`,
+    }))
+    const mode = normalizeAilaExecutionMode(input.mode)
+    const onToolPolicy =
+      mode === 'agent' && !this.host.onToolPolicy
+        ? undefined
+        : createExecutionModeToolPolicy(mode, this.host.onToolPolicy)
+    return {
+      settings: cloneRuntimeSettings((await this.host.loadSettings?.()) ?? EMPTY_RUNTIME_SETTINGS),
+      ...(input.conversationId ? { conversationId: input.conversationId } : {}),
+      ...(input.messageId ? { messageId: input.messageId } : {}),
+      ...(input.toolCallId ? { toolCallId: input.toolCallId } : {}),
+      ...(input.signal ? { signal: input.signal } : {}),
+      workspaceRoots: skillRoots.length > 0 ? [...(hostRoots ?? []), ...skillRoots] : hostRoots,
+      shellCwd: this.resolveShellCwd(),
+      ...(onToolPolicy ? { onToolPolicy } : {}),
+      onToolApproval: this.host.onToolApproval,
+      webSearch: this.host.webSearch,
+      generateImage: this.host.generateImage,
+      saveImage: this.host.saveImage,
+      runShell: this.host.runShell,
+      fileSystem: this.host.fileSystem,
+      path: this.host.path,
+    }
+  }
+
+  private resolveWorkspaceRoots(): ToolContext['workspaceRoots'] {
+    const roots = this.host.workspaceRoots
+    return cloneRuntimeWorkspaceRoots(typeof roots === 'function' ? roots() : roots)
+  }
+
+  private resolveShellCwd(): ToolContext['shellCwd'] {
+    const cwd = this.host.shellCwd
+    return typeof cwd === 'function' ? cwd() : cwd
+  }
+
+  private async loadToolRegistry(input?: RuntimeToolPackLoadInput): Promise<ToolRegistry> {
+    try {
+      const loaded = await this.host.loadToolPacks?.(cloneRuntimeToolPackLoadInput(input))
+      const skills = await this.getSkills()
+      return createDefaultToolRegistry([
+        ...this.staticToolPacks,
+        ...(loaded ?? []).map(cloneRuntimeToolPack),
+        ...createRuntimeSkillToolPacks(skills),
+      ])
+    } catch (error) {
+      this.logger.warn(
+        '[runtime] tool-pack load failed; continuing with built-in/static tools:',
+        error,
+      )
+      return this.fallbackToolRegistry
+    }
+  }
+
+  private async loadSkills(): Promise<readonly LoadedSkill[]> {
+    try {
+      const loaded = await this.host.loadSkills?.()
+      return [...this.staticSkills, ...(loaded ?? [])].map(cloneRuntimeSkill)
+    } catch (error) {
+      this.logger.warn('[runtime] skill load failed; continuing without skills:', error)
+      return cloneRuntimeSkills(this.staticSkills)
+    }
+  }
+}
+
+class ConversationCatalog {
+  constructor(private readonly services: WorkbenchServices) {}
+
   async createConversation(
     input: RuntimeCreateConversationInput = {},
   ): Promise<ConversationSummary> {
-    if (!this.store.createConversation) throw new Error('runtime store cannot create conversations')
+    const { store } = this.services
+    if (!store.createConversation) throw new Error('runtime store cannot create conversations')
     const summary = cloneRuntimeConversationSummary(
-      await this.store.createConversation(input.workspace ?? undefined),
+      await store.createConversation(input.workspace ?? undefined),
     )
-    this.emit(createWorkbenchEvent('conversations:updated', summary))
+    this.services.emit(createWorkbenchEvent('conversations:updated', summary))
     return summary
   }
 
   async listConversations(): Promise<ConversationSummary[]> {
-    if (!this.store.listConversations) throw new Error('runtime store cannot list conversations')
+    const { store } = this.services
+    if (!store.listConversations) throw new Error('runtime store cannot list conversations')
     return sortRuntimeConversationSummaries(
-      cloneRuntimeConversationSummaries(await this.store.listConversations()),
+      cloneRuntimeConversationSummaries(await store.listConversations()),
     )
+  }
+
+  async resolveConversation(
+    input: RuntimeResolveConversationInput = {},
+  ): Promise<RuntimeResolveConversationResult> {
+    if (input.conversationId && input.resumeLatest) {
+      throw new Error('conversationId and resumeLatest cannot be combined')
+    }
+    if (input.resumeLatest) {
+      const [summary] = await this.listConversations()
+      if (!summary) throw new Error('no conversations found to resume')
+      return { conversationId: summary.id, isExisting: true, summary }
+    }
+    if (input.conversationId) {
+      const record = projectConversation(
+        await this.services.store.listSessionEntries(input.conversationId),
+        {
+          entryTransforms: this.services.host.sessionEntryTransforms,
+          customEntryProjectors: this.services.host.sessionCustomEntryProjectors,
+        },
+      )
+      return {
+        conversationId: input.conversationId,
+        isExisting: true,
+        summary: cloneRuntimeConversationSummary(record.meta),
+      }
+    }
+    const summary = await this.createConversation()
+    return { conversationId: summary.id, isExisting: false, summary }
+  }
+
+  async recoverInterruptedActivities(
+    reason = 'runtime restarted before this turn finished',
+  ): Promise<ConversationSummary[]> {
+    const { store } = this.services
+    if (store.recoverInterruptedActivities) {
+      const recoveredResults = cloneRuntimeRunEventAppendResults(
+        await store.recoverInterruptedActivities(reason),
+      )
+      const recovered: ConversationSummary[] = []
+      for (const result of recoveredResults) {
+        this.services.emit(createWorkbenchEvent('run:event', result.event))
+        if (!result.summary) continue
+        this.services.emit(createWorkbenchEvent('conversations:updated', result.summary))
+        recovered.push(result.summary)
+      }
+      await this.resetInterruptedSessionPhases()
+      return [...recovered].sort((a, b) => b.updatedAt - a.updatedAt)
+    }
+
+    if (!store.listConversations) return []
+    const conversations = cloneRuntimeConversationSummaries(await store.listConversations())
+    const recovered: ConversationSummary[] = []
+    await Promise.all(
+      conversations.map(async (summary) => {
+        const events = cloneRuntimePersistedRunEvents(
+          sessionRunEvents(await store.listSessionEntries(summary.id)),
+        )
+        const recoveryEvent = createInterruptedConversationRecoveryEvent(events, {
+          reason,
+          activity: replayConversationActivity(events) ?? summary.activity,
+        })
+        if (!recoveryEvent) return
+        const appended = await store.appendSessionEntry(summary.id, {
+          type: 'run.event',
+          timestamp: recoveryEvent.timestamp,
+          entryId: recoveryEvent.eventId,
+          turnId: recoveryEvent.turnId,
+          runId: recoveryEvent.runId,
+          stepId: recoveryEvent.stepId,
+          data: { event: cloneRuntimeValue(recoveryEvent) },
+        })
+        if (appended.entry.type !== 'run.event') return
+        const event = cloneRuntimeValue(appended.entry.data.event) as PersistedRunEvent
+        const nextSummary = cloneRuntimeConversationSummary(appended.summary)
+        this.services.emit(createWorkbenchEvent('run:event', event))
+        this.services.emit(createWorkbenchEvent('conversations:updated', nextSummary))
+        recovered.push(nextSummary)
+      }),
+    )
+    await this.resetInterruptedSessionPhases()
+    return recovered.sort((a, b) => b.updatedAt - a.updatedAt)
+  }
+
+  private async resetInterruptedSessionPhases(): Promise<void> {
+    const { store } = this.services
+    if (!store.listConversations) return
+    const conversations = await store.listConversations()
+    await Promise.all(
+      conversations.map(async (summary) => {
+        const tree = await store.getSessionTree(summary.id)
+        if (tree.phase === 'idle') return
+        await store.appendSessionEntry(summary.id, {
+          type: 'session.phase.changed',
+          timestamp: this.services.now(),
+          data: { phase: 'idle' },
+        })
+      }),
+    )
+  }
+}
+
+class SessionRuntimeEngine {
+  private readonly turns: SessionTurnCoordinator<StreamSlot>
+  private deleted = false
+  private sessionPhase: SessionPhase | undefined
+  private pendingSessionWrites: SessionEntryInput[] = []
+  private steeringQueue: QueuedSessionInput[] = []
+  private followUpQueue: QueuedSessionInput[] = []
+  private nextTurnQueue: QueuedSessionInput[] = []
+  private steeringQueueMode: SessionInputQueueMode = 'one-at-a-time'
+  private followUpQueueMode: SessionInputQueueMode = 'one-at-a-time'
+  private readonly host: WorkbenchHost
+  private readonly store: WorkbenchStore
+  private readonly logger: Pick<Console, 'error' | 'warn'>
+  private readonly createId: () => string
+  private readonly createRunId: () => string
+  private readonly createEventId: () => string
+  private readonly now: () => number
+  private readonly options: WorkbenchOptions
+  private shutdownPromise: Promise<void> | null = null
+  private shutdownStarted = false
+
+  constructor(
+    private readonly conversationId: string,
+    private readonly services: WorkbenchServices,
+    private readonly onSessionEvent?: (event: WorkbenchEvent) => void,
+  ) {
+    this.turns = new SessionTurnCoordinator(conversationId)
+    this.host = services.host
+    this.store = services.store
+    this.logger = services.logger
+    this.createId = services.createId
+    this.createRunId = services.createRunId
+    this.createEventId = services.createEventId
+    this.now = services.now
+    this.options = services.options
+  }
+
+  async getToolRegistry(input?: RuntimeToolPackLoadInput): Promise<ToolRegistry> {
+    return this.services.getToolRegistry(input)
+  }
+
+  async getSkills(): Promise<LoadedSkill[]> {
+    return this.services.getSkills()
+  }
+
+  async reloadToolPacks(): Promise<ToolRegistry> {
+    return this.services.reloadToolPacks()
   }
 
   async getConversation(conversationId: string): Promise<ConversationRecord> {
@@ -1040,32 +1303,6 @@ class SessionRuntimeEngine {
     }
     await this.requireIdleSession(conversationId)
     return cloneRuntimeValue(await this.store.collectGarbageBlobs(conversationId))
-  }
-
-  async resolveConversation(
-    input: RuntimeResolveConversationInput = {},
-  ): Promise<RuntimeResolveConversationResult> {
-    if (input.conversationId && input.resumeLatest) {
-      throw new Error('conversationId and resumeLatest cannot be combined')
-    }
-
-    if (input.resumeLatest) {
-      const [summary] = await this.listConversations()
-      if (!summary) throw new Error('no conversations found to resume')
-      return { conversationId: summary.id, isExisting: true, summary }
-    }
-
-    if (input.conversationId) {
-      const record = await this.getConversation(input.conversationId)
-      return {
-        conversationId: input.conversationId,
-        isExisting: true,
-        summary: cloneRuntimeConversationSummary(record.meta),
-      }
-    }
-
-    const summary = await this.createConversation()
-    return { conversationId: summary.id, isExisting: false, summary }
   }
 
   async listRunEvents(conversationId: string): Promise<PersistedRunEvent[]> {
@@ -1169,16 +1406,6 @@ class SessionRuntimeEngine {
     return cloneRuntimeValue({ record, events, runtimeState, activeTurn })
   }
 
-  async listConversationRuntimeStates(): Promise<ConversationRuntimeStateSnapshot[]> {
-    const conversations = await this.listConversations()
-    return Promise.all(
-      conversations.map(async (summary) => ({
-        conversationId: summary.id,
-        state: await this.getConversationRuntimeState(summary.id),
-      })),
-    )
-  }
-
   async renameConversation(conversationId: string, title: string): Promise<ConversationSummary> {
     const { summary: appended } = await this.store.appendSessionEntry(conversationId, {
       type: 'conversation.renamed',
@@ -1205,6 +1432,70 @@ class SessionRuntimeEngine {
       throw new Error('conversation was deleted')
     }
     return message
+  }
+
+  async steer(input: RuntimeQueueControlInput): Promise<string> {
+    this.assertBoundConversation(input.conversationId)
+    this.assertCanStartTurn(input.conversationId)
+    if (!this.turns.has(input.conversationId)) {
+      throw new Error('cannot steer while the session is idle')
+    }
+    const queued = this.createQueuedSessionInput(input.text)
+    this.steeringQueue.push(queued)
+    this.emitQueueUpdate()
+    return queued.message.id
+  }
+
+  async followUp(input: RuntimeQueueControlInput): Promise<string> {
+    this.assertBoundConversation(input.conversationId)
+    this.assertCanStartTurn(input.conversationId)
+    if (!this.turns.has(input.conversationId)) {
+      throw new Error('cannot follow up while the session is idle')
+    }
+    const queued = this.createQueuedSessionInput(input.text)
+    this.followUpQueue.push(queued)
+    this.emitQueueUpdate()
+    return queued.message.id
+  }
+
+  async nextTurn(input: RuntimeQueueControlInput): Promise<string> {
+    this.assertBoundConversation(input.conversationId)
+    this.assertCanStartTurn(input.conversationId)
+    const queued = this.createQueuedSessionInput(input.text)
+    this.nextTurnQueue.push(queued)
+    this.emitQueueUpdate()
+    return queued.message.id
+  }
+
+  getInputQueueState(): SessionInputQueueState {
+    return {
+      conversationId: this.conversationId,
+      steering: this.steeringQueue.map((queued) => cloneRuntimePersistedMessage(queued.message)),
+      followUp: this.followUpQueue.map((queued) => cloneRuntimePersistedMessage(queued.message)),
+      nextTurn: this.nextTurnQueue.map((queued) => cloneRuntimePersistedMessage(queued.message)),
+      steeringMode: this.steeringQueueMode,
+      followUpMode: this.followUpQueueMode,
+    }
+  }
+
+  clearInputQueue(): SessionInputQueueState {
+    this.steeringQueue = []
+    this.followUpQueue = []
+    this.nextTurnQueue = []
+    this.emitQueueUpdate()
+    return this.getInputQueueState()
+  }
+
+  setSteeringMode(mode: SessionInputQueueMode): void {
+    this.assertQueueMode(mode)
+    this.steeringQueueMode = mode
+    this.emitQueueUpdate()
+  }
+
+  setFollowUpMode(mode: SessionInputQueueMode): void {
+    this.assertQueueMode(mode)
+    this.followUpQueueMode = mode
+    this.emitQueueUpdate()
   }
 
   async appendSessionCustomEntry(input: RuntimeAppendSessionCustomInput): Promise<string> {
@@ -1238,7 +1529,6 @@ class SessionRuntimeEngine {
   }
 
   async executeTool(input: RuntimeExecuteToolInput): Promise<string> {
-    const mode = normalizeAilaExecutionMode(input.mode)
     let record: ConversationRecord | undefined
     if (input.conversationId) {
       try {
@@ -1247,26 +1537,7 @@ class SessionRuntimeEngine {
         record = undefined
       }
     }
-    const registry = await this.getToolRegistry(
-      record
-        ? {
-            ...(input.conversationId && { conversationId: input.conversationId }),
-            record,
-          }
-        : undefined,
-    )
-    return executeRegisteredTool(
-      input.name,
-      input.args,
-      await this.buildToolContext({
-        ...(input.conversationId && { conversationId: input.conversationId }),
-        ...(input.messageId && { messageId: input.messageId }),
-        ...(input.toolCallId && { toolCallId: input.toolCallId }),
-        mode,
-        ...(input.signal && { signal: input.signal }),
-      }),
-      registry,
-    )
+    return this.services.executeTool(input, record)
   }
 
   async compactConversation(
@@ -1367,6 +1638,8 @@ class SessionRuntimeEngine {
       // side-effects before appending the next user message.
       const previous = this.turns.get(conversationId)
       if (previous) await this.waitForPriorStreamBeforeNextTurn(conversationId, previous)
+      this.assertCanStartTurn(conversationId)
+      await this.drainQueuedInputs('nextTurn')
       this.assertCanStartTurn(conversationId)
 
       const blocks: PersistedBlock[] = [
@@ -1944,6 +2217,8 @@ class SessionRuntimeEngine {
   }
 
   async abort(conversationId: string): Promise<void> {
+    this.assertBoundConversation(conversationId)
+    this.clearActiveInputQueues()
     const slot = this.turns.get(conversationId)
     if (!slot) return
     slot.controller.abort()
@@ -1961,7 +2236,12 @@ class SessionRuntimeEngine {
     return this.listActiveStreams()
   }
 
+  resetRecoveredPhase(): void {
+    this.sessionPhase = undefined
+  }
+
   async waitForIdle(conversationId: string): Promise<void> {
+    this.assertBoundConversation(conversationId)
     await this.turns.get(conversationId)?.cleanup
   }
 
@@ -1975,73 +2255,8 @@ class SessionRuntimeEngine {
     }))
   }
 
-  async recoverInterruptedActivities(
-    reason = 'runtime restarted before this turn finished',
-  ): Promise<ConversationSummary[]> {
-    if (this.store.recoverInterruptedActivities) {
-      const recoveredResults = cloneRuntimeRunEventAppendResults(
-        await this.store.recoverInterruptedActivities(reason),
-      )
-      const recovered: ConversationSummary[] = []
-      for (const result of recoveredResults) {
-        this.emit(createWorkbenchEvent('run:event', result.event))
-        if (!result.summary) continue
-        this.emit(createWorkbenchEvent('conversations:updated', result.summary))
-        recovered.push(result.summary)
-      }
-      await this.resetInterruptedSessionPhases()
-      return [...recovered].sort((a, b) => b.updatedAt - a.updatedAt)
-    }
-
-    if (!this.store.listConversations) return []
-
-    const conversations = cloneRuntimeConversationSummaries(await this.store.listConversations())
-    const recovered: ConversationSummary[] = []
-    await Promise.all(
-      conversations.map(async (summary) => {
-        const events = cloneRuntimePersistedRunEvents(
-          sessionRunEvents(await this.store.listSessionEntries(summary.id)),
-        )
-        const recoveryEvent = createInterruptedConversationRecoveryEvent(events, {
-          reason,
-          activity: replayConversationActivity(events) ?? summary.activity,
-        })
-        if (!recoveryEvent) return
-        const appended = await this.store.appendSessionEntry(summary.id, {
-          type: 'run.event',
-          timestamp: recoveryEvent.timestamp,
-          entryId: recoveryEvent.eventId,
-          turnId: recoveryEvent.turnId,
-          runId: recoveryEvent.runId,
-          stepId: recoveryEvent.stepId,
-          data: { event: cloneRuntimeValue(recoveryEvent) },
-        })
-        if (appended.entry.type !== 'run.event') return
-        const event = cloneRuntimeValue(appended.entry.data.event) as PersistedRunEvent
-        const nextSummary = cloneRuntimeConversationSummary(appended.summary)
-        this.emit(createWorkbenchEvent('run:event', event))
-        if (!nextSummary) return
-        this.emit(createWorkbenchEvent('conversations:updated', nextSummary))
-        recovered.push(nextSummary)
-      }),
-    )
-    await this.resetInterruptedSessionPhases()
-    return recovered.sort((a, b) => b.updatedAt - a.updatedAt)
-  }
-
-  private async resetInterruptedSessionPhases(): Promise<void> {
-    if (!this.store.listConversations) return
-    const conversations = await this.store.listConversations()
-    await Promise.all(
-      conversations.map(async (summary) => {
-        const tree = await this.store.getSessionTree(summary.id)
-        if (tree.phase === 'idle') return
-        await this.setSessionPhase(summary.id, 'idle')
-      }),
-    )
-  }
-
   async abortAll(reason: ConversationAbortReason = 'shutdown'): Promise<void> {
+    this.clearActiveInputQueues()
     const cleanupTimeoutMs =
       this.options.abortAllCleanupTimeoutMs ?? DEFAULT_ABORT_ALL_CLEANUP_TIMEOUT_MS
     await Promise.all(
@@ -2071,7 +2286,9 @@ class SessionRuntimeEngine {
   }
 
   async deleteConversation(conversationId: string): Promise<void> {
-    this.deletedConversations.add(conversationId)
+    this.assertBoundConversation(conversationId)
+    this.deleted = true
+    this.clearActiveInputQueues()
     let removed = false
     const slot = this.turns.get(conversationId)
     let streamCleanupTimedOut = false
@@ -2094,11 +2311,13 @@ class SessionRuntimeEngine {
       await this.cleanupConversationAssets(conversationId)
 
       await this.store.deleteConversation(conversationId)
-      this.sessionPhases.delete(conversationId)
-      this.pendingSessionWrites.delete(conversationId)
+      this.sessionPhase = undefined
+      this.pendingSessionWrites = []
+      this.nextTurnQueue = []
+      this.emitQueueUpdate()
       removed = true
     } catch (error) {
-      this.deletedConversations.delete(conversationId)
+      this.deleted = false
       if (slot) {
         try {
           await this.recordCancellationRequest(conversationId, slot, 'delete')
@@ -2115,7 +2334,7 @@ class SessionRuntimeEngine {
       }
       throw error
     } finally {
-      if (!removed) this.deletedConversations.delete(conversationId)
+      if (!removed) this.deleted = false
     }
   }
 
@@ -2123,14 +2342,14 @@ class SessionRuntimeEngine {
     conversationId: string,
     message: PersistedMessage,
   ): Promise<boolean> {
-    if (this.deletedConversations.has(conversationId)) return false
+    if (this.deleted) return false
     const appended = await this.store.appendSessionEntry(conversationId, {
       type: 'message.committed',
       timestamp: this.now(),
       data: { message: cloneRuntimePersistedMessage(message) },
     })
     const summary = cloneRuntimeConversationSummary(appended.summary)
-    if (this.deletedConversations.has(conversationId)) return false
+    if (this.deleted) return false
     this.emit(createWorkbenchEvent('conversations:updated', summary))
     return true
   }
@@ -2192,7 +2411,7 @@ class SessionRuntimeEngine {
     } catch (error) {
       this.logger.warn('[runtime] setup failure activity append failed:', error)
     }
-    if (this.deletedConversations.has(conversationId)) return
+    if (this.deleted) return
     this.emit(
       createWorkbenchEvent('chat:error', {
         conversationId,
@@ -2239,7 +2458,7 @@ class SessionRuntimeEngine {
     } catch (error) {
       this.logger.warn('[runtime] setup cancellation activity append failed:', error)
     }
-    if (this.deletedConversations.has(conversationId)) return
+    if (this.deleted) return
     this.emit(
       createWorkbenchEvent('chat:error', {
         conversationId,
@@ -2251,7 +2470,8 @@ class SessionRuntimeEngine {
   }
 
   private emit(event: WorkbenchEvent): void {
-    this.host.onEvent?.(cloneRuntimeValue(event))
+    this.services.emit(event)
+    this.onSessionEvent?.(cloneRuntimeValue(event))
   }
 
   private emitStreamEvent(
@@ -2270,7 +2490,7 @@ class SessionRuntimeEngine {
   private async recordRunEventWithResult(
     event: RuntimeRecordRunEventInput,
   ): Promise<RunEventAppendResult | null> {
-    if (this.deletedConversations.has(event.conversationId)) return null
+    if (this.deleted) return null
     const appended = await this.store.appendSessionEntry(event.conversationId, {
       type: 'run.event',
       timestamp: event.timestamp,
@@ -2285,39 +2505,11 @@ class SessionRuntimeEngine {
       event: cloneRuntimeValue(appended.entry.data.event) as PersistedRunEvent,
       summary: cloneRuntimeConversationSummary(appended.summary),
     }
-    if (this.deletedConversations.has(event.conversationId)) return null
+    if (this.deleted) return null
     const { event: persisted, summary } = result
     this.emit(createWorkbenchEvent('run:event', persisted))
     if (summary) this.emit(createWorkbenchEvent('conversations:updated', summary))
     return result
-  }
-
-  private resolveWorkspaceRoots(): ToolContext['workspaceRoots'] {
-    const roots = this.host.workspaceRoots
-    return cloneRuntimeWorkspaceRoots(typeof roots === 'function' ? roots() : roots)
-  }
-
-  // Skill directories become read/write roots so the model can open bundled
-  // skill files (references/, scripts/, assets/) with the ordinary file tools.
-  private async resolveSkillWorkspaceRoots(): Promise<ToolWorkspaceRoot[]> {
-    const skills = await this.getSkills()
-    return skills.map((skill) => ({
-      path: skill.directory,
-      label: `Skill: ${skill.definition.name}`,
-    }))
-  }
-
-  private resolveShellCwd(): ToolContext['shellCwd'] {
-    const cwd = this.host.shellCwd
-    return typeof cwd === 'function' ? cwd() : cwd
-  }
-
-  private async resolveSettings(): Promise<Settings | undefined> {
-    return this.host.loadSettings?.()
-  }
-
-  private async resolveSettingsOrDefault(): Promise<Settings> {
-    return cloneRuntimeSettings((await this.resolveSettings()) ?? EMPTY_RUNTIME_SETTINGS)
   }
 
   private async resolveModelInfo(selection: ModelSelection): Promise<ModelInfo> {
@@ -2335,30 +2527,7 @@ class SessionRuntimeEngine {
   }
 
   private async buildToolContext(input: RuntimeToolContextInput): Promise<ToolContext> {
-    const hostRoots = this.resolveWorkspaceRoots()
-    const skillRoots = await this.resolveSkillWorkspaceRoots()
-    const mode = normalizeAilaExecutionMode(input.mode)
-    const onToolPolicy =
-      mode === 'agent' && !this.host.onToolPolicy
-        ? undefined
-        : createExecutionModeToolPolicy(mode, this.host.onToolPolicy)
-    return {
-      settings: await this.resolveSettingsOrDefault(),
-      ...(input.conversationId && { conversationId: input.conversationId }),
-      ...(input.messageId && { messageId: input.messageId }),
-      ...(input.toolCallId && { toolCallId: input.toolCallId }),
-      ...(input.signal && { signal: input.signal }),
-      workspaceRoots: skillRoots.length > 0 ? [...(hostRoots ?? []), ...skillRoots] : hostRoots,
-      shellCwd: this.resolveShellCwd(),
-      ...(onToolPolicy ? { onToolPolicy } : {}),
-      onToolApproval: this.host.onToolApproval,
-      webSearch: this.host.webSearch,
-      generateImage: this.host.generateImage,
-      saveImage: this.host.saveImage,
-      runShell: this.host.runShell,
-      fileSystem: this.host.fileSystem,
-      path: this.host.path,
-    }
+    return this.services.buildToolContext(input)
   }
 
   private async resolveTransientContext(
@@ -2391,8 +2560,96 @@ class SessionRuntimeEngine {
     return this.options.abortAllCleanupTimeoutMs ?? DEFAULT_ABORT_ALL_CLEANUP_TIMEOUT_MS
   }
 
+  private assertBoundConversation(conversationId: string): void {
+    if (conversationId !== this.conversationId) {
+      throw new Error(
+        `session runtime is bound to ${this.conversationId}, received ${conversationId}`,
+      )
+    }
+  }
+
+  private assertQueueMode(mode: SessionInputQueueMode): void {
+    if (mode !== 'one-at-a-time' && mode !== 'all') {
+      throw new Error(`invalid session input queue mode: ${String(mode)}`)
+    }
+  }
+
+  private createQueuedSessionInput(text: string): QueuedSessionInput {
+    if (!text.trim()) throw new Error('queued input text is required')
+    const message: PersistedMessage = {
+      schemaVersion: AILA_PERSISTED_MESSAGE_SCHEMA_VERSION,
+      id: this.createId(),
+      role: 'user',
+      blocks: [{ type: 'text', content: text }],
+      status: 'done',
+    }
+    return {
+      message,
+      chatMessage: { role: 'user', content: text },
+    }
+  }
+
+  private emitQueueUpdate(): void {
+    this.emit(createWorkbenchEvent('session:queue-updated', this.getInputQueueState()))
+  }
+
+  private clearActiveInputQueues(): void {
+    if (this.steeringQueue.length === 0 && this.followUpQueue.length === 0) return
+    this.steeringQueue = []
+    this.followUpQueue = []
+    this.emitQueueUpdate()
+  }
+
+  private async drainQueuedInputs(
+    kind: 'steering' | 'followUp' | 'nextTurn',
+    onPersisted?: (input: { lastSeq: number; sessionLeafId: string }) => void,
+  ): Promise<ChatMessage[]> {
+    const queue =
+      kind === 'steering'
+        ? this.steeringQueue
+        : kind === 'followUp'
+          ? this.followUpQueue
+          : this.nextTurnQueue
+    const mode =
+      kind === 'steering'
+        ? this.steeringQueueMode
+        : kind === 'followUp'
+          ? this.followUpQueueMode
+          : 'all'
+    const count = mode === 'all' ? queue.length : Math.min(1, queue.length)
+    if (count === 0) return []
+    const drained = queue.splice(0, count)
+    try {
+      let lastSeq = 0
+      for (const queued of drained) {
+        const appended = await this.store.appendSessionEntry(this.conversationId, {
+          type: 'message.committed',
+          entryId: `queued-message:${queued.message.id}`,
+          timestamp: this.now(),
+          data: { message: cloneRuntimePersistedMessage(queued.message) },
+        })
+        lastSeq = Math.max(lastSeq, appended.entry.seq)
+        this.emit(
+          createWorkbenchEvent(
+            'conversations:updated',
+            cloneRuntimeConversationSummary(appended.summary),
+          ),
+        )
+      }
+      const sessionLeafId = (await this.store.getSessionTree(this.conversationId)).leafId
+      onPersisted?.({ lastSeq, sessionLeafId })
+      this.emitQueueUpdate()
+      return drained.map((queued) => cloneRuntimeValue(queued.chatMessage))
+    } catch (error) {
+      queue.unshift(...drained)
+      this.emitQueueUpdate()
+      throw error
+    }
+  }
+
   private assertConversationOpen(conversationId: string): void {
-    if (this.deletedConversations.has(conversationId)) {
+    this.assertBoundConversation(conversationId)
+    if (this.deleted) {
       throw new Error('conversation was deleted')
     }
   }
@@ -2403,8 +2660,8 @@ class SessionRuntimeEngine {
   }
 
   private async setSessionPhase(conversationId: string, phase: SessionPhase): Promise<number> {
-    const previous = this.sessionPhases.get(conversationId)
-    this.sessionPhases.set(conversationId, phase)
+    const previous = this.sessionPhase
+    this.sessionPhase = phase
     try {
       const appended = await this.store.appendSessionEntry(conversationId, {
         type: 'session.phase.changed',
@@ -2413,8 +2670,7 @@ class SessionRuntimeEngine {
       })
       return appended.entry.seq
     } catch (error) {
-      if (previous) this.sessionPhases.set(conversationId, previous)
-      else this.sessionPhases.delete(conversationId)
+      this.sessionPhase = previous
       throw error
     }
   }
@@ -2433,22 +2689,18 @@ class SessionRuntimeEngine {
     entry: SessionEntryInput,
   ): Promise<void> {
     this.assertCanStartTurn(conversationId)
-    const phase =
-      this.sessionPhases.get(conversationId) ??
-      (await this.store.getSessionTree(conversationId)).phase
+    const phase = this.sessionPhase ?? (await this.store.getSessionTree(conversationId)).phase
     if (phase === 'idle') {
       await this.store.appendSessionEntry(conversationId, cloneRuntimeValue(entry))
       return
     }
-    const pending = this.pendingSessionWrites.get(conversationId) ?? []
-    pending.push(cloneRuntimeValue(entry))
-    this.pendingSessionWrites.set(conversationId, pending)
+    this.pendingSessionWrites.push(cloneRuntimeValue(entry))
   }
 
   private async flushPendingSessionWrites(conversationId: string): Promise<number | null> {
-    const pending = this.pendingSessionWrites.get(conversationId)
-    if (!pending || pending.length === 0) return null
-    this.pendingSessionWrites.delete(conversationId)
+    const pending = this.pendingSessionWrites
+    if (pending.length === 0) return null
+    this.pendingSessionWrites = []
     let lastSeq: number | null = null
     for (let index = 0; index < pending.length; index += 1) {
       try {
@@ -2458,10 +2710,7 @@ class SessionRuntimeEngine {
         )
         lastSeq = appended.entry.seq
       } catch (error) {
-        this.pendingSessionWrites.set(
-          conversationId,
-          pending.slice(index).map((entry) => cloneRuntimeValue(entry)),
-        )
+        this.pendingSessionWrites = pending.slice(index).map((entry) => cloneRuntimeValue(entry))
         throw error
       }
     }
@@ -2555,7 +2804,7 @@ class SessionRuntimeEngine {
   }
 
   private acceptsStreamEvents(conversationId: string, controller: AbortController): boolean {
-    if (this.deletedConversations.has(conversationId)) return false
+    if (this.deleted) return false
     return this.turns.get(conversationId)?.controller === controller
   }
 
@@ -2592,34 +2841,6 @@ class SessionRuntimeEngine {
       ])
     } finally {
       if (timer) clearTimeout(timer)
-    }
-  }
-
-  private async loadToolRegistry(input?: RuntimeToolPackLoadInput): Promise<ToolRegistry> {
-    try {
-      const loaded = await this.host.loadToolPacks?.(cloneRuntimeToolPackLoadInput(input))
-      const skills = await this.getSkills()
-      return createDefaultToolRegistry([
-        ...this.staticToolPacks,
-        ...(loaded ?? []).map(cloneRuntimeToolPack),
-        ...createRuntimeSkillToolPacks(skills),
-      ])
-    } catch (error) {
-      this.logger.warn(
-        '[runtime] tool-pack load failed; continuing with built-in/static tools:',
-        error,
-      )
-      return this.fallbackToolRegistry
-    }
-  }
-
-  private async loadSkills(): Promise<readonly LoadedSkill[]> {
-    try {
-      const loaded = await this.host.loadSkills?.()
-      return [...this.staticSkills, ...(loaded ?? [])].map(cloneRuntimeSkill)
-    } catch (error) {
-      this.logger.warn('[runtime] skill load failed; continuing without skills:', error)
-      return cloneRuntimeSkills(this.staticSkills)
     }
   }
 
@@ -3005,6 +3226,16 @@ class SessionRuntimeEngine {
           prepareModelStep: ({ messages: currentMessages, contextPlan: currentPlan }) => ({
             messages: prepareRuntimeModelStepMessages(currentMessages, currentPlan),
           }),
+          getSteeringMessages: () =>
+            this.drainQueuedInputs('steering', ({ lastSeq, sessionLeafId: nextLeafId }) => {
+              lastJournalSeq = Math.max(lastJournalSeq, lastSeq)
+              currentSessionLeafId = nextLeafId
+            }),
+          getFollowUpMessages: () =>
+            this.drainQueuedInputs('followUp', ({ lastSeq, sessionLeafId: nextLeafId }) => {
+              lastJournalSeq = Math.max(lastJournalSeq, lastSeq)
+              currentSessionLeafId = nextLeafId
+            }),
           mode,
           selection: cloneRuntimeValue(selection),
           signal: controller.signal,
@@ -3169,7 +3400,7 @@ class SessionRuntimeEngine {
         await this.flushPendingSessionWrites(conversationId).catch((error) => {
           this.logger.warn('[runtime] pending session write flush failed:', error)
         })
-        if (!this.deletedConversations.has(conversationId)) {
+        if (!this.deleted) {
           await this.setSessionPhase(conversationId, 'idle').catch((error) => {
             this.logger.warn('[runtime] idle phase persistence failed:', error)
           })
@@ -3188,31 +3419,36 @@ class SessionRuntimeEngine {
  * navigation, compaction, extension, or run-control methods. All mutable
  * execution state is therefore scoped to this one session.
  */
+export interface SessionRuntimeOptions extends WorkbenchOptions {
+  store: WorkbenchStore
+}
+
+const SHARED_WORKBENCH_SERVICES = Symbol('shared-workbench-services')
+type InternalSessionRuntimeOptions = SessionRuntimeOptions & {
+  [SHARED_WORKBENCH_SERVICES]?: WorkbenchServices
+}
+const sessionRuntimeDeletedHandlers = new WeakMap<SessionRuntime, () => void>()
+const sessionRuntimeEngines = new WeakMap<SessionRuntime, SessionRuntimeEngine>()
+
 export class SessionRuntime {
   readonly conversationId: string
   private readonly engine: SessionRuntimeEngine
   private readonly listeners = new Set<(event: WorkbenchEvent) => void>()
 
-  constructor(
-    conversationId: string,
-    options: WorkbenchOptions = {},
-    private readonly onDeleted?: () => void,
-  ) {
+  constructor(conversationId: string, options: SessionRuntimeOptions) {
     if (!conversationId.trim()) throw new Error('conversationId is required')
     this.conversationId = conversationId
-    const externalOnEvent = normalizeRuntimeHost(options).onEvent
+    const services =
+      (options as InternalSessionRuntimeOptions)[SHARED_WORKBENCH_SERVICES] ??
+      new WorkbenchServices(options)
     const onEvent = (event: WorkbenchEvent): void => {
-      externalOnEvent?.(cloneRuntimeValue(event))
       const eventConversationId =
         event.type === 'conversations:updated' ? event.data.id : event.data.conversationId
       if (eventConversationId !== this.conversationId) return
       for (const listener of this.listeners) listener(cloneRuntimeValue(event))
     }
-    this.engine = new SessionRuntimeEngine({
-      ...options,
-      onEvent,
-      host: { ...options.host, onEvent },
-    })
+    this.engine = new SessionRuntimeEngine(conversationId, services, onEvent)
+    sessionRuntimeEngines.set(this, this.engine)
   }
 
   subscribe(listener: (event: WorkbenchEvent) => void): () => void {
@@ -3243,6 +3479,34 @@ export class SessionRuntime {
 
   async waitForIdle(): Promise<void> {
     await this.engine.waitForIdle(this.conversationId)
+  }
+
+  async steer(input: RuntimeQueueInput): Promise<string> {
+    return this.engine.steer({ ...input, conversationId: this.conversationId })
+  }
+
+  async followUp(input: RuntimeQueueInput): Promise<string> {
+    return this.engine.followUp({ ...input, conversationId: this.conversationId })
+  }
+
+  async nextTurn(input: RuntimeQueueInput): Promise<string> {
+    return this.engine.nextTurn({ ...input, conversationId: this.conversationId })
+  }
+
+  getInputQueueState(): SessionInputQueueState {
+    return this.engine.getInputQueueState()
+  }
+
+  clearInputQueue(): SessionInputQueueState {
+    return this.engine.clearInputQueue()
+  }
+
+  setSteeringMode(mode: SessionInputQueueMode): void {
+    this.engine.setSteeringMode(mode)
+  }
+
+  setFollowUpMode(mode: SessionInputQueueMode): void {
+    this.engine.setFollowUpMode(mode)
   }
 
   async navigateSession(
@@ -3336,10 +3600,9 @@ export class SessionRuntime {
   }
 
   async getToolRegistry(record?: ConversationRecord): Promise<ToolRegistry> {
-    return this.engine.getToolRegistry({
-      conversationId: this.conversationId,
-      ...(record ? { record } : {}),
-    })
+    return this.engine.getToolRegistry(
+      record ? { conversationId: this.conversationId, record } : undefined,
+    )
   }
 
   async getSkills(): Promise<LoadedSkill[]> {
@@ -3405,7 +3668,7 @@ export class SessionRuntime {
 
   async delete(): Promise<void> {
     await this.engine.deleteConversation(this.conversationId)
-    this.onDeleted?.()
+    sessionRuntimeDeletedHandlers.get(this)?.()
   }
 }
 
@@ -3414,31 +3677,27 @@ export class SessionRuntime {
  * one SessionRuntime instance per conversation.
  */
 export class WorkbenchRuntime implements Workbench {
-  private readonly store: WorkbenchStore
-  private readonly runtimeOptions: WorkbenchOptions
-  private readonly globalRuntime: SessionRuntimeEngine
+  private readonly services: WorkbenchServices
+  private readonly catalog: ConversationCatalog
   private readonly sessions = new Map<string, SessionRuntime>()
   private shutdownStarted = false
   private shutdownPromise: Promise<void> | null = null
 
   constructor(options: WorkbenchOptions = {}) {
-    const host = normalizeRuntimeHost(options)
-    this.store =
-      options.store ??
-      createInMemoryRuntimeStore({
-        createId: host.createId ?? defaultCreateRuntimeId,
-        createEventId: host.createEventId ?? defaultCreateRuntimeId,
-        now: host.now ?? defaultRuntimeNow,
-      })
-    this.runtimeOptions = { ...options, store: this.store }
-    this.globalRuntime = new SessionRuntimeEngine(this.runtimeOptions)
+    this.services = new WorkbenchServices(options)
+    this.catalog = new ConversationCatalog(this.services)
   }
 
   getSessionRuntime(conversationId: string): SessionRuntime {
     const existing = this.sessions.get(conversationId)
     if (existing) return existing
-    let session: SessionRuntime
-    session = new SessionRuntime(conversationId, this.runtimeOptions, () => {
+    const sessionOptions: InternalSessionRuntimeOptions = {
+      ...this.services.options,
+      store: this.services.store,
+      [SHARED_WORKBENCH_SERVICES]: this.services,
+    }
+    const session = new SessionRuntime(conversationId, sessionOptions)
+    sessionRuntimeDeletedHandlers.set(session, () => {
       if (this.sessions.get(conversationId) === session) this.sessions.delete(conversationId)
     })
     this.sessions.set(conversationId, session)
@@ -3447,32 +3706,29 @@ export class WorkbenchRuntime implements Workbench {
   }
 
   async getToolRegistry(input?: RuntimeToolPackLoadInput): Promise<ToolRegistry> {
-    if (!input?.conversationId) return this.globalRuntime.getToolRegistry(input)
-    return this.getSessionRuntime(input.conversationId).getToolRegistry(input.record)
+    if (!input?.conversationId) return this.services.getToolRegistry(input)
+    const session = this.getSessionRuntime(input.conversationId)
+    return session.getToolRegistry(input.record ?? (await session.getConversation()))
   }
 
   async getSkills(): Promise<LoadedSkill[]> {
-    return this.globalRuntime.getSkills()
+    return this.services.getSkills()
   }
 
   async reloadToolPacks(): Promise<ToolRegistry> {
-    const [registry] = await Promise.all([
-      this.globalRuntime.reloadToolPacks(),
-      ...[...this.sessions.values()].map((session) => session.reloadToolPacks()),
-    ])
-    return registry
+    return this.services.reloadToolPacks()
   }
 
   async createConversation(
     input: RuntimeCreateConversationInput = {},
   ): Promise<ConversationSummary> {
-    const summary = await this.globalRuntime.createConversation(input)
+    const summary = await this.catalog.createConversation(input)
     this.getSessionRuntime(summary.id)
     return summary
   }
 
   async listConversations(): Promise<ConversationSummary[]> {
-    return this.globalRuntime.listConversations()
+    return this.catalog.listConversations()
   }
 
   async getConversation(conversationId: string): Promise<ConversationRecord> {
@@ -3506,7 +3762,7 @@ export class WorkbenchRuntime implements Workbench {
   async resolveConversation(
     input: RuntimeResolveConversationInput = {},
   ): Promise<RuntimeResolveConversationResult> {
-    const resolved = await this.globalRuntime.resolveConversation(input)
+    const resolved = await this.catalog.resolveConversation(input)
     this.getSessionRuntime(resolved.conversationId)
     return resolved
   }
@@ -3608,6 +3864,34 @@ export class WorkbenchRuntime implements Workbench {
     return this.getSessionRuntime(input.conversationId).forkRun(input)
   }
 
+  async steer(input: RuntimeQueueControlInput): Promise<string> {
+    return this.getSessionRuntime(input.conversationId).steer(input)
+  }
+
+  async followUp(input: RuntimeQueueControlInput): Promise<string> {
+    return this.getSessionRuntime(input.conversationId).followUp(input)
+  }
+
+  async nextTurn(input: RuntimeQueueControlInput): Promise<string> {
+    return this.getSessionRuntime(input.conversationId).nextTurn(input)
+  }
+
+  getInputQueueState(conversationId: string): SessionInputQueueState {
+    return this.getSessionRuntime(conversationId).getInputQueueState()
+  }
+
+  clearInputQueue(conversationId: string): SessionInputQueueState {
+    return this.getSessionRuntime(conversationId).clearInputQueue()
+  }
+
+  setSteeringMode(conversationId: string, mode: SessionInputQueueMode): void {
+    this.getSessionRuntime(conversationId).setSteeringMode(mode)
+  }
+
+  setFollowUpMode(conversationId: string, mode: SessionInputQueueMode): void {
+    this.getSessionRuntime(conversationId).setFollowUpMode(mode)
+  }
+
   async abort(conversationId: string): Promise<void> {
     await this.getSessionRuntime(conversationId).abort()
   }
@@ -3619,10 +3903,9 @@ export class WorkbenchRuntime implements Workbench {
   shutdown(reason: ConversationAbortReason = 'shutdown'): Promise<void> {
     this.shutdownStarted = true
     if (!this.shutdownPromise) {
-      this.shutdownPromise = Promise.all([
-        this.globalRuntime.shutdown(reason),
-        ...[...this.sessions.values()].map((session) => session.shutdown(reason)),
-      ]).then(() => undefined)
+      this.shutdownPromise = Promise.all(
+        [...this.sessions.values()].map((session) => session.shutdown(reason)),
+      ).then(() => undefined)
     }
     return this.shutdownPromise
   }
@@ -3639,13 +3922,16 @@ export class WorkbenchRuntime implements Workbench {
   }
 
   async recoverInterruptedActivities(reason?: string): Promise<ConversationSummary[]> {
-    const recovered = await this.globalRuntime.recoverInterruptedActivities(reason)
+    const recovered = await this.catalog.recoverInterruptedActivities(reason)
+    for (const session of this.sessions.values()) {
+      sessionRuntimeEngines.get(session)?.resetRecoveredPhase()
+    }
     for (const summary of recovered) this.getSessionRuntime(summary.id)
     return recovered
   }
 
   async executeTool(input: RuntimeExecuteToolInput): Promise<string> {
-    if (!input.conversationId) return this.globalRuntime.executeTool(input)
+    if (!input.conversationId) return this.services.executeTool(input)
     return this.getSessionRuntime(input.conversationId).executeTool(input)
   }
 }

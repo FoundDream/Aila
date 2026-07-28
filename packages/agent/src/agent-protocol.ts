@@ -197,6 +197,10 @@ export interface RunRequest {
   prepareModelStep?: (
     input: RunModelStepPreparationInput,
   ) => MaybePromise<RunModelStepPreparationResult | undefined>
+  /** Messages injected after the current model/tool boundary, before continuing. */
+  getSteeringMessages?: () => MaybePromise<ChatMessage[]>
+  /** Messages injected only after the run would otherwise finish. */
+  getFollowUpMessages?: () => MaybePromise<ChatMessage[]>
   mode?: AilaExecutionMode
   selection: ModelSelection
   signal: AbortSignal

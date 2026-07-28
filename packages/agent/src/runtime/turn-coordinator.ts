@@ -88,3 +88,91 @@ export class TurnCoordinator<TTurn extends CoordinatedTurn> {
     lock.release()
   }
 }
+
+/**
+ * Single-session variant used by SessionRuntime. It preserves the coordinator
+ * contract while storing one active turn and one start lock as scalar state.
+ */
+export class SessionTurnCoordinator<TTurn extends CoordinatedTurn> {
+  private activeTurn: TTurn | undefined
+  private startLock: TurnStartLock | undefined
+
+  constructor(private readonly sessionId: string) {}
+
+  async withStartLock<T>(
+    sessionId: string,
+    operation: (lock: TurnStartLock) => Promise<T>,
+  ): Promise<T> {
+    this.assertSession(sessionId)
+    const previous = this.startLock
+    let resolveLock: () => void = () => {}
+    const promise = new Promise<void>((resolve) => {
+      resolveLock = resolve
+    })
+    const current: TurnStartLock = {
+      promise,
+      released: false,
+      release: () => {},
+    }
+    current.release = () => {
+      if (current.released) return
+      current.released = true
+      resolveLock()
+    }
+    this.startLock = current
+
+    if (previous) await previous.promise
+    try {
+      return await operation(current)
+    } finally {
+      current.release()
+      if (this.startLock === current) this.startLock = undefined
+    }
+  }
+
+  get(sessionId: string): TTurn | undefined {
+    this.assertSession(sessionId)
+    return this.activeTurn
+  }
+
+  has(sessionId: string): boolean {
+    this.assertSession(sessionId)
+    return this.activeTurn !== undefined
+  }
+
+  set(sessionId: string, turn: TTurn): void {
+    this.assertSession(sessionId)
+    this.activeTurn = turn
+  }
+
+  delete(sessionId: string, expected?: TTurn): boolean {
+    this.assertSession(sessionId)
+    if (!this.activeTurn || (expected && this.activeTurn !== expected)) return false
+    this.activeTurn = undefined
+    return true
+  }
+
+  deleteWhere(sessionId: string, predicate: (turn: TTurn) => boolean): boolean {
+    this.assertSession(sessionId)
+    if (!this.activeTurn || !predicate(this.activeTurn)) return false
+    this.activeTurn = undefined
+    return true
+  }
+
+  entries(): Array<[string, TTurn]> {
+    return this.activeTurn ? [[this.sessionId, this.activeTurn]] : []
+  }
+
+  clearTimedOut(sessionId: string, turn: TTurn): void {
+    this.assertSession(sessionId)
+    this.delete(sessionId, turn)
+    turn.turnStartLock.release()
+    if (this.startLock === turn.turnStartLock) this.startLock = undefined
+  }
+
+  private assertSession(sessionId: string): void {
+    if (sessionId !== this.sessionId) {
+      throw new Error(`session runtime is bound to ${this.sessionId}, received ${sessionId}`)
+    }
+  }
+}

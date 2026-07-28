@@ -7,12 +7,24 @@ import type {
   ToolCallEvent,
   ToolResultEvent,
 } from './agent-protocol'
-import type { ConversationSummary, PersistedRunEvent } from './conversation-core'
+import type { ConversationSummary, PersistedMessage, PersistedRunEvent } from './conversation-core'
+
+export type SessionInputQueueMode = 'one-at-a-time' | 'all'
+
+export interface SessionInputQueueState {
+  conversationId: string
+  steering: PersistedMessage[]
+  followUp: PersistedMessage[]
+  nextTurn: PersistedMessage[]
+  steeringMode: SessionInputQueueMode
+  followUpMode: SessionInputQueueMode
+}
 
 export const AILA_WORKBENCH_EVENT_SCHEMA_VERSION = 1
 
 export interface WorkbenchEventMap {
   'conversations:updated': ConversationSummary
+  'session:queue-updated': SessionInputQueueState
   'run:event': PersistedRunEvent
   'chat:text-delta': DeltaEvent
   'chat:reasoning-delta': DeltaEvent
@@ -26,6 +38,7 @@ export interface WorkbenchEventMap {
 
 export const AILA_WORKBENCH_EVENT_TYPES = [
   'conversations:updated',
+  'session:queue-updated',
   'run:event',
   'chat:text-delta',
   'chat:reasoning-delta',

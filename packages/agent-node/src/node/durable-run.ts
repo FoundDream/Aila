@@ -143,6 +143,8 @@ export function createDurableRunExecutor(
       messages: requestMessages,
       contextPlan: requestContextPlan,
       prepareModelStep,
+      getSteeringMessages,
+      getFollowUpMessages,
       selection: requestSelection,
       signal,
       onRunEvent,
@@ -452,7 +454,7 @@ export function createDurableRunExecutor(
         }
       }
 
-      const loopResult = await defaultAgentRuntime.run<ParsedModelToolCall>({
+      const loopResult = await defaultAgentRuntime.run<ParsedModelToolCall, ChatMessage[]>({
         identity: run,
         signal,
         maxToolSteps,
@@ -460,6 +462,23 @@ export function createDurableRunExecutor(
         ...(options.createStepId
           ? {
               createStepId: () => options.createStepId?.() ?? randomUUID(),
+            }
+          : {}),
+        ...(getSteeringMessages || getFollowUpMessages
+          ? {
+              inputQueue: {
+                dequeueSteering: async () => {
+                  const queued = await getSteeringMessages?.()
+                  return queued && queued.length > 0 ? cloneAgentMessages(queued) : undefined
+                },
+                dequeueFollowUp: async () => {
+                  const queued = await getFollowUpMessages?.()
+                  return queued && queued.length > 0 ? cloneAgentMessages(queued) : undefined
+                },
+                apply: (queued: ChatMessage[]) => {
+                  modelMessages.push(...cloneAgentMessages(queued))
+                },
+              },
             }
           : {}),
         policy: { mode: loopMode },
@@ -732,6 +751,16 @@ export function createDurableRunExecutor(
                     ),
                 )
               : []
+          if (pendingToolCalls.length === 0) {
+            modelMessages.push(responseModelMessage)
+            for (const resolved of result.resolvedToolResults) {
+              modelMessages.push({
+                role: 'tool',
+                tool_call_id: resolved.toolCallId,
+                content: resolved.error ?? stringifyToolOutput(resolved.output),
+              })
+            }
+          }
           toolCallsByModelStep.set(modelStepIndex, cloneAgentValue(pendingToolCalls))
           return {
             outcome: result.outcome,
