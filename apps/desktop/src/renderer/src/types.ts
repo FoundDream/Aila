@@ -67,6 +67,7 @@ export type {
   RunEventType,
   RunPayload,
   RunSnapshot,
+  RuntimeAppendMessageRequest,
   RuntimeCompactConversationRequest,
   RuntimeCompactConversationResult,
   RuntimeConversationHydration,

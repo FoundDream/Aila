@@ -3,12 +3,14 @@ import {
   type AilaExecutionMode,
   type BlobGarbageCollectionResult,
   type ChatAttachmentInput,
+  type ChatMessage,
   type ConversationRecord,
   type ConversationRuntimeHydration,
   type ConversationRuntimeStateSnapshot,
   type ConversationSummary,
   type ConversationWorkspaceRef,
   type ModelSelection,
+  type PersistedMessage,
   type RunPayload,
   type RunSnapshot,
   type RuntimeCompactConversationResult,
@@ -45,12 +47,20 @@ export interface RuntimeWorkbenchSendInput {
   mode?: AilaExecutionMode
   loopMode?: 'continuous' | 'step'
   attachments?: ChatAttachmentInput[]
+  transientContext?: ChatMessage[]
 }
 
 export interface RuntimeWorkbenchRetryLastInput {
   conversationId: string
   selection: ModelSelection
   mode?: AilaExecutionMode
+  loopMode?: 'continuous' | 'step'
+  transientContext?: ChatMessage[]
+}
+
+export interface RuntimeWorkbenchAppendMessageInput {
+  conversationId: string
+  message: PersistedMessage
 }
 
 export interface RuntimeWorkbenchCompactInput {
@@ -69,6 +79,7 @@ export interface RuntimeWorkbenchReloadResult {
 export interface DesktopRuntimeWorkbench {
   send(input: RuntimeWorkbenchSendInput): Promise<RuntimeSendResult>
   retryLastUserMessage(input: RuntimeWorkbenchRetryLastInput): Promise<RuntimeSendResult>
+  appendPlaygroundMessage(input: RuntimeWorkbenchAppendMessageInput): Promise<string>
   compactConversation(
     input: RuntimeWorkbenchCompactInput,
   ): Promise<RuntimeCompactConversationResult>
@@ -158,10 +169,20 @@ export function createDesktopRuntimeWorkbench(
         ...(input.attachments && input.attachments.length > 0
           ? { attachments: input.attachments }
           : {}),
+        ...(input.transientContext ? { transientContext: input.transientContext } : {}),
       })
     },
     retryLastUserMessage(input) {
       return runtime.retryLastUserMessage(input)
+    },
+    appendPlaygroundMessage(input) {
+      // Namespace is pinned host-side so the renderer cannot write foreign extension entries.
+      return runtime.appendSessionCustomMessage({
+        conversationId: input.conversationId,
+        namespace: 'aila.playground',
+        version: 1,
+        message: input.message,
+      })
     },
     compactConversation(input) {
       return runtime.compactConversation(input)
@@ -267,6 +288,9 @@ export function registerRuntimeWorkbenchIpcHandlers(
   )
   ipc.handle('runtime:retry-last', (_event, request: RuntimeWorkbenchRetryLastInput) =>
     workbench.retryLastUserMessage(request),
+  )
+  ipc.handle('runtime:messages:append', (_event, request: RuntimeWorkbenchAppendMessageInput) =>
+    workbench.appendPlaygroundMessage(request),
   )
   ipc.handle('runtime:compact-conversation', (_event, request: RuntimeWorkbenchCompactInput) =>
     workbench.compactConversation(request),

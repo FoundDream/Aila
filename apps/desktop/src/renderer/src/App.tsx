@@ -1,4 +1,10 @@
-import { PanelLeftCloseIcon, PanelLeftOpenIcon, SettingsIcon } from 'lucide-react'
+import {
+  BugIcon,
+  MessageSquareIcon,
+  PanelLeftCloseIcon,
+  PanelLeftOpenIcon,
+  SettingsIcon,
+} from 'lucide-react'
 import { type ReactElement, useCallback, useEffect, useMemo, useState } from 'react'
 import { SettingsModal } from '@/components/SettingsModal'
 import { ToolApprovalDialog } from '@/components/ToolApprovalDialog'
@@ -7,6 +13,7 @@ import { ChatPage } from '@/pages/chat/ChatPage'
 import { ConversationList } from '@/pages/chat/ConversationList'
 import { useChatStreams } from '@/pages/chat/useChatStreams'
 import { useConversations } from '@/pages/chat/useConversations'
+import { DebugPage } from '@/pages/debug/DebugPage'
 import {
   createToolApprovalsState,
   mergeToolApprovals,
@@ -16,6 +23,9 @@ import {
 import type { ProviderId, Settings, SettingsState, ToolApprovalRequestEvent } from './types'
 
 const SIDEBAR_EXPANDED_STORAGE_KEY = 'app.sidebar.expanded'
+const WORKBENCH_MODE_STORAGE_KEY = 'app.workbench.mode'
+
+type WorkbenchMode = 'agent' | 'debug'
 
 function readSidebarExpanded(): boolean {
   try {
@@ -25,8 +35,17 @@ function readSidebarExpanded(): boolean {
   }
 }
 
+function readWorkbenchMode(): WorkbenchMode {
+  try {
+    return localStorage.getItem(WORKBENCH_MODE_STORAGE_KEY) === 'debug' ? 'debug' : 'agent'
+  } catch {
+    return 'agent'
+  }
+}
+
 export default function App(): ReactElement {
   const [sidebarExpanded, setSidebarExpanded] = useState(readSidebarExpanded)
+  const [workbenchMode, setWorkbenchMode] = useState(readWorkbenchMode)
   const conversationsState = useConversations()
   const chatStreams = useChatStreams(
     useMemo(
@@ -66,6 +85,14 @@ export default function App(): ReactElement {
   }, [sidebarExpanded])
 
   useEffect(() => {
+    try {
+      localStorage.setItem(WORKBENCH_MODE_STORAGE_KEY, workbenchMode)
+    } catch {
+      // Storage is an enhancement; private windows may reject it.
+    }
+  }, [workbenchMode])
+
+  useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'b') {
         event.preventDefault()
@@ -73,6 +100,12 @@ export default function App(): ReactElement {
       } else if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
         event.preventDefault()
         conversationsState.deselect()
+      } else if ((event.metaKey || event.ctrlKey) && event.key === '1') {
+        event.preventDefault()
+        setWorkbenchMode('agent')
+      } else if ((event.metaKey || event.ctrlKey) && event.key === '2') {
+        event.preventDefault()
+        setWorkbenchMode('debug')
       }
     }
     window.addEventListener('keydown', onKeyDown)
@@ -143,6 +176,41 @@ export default function App(): ReactElement {
           <div className="h-[42px] shrink-0 [-webkit-app-region:drag]" />
 
           {sidebarIsExpanded && (
+            <div className="shrink-0 px-3 pb-2">
+              <div className="flex rounded-lg bg-[var(--bg-soft)] p-0.5">
+                {(
+                  [
+                    { mode: 'agent', label: 'Agent', icon: MessageSquareIcon, shortcut: '⌘1' },
+                    { mode: 'debug', label: 'Debug', icon: BugIcon, shortcut: '⌘2' },
+                  ] as const
+                ).map(({ mode, label, icon: Icon, shortcut }) => (
+                  <Tooltip key={mode}>
+                    <TooltipTrigger asChild>
+                      <button
+                        type="button"
+                        onClick={() => setWorkbenchMode(mode)}
+                        aria-pressed={workbenchMode === mode}
+                        className={`flex h-7 flex-1 items-center justify-center gap-1.5 rounded-md text-[11.5px] font-medium outline-none transition-colors focus-visible:bg-[var(--surface-hover-strong)] focus-visible:text-[var(--text)] ${
+                          workbenchMode === mode
+                            ? 'bg-[var(--bg)] text-[var(--text)] shadow-[var(--shadow-xs)]'
+                            : 'text-[var(--sidebar-text-dim)] hover:text-[var(--text)]'
+                        }`}
+                      >
+                        <Icon className="size-3.5" />
+                        {label}
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom">
+                      {mode === 'agent' ? 'Agent workbench' : 'Debug workbench'}
+                      <span className="ml-2 opacity-60">{shortcut}</span>
+                    </TooltipContent>
+                  </Tooltip>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {sidebarIsExpanded && (
             <div className="min-h-0 flex-1">
               <ConversationList
                 conversations={conversationsState.conversations}
@@ -209,19 +277,35 @@ export default function App(): ReactElement {
                     )}
                   </>
                 )}
+                {workbenchMode === 'debug' && (
+                  <span className="shrink-0 rounded-md bg-[var(--warning-soft)] px-2 py-0.5 text-[10.5px] font-medium text-[var(--warning)]">
+                    Debug
+                  </span>
+                )}
               </div>
             </header>
             <div className="min-h-0 flex-1">
-              <ChatPage
-                conversation={conversationsState.activeRecord}
-                draftWorkspace={conversationsState.draftWorkspace}
-                onCreateConversation={conversationsState.create}
-                streams={chatStreams}
-                settings={settingsState?.settings ?? null}
-                configuredProviders={settingsState?.configuredProviders ?? ([] as ProviderId[])}
-                onUpdateSettings={updateSettings}
-                onOpenSettings={() => setSettingsOpen(true)}
-              />
+              {workbenchMode === 'debug' ? (
+                <DebugPage
+                  conversation={conversationsState.activeRecord}
+                  streams={chatStreams}
+                  settings={settingsState?.settings ?? null}
+                  configuredProviders={settingsState?.configuredProviders ?? ([] as ProviderId[])}
+                  onUpdateSettings={updateSettings}
+                  onOpenSettings={() => setSettingsOpen(true)}
+                />
+              ) : (
+                <ChatPage
+                  conversation={conversationsState.activeRecord}
+                  draftWorkspace={conversationsState.draftWorkspace}
+                  onCreateConversation={conversationsState.create}
+                  streams={chatStreams}
+                  settings={settingsState?.settings ?? null}
+                  configuredProviders={settingsState?.configuredProviders ?? ([] as ProviderId[])}
+                  onUpdateSettings={updateSettings}
+                  onOpenSettings={() => setSettingsOpen(true)}
+                />
+              )}
             </div>
           </div>
         </main>

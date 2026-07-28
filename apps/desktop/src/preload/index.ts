@@ -675,12 +675,20 @@ export interface RuntimeSendRequest {
   mode?: AilaExecutionMode
   loopMode?: 'continuous' | 'step'
   attachments?: ChatAttachmentInput[]
+  transientContext?: ChatMessage[]
 }
 
 export interface RuntimeRetryLastRequest {
   conversationId: string
   selection: ModelSelection
   mode?: AilaExecutionMode
+  loopMode?: 'continuous' | 'step'
+  transientContext?: ChatMessage[]
+}
+
+export interface RuntimeAppendMessageRequest {
+  conversationId: string
+  message: PersistedMessage
 }
 
 export interface RuntimeCompactConversationRequest {
@@ -736,6 +744,8 @@ const api = {
       ipcRenderer.invoke('runtime:send', request),
     retryLast: (request: RuntimeRetryLastRequest): Promise<SendResult> =>
       ipcRenderer.invoke('runtime:retry-last', request),
+    appendPlaygroundMessage: (request: RuntimeAppendMessageRequest): Promise<string> =>
+      ipcRenderer.invoke('runtime:messages:append', request),
     compactConversation: (
       request: RuntimeCompactConversationRequest,
     ): Promise<RuntimeCompactConversationResult> =>
