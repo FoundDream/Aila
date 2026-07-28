@@ -452,32 +452,34 @@ function ConversationRow({
               </span>
             )}
           </button>
-          <span className="w-9 shrink-0 pr-2 text-right text-[11px] tabular-nums text-[var(--sidebar-text-dim)] group-hover:hidden">
-            {formatConversationListRelativeTime(conversation.updatedAt)}
-          </span>
-          <div className="mr-1 hidden shrink-0 items-center gap-px group-hover:flex">
-            <button
-              type="button"
-              onClick={() => onStartRename(conversation.id)}
-              aria-label="Rename conversation"
-              title="Rename"
-              className="flex h-5 w-5 cursor-pointer items-center justify-center rounded-md text-[var(--sidebar-text-dim)] hover:bg-[var(--surface)] hover:text-[var(--text)]"
-            >
-              <PencilIcon className="size-3.5" />
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                if (window.confirm(`Delete "${title}"?`)) {
-                  onDelete(conversation.id)
-                }
-              }}
-              aria-label="Delete conversation"
-              title="Delete"
-              className="flex h-5 w-5 cursor-pointer items-center justify-center rounded-md text-[var(--sidebar-text-dim)] hover:bg-[var(--surface)] hover:text-[var(--error)]"
-            >
-              <Trash2Icon className="size-3.5" />
-            </button>
+          <div className="relative mr-1 h-5 w-[41px] shrink-0">
+            <span className="absolute inset-0 flex items-center justify-end pr-1 text-[11px] tabular-nums text-[var(--sidebar-text-dim)] transition-opacity group-hover:invisible group-hover:opacity-0">
+              {formatConversationListRelativeTime(conversation.updatedAt)}
+            </span>
+            <div className="invisible absolute inset-0 flex items-center gap-px opacity-0 transition-opacity group-hover:visible group-hover:opacity-100">
+              <button
+                type="button"
+                onClick={() => onStartRename(conversation.id)}
+                aria-label="Rename conversation"
+                title="Rename"
+                className="flex h-5 w-5 cursor-pointer items-center justify-center rounded-md text-[var(--sidebar-text-dim)] hover:bg-[var(--surface)] hover:text-[var(--text)]"
+              >
+                <PencilIcon className="size-3.5" />
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (window.confirm(`Delete "${title}"?`)) {
+                    onDelete(conversation.id)
+                  }
+                }}
+                aria-label="Delete conversation"
+                title="Delete"
+                className="flex h-5 w-5 cursor-pointer items-center justify-center rounded-md text-[var(--sidebar-text-dim)] hover:bg-[var(--surface)] hover:text-[var(--error)]"
+              >
+                <Trash2Icon className="size-3.5" />
+              </button>
+            </div>
           </div>
         </>
       )}
