@@ -137,7 +137,10 @@ export interface RunEvent {
   conversationId: string
   messageId: string
   type: RunEventType
-  /** Stable execution identity. Optional only for legacy events. */
+  /**
+   * Stable execution identity. Absent only on synthesized recovery events
+   * whose source journal never resolved one.
+   */
   turnId?: string
   runId?: string
   stepId?: string

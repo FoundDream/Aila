@@ -6,9 +6,7 @@ export {
 } from './runtime/memory-store'
 export type {
   BlobRepository,
-  EventRepository,
   RecoveryRepository,
-  RunRepository,
   RunSnapshotRepository,
   SessionRepository,
   WorkbenchStore,

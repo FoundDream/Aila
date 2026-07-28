@@ -199,15 +199,11 @@ export interface AgentContextMicrocompactPlan {
 export interface AssembleAgentContextInput {
   stableInstructions?: ChatMessage[]
   dynamicContext?: ChatMessage[]
-  /** @deprecated Use dynamicContext. Kept while adapters migrate to ContextAssembler sections. */
-  transientContext?: ChatMessage[]
   messages: PersistedMessage[]
   modelInfo: ModelInfo
   providerId?: ProviderId
   compactionCheckpoint?: ConversationContextCheckpoint | null
 }
-
-export type BuildAgentContextInput = AssembleAgentContextInput
 
 export interface AgentContextResult {
   messages: ChatMessage[]
@@ -1038,19 +1034,13 @@ export function applyAgentContextTokenPreflight(
   }
 }
 
-export class ContextAssembler {
-  assemble(input: AssembleAgentContextInput): AgentContextResult {
-    return assembleAgentContext(input)
-  }
-}
-
 export function assembleAgentContext(input: AssembleAgentContextInput): AgentContextResult {
   const budgetManager = new ContextBudgetManager({
     modelInfo: input.modelInfo,
     providerId: input.providerId,
   })
   const estimator = budgetManager.estimator
-  const dynamicContext = [...(input.dynamicContext ?? []), ...(input.transientContext ?? [])]
+  const dynamicContext = [...(input.dynamicContext ?? [])]
   const currentUser = latestUserMessage(input.messages)
   const allRounds = input.messages
     .map((message, index) => messageToRound(message, index, estimator))
@@ -1183,8 +1173,4 @@ export function assembleAgentContext(input: AssembleAgentContextInput): AgentCon
       shouldAutoCompact: compactionPlan.shouldAutoCompact,
     },
   }
-}
-
-export function buildAgentContext(input: BuildAgentContextInput): AgentContextResult {
-  return assembleAgentContext(input)
 }

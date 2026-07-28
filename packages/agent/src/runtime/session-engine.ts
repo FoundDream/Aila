@@ -280,7 +280,7 @@ export class SessionRuntimeEngine {
 
   async listRunSummaries(conversationId: string): Promise<RuntimeRunSummary[]> {
     const activeRunIds = new Set(
-      this.listActiveStreams()
+      this.listActiveTurns()
         .filter((turn) => turn.conversationId === conversationId)
         .map((turn) => turn.runId),
     )
@@ -322,7 +322,7 @@ export class SessionRuntimeEngine {
         return runPayloadFromEntry(entry, blob?.data ?? null)
       }),
     )
-    const active = this.listActiveStreams().some((turn) => turn.runId === input.runId)
+    const active = this.listActiveTurns().some((turn) => turn.runId === input.runId)
     return cloneRuntimeValue({
       snapshot,
       events: events.filter((event) => event.runId === input.runId),
@@ -360,7 +360,7 @@ export class SessionRuntimeEngine {
     ])
     const runtimeState = replayConversationRuntimeState(events)
     const activeTurn =
-      this.listActiveStreams().find((turn) => turn.conversationId === conversationId) ?? null
+      this.listActiveTurns().find((turn) => turn.conversationId === conversationId) ?? null
     return cloneRuntimeValue({ record, events, runtimeState, activeTurn })
   }
 
@@ -1209,10 +1209,6 @@ export class SessionRuntimeEngine {
     }
   }
 
-  listActiveTurns(): ActiveAssistantTurn[] {
-    return this.listActiveStreams()
-  }
-
   resetRecoveredPhase(): void {
     this.sessionPhase = undefined
   }
@@ -1223,7 +1219,7 @@ export class SessionRuntimeEngine {
    * Advisory for clients; the assert* guards remain authoritative.
    */
   private computeAvailability(phase: SessionPhase): RuntimeSessionAvailability {
-    const activeTurn = this.listActiveStreams()[0] ?? null
+    const activeTurn = this.listActiveTurns()[0] ?? null
     const blocked = this.shutdownStarted
       ? 'shutdown'
       : this.deleted
@@ -1295,7 +1291,7 @@ export class SessionRuntimeEngine {
     await this.turns.get()?.cleanup
   }
 
-  listActiveStreams(): ActiveAssistantTurn[] {
+  listActiveTurns(): ActiveAssistantTurn[] {
     return this.turns.entries().map(([conversationId, slot]) => ({
       conversationId,
       assistantMessageId: slot.assistantMessageId,

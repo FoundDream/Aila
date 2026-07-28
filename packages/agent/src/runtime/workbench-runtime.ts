@@ -300,10 +300,6 @@ export class WorkbenchRuntime implements Workbench {
     })
   }
 
-  listActiveStreams(): ActiveAssistantTurn[] {
-    return this.listActiveTurns()
-  }
-
   async recoverInterruptedActivities(reason?: string): Promise<ConversationSummary[]> {
     const recovered = await this.catalog.recoverInterruptedActivities(reason)
     for (const session of this.sessions.values()) {

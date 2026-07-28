@@ -38,8 +38,8 @@ there is deliberately no test suite (see AGENTS.md).
 - Run events are schema-versioned, deduped by `eventId`, and replay
   deterministically; append order is stable at equal timestamps.
 - `run.payload` entries use the API vocabulary (`model_request`,
-  `model_response`, `tool_batch`, `tool_request`, `tool_result`, `compaction`,
-  `inspection`); there is no legacy vocabulary and no read-time normalization.
+  `model_response`, `tool_batch`, `tool_request`, `tool_result`,
+  `compaction`); there is no legacy vocabulary and no read-time normalization.
 - Session fork copies only the selected root-to-leaf semantic path.
 - Structural session operations (navigate, fork, garbage-collect, compact)
   require the idle phase.

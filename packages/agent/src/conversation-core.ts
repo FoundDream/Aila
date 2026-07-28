@@ -1339,28 +1339,6 @@ export function createInterruptedConversationRecoveryEvent(
   }
 }
 
-export function interruptedRecoveryEventFromLegacyActivity(
-  conversationId: string,
-  activity: ConversationActivity | undefined,
-  reason: string,
-): RunEvent | null {
-  if (!activity || (activity.state !== 'running' && activity.state !== 'approval')) {
-    return null
-  }
-  return {
-    timestamp: Date.now(),
-    conversationId,
-    messageId: activity.messageId,
-    type: 'turn.interrupted',
-    data: {
-      reason,
-      previousState: activity.state,
-      previousEventType: activity.eventType,
-      previousTitle: activity.title,
-    },
-  }
-}
-
 export function conversationActivityEquals(
   left: ConversationActivity | undefined,
   right: ConversationActivity | undefined,

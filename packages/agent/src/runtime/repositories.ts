@@ -60,8 +60,3 @@ export interface WorkbenchStore
     RecoveryRepository,
     RunSnapshotRepository,
     BlobRepository {}
-
-/** @deprecated Use RecoveryRepository. */
-export type EventRepository = RecoveryRepository
-/** @deprecated Use RunSnapshotRepository and BlobRepository. */
-export type RunRepository = RunSnapshotRepository & BlobRepository

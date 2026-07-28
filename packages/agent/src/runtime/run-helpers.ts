@@ -76,8 +76,7 @@ export function runPayloadLabel(payload: RunPayload): string {
       .join(' · ')
   }
   if (payload.kind === 'tool_batch') return 'Tool batch summary'
-  if (payload.kind === 'compaction') return 'Context compaction'
-  return payload.kind.replaceAll('_', ' ')
+  return 'Context compaction'
 }
 
 export function runPayloadDescriptor(payload: RunPayload): RuntimeRunPayloadDescriptor {

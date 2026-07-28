@@ -44,7 +44,6 @@ export type RunPayloadKind =
   | 'tool_request'
   | 'tool_result'
   | 'compaction'
-  | 'inspection'
 
 export interface RunPayloadData {
   kind: RunPayloadKind
