@@ -15,13 +15,11 @@ const sharedAlias = [
     find: '@aila/agent/host',
     replacement: resolve(CONFIG_DIR, '../../packages/agent/src/host.ts'),
   },
+  // `@aila/agent-node` has no root export — /app is its only entry point. These
+  // are prefix matches, so the longer finds must stay ahead of '@aila/agent'.
   {
     find: '@aila/agent-node/app',
     replacement: resolve(CONFIG_DIR, '../../packages/agent-node/src/app/index.ts'),
-  },
-  {
-    find: '@aila/agent-node',
-    replacement: resolve(CONFIG_DIR, '../../packages/agent-node/src/index.ts'),
   },
   { find: '@aila/agent', replacement: resolve(CONFIG_DIR, '../../packages/agent/src/index.ts') },
   { find: '@shared', replacement: resolve(CONFIG_DIR, 'src/shared') },

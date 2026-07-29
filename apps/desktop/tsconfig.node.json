@@ -10,7 +10,6 @@
       "@aila/agent/host": ["../../packages/agent/src/host.ts"],
       "@aila/agent": ["../../packages/agent/src/index.ts"],
       "@aila/agent-node/app": ["../../packages/agent-node/src/app/index.ts"],
-      "@aila/agent-node": ["../../packages/agent-node/src/index.ts"],
       "@shared/*": ["./src/shared/*"]
     }
   }
