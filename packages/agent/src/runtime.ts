@@ -10,7 +10,6 @@ export type {
   SessionRepository,
   WorkbenchStore,
 } from './runtime/repositories'
-export { SessionRuntime, type SessionRuntimeOptions } from './runtime/session-runtime'
 export type {
   ContextAssembledHookEvent,
   ContextCompactedHookEvent,

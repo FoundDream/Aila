@@ -109,7 +109,7 @@ also drives the `turn.*` / `run.*` / `step.*` hooks — → assistant message
 commit (`turn.onCommitted`) → idle phase write. Save points fire
 `run.onSavePoint` after the journal flush. Two event channels predate hooks
 and are unchanged: `host.onEvent` (process-wide workbench events) and the
-per-session subscription used by `SessionRuntime.subscribe`; hooks are a
+per-session subscription used by `WorkbenchRuntime.subscribeSession`; hooks are a
 third, purely additive observation channel.
 
 ### Stage table

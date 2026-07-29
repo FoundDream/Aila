@@ -24,10 +24,11 @@ session-engine, session-runtime, workbench-runtime):
   and the lifecycle-hook dispatcher are shared by every session.
 - `ConversationCatalog` owns global conversation creation, lookup, listing, and
   restart recovery; it does not execute turns.
-- `SessionRuntime` is bound to one durable conversation. It owns that session's
-  turn lifecycle, phase, pending journal writes, context assembly, run controls,
-  navigation, compaction, event subscription, availability snapshots, and
-  steer/follow-up/next-turn input queues.
+- `SessionRuntimeEngine` is bound to one durable conversation. It owns that
+  session's turn lifecycle, phase, pending journal writes, context assembly,
+  run controls, navigation, compaction, availability snapshots, and
+  steer/follow-up/next-turn input queues. `WorkbenchRuntime` holds one engine
+  per conversation.
 - `AgentRuntime` orchestrates one model/tool loop, including queue timing and
   step policy.
 - `RunMachine` is the pure durable execution state machine.
@@ -36,9 +37,8 @@ Hosts observe the runtime through `WorkbenchHost.hooks` and the
 `session:availability` event; the invariants that bind all of this together
 live in [CLAUDE.md](./CLAUDE.md).
 
-Desktop, TUI, and CLI can keep using the `Workbench` API. Code that already
-knows a conversation id can call `workbench.getSessionRuntime(id)` and use the
-bound API without repeatedly passing that id.
+Desktop, TUI, and CLI use the `Workbench` API. Code that wants a per-session
+event feed can call `workbench.subscribeSession(id, listener)`.
 
 ## Interfaces
 

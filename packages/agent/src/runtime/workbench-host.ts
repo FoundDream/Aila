@@ -76,7 +76,6 @@ import type {
   RuntimeWorkspaceResolverInput,
 } from './api-types'
 import type { WorkbenchStore } from './repositories'
-import type { SessionRuntime } from './session-runtime'
 
 export type MaybePromise<T> = T | Promise<T>
 
@@ -291,7 +290,8 @@ export interface WorkbenchOptions extends WorkbenchHost {
 }
 
 export interface WorkbenchSessionApi {
-  getSessionRuntime(conversationId: string): SessionRuntime
+  /** Per-session event subscription — the pre-hooks observation channel. */
+  subscribeSession(conversationId: string, listener: (event: WorkbenchEvent) => void): () => void
   createConversation(input?: RuntimeCreateConversationInput): Promise<ConversationSummary>
   listConversations(): Promise<ConversationSummary[]>
   getConversation(conversationId: string): Promise<ConversationRecord>

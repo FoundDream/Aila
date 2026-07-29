@@ -235,8 +235,6 @@ export {
   type SessionPhaseChangedHookEvent,
   type SessionRenamedHookEvent,
   type SessionRepository,
-  SessionRuntime,
-  type SessionRuntimeOptions,
   type ToolApprovalRequestedHookEvent,
   type ToolApprovalResolvedHookEvent,
   type ToolExecutionCompletedHookEvent,
