@@ -8,10 +8,11 @@
  *    not hand-computed SVG — robust, and correct for CJK text widths.
  *  - CJK-first typography + an accessibility/state baseline.
  *
- * The wire format MUST stay in sync with the renderer parser in
- * `apps/desktop/src/shared/widget/wire-format.ts` (the `show-widget` fence + `widget_code`
- * field are the contract). The diagram/utility class names referenced below
- * MUST stay in sync with `apps/desktop/src/shared/widget/styles.ts`.
+ * This file is the single source for the wire-format spec text; the renderer
+ * side of the same contract (fence tag + parser) is
+ * `apps/desktop/src/shared/widget/wire-format.ts`, which keeps no copy of the
+ * text. The diagram/utility class names referenced below MUST stay in sync
+ * with `apps/desktop/src/shared/widget/styles.ts`.
  *
  * Self-contained on purpose: also consumed by the CLI/TUI, so no `@shared`.
  */

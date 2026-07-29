@@ -1,35 +1,13 @@
 /**
- * The `show-widget` wire format: the single contract shared by the system
- * prompt, the on-demand guidelines, and the renderer parser.
+ * Renderer-side half of the `show-widget` contract: the fence tag and the
+ * parser. The prompt-side half (the spec text handed to the model) lives in
+ * `widget-guidelines.ts` in @aila/agent, which is the single source for it —
+ * this file deliberately keeps no copy, because the two drifted while both
+ * existed.
  *
  * A widget is a fenced code block labelled `show-widget` whose body is a JSON
- * object with a `widget_code` string. Keeping one source of truth here avoids
- * the "model emits raw HTML fence instead of JSON" failure mode.
+ * object with a `widget_code` string.
  */
-
-export const CANONICAL_SHOW_WIDGET_JSON =
-  '{"title":"Hello","widget_code":"<div style=\'padding:8px;font:14px var(--font-sans)\'>Hello world</div>"}'
-
-export const WIDGET_WIRE_FORMAT_SPEC = `## FINAL OUTPUT FORMAT — non-negotiable
-
-The ONLY way to render a widget is a code fence labelled \`show-widget\` whose body is a JSON object with a \`widget_code\` string:
-
-\`\`\`show-widget
-{"title":"<human-readable title>","widget_code":"<escaped HTML/SVG string>"}
-\`\`\`
-
-- \`widget_code\` is a **JSON-encoded string**, not raw HTML. Prefer **single-quote** HTML attributes (\`<div style='...'>\`) so the JSON body never needs to escape double quotes — copy/paste-safe.
-- If you absolutely need double-quote HTML attributes inside \`widget_code\`, use **one** backslash (\`\\"\`) — never two.
-- Escape newlines as \`\\n\` and backslashes as \`\\\\\` inside the JSON string.
-- A raw HTML fence (\`\`\`html …\`\`\`) is NEVER rendered as a widget.
-- A \`show-widget\` fence whose body is HTML (not JSON) is NEVER rendered as a widget — the UI surfaces a "malformed widget" error block.
-- Any HTML example shown later in the design guidelines goes **inside** \`widget_code\`. It is not the wire format.
-
-Minimal correct example — copy/paste-safe JSON:
-
-\`\`\`show-widget
-${CANONICAL_SHOW_WIDGET_JSON}
-\`\`\``
 
 /** The fenced-code language tag streamdown emits as `language-show-widget`. */
 export const WIDGET_FENCE_LANG = 'show-widget'
