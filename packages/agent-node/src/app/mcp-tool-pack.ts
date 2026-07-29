@@ -177,26 +177,13 @@ function createMcpToolEntry(tool: McpToolDefinition): ToolPackEntry {
   }
 }
 
-function isMcpConfigLoadResult(value: unknown): value is McpConfigLoadResult {
-  return (
-    value !== null &&
-    typeof value === 'object' &&
-    'servers' in value &&
-    'userConfigPath' in value &&
-    'projectConfigPath' in value
-  )
-}
-
 export function getMcpConnectionScopeKey(config: Pick<McpConfigLoadResult, 'projectConfigPath'>) {
   return config.projectConfigPath
 }
 
 export async function loadMcpToolPack(
-  input?: McpConfigLoadResult | LoadMcpToolPackOptions,
+  options: LoadMcpToolPackOptions = {},
 ): Promise<ToolPack | null> {
-  const options: LoadMcpToolPackOptions = isMcpConfigLoadResult(input)
-    ? { loadResult: input }
-    : (input ?? {})
   const config = options.loadResult ?? (await loadMcpServerConfigs(options.cwd))
   const scopeKey = options.scopeKey ?? getMcpConnectionScopeKey(config)
   await syncMcpConnections(config.servers, scopeKey)

@@ -508,21 +508,3 @@ export async function setMcpServerEnabledOverride(
   }
   await writeUserMcpConfig(file)
 }
-
-export function redactMcpServerConfig(config: LoadedMcpServerConfig): LoadedMcpServerConfig {
-  return {
-    ...config,
-    ...(config.env && {
-      env: Object.fromEntries(Object.keys(config.env).map((key) => [key, '[redacted]'])),
-    }),
-    ...(config.headers && {
-      headers: Object.fromEntries(Object.keys(config.headers).map((key) => [key, '[redacted]'])),
-    }),
-    ...(config.auth && {
-      auth: {
-        ...config.auth,
-        ...(config.auth.clientSecret && { clientSecret: '[redacted]' }),
-      },
-    }),
-  }
-}

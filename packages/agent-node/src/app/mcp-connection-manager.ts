@@ -202,10 +202,6 @@ function createTransport(config: LoadedMcpServerConfig): Transport {
   return new StreamableHTTPClientTransport(new URL(config.url), transportOptions)
 }
 
-export async function connectMcpServer(name: string, config: LoadedMcpServerConfig): Promise<void> {
-  return connectScopedMcpServer(name, config, 'default')
-}
-
 async function connectScopedMcpServer(
   name: string,
   config: LoadedMcpServerConfig,
@@ -257,10 +253,6 @@ async function connectScopedMcpServer(
     connection.client = null
     connection.transport = null
   }
-}
-
-export async function disconnectMcpServer(name: string): Promise<void> {
-  return disconnectScopedMcpServer(name, 'default')
 }
 
 async function disconnectScopedMcpServer(name: string, scopeKey: string): Promise<void> {

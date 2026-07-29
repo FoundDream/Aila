@@ -203,40 +203,6 @@ export async function installSkillFromDirectory(directory: string): Promise<Exte
   return skillReportFromLoaded(await loadSkillFromDir(target))
 }
 
-export async function getSkillExtensionReport(cwd = process.cwd()): Promise<ExtensionReport> {
-  const mcp = await buildMcpServerReports(cwd).catch((error) => ({
-    mcpConfigPath: '',
-    projectMcpConfigPath: '',
-    mcpServers: [],
-    errors: [{ kind: 'mcp' as const, message: errorMessage(error) }],
-  }))
-  const skillResult = await loadSkillsFromDir().catch((error) => ({
-    skills: [],
-    errors: [{ directory: getSkillsDir(), message: errorMessage(error) }],
-  }))
-  const errors = skillResult.errors.map((skillError) => ({
-    kind: 'skills' as const,
-    message: skillError.message,
-  }))
-
-  return {
-    ok: errors.length === 0 && mcp.errors.length === 0,
-    dataDir: getDataDir(),
-    skillsDir: getSkillsDir(),
-    mcpConfigPath: mcp.mcpConfigPath,
-    projectMcpConfigPath: mcp.projectMcpConfigPath,
-    skills: skillResult.skills.map((skill) => ({
-      name: skill.definition.name,
-      description: skill.definition.description,
-      directory: skill.directory,
-      skillPath: skill.skillPath,
-    })),
-    integrations: buildIntegrationReports(mcp.mcpServers),
-    mcpServers: mcp.mcpServers,
-    errors: [...errors, ...mcp.errors],
-  }
-}
-
 export async function getExtensionReport(cwd = process.cwd()): Promise<ExtensionReport> {
   const errors: ExtensionReportError[] = []
 
