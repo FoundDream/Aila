@@ -124,9 +124,7 @@ export class AilaFrameComponent implements Component {
         ? ` · ${chalk.hex(AILA_TUI_COLORS.warning)(`${state.queueCount} queued`)}`
         : ''
     const approval =
-      state.approvalMode === 'yolo'
-        ? ` · ${chalk.bold.hex(AILA_TUI_COLORS.warning)('YOLO')}`
-        : ''
+      state.approvalMode === 'yolo' ? ` · ${chalk.bold.hex(AILA_TUI_COLORS.warning)('YOLO')}` : ''
     const model =
       width >= 72
         ? ` · ${chalk.hex(AILA_TUI_COLORS.text)(

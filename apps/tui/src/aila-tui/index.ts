@@ -1,13 +1,13 @@
 import {
+  type Component,
   decodeKittyPrintable,
   Key,
   matchesKey,
-  truncateToWidth,
-  visibleWidth,
-  type Component,
   type SelectItem,
   type SelectListLayoutOptions,
   type SelectListTheme,
+  truncateToWidth,
+  visibleWidth,
 } from '@earendil-works/pi-tui'
 
 export {
@@ -20,8 +20,8 @@ export {
   type Component,
   Container,
   CURSOR_MARKER,
-  decodeKittyPrintable,
   type DefaultTextStyle,
+  decodeKittyPrintable,
   Editor,
   type EditorOptions,
   type EditorTheme,
@@ -47,8 +47,8 @@ export {
   type SizeValue,
   type SlashCommand,
   Spacer,
-  Text,
   type Terminal,
+  Text,
   TUI,
   truncateToWidth,
   visibleWidth,
