@@ -15,7 +15,7 @@ import type { RunEventInput } from './session-engine'
 export const DEFAULT_ABORT_ALL_CLEANUP_TIMEOUT_MS = 5_000
 export const EMPTY_RUNTIME_SETTINGS: Settings = { apiKeys: {}, defaultModel: null }
 export const FALLBACK_MODEL_CONTEXT: ModelInfo = { model: 'unknown', contextLength: null }
-export const TURN_LIFECYCLE_EVENTS = new Set<RunEvent['type']>([
+const TURN_LIFECYCLE_EVENTS = new Set<RunEvent['type']>([
   'turn.started',
   'turn.completed',
   'turn.failed',
@@ -58,7 +58,7 @@ export function runtimeRunAllowedControls(
   }
 }
 
-export function runPayloadLabel(payload: RunPayload): string {
+function runPayloadLabel(payload: RunPayload): string {
   const data =
     payload.data && typeof payload.data === 'object'
       ? (payload.data as Record<string, unknown>)

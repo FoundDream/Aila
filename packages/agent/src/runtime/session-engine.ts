@@ -272,30 +272,22 @@ export class SessionRuntimeEngine {
 
   // Snapshots are computed views over the journal — never persisted.
   async getRunSnapshot(conversationId: string, runId: string): Promise<RunSnapshot | null> {
-    const [entries, tree] = await Promise.all([
-      this.store.listSessionEntries(conversationId),
-      this.store.getSessionTree(conversationId),
-    ])
+    const entries = await this.store.listSessionEntries(conversationId)
     return rebuildRunSnapshot({
       runId,
       entries,
       getBlob: (blobId) => this.store.getBlob(conversationId, blobId),
-      currentSessionLeafId: tree.leafId,
     })
   }
 
   async listRunSnapshots(conversationId: string): Promise<RunSnapshot[]> {
-    const [entries, tree] = await Promise.all([
-      this.store.listSessionEntries(conversationId),
-      this.store.getSessionTree(conversationId),
-    ])
+    const entries = await this.store.listSessionEntries(conversationId)
     const snapshots = await Promise.all(
       listJournalRunIds(entries).map((runId) =>
         rebuildRunSnapshot({
           runId,
           entries,
           getBlob: (blobId) => this.store.getBlob(conversationId, blobId),
-          currentSessionLeafId: tree.leafId,
         }),
       ),
     )

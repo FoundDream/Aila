@@ -82,7 +82,7 @@ export function cloneRuntimeChatMessages(
   return messages === undefined ? undefined : cloneRuntimeValue([...messages])
 }
 
-export const IN_RUN_TOOL_RESULT_COMPACTED =
+const IN_RUN_TOOL_RESULT_COMPACTED =
   '[Earlier tool result compacted during this run; rerun the tool if the full output is required.]'
 
 export function prepareRuntimeModelStepMessages(
@@ -148,7 +148,7 @@ export function cloneRuntimePersistedMessage(message: PersistedMessage): Persist
   return cloneRuntimeValue(message)
 }
 
-export function cloneRuntimePersistedRunEvent(event: PersistedRunEvent): PersistedRunEvent {
+function cloneRuntimePersistedRunEvent(event: PersistedRunEvent): PersistedRunEvent {
   return cloneRuntimeValue(event)
 }
 
@@ -158,9 +158,7 @@ export function cloneRuntimePersistedRunEvents(
   return cloneRuntimeValue([...events])
 }
 
-export function cloneRuntimeRunEventAppendResult(
-  result: RunEventAppendResult,
-): RunEventAppendResult {
+function cloneRuntimeRunEventAppendResult(result: RunEventAppendResult): RunEventAppendResult {
   const event = cloneRuntimePersistedRunEvent(result.event)
   if (!result.summary) return { event }
   return { event, summary: cloneRuntimeConversationSummary(result.summary) }

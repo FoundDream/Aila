@@ -392,10 +392,6 @@ export function createDefaultToolRegistry(extraToolPacks: readonly ToolPack[] = 
 
 const DEFAULT_TOOL_REGISTRY = createDefaultToolRegistry()
 
-export const TOOL_SPECS: ToolSpec[] = DEFAULT_TOOL_REGISTRY.specs
-
-export const TOOL_DEFINITIONS: ToolDefinition[] = DEFAULT_TOOL_REGISTRY.definitions
-
 export function getToolDefinitions(
   registry: ToolRegistry = DEFAULT_TOOL_REGISTRY,
 ): ToolDefinition[] {

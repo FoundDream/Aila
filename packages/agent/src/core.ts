@@ -1,5 +1,3 @@
-export const AILA_RUNTIME_SDK_VERSION = 1
-
 export type {
   ChatMessage,
   DeltaEvent,
@@ -99,7 +97,6 @@ export {
   normalizeConversationCompactArtifact,
   normalizeConversationMeta,
   normalizePersistedMessage,
-  normalizeRunEvent,
   orderedUniqueRunEvents,
   type PersistedBlock,
   type PersistedFileBlock,
@@ -109,10 +106,7 @@ export {
   type PersistedTextBlock,
   type PersistedToolCallBlock,
   type PersistedToolResultRef,
-  type PreparedRunEventAppend,
   preparePersistedMessage,
-  prepareRunEvent,
-  prepareRunEventAppend,
   type RunEventAppendResult,
   replayConversationActivity,
   replayConversationRuntimeState,
@@ -155,10 +149,6 @@ export {
 export type { RunIdentity } from './run-machine'
 export {
   AILA_RUN_PAYLOAD_SCHEMA_VERSION,
-  AILA_RUN_SNAPSHOT_SCHEMA_VERSION,
-  normalizeRunSnapshot,
-  prepareRunPayload,
-  prepareRunSnapshot,
   prepareRunSnapshotForResume,
   type RunPayload,
   type RunPayloadKind,

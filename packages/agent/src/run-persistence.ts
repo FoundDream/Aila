@@ -6,7 +6,6 @@ export type { RunPayloadKind } from './session-journal'
 
 import type { AilaExecutionMode } from './tool-policy'
 
-export const AILA_RUN_SNAPSHOT_SCHEMA_VERSION = 2
 export const AILA_RUN_PAYLOAD_SCHEMA_VERSION = 1
 
 export type RunRecoveryStrategy = 'automatic' | 'manual_review'
@@ -17,11 +16,11 @@ export interface RunRecovery {
 }
 
 /**
- * Materialized execution cursor. The session journal is the source of truth;
- * this snapshot only accelerates exact run resume.
+ * Materialized execution cursor — a read view rebuilt from the journal on
+ * demand (see `rebuildRunSnapshot`). Never persisted, so it carries no schema
+ * version and needs no deserialization path.
  */
 export interface RunSnapshot {
-  schemaVersion: typeof AILA_RUN_SNAPSHOT_SCHEMA_VERSION
   identity: RunIdentity
   assistantMessageId: string
   selection: ModelSelection
@@ -36,7 +35,6 @@ export interface RunSnapshot {
   revision: number
   createdAt: number
   updatedAt: number
-  throughSeq: number
 }
 
 /** Reader view resolved from a run.payload journal entry and its BlobRef. */
@@ -53,33 +51,6 @@ export interface RunPayload {
   data: unknown
 }
 
-/** Strictly validates the only supported snapshot schema. */
-export function normalizeRunSnapshot(value: unknown): RunSnapshot {
-  if (!value || typeof value !== 'object') throw new Error('invalid agent run snapshot')
-  const snapshot = structuredClone(value) as RunSnapshot
-  if (snapshot.schemaVersion !== AILA_RUN_SNAPSHOT_SCHEMA_VERSION) {
-    throw new Error(`unsupported agent run snapshot schema: ${snapshot.schemaVersion}`)
-  }
-  if (
-    !snapshot.loop?.state ||
-    !snapshot.identity ||
-    !snapshot.contextRef ||
-    !snapshot.sessionLeafId
-  ) {
-    throw new Error('invalid agent run snapshot state')
-  }
-  if (
-    !Number.isInteger(snapshot.throughSeq) ||
-    snapshot.throughSeq < 0 ||
-    !Number.isInteger(snapshot.revision) ||
-    snapshot.revision < 1
-  ) {
-    throw new Error('invalid agent run snapshot revision')
-  }
-  assertRunStateInvariant(snapshot.loop.state)
-  return snapshot
-}
-
 export function runRecoveryFromCursor(loop: RunCursor): RunRecovery {
   if (loop.state.currentStep?.kind === 'tool' && loop.state.currentStep.status === 'running') {
     return {
@@ -90,24 +61,16 @@ export function runRecoveryFromCursor(loop: RunCursor): RunRecovery {
   return { strategy: 'automatic' }
 }
 
-export function prepareRunSnapshot(snapshot: RunSnapshot, previous?: RunSnapshot): RunSnapshot {
-  const normalized = normalizeRunSnapshot(snapshot)
-  const normalizedPrevious = previous ? normalizeRunSnapshot(previous) : undefined
-  if (normalized.identity.runId !== normalized.loop.state.identity.runId) {
+export function prepareRunSnapshotForResume(snapshot: RunSnapshot, timestamp: number): RunSnapshot {
+  if (snapshot.identity.runId !== snapshot.loop.state.identity.runId) {
     throw new Error('run snapshot identity does not match loop snapshot')
   }
-  return {
-    ...structuredClone(normalized),
-    schemaVersion: AILA_RUN_SNAPSHOT_SCHEMA_VERSION,
-    revision: normalizedPrevious
-      ? Math.max(normalizedPrevious.revision + 1, normalized.revision)
-      : Math.max(1, normalized.revision),
-    recovery: runRecoveryFromCursor(normalized.loop),
-  }
-}
+  assertRunStateInvariant(snapshot.loop.state)
 
-export function prepareRunSnapshotForResume(snapshot: RunSnapshot, timestamp: number): RunSnapshot {
-  const prepared = prepareRunSnapshot(snapshot)
+  const prepared: RunSnapshot = {
+    ...structuredClone(snapshot),
+    recovery: runRecoveryFromCursor(snapshot.loop),
+  }
   if (
     prepared.loop.state.status === 'completed' ||
     prepared.loop.state.status === 'failed' ||
@@ -144,12 +107,4 @@ export function prepareRunSnapshotForResume(snapshot: RunSnapshot, timestamp: nu
   prepared.recovery = { strategy: 'automatic' }
   prepared.updatedAt = timestamp
   return prepared
-}
-
-/** Normalizes a journal-backed payload reader view. */
-export function prepareRunPayload(payload: RunPayload): RunPayload {
-  return {
-    ...structuredClone(payload),
-    schemaVersion: AILA_RUN_PAYLOAD_SCHEMA_VERSION,
-  }
 }

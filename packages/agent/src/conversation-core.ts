@@ -281,6 +281,9 @@ export interface ConversationRecord {
 
 export interface PersistedRunEvent extends RunEvent {
   schemaVersion: typeof AILA_RUN_EVENT_SCHEMA_VERSION
+  /** Both assigned by `prepareSessionEntry` on append — the journal owns them. */
+  seq: number
+  eventId: string
 }
 
 export interface RunEventAppendResult {
@@ -789,127 +792,22 @@ export function upsertPersistedMessage(
   messages.push(message)
 }
 
-export function prepareRunEvent(event: RunEvent): PersistedRunEvent {
-  return {
-    ...event,
-    schemaVersion: AILA_RUN_EVENT_SCHEMA_VERSION,
-  }
-}
-
-export interface PreparedRunEventAppend {
-  event: PersistedRunEvent
-  duplicate: boolean
-}
-
-/**
- * Allocates durable journal identity. Producers may provide eventId for
- * idempotency, but the journal is the sole owner of seq.
- */
-export function prepareRunEventAppend(
-  existing: readonly PersistedRunEvent[],
-  event: RunEvent,
-  createEventId: () => string,
-): PreparedRunEventAppend {
-  if (event.eventId) {
-    const duplicate = existing.find((candidate) => candidate.eventId === event.eventId)
-    if (duplicate) return { event: structuredClone(duplicate), duplicate: true }
-  } else {
-    // Legacy v1 producers did not allocate an eventId. Preserve their exact-event
-    // idempotency while all v2 producers migrate to explicit identities.
-    const contentKey = agentEventContentKey(event)
-    const duplicate = existing.find((candidate) => agentEventContentKey(candidate) === contentKey)
-    if (duplicate) return { event: structuredClone(duplicate), duplicate: true }
-  }
-  const maximumSequence = existing.reduce(
-    (maximum, candidate) =>
-      candidate.seq !== undefined ? Math.max(maximum, candidate.seq) : maximum,
-    0,
-  )
-  // A v1 journal has no seq values, but its array order is still durable append
-  // order. Start v2 allocation after those legacy entries instead of at 1.
-  const seq = Math.max(existing.length, maximumSequence) + 1
-  return {
-    event: prepareRunEvent({
-      ...event,
-      eventId: event.eventId ?? createEventId(),
-      seq,
-    }),
-    duplicate: false,
-  }
-}
-
-function agentEventContentKey(event: RunEvent): string {
-  return [
-    event.timestamp,
-    event.conversationId,
-    event.messageId,
-    event.turnId ?? '',
-    event.runId ?? '',
-    event.stepId ?? '',
-    event.type,
-    JSON.stringify(event.data ?? {}),
-  ].join(':')
-}
-
-function runEventReplayKey(event: PersistedRunEvent): string {
-  if (event.eventId) return event.eventId
-  return agentEventContentKey(event)
-}
-
 export function orderedUniqueRunEvents(events: readonly PersistedRunEvent[]): PersistedRunEvent[] {
   const seen = new Set<string>()
   const ordered: PersistedRunEvent[] = []
   const indexed = events.map((event, index) => ({ event, index }))
-  const hasDurableSequence = indexed.some(({ event }) => event.seq !== undefined)
   indexed.sort((left, right) => {
-    if (hasDurableSequence) {
-      const sequenceOrder =
-        (left.event.seq ?? left.index + 1) - (right.event.seq ?? right.index + 1)
-      if (sequenceOrder !== 0) return sequenceOrder
-    }
+    const sequenceOrder = left.event.seq - right.event.seq
+    if (sequenceOrder !== 0) return sequenceOrder
     const timestampOrder = left.event.timestamp - right.event.timestamp
     return timestampOrder === 0 ? left.index - right.index : timestampOrder
   })
   for (const { event } of indexed) {
-    const key = runEventReplayKey(event)
-    if (seen.has(key)) continue
-    seen.add(key)
+    if (seen.has(event.eventId)) continue
+    seen.add(event.eventId)
     ordered.push(event)
   }
   return ordered
-}
-
-export function normalizeRunEvent(
-  value: Partial<PersistedRunEvent>,
-  fallbackConversationId?: string,
-): PersistedRunEvent | null {
-  const conversationId =
-    typeof value.conversationId === 'string' && value.conversationId.length > 0
-      ? value.conversationId
-      : fallbackConversationId
-  if (!conversationId) return null
-  if (typeof value.messageId !== 'string' || value.messageId.length === 0) return null
-  if (typeof value.type !== 'string' || value.type.length === 0) return null
-
-  return {
-    schemaVersion: AILA_RUN_EVENT_SCHEMA_VERSION,
-    timestamp: typeof value.timestamp === 'number' ? value.timestamp : Date.now(),
-    conversationId,
-    messageId: value.messageId,
-    type: value.type as RunEvent['type'],
-    ...(typeof value.turnId === 'string' && value.turnId.length > 0 && { turnId: value.turnId }),
-    ...(typeof value.runId === 'string' && value.runId.length > 0 && { runId: value.runId }),
-    ...(typeof value.stepId === 'string' && value.stepId.length > 0 && { stepId: value.stepId }),
-    ...(typeof value.seq === 'number' && Number.isSafeInteger(value.seq) && value.seq > 0
-      ? { seq: value.seq }
-      : {}),
-    ...(typeof value.eventId === 'string' &&
-      value.eventId.length > 0 && { eventId: value.eventId }),
-    ...(value.data &&
-      typeof value.data === 'object' && {
-        data: value.data as Record<string, unknown>,
-      }),
-  }
 }
 
 export function deriveConversationTitle(message: PersistedMessage): string | null {

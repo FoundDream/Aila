@@ -2,11 +2,7 @@ import type { ModelSelection, UsageInfo } from './agent-protocol'
 import type { PersistedRunEvent } from './conversation-core'
 import type { ModelCallToolCall } from './model-call'
 import { type RunCursor, type RunState, replayRunState } from './run-machine'
-import {
-  AILA_RUN_SNAPSHOT_SCHEMA_VERSION,
-  type RunSnapshot,
-  runRecoveryFromCursor,
-} from './run-persistence'
+import { type RunSnapshot, runRecoveryFromCursor } from './run-persistence'
 import {
   AILA_BLOB_SCHEMA_VERSION,
   type SessionEntry,
@@ -19,17 +15,16 @@ import { normalizeAilaExecutionMode } from './tool-policy'
 /**
  * Rebuilds RunSnapshot views from the journal — the journal is the single
  * source of truth; snapshots are computed on demand, never persisted.
+ *
+ * Every producer stamps selection / executionMode / maxToolSteps /
+ * sessionLeafId onto the run's opening event, so a run missing them is not
+ * reconstructible and rebuilds to null rather than to invented defaults.
  */
-
-// Mirror of the executor default for journals that predate metadata stamping.
-const FALLBACK_MAX_TOOL_STEPS = 50
 
 export interface RebuildRunSnapshotInput {
   runId: string
   entries: readonly SessionEntry[]
   getBlob: (blobId: string) => Promise<StoredBlob | null>
-  /** Leaf fallback for journals that predate sessionLeafId stamping. */
-  currentSessionLeafId: string
 }
 
 /** Run ids present in the journal, ordered by first event appearance. */
@@ -55,6 +50,9 @@ export async function rebuildRunSnapshot(
   if (!state) return null
 
   const meta = resolveRunMeta(input.runId, eventsByRun)
+  if (!meta.selection || meta.maxToolSteps === undefined || meta.sessionLeafId === undefined) {
+    return null
+  }
   const rootRunId = resolveRootRunId(input.runId, eventsByRun)
   const payloads = visibleRunPayloads(input.entries, state)
   const batch = await lastModelBatch(payloads, input.getBlob)
@@ -87,16 +85,14 @@ export async function rebuildRunSnapshot(
   }
 
   const timestamps = events.map((event) => event.timestamp)
-  const lastSeq = events.reduce((max, event) => Math.max(max, event.seq ?? 0), 0)
   return {
-    schemaVersion: AILA_RUN_SNAPSHOT_SCHEMA_VERSION,
     identity: structuredClone(state.identity),
     assistantMessageId: events[0]?.messageId ?? state.identity.turnId,
-    selection: meta.selection ?? { providerId: 'anthropic', modelId: 'unknown' },
+    selection: meta.selection,
     executionMode: normalizeAilaExecutionMode(meta.executionMode),
-    maxToolSteps: meta.maxToolSteps ?? FALLBACK_MAX_TOOL_STEPS,
+    maxToolSteps: meta.maxToolSteps,
     loop,
-    sessionLeafId: meta.sessionLeafId ?? input.currentSessionLeafId,
+    sessionLeafId: meta.sessionLeafId,
     contextRef: {
       schemaVersion: AILA_BLOB_SCHEMA_VERSION,
       blobId: `run-context:${rootRunId}`,
@@ -108,7 +104,6 @@ export async function rebuildRunSnapshot(
     revision: events.length,
     createdAt: timestamps.length > 0 ? Math.min(...timestamps) : 0,
     updatedAt: timestamps.length > 0 ? Math.max(...timestamps) : 0,
-    throughSeq: lastSeq,
   }
 }
 
