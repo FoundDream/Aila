@@ -26,6 +26,7 @@ import {
 } from '../conversation-core'
 import type { RunIdentity, RunNextAction } from '../run-machine'
 import { prepareRunSnapshotForResume, type RunPayload, type RunSnapshot } from '../run-persistence'
+import { listJournalRunIds, rebuildRunSnapshot } from '../run-replay'
 import {
   type BlobGarbageCollectionResult,
   type BlobRef,
@@ -269,13 +270,38 @@ export class SessionRuntimeEngine {
     )
   }
 
+  // Snapshots are computed views over the journal — never persisted.
   async getRunSnapshot(conversationId: string, runId: string): Promise<RunSnapshot | null> {
-    const snapshot = await this.store.getRunSnapshot(conversationId, runId)
-    return snapshot ? cloneRuntimeValue(snapshot) : null
+    const [entries, tree] = await Promise.all([
+      this.store.listSessionEntries(conversationId),
+      this.store.getSessionTree(conversationId),
+    ])
+    return rebuildRunSnapshot({
+      runId,
+      entries,
+      getBlob: (blobId) => this.store.getBlob(conversationId, blobId),
+      currentSessionLeafId: tree.leafId,
+    })
   }
 
   async listRunSnapshots(conversationId: string): Promise<RunSnapshot[]> {
-    return cloneRuntimeValue([...(await this.store.listRunSnapshots(conversationId))])
+    const [entries, tree] = await Promise.all([
+      this.store.listSessionEntries(conversationId),
+      this.store.getSessionTree(conversationId),
+    ])
+    const snapshots = await Promise.all(
+      listJournalRunIds(entries).map((runId) =>
+        rebuildRunSnapshot({
+          runId,
+          entries,
+          getBlob: (blobId) => this.store.getBlob(conversationId, blobId),
+          currentSessionLeafId: tree.leafId,
+        }),
+      ),
+    )
+    return snapshots
+      .filter((snapshot): snapshot is RunSnapshot => snapshot !== null)
+      .sort((left, right) => right.updatedAt - left.updatedAt)
   }
 
   async listRunSummaries(conversationId: string): Promise<RuntimeRunSummary[]> {
@@ -690,9 +716,9 @@ export class SessionRuntimeEngine {
       }
       await this.abort(input.conversationId)
     }
-    const loaded = await this.store.getRunSnapshot(input.conversationId, input.runId)
+    const loaded = await this.getRunSnapshot(input.conversationId, input.runId)
     if (!loaded) {
-      throw new Error(`agent run snapshot not found: ${input.conversationId}/${input.runId}`)
+      throw new Error(`agent run not found in journal: ${input.conversationId}/${input.runId}`)
     }
     if (
       loaded.loop.state.status === 'completed' ||
@@ -703,25 +729,19 @@ export class SessionRuntimeEngine {
     }
 
     const timestamp = this.now()
-    const snapshot = cloneRuntimeValue(loaded)
-    snapshot.loop.state.status = 'cancelled'
-    snapshot.loop.state.completedAt = timestamp
-    snapshot.loop.state.currentStep = undefined
-    snapshot.loop.state.nextAction = undefined
-    snapshot.loop.state.wait = undefined
-    snapshot.loop.state.error = 'user'
-    snapshot.recovery = { strategy: 'automatic' }
-    snapshot.updatedAt = timestamp
     await this.recordRunEvent({
       timestamp,
       conversationId: input.conversationId,
-      messageId: snapshot.assistantMessageId,
-      turnId: snapshot.identity.turnId,
-      runId: snapshot.identity.runId,
+      messageId: loaded.assistantMessageId,
+      turnId: loaded.identity.turnId,
+      runId: loaded.identity.runId,
       type: 'run.cancelled',
       data: { reason: 'user' },
     })
-    const saved = cloneRuntimeValue(await this.store.saveRunSnapshot(snapshot))
+    const saved = await this.getRunSnapshot(input.conversationId, input.runId)
+    if (!saved) {
+      throw new Error(`agent run not found in journal: ${input.conversationId}/${input.runId}`)
+    }
     const record = await this.getConversation(input.conversationId)
     const currentAssistant = record.messages.find(
       (message) => message.id === saved.assistantMessageId && message.role === 'assistant',
@@ -744,9 +764,9 @@ export class SessionRuntimeEngine {
       'cannot fork a run while an assistant turn is running',
     )
     const sessionTree = await this.store.getSessionTree(input.conversationId)
-    const source = await this.store.getRunSnapshot(input.conversationId, input.runId)
+    const source = await this.getRunSnapshot(input.conversationId, input.runId)
     if (!source) {
-      throw new Error(`agent run snapshot not found: ${input.conversationId}/${input.runId}`)
+      throw new Error(`agent run not found in journal: ${input.conversationId}/${input.runId}`)
     }
     if (source.loop.state.currentStep?.status === 'running') {
       throw new Error('cannot fork while a step is running')
@@ -766,38 +786,12 @@ export class SessionRuntimeEngine {
     const nextAction: RunNextAction = cloneRuntimeValue(
       source.loop.state.nextAction ?? { type: 'model', reason: 'resume' as const },
     )
-    const snapshot: RunSnapshot = {
-      ...cloneRuntimeValue(source),
-      identity,
-      assistantMessageId,
-      loop: {
-        state: {
-          identity: cloneRuntimeValue(identity),
-          mode: source.loop.state.mode,
-          status: 'paused',
-          startedAt: timestamp,
-          steps: [],
-          nextAction,
-          wait: { reason: 'operator', detail: 'forked run is ready for inspection' },
-        },
-        nextStepIndex: 0,
-        modelStepIndex: nextAction.type === 'tools' ? 1 : 0,
-        completedToolBatches: source.loop.completedToolBatches,
-        pendingToolCalls: cloneRuntimeValue(source.loop.pendingToolCalls),
-      },
-      sessionLeafId: sessionTree.leafId,
-      contextRef: cloneRuntimeValue(source.contextRef),
-      recovery: { strategy: 'automatic' },
-      revision: 1,
-      createdAt: timestamp,
-      updatedAt: timestamp,
-      throughSeq: source.throughSeq,
-    }
-    const saved = cloneRuntimeValue(await this.store.saveRunSnapshot(snapshot))
     const identityData = {
       parentRunId: source.identity.runId,
       ...(originStepId ? { originStepId } : {}),
     }
+    // The fork's own events carry the full snapshot metadata so the run
+    // rebuilds from the journal without consulting its parent's leaf.
     await this.recordRunEvent({
       timestamp,
       conversationId: input.conversationId,
@@ -805,7 +799,15 @@ export class SessionRuntimeEngine {
       turnId: identity.turnId,
       runId,
       type: 'run.started',
-      data: { ...identityData, mode: source.loop.state.mode },
+      data: {
+        ...identityData,
+        mode: source.loop.state.mode,
+        providerId: source.selection.providerId,
+        modelId: source.selection.modelId,
+        executionMode: source.executionMode,
+        maxToolSteps: source.maxToolSteps,
+        sessionLeafId: sessionTree.leafId,
+      },
     })
     await this.recordRunEvent({
       timestamp,
@@ -820,6 +822,10 @@ export class SessionRuntimeEngine {
         wait: { reason: 'operator', detail: 'forked run is ready for inspection' },
       },
     })
+    const saved = await this.getRunSnapshot(input.conversationId, runId)
+    if (!saved) {
+      throw new Error(`forked run not found in journal: ${input.conversationId}/${runId}`)
+    }
     return saved
   }
 
@@ -831,9 +837,9 @@ export class SessionRuntimeEngine {
         await this.waitForPriorStreamBeforeNextTurn(input.conversationId, previous)
       }
       this.assertCanStartTurn(input.conversationId)
-      const loaded = await this.store.getRunSnapshot(input.conversationId, input.runId)
+      const loaded = await this.getRunSnapshot(input.conversationId, input.runId)
       if (!loaded) {
-        throw new Error(`agent run snapshot not found: ${input.conversationId}/${input.runId}`)
+        throw new Error(`agent run not found in journal: ${input.conversationId}/${input.runId}`)
       }
       const snapshot = cloneRuntimeValue(loaded)
       const sessionTree = await this.store.getSessionTree(input.conversationId)
@@ -877,7 +883,7 @@ export class SessionRuntimeEngine {
           },
         })
       }
-      const savedCheckpoint = cloneRuntimeValue(await this.store.saveRunSnapshot(resumed))
+      const savedCheckpoint = cloneRuntimeValue(resumed)
       const record = await this.getConversation(input.conversationId)
       const userMessage = record.messages.find(
         (message) => message.id === savedCheckpoint.identity.turnId,
@@ -2259,8 +2265,6 @@ export class SessionRuntimeEngine {
     } = input
     let eventLogChain = Promise.resolve()
     let eventLogFailure: unknown
-    let lastJournalSeq = runSnapshot?.throughSeq ?? 0
-    let currentSessionLeafId = sessionLeafId
     let terminalRunEventQueued = false
     const queueRunEvent = (event: RunEventInput): Promise<void> => {
       const eventWithSelection = withTurnSelection(
@@ -2285,8 +2289,7 @@ export class SessionRuntimeEngine {
       eventLogChain = eventLogChain
         .then(async () => {
           if (eventLogFailure) return
-          const result = await this.recordRunEventWithResult(eventWithSelection)
-          if (result?.event.seq !== undefined) lastJournalSeq = result.event.seq
+          await this.recordRunEventWithResult(eventWithSelection)
         })
         .catch((error) => {
           eventLogFailure ??= error
@@ -2314,16 +2317,8 @@ export class SessionRuntimeEngine {
           prepareModelStep: ({ messages: currentMessages, contextPlan: currentPlan }) => ({
             messages: prepareRuntimeModelStepMessages(currentMessages, currentPlan),
           }),
-          getSteeringMessages: () =>
-            this.drainQueuedInputs('steering', ({ lastSeq, sessionLeafId: nextLeafId }) => {
-              lastJournalSeq = Math.max(lastJournalSeq, lastSeq)
-              currentSessionLeafId = nextLeafId
-            }),
-          getFollowUpMessages: () =>
-            this.drainQueuedInputs('followUp', ({ lastSeq, sessionLeafId: nextLeafId }) => {
-              lastJournalSeq = Math.max(lastJournalSeq, lastSeq)
-              currentSessionLeafId = nextLeafId
-            }),
+          getSteeringMessages: () => this.drainQueuedInputs('steering'),
+          getFollowUpMessages: () => this.drainQueuedInputs('followUp'),
           mode,
           // Hosts may mutate the request object; the engine's selection must
           // stay isolated (contract-verified).
@@ -2344,28 +2339,17 @@ export class SessionRuntimeEngine {
           onSavePoint: async (reason) => {
             await eventLogChain
             if (eventLogFailure) throw eventLogFailure
-            const pendingSeq = await this.flushPendingSessionWrites(conversationId)
-            if (pendingSeq !== null) {
-              lastJournalSeq = Math.max(lastJournalSeq, pendingSeq)
-              currentSessionLeafId = (await this.store.getSessionTree(conversationId)).leafId
-            }
+            await this.flushPendingSessionWrites(conversationId)
             this.lifecycle.dispatch('run', 'onSavePoint', {
               conversationId,
               runId: run.runId,
               reason,
             })
           },
-          saveRunSnapshot: (snapshot: RunSnapshot) =>
-            this.store.saveRunSnapshot({
-              ...snapshot,
-              sessionLeafId: currentSessionLeafId,
-              throughSeq: lastJournalSeq,
-            }),
           appendSessionEntry: async (entry: SessionEntryInput) => {
             await eventLogChain
             if (eventLogFailure) throw eventLogFailure
             const appended = await this.store.appendSessionEntry(conversationId, entry)
-            lastJournalSeq = appended.entry.seq
             return appended.entry
           },
           putBlob: (blob) => this.store.putBlob(conversationId, blob),

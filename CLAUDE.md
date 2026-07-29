@@ -33,8 +33,9 @@ there is deliberately no test suite (see AGENTS.md).
   through `WorkbenchHost`. Runtime core stays Node-free.
 - The store is injectable; optional store capabilities fail closed.
 - The session journal is append-only and the single source of truth; run
-  snapshots are accelerators, never authority. Entries are immutable once
-  written (byte-identical duplicates are idempotent; any difference throws).
+  snapshots are computed read-views rebuilt from the journal on demand, never
+  persisted. Entries are immutable once written (byte-identical duplicates are
+  idempotent; any difference throws).
 - Run events are schema-versioned, deduped by `eventId`, and replay
   deterministically; append order is stable at equal timestamps.
 - `run.payload` entries use the API vocabulary (`model_request`,
@@ -80,7 +81,9 @@ Hosts observe the runtime through `WorkbenchHost.hooks`
 (`RuntimeLifecycleHooks`): typed, stage-grouped callbacks that are dispatched
 synchronously, never awaited, isolated by try/catch, and handed cloned
 payloads. Hooks observe; they never decide. Decision points remain the
-dedicated host fields (`onToolPolicy`, `onToolApproval`).
+dedicated host fields (`onToolPolicy`, `onToolApproval`). The hooks surface is
+reserved for the planned extension system — it has no first-party consumer
+yet, and that is deliberate, not dead code.
 
 ### Session phase state machine
 

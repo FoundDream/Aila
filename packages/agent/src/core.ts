@@ -187,7 +187,6 @@ export {
   type RecoveryRepository,
   type RunEventHookEvent,
   type RunSavePointHookEvent,
-  type RunSnapshotRepository,
   type RuntimeAppendSessionCustomInput,
   type RuntimeAppendSessionCustomMessageInput,
   type RuntimeAppendUserMessageInput,

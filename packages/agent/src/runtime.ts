@@ -7,7 +7,6 @@ export {
 export type {
   BlobRepository,
   RecoveryRepository,
-  RunSnapshotRepository,
   SessionRepository,
   WorkbenchStore,
 } from './runtime/repositories'

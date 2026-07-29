@@ -4,7 +4,6 @@ import type {
   ConversationWorkspaceRef,
   RunEventAppendResult,
 } from '../conversation-core'
-import type { RunSnapshot } from '../run-persistence'
 import type {
   BlobGarbageCollectionResult,
   BlobRef,
@@ -39,12 +38,6 @@ export interface RecoveryRepository {
   recoverInterruptedActivities?: (reason?: string) => Promise<readonly RunEventAppendResult[]>
 }
 
-export interface RunSnapshotRepository {
-  saveRunSnapshot: (snapshot: RunSnapshot) => Promise<RunSnapshot>
-  getRunSnapshot: (conversationId: string, runId: string) => Promise<RunSnapshot | null>
-  listRunSnapshots: (conversationId: string) => Promise<readonly RunSnapshot[]>
-}
-
 export interface BlobRepository {
   putBlob: (
     conversationId: string,
@@ -54,9 +47,5 @@ export interface BlobRepository {
   collectGarbageBlobs: (conversationId: string) => Promise<BlobGarbageCollectionResult>
 }
 
-/** One journal plus rebuildable snapshots and referenced blobs. */
-export interface WorkbenchStore
-  extends SessionRepository,
-    RecoveryRepository,
-    RunSnapshotRepository,
-    BlobRepository {}
+/** One journal plus referenced blobs; run snapshots are computed, never stored. */
+export interface WorkbenchStore extends SessionRepository, RecoveryRepository, BlobRepository {}

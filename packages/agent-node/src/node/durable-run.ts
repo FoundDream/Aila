@@ -1,28 +1,25 @@
 import { randomUUID } from 'node:crypto'
-import type { Settings } from '@aila/agent'
-import {
-  AILA_RUN_SNAPSHOT_SCHEMA_VERSION,
-  type ChatMessage,
-  type DurableRunExecutor,
-  type ImageSideChannelBlock,
-  type ModelCallToolCall,
-  type ModelDescriptor,
-  type ModelInfo,
-  type ModelSelection,
-  type PersistedToolResultRef,
-  type RunEvent,
-  type RunEventType,
-  type RunHandlers,
-  type RunIdentity,
-  type RunPayloadKind,
-  type RunSnapshot,
-  runRecoveryFromCursor,
-  type ToolActivityTarget,
-  type ToolAuthorization,
-  type ToolCall,
-  type ToolContext,
-  type ToolRegistry,
-  type UsageInfo,
+import type {
+  ChatMessage,
+  DurableRunExecutor,
+  ImageSideChannelBlock,
+  ModelCallToolCall,
+  ModelDescriptor,
+  ModelInfo,
+  ModelSelection,
+  PersistedToolResultRef,
+  RunEvent,
+  RunEventType,
+  RunHandlers,
+  RunIdentity,
+  RunPayloadKind,
+  Settings,
+  ToolActivityTarget,
+  ToolAuthorization,
+  ToolCall,
+  ToolContext,
+  ToolRegistry,
+  UsageInfo,
 } from '@aila/agent'
 import {
   authorizeTool,
@@ -33,7 +30,6 @@ import {
 import {
   createRunCursor,
   defaultAgentRuntime,
-  type RunCursor,
   type RunTransition,
   reduceRunTransition,
 } from '@aila/agent/internal'
@@ -138,7 +134,6 @@ export function createDurableRunExecutor(
       loopMode = 'continuous',
       runSnapshot,
       sessionLeafId: requestSessionLeafId,
-      runContextRef,
       resumeState,
       messages: requestMessages,
       contextPlan: requestContextPlan,
@@ -149,7 +144,6 @@ export function createDurableRunExecutor(
       signal,
       onRunEvent,
       onSavePoint,
-      saveRunSnapshot,
       appendSessionEntry,
       putBlob,
       workspaceRoots: requestWorkspaceRoots,
@@ -249,24 +243,6 @@ export function createDurableRunExecutor(
       }
       loop.state = reduceRunTransition(loop.state, failed)
       await emitDurableRunEvent(failed.type, runTransitionData(failed))
-      if (!saveRunSnapshot) return
-      await saveRunSnapshot({
-        schemaVersion: AILA_RUN_SNAPSHOT_SCHEMA_VERSION,
-        identity: cloneAgentValue(run),
-        assistantMessageId,
-        selection: cloneAgentValue(selection),
-        executionMode: runSnapshot?.executionMode ?? req.mode ?? 'agent',
-        maxToolSteps: runSnapshot?.maxToolSteps ?? maxToolSteps,
-        loop,
-        sessionLeafId: runSnapshot?.sessionLeafId ?? sessionLeafId,
-        contextRef: cloneAgentValue(runContextRef),
-        ...(lastUsage ? { usage: cloneAgentValue(lastUsage) } : {}),
-        recovery: runRecoveryFromCursor(loop),
-        revision: (runSnapshot?.revision ?? 0) + 1,
-        createdAt: runSnapshot?.createdAt ?? timestamp,
-        updatedAt: timestamp,
-        throughSeq: runSnapshot?.throughSeq ?? 0,
-      })
     }
 
     const settings = cloneAgentSettings(
@@ -282,6 +258,10 @@ export function createDurableRunExecutor(
         provider: descriptor.provider,
         api: descriptor.api,
         inputMessageCount: messages.length,
+        // Stamped so run snapshots can be rebuilt from the journal alone.
+        executionMode: req.mode ?? 'agent',
+        maxToolSteps,
+        sessionLeafId,
       })
     }
 
@@ -373,37 +353,6 @@ export function createDurableRunExecutor(
           text,
         ]),
       )
-      let snapshotRevision = runSnapshot?.revision ?? 0
-      const snapshotCreatedAt = runSnapshot?.createdAt ?? Date.now()
-      let latestLoopSnapshot: RunCursor | undefined
-      const persistRunSnapshot = async (
-        loop: RunCursor,
-        _messageStatus: 'streaming' | 'done' | 'error' = 'streaming',
-        _messageError?: string,
-      ): Promise<void> => {
-        latestLoopSnapshot = cloneAgentValue(loop)
-        if (!saveRunSnapshot) return
-        const timestamp = Date.now()
-        const snapshot: RunSnapshot = {
-          schemaVersion: AILA_RUN_SNAPSHOT_SCHEMA_VERSION,
-          identity: cloneAgentValue(run),
-          assistantMessageId,
-          selection: cloneAgentValue(selection),
-          executionMode: req.mode ?? 'agent',
-          maxToolSteps,
-          loop: cloneAgentValue(loop),
-          sessionLeafId: runSnapshot?.sessionLeafId ?? sessionLeafId,
-          contextRef: cloneAgentValue(runContextRef),
-          ...(lastUsage ? { usage: cloneAgentValue(lastUsage) } : {}),
-          recovery: runRecoveryFromCursor(loop),
-          revision: snapshotRevision + 1,
-          createdAt: snapshotCreatedAt,
-          updatedAt: timestamp,
-          throughSeq: runSnapshot?.throughSeq ?? 0,
-        }
-        const saved = await saveRunSnapshot(cloneAgentValue(snapshot))
-        snapshotRevision = saved.revision
-      }
       const persistRunPayload = async (input: {
         kind: RunPayloadKind
         label: string
@@ -482,7 +431,6 @@ export function createDurableRunExecutor(
             }
           : {}),
         policy: { mode: loopMode },
-        onSnapshot: (snapshot) => persistRunSnapshot(snapshot),
         onTransition: async (transition) => {
           if (transition.type === 'run.started' || transition.type === 'run.resumed') {
             runBoundaryPersisted = true
@@ -817,7 +765,6 @@ export function createDurableRunExecutor(
               },
               async () => {
                 await reachSavePoint('approval')
-                if (latestLoopSnapshot) await persistRunSnapshot(latestLoopSnapshot)
                 return onToolApproval(cloneAgentValue(authorization.request))
               },
             )
@@ -1095,9 +1042,6 @@ export function createDurableRunExecutor(
       if (loopResult.state.status === 'cancelled' || loopResult.state.status === 'failed') {
         const cancelled = loopResult.state.status === 'cancelled'
         const message = cancelled ? 'Aborted' : (loopResult.state.error ?? 'Agent run failed')
-        if (latestLoopSnapshot) {
-          await persistRunSnapshot(latestLoopSnapshot, 'error', message)
-        }
         await callAsyncStreamHandler(handlers.onError, {
           conversationId,
           messageId: assistantMessageId,
@@ -1113,7 +1057,6 @@ export function createDurableRunExecutor(
       }
       if (loopResult.state.status === 'paused') return
 
-      if (latestLoopSnapshot) await persistRunSnapshot(latestLoopSnapshot, 'done')
       emitRunEvent('turn.completed', {
         usage: lastUsage ?? undefined,
         outputBlockCount: builder.blocks.length,

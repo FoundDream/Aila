@@ -5,7 +5,6 @@ import {
   DEFAULT_CONVERSATION_TITLE,
   type RunEventAppendResult,
 } from '../conversation-core'
-import { prepareRunSnapshot, type RunSnapshot } from '../run-persistence'
 import {
   AILA_BLOB_SCHEMA_VERSION,
   type BlobRef,
@@ -60,17 +59,12 @@ export function createInMemoryRuntimeStore(input: InMemoryStoreOptions = {}): Wo
   const createEventId = input.createEventId ?? createIdDefault
   const now = input.now ?? nowDefault
   const journals = new Map<string, SessionEntry[]>()
-  const snapshots = new Map<string, RunSnapshot>()
   const blobs = new Map<string, StoredBlob>()
 
   function requireJournal(sessionId: string): SessionEntry[] {
     const journal = journals.get(sessionId)
     if (!journal) throw new Error(`conversation not found: ${sessionId}`)
     return journal
-  }
-
-  function runKey(sessionId: string, runId: string): string {
-    return `${sessionId}:${runId}`
   }
 
   function blobKey(sessionId: string, blobId: string): string {
@@ -260,28 +254,6 @@ export function createInMemoryRuntimeStore(input: InMemoryStoreOptions = {}): Wo
           (left.summary?.updatedAt ?? left.event.timestamp),
       )
     },
-    async saveRunSnapshot(snapshot) {
-      const entries = requireJournal(snapshot.identity.conversationId)
-      getSessionBranch(entries, snapshot.sessionLeafId)
-      const maximumSeq = entries.reduce((maximum, entry) => Math.max(maximum, entry.seq), 0)
-      if (snapshot.throughSeq > maximumSeq) {
-        throw new Error(`run snapshot exceeds session journal: ${snapshot.throughSeq}`)
-      }
-      const key = runKey(snapshot.identity.conversationId, snapshot.identity.runId)
-      const prepared = prepareRunSnapshot(snapshot, snapshots.get(key))
-      snapshots.set(key, clone(prepared))
-      return clone(prepared)
-    },
-    async getRunSnapshot(sessionId, runId) {
-      const snapshot = snapshots.get(runKey(sessionId, runId))
-      return snapshot ? clone(snapshot) : null
-    },
-    async listRunSnapshots(sessionId) {
-      return [...snapshots.values()]
-        .filter((snapshot) => snapshot.identity.conversationId === sessionId)
-        .sort((left, right) => right.updatedAt - left.updatedAt)
-        .map(clone)
-    },
     async putBlob(sessionId, blobInput) {
       requireJournal(sessionId)
       const blobId = blobInput.blobId ?? createId()
@@ -310,10 +282,8 @@ export function createInMemoryRuntimeStore(input: InMemoryStoreOptions = {}): Wo
       const referenced = new Set(
         entries.flatMap((entry) => (entry.payloadRef ? [entry.payloadRef.blobId] : [])),
       )
-      for (const snapshot of snapshots.values()) {
-        if (snapshot.identity.conversationId === sessionId) {
-          referenced.add(snapshot.contextRef.blobId)
-        }
+      for (const event of sessionRunEvents(entries)) {
+        if (event.runId) referenced.add(`run-context:${event.runId}`)
       }
       const deletedBlobIds: string[] = []
       const retainedBlobIds: string[] = []
@@ -333,9 +303,6 @@ export function createInMemoryRuntimeStore(input: InMemoryStoreOptions = {}): Wo
     },
     async deleteConversation(sessionId) {
       journals.delete(sessionId)
-      for (const key of snapshots.keys()) {
-        if (key.startsWith(`${sessionId}:`)) snapshots.delete(key)
-      }
       for (const key of blobs.keys()) {
         if (key.startsWith(`${sessionId}:`)) blobs.delete(key)
       }

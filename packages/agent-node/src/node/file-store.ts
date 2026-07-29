@@ -7,7 +7,6 @@ import type {
   ConversationWorkspaceRef,
   RunEvent,
   RunEventAppendResult,
-  RunSnapshot,
   SessionEntry,
   SessionEntryInput,
   StoredBlob,
@@ -21,8 +20,6 @@ import {
   DEFAULT_CONVERSATION_TITLE,
   getSessionBranch,
   getSessionLeafId,
-  normalizeRunSnapshot,
-  prepareRunSnapshot,
   prepareSessionEntry,
   projectConversation,
   sessionRunEvents,
@@ -79,14 +76,6 @@ export function createFileRuntimeStore(options: FileRuntimeStoreOptions): Workbe
 
   function journalPath(sessionId: string): string {
     return join(sessionDir(sessionId), 'entries.jsonl')
-  }
-
-  function snapshotsDir(sessionId: string): string {
-    return join(sessionDir(sessionId), 'snapshots')
-  }
-
-  function snapshotPath(sessionId: string, runId: string): string {
-    return join(snapshotsDir(sessionId), `${encodeURIComponent(runId)}.json`)
   }
 
   function blobsDir(sessionId: string): string {
@@ -367,64 +356,6 @@ export function createFileRuntimeStore(options: FileRuntimeStoreOptions): Workbe
       }
       return recovered
     },
-    async saveRunSnapshot(snapshot) {
-      return queueWrite(snapshot.identity.conversationId, async () => {
-        const entries = await readJournal(snapshot.identity.conversationId)
-        getSessionBranch(entries, snapshot.sessionLeafId)
-        const maximumSeq = entries.reduce((maximum, entry) => Math.max(maximum, entry.seq), 0)
-        if (snapshot.throughSeq > maximumSeq) {
-          throw new Error(`run snapshot exceeds session journal: ${snapshot.throughSeq}`)
-        }
-        let previous: RunSnapshot | undefined
-        try {
-          previous = normalizeRunSnapshot(
-            JSON.parse(
-              await readFile(
-                snapshotPath(snapshot.identity.conversationId, snapshot.identity.runId),
-                'utf-8',
-              ),
-            ),
-          )
-        } catch (error) {
-          if (!isErrnoCode(error, 'ENOENT')) throw error
-        }
-        const prepared = prepareRunSnapshot(snapshot, previous)
-        await mkdir(snapshotsDir(snapshot.identity.conversationId), { recursive: true })
-        await writeJsonAtomic(
-          snapshotPath(prepared.identity.conversationId, prepared.identity.runId),
-          prepared,
-        )
-        return structuredClone(prepared)
-      })
-    },
-    async getRunSnapshot(sessionId, runId) {
-      try {
-        return structuredClone(
-          normalizeRunSnapshot(JSON.parse(await readFile(snapshotPath(sessionId, runId), 'utf-8'))),
-        )
-      } catch (error) {
-        if (isErrnoCode(error, 'ENOENT')) return null
-        throw error
-      }
-    },
-    async listRunSnapshots(sessionId) {
-      await readJournal(sessionId)
-      let files: string[]
-      try {
-        files = await readdir(snapshotsDir(sessionId))
-      } catch (error) {
-        if (isErrnoCode(error, 'ENOENT')) return []
-        throw error
-      }
-      const snapshots = await Promise.all(
-        files
-          .filter((file) => file.endsWith('.json'))
-          .map((file) => this.getRunSnapshot(sessionId, decodeURIComponent(file.slice(0, -5)))),
-      )
-      return snapshots
-        .filter((snapshot): snapshot is RunSnapshot => snapshot !== null)
-        .sort((left, right) => right.updatedAt - left.updatedAt)
-    },
     async putBlob(sessionId, input) {
       return queueWrite(sessionId, async () => {
         await readJournal(sessionId)
@@ -468,16 +399,8 @@ export function createFileRuntimeStore(options: FileRuntimeStoreOptions): Workbe
         const referenced = new Set(
           entries.flatMap((entry) => (entry.payloadRef ? [entry.payloadRef.blobId] : [])),
         )
-        try {
-          const snapshotFiles = await readdir(snapshotsDir(sessionId))
-          for (const file of snapshotFiles.filter((candidate) => candidate.endsWith('.json'))) {
-            const snapshot = normalizeRunSnapshot(
-              JSON.parse(await readFile(join(snapshotsDir(sessionId), file), 'utf-8')),
-            )
-            referenced.add(snapshot.contextRef.blobId)
-          }
-        } catch (error) {
-          if (!isErrnoCode(error, 'ENOENT')) throw error
+        for (const event of sessionRunEvents(entries)) {
+          if (event.runId) referenced.add(`run-context:${event.runId}`)
         }
 
         let blobFiles: string[]

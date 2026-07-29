@@ -209,7 +209,6 @@ export interface RunRequest {
   signal: AbortSignal
   onRunEvent?: RunEventSink
   onSavePoint?: (reason: RunSavePointReason) => MaybePromise<void>
-  saveRunSnapshot?: (snapshot: RunSnapshot) => MaybePromise<RunSnapshot>
   appendSessionEntry?: (entry: SessionEntryInput) => MaybePromise<SessionEntry>
   putBlob?: (input: {
     contentType: string
