@@ -5,17 +5,26 @@ import {
   isAilaExecutionMode,
   MODEL_CATALOG,
   type ModelSelection,
+  type PersistedMessage,
   providerLabel,
   type ToolApprovalMode,
   type ToolApprovalRequest,
   type Workbench,
   type WorkbenchEvent,
 } from '@aila/agent'
-import { configureDataDir, getDataDir, getExtensionReport } from '@aila/agent-node/app'
+import {
+  configureDataDir,
+  getDataDir,
+  getExtensionReport,
+  loadSettings,
+  resolveApiKey,
+  saveSettings,
+} from '@aila/agent-node/app'
 import * as dotenv from 'dotenv'
 import {
   CombinedAutocompleteProvider,
   Editor,
+  isKeyRelease,
   Key,
   matchesKey,
   type OverlayHandle,
@@ -33,11 +42,9 @@ import {
 } from './components'
 import {
   appendLocalContext,
-  blockPreview,
   commandHelp,
   createTuiRuntime,
   defaultDataDir,
-  displayPreview,
   formatDate,
   formatToolResultForDisplay,
   modelLabel,
@@ -45,11 +52,12 @@ import {
   parseModel,
   printConversationList,
   readShellToken,
-  resolveSelection,
+  resolveSelectionOrNull,
   splitShellWords,
   waitForManagedRun,
   workspacePath,
 } from './line-mode'
+import { ModelSetupComponent, type ModelSetupResult } from './model-setup'
 import { createEditorTheme } from './theme'
 
 dotenv.config()
@@ -57,12 +65,31 @@ dotenv.config()
 type SlashResult = 'agent' | 'exit' | 'handled'
 
 interface SessionState {
-  selection: ModelSelection
+  selection: ModelSelection | null
   mode: AilaExecutionMode
 }
 
 function entry(kind: TranscriptEntry['kind'], title: string, body = ''): TranscriptEntry {
   return { id: randomUUID(), kind, title, body }
+}
+
+function persistedMessageBody(message: PersistedMessage): string {
+  const blocks = message.blocks
+    .map((block) => {
+      switch (block.type) {
+        case 'text':
+          return block.content
+        case 'reasoning':
+          return `[reasoning]\n${block.content}`
+        case 'tool_call':
+          return `[tool · ${block.status}] ${block.name}`
+        case 'image':
+          return `[image] ${block.url}`
+      }
+      return ''
+    })
+    .filter((block): block is string => Boolean(block))
+  return blocks.join('\n\n') || '[empty message]'
 }
 
 function extensionReportText(report: Awaited<ReturnType<typeof getExtensionReport>>): string {
@@ -84,28 +111,29 @@ function extensionReportText(report: Awaited<ReturnType<typeof getExtensionRepor
 }
 
 function conversationText(summary: ConversationSummary): string {
-  const usage = summary.usage ? `, ${summary.usage.totalTokens} tokens` : ''
-  return `${formatDate(summary.updatedAt)}  ${summary.id}  thread  ${summary.title}${usage}`
+  const usage = summary.usage ? ` · ${summary.usage.totalTokens} tokens` : ''
+  return `${formatDate(summary.updatedAt)} · #${summary.id.slice(0, 8)}${usage}`
 }
 
 export async function runFullScreenTui(argv: string[] = process.argv.slice(2)): Promise<void> {
   const options = parseArgs(argv)
   configureDataDir(options.dataDir ?? defaultDataDir())
+  const approvalMode = options.approvalMode ?? loadSettings().approvalMode ?? 'safe'
 
   if (options.list) {
-    await printConversationList(createTuiRuntime({ approvalMode: options.approvalMode }), {
+    await printConversationList(createTuiRuntime({ approvalMode }), {
       limit: options.limit,
     })
     return
   }
 
   const session: SessionState = {
-    selection: resolveSelection(options.model),
+    selection: resolveSelectionOrNull(options.model),
     mode: options.mode,
   }
 
   const app = new AilaFullScreenApp({
-    approvalMode: options.approvalMode,
+    approvalMode,
     retryLast: options.retryLast,
     session,
     showHistory: options.showHistory,
@@ -119,9 +147,9 @@ export async function runFullScreenTui(argv: string[] = process.argv.slice(2)): 
 
 class AilaFullScreenApp {
   private readonly terminal = new ProcessTerminal()
-  private readonly ui = new TUI(this.terminal, true)
+  private readonly ui = new TUI(this.terminal)
   private readonly editor = new Editor(this.ui, createEditorTheme(), {
-    autocompleteMaxVisible: 8,
+    autocompleteMaxVisible: 6,
     paddingX: 2,
   })
   private readonly runtime: Workbench
@@ -131,7 +159,14 @@ class AilaFullScreenApp {
   private readonly toolArgs = new Map<string, string>()
   private readonly entries: TranscriptEntry[] = []
   private readonly queue: string[] = []
+  private readonly streamSegmentCounts = new Map<string, number>()
+  private readonly streamSegments = new Map<
+    string,
+    { id: string; kind: 'assistant' | 'reasoning' }
+  >()
   private activeConversationId: string | null = null
+  private approvalMode: ToolApprovalMode
+  private configurationPromise: Promise<boolean> | null = null
   private conversationId: string
   private lastIdleCtrlC = 0
   private running = false
@@ -146,19 +181,21 @@ class AilaFullScreenApp {
     session: SessionState
     showHistory: boolean
   }) {
+    this.approvalMode = input.approvalMode
     this.conversationId = ''
     this.session = input.session
     this.state = {
       active: false,
+      approvalMode: input.approvalMode,
       conversationId: '',
       dataDir: getDataDir(),
       queueCount: 0,
       selection: input.session.selection,
       status: 'initializing conversation',
     }
-    this.frame = new AilaFrameComponent(this.terminal, this.editor, this.state)
+    this.frame = new AilaFrameComponent(this.editor, this.state)
     this.runtime = createTuiRuntime({
-      approvalMode: input.approvalMode,
+      getApprovalMode: () => this.approvalMode,
       onEvent: (event) => this.handleRuntimeEvent(event),
       onToolApproval: (request) => this.askToolApproval(request),
     })
@@ -196,16 +233,16 @@ class AilaFullScreenApp {
       conversationId: resolved.conversationId,
       status: resolved.isExisting ? 'resumed conversation' : 'new conversation',
     })
+    const needsSetup =
+      !this.session.selection || !resolveApiKey(this.session.selection.providerId, loadSettings())
     this.addEntry(
-      'system',
-      'runtime',
-      [
-        `Data: ${getDataDir()}`,
-        `Conversation: ${resolved.conversationId}${resolved.isExisting ? ' (resumed)' : ''}`,
-        `Model: ${modelLabel(this.session.selection)}`,
-        `Runtime mode: ${this.session.mode}`,
-      ].join('\n'),
+      'welcome',
+      resolved.isExisting ? 'Welcome back' : 'Welcome to Aila',
+      this.welcomeBody(resolved.isExisting),
     )
+    if (needsSetup) {
+      this.setState({ status: 'ready · /setup connects a model' })
+    }
 
     if (this.showHistoryOnStart) await this.loadHistory()
   }
@@ -214,7 +251,7 @@ class AilaFullScreenApp {
     this.terminal.setTitle('Aila TUI')
     this.frame.setEntries(this.entries)
     this.ui.start()
-    this.ui.requestRender(true)
+    this.ui.requestRender()
     if (this.retryLastOnStart) {
       queueMicrotask(() => {
         void this.submit('/retry')
@@ -230,21 +267,25 @@ class AilaFullScreenApp {
     this.stopped = true
     await this.runtime.abortAll()
     this.terminal.setProgress(false)
-    this.ui.stop()
     await this.terminal.drainInput(250, 25).catch(() => {})
+    this.ui.stop()
     this.resolveStopped?.()
   }
 
   private handleGlobalInput(data: string): { consume?: boolean } | undefined {
+    if (isKeyRelease(data)) return { consume: true }
     if (matchesKey(data, Key.ctrl('l'))) {
       this.ui.requestRender(true)
       return { consume: true }
     }
     if (matchesKey(data, Key.ctrl('c'))) {
+      if (this.configurationPromise) return undefined
+      if (this.ui.hasOverlay()) return undefined
       void this.handleCtrlC()
       return { consume: true }
     }
     if (matchesKey(data, Key.ctrl('d'))) {
+      if (this.configurationPromise) return undefined
       if (this.activeConversationId) {
         this.runtime.abort(this.activeConversationId)
         this.setState({ status: 'aborting active response' })
@@ -328,7 +369,12 @@ class AilaFullScreenApp {
     text: string,
     input: { mode?: AilaExecutionMode } = {},
   ): Promise<void> {
-    this.addEntry('user', 'message', text)
+    if (!(await this.ensureModelConfigured()) || !this.session.selection) {
+      this.addEntry('system', 'setup required', 'Configure a model and API key to send messages.')
+      this.setState({ status: 'model setup required' })
+      return
+    }
+    this.addEntry('user', '', text)
     this.setState({ active: true, status: 'sending prompt' })
     const mode = input.mode ?? this.session.mode
     const { assistantMessageId } = await this.runtime.send({
@@ -349,6 +395,11 @@ class AilaFullScreenApp {
   }
 
   private async retryLastTurn(): Promise<void> {
+    if (!(await this.ensureModelConfigured()) || !this.session.selection) {
+      this.addEntry('system', 'setup required', 'Configure a model and API key to retry.')
+      this.setState({ status: 'model setup required' })
+      return
+    }
     this.setState({ active: true, status: 'retrying last user turn' })
     try {
       const { assistantMessageId } = await this.runtime.retryLastUserMessage({
@@ -388,6 +439,9 @@ class AilaFullScreenApp {
           if (this.activeConversationId) this.runtime.abort(this.activeConversationId)
           this.setState({ status: 'aborting active response' })
           return 'handled'
+        case 'retry':
+          await this.retryLastTurn()
+          return 'handled'
         case 'runs':
           await this.showRuns()
           return 'handled'
@@ -409,8 +463,16 @@ class AilaFullScreenApp {
         case 'model':
           await this.handleModel(rest)
           return 'handled'
+        case 'setup':
+          await this.startModelSetup(null)
+          return 'handled'
         case 'mode':
           this.handleMode(rest)
+          return 'handled'
+        case 'approval':
+        case 'safe':
+        case 'yolo':
+          this.handleApprovalMode(name, rest)
           return 'handled'
         case 'sessions':
         case 'session':
@@ -524,28 +586,37 @@ class AilaFullScreenApp {
       return
     }
     if (words.length > 1) throw new Error('usage: /model [provider:modelId]')
-    this.setModel(parseModel(words[0]))
+    await this.setModel(parseModel(words[0]))
   }
 
   private showModelPicker(): void {
     let handle: OverlayHandle | null = null
     const items: SelectItem[] = MODEL_CATALOG.map((model) => ({
-      description: `${model.providerId}${model.tags?.length ? ` - ${model.tags.join(', ')}` : ''}`,
-      label: `${providerLabel(model.providerId)} / ${model.displayName}`,
+      description: [
+        providerLabel(model.providerId),
+        ...(model.tags ?? []),
+        ...(this.session.selection?.providerId === model.providerId &&
+        this.session.selection.modelId === model.modelId
+          ? ['current']
+          : []),
+      ].join(' · '),
+      label: model.displayName,
       value: `${model.providerId}:${model.modelId}`,
     }))
     const picker = new PickerDialog(
-      'Models',
+      'Select a model',
       items,
       (item) => {
         handle?.hide()
-        this.setModel(parseModel(item.value))
-        this.ui.setFocus(this.editor)
+        void this.setModel(parseModel(item.value))
       },
       () => {
         handle?.hide()
         this.ui.setFocus(this.editor)
       },
+      this.session.selection
+        ? `${this.session.selection.providerId}:${this.session.selection.modelId}`
+        : undefined,
     )
     handle = this.ui.showOverlay(picker, {
       width: '80%',
@@ -555,10 +626,94 @@ class AilaFullScreenApp {
     })
   }
 
-  private setModel(selection: ModelSelection): void {
+  private async setModel(selection: ModelSelection): Promise<void> {
+    const settings = loadSettings()
+    if (!resolveApiKey(selection.providerId, settings)) {
+      this.setState({ status: `connect ${providerLabel(selection.providerId)} to use this model` })
+      await this.startModelSetup(selection)
+      return
+    }
+    settings.defaultModel = selection
+    saveSettings(settings)
     this.session = { ...this.session, selection }
+    this.refreshWelcome()
     this.addEntry('system', 'model changed', modelLabel(selection))
     this.setState({ selection, status: `model: ${modelLabel(selection)}` })
+    this.ui.setFocus(this.editor)
+  }
+
+  private ensureModelConfigured(): Promise<boolean> {
+    if (this.configurationPromise) return this.configurationPromise
+
+    const selection = this.session.selection
+    if (selection && resolveApiKey(selection.providerId, loadSettings())) {
+      return Promise.resolve(true)
+    }
+
+    return this.startModelSetup(selection)
+  }
+
+  private startModelSetup(initialSelection: ModelSelection | null): Promise<boolean> {
+    if (this.configurationPromise) return this.configurationPromise
+    this.configurationPromise = this.runModelSetup(initialSelection).finally(() => {
+      this.configurationPromise = null
+    })
+    return this.configurationPromise
+  }
+
+  private runModelSetup(initialSelection: ModelSelection | null): Promise<boolean> {
+    const settings = loadSettings()
+    this.setState({ status: 'model setup' })
+    return new Promise((resolve) => {
+      const finish = (configured: boolean) => {
+        this.frame.setInputComponent(this.editor)
+        this.ui.setFocus(this.editor)
+        this.setState({ inputHint: undefined })
+        this.requestRender()
+        resolve(configured)
+      }
+      const setup = new ModelSetupComponent({
+        initialSelection,
+        providerHasApiKey: (providerId) => Boolean(resolveApiKey(providerId, settings)),
+        onCancel: () => {
+          this.setState({ status: 'setup cancelled · run /setup when ready' })
+          finish(false)
+        },
+        onDone: (result) => {
+          this.completeModelSetup(settings, result)
+          finish(true)
+        },
+      })
+      this.frame.setInputComponent(setup)
+      this.ui.setFocus(setup)
+      this.setState({ inputHint: 'Setup stays local · follow the step hints above' })
+      this.requestRender()
+    })
+  }
+
+  private completeModelSetup(
+    settings: ReturnType<typeof loadSettings>,
+    result: ModelSetupResult,
+  ): void {
+    if (result.apiKey) {
+      settings.apiKeys = {
+        ...settings.apiKeys,
+        [result.selection.providerId]: result.apiKey,
+      }
+    }
+    settings.defaultModel = result.selection
+    saveSettings(settings)
+    this.session = { ...this.session, selection: result.selection }
+    this.refreshWelcome()
+    this.addEntry(
+      'system',
+      'model connected',
+      `${modelLabel(result.selection)} is ready. Credentials and defaults were saved in the active Aila data directory.`,
+    )
+    this.setState({
+      selection: result.selection,
+      status: `ready · ${modelLabel(result.selection)}`,
+    })
   }
 
   private handleMode(rest: string): void {
@@ -573,8 +728,44 @@ class AilaFullScreenApp {
 
   private setMode(mode: AilaExecutionMode): void {
     this.session = { ...this.session, mode }
+    this.refreshWelcome()
     this.addEntry('system', 'runtime mode changed', mode)
     this.setState({ status: `mode: ${mode}` })
+  }
+
+  private handleApprovalMode(name: string, rest: string): void {
+    const words = splitShellWords(rest)
+    const requested = name === 'approval' ? words[0] : name
+    if (!requested) {
+      this.addEntry('system', 'approval mode', this.approvalMode)
+      this.setState({ status: `approval: ${this.approvalMode}` })
+      return
+    }
+    if (
+      words.length > (name === 'approval' ? 1 : 0) ||
+      (requested !== 'safe' && requested !== 'yolo')
+    ) {
+      throw new Error('usage: /approval [safe|yolo]')
+    }
+
+    this.approvalMode = requested
+    const settings = loadSettings()
+    settings.approvalMode = requested
+    saveSettings(settings)
+    this.addEntry(
+      'system',
+      `approval mode: ${requested}`,
+      requested === 'yolo'
+        ? 'Future tool calls run without confirmation.'
+        : 'Risky tool calls require confirmation.',
+    )
+    this.setState({
+      approvalMode: requested,
+      status:
+        requested === 'yolo'
+          ? 'YOLO enabled · tools run without confirmation'
+          : 'safe mode · risky tools require confirmation',
+    })
   }
 
   private async showSessionPicker(): Promise<void> {
@@ -585,9 +776,9 @@ class AilaFullScreenApp {
     }
     let handle: OverlayHandle | null = null
     const picker = new PickerDialog(
-      'Sessions',
+      'Switch conversation',
       conversations.slice(0, 80).map((summary) => ({
-        description: conversationText(summary),
+        description: `${conversationText(summary)}${summary.id === this.conversationId ? ' · current' : ''}`,
         label: summary.title || summary.id,
         value: summary.id,
       })),
@@ -600,6 +791,7 @@ class AilaFullScreenApp {
         handle?.hide()
         this.ui.setFocus(this.editor)
       },
+      this.conversationId,
     )
     handle = this.ui.showOverlay(picker, {
       width: '88%',
@@ -614,11 +806,12 @@ class AilaFullScreenApp {
     this.conversationId = conversationId
     this.entries.length = 0
     this.addEntry('system', 'conversation switched', conversationId)
-    await this.loadHistory(12)
+    await this.loadHistory()
     this.setState({
       conversationId,
       status: `conversation: ${conversationId}`,
     })
+    this.ui.requestRender(true)
   }
 
   private async readFile(rest: string): Promise<void> {
@@ -626,7 +819,7 @@ class AilaFullScreenApp {
     if (!pathArg) throw new Error('usage: /read <path>')
     const path = workspacePath(pathArg)
     const result = await this.runLocalTool('read', { path })
-    this.addEntry('local', `[read] ${path}`, displayPreview(result))
+    this.addEntry('local', `[read] ${path}`, result)
     await appendLocalContext({
       command: `/read ${path}`,
       conversationId: this.conversationId,
@@ -639,7 +832,7 @@ class AilaFullScreenApp {
     if (!rest) throw new Error('usage: /run <command>')
     const result = await this.runLocalTool('bash', { command: rest })
     const display = formatToolResultForDisplay('bash', result)
-    this.addEntry('local', `[run] ${rest}`, displayPreview(display))
+    this.addEntry('local', `[run] ${rest}`, display)
     await appendLocalContext({
       command: `/run ${rest}`,
       conversationId: this.conversationId,
@@ -653,7 +846,7 @@ class AilaFullScreenApp {
     if (!parsed?.rest) throw new Error('usage: /write <path> <content>')
     const path = workspacePath(parsed.token)
     const result = await this.runLocalTool('write', { content: parsed.rest, path })
-    this.addEntry('local', `[write] ${path}`, displayPreview(result))
+    this.addEntry('local', `[write] ${path}`, result)
     await appendLocalContext({
       command: `/write ${path}`,
       conversationId: this.conversationId,
@@ -674,7 +867,7 @@ class AilaFullScreenApp {
       oldText: oldText.trim(),
       path,
     })
-    this.addEntry('local', `[edit] ${path}`, displayPreview(result))
+    this.addEntry('local', `[edit] ${path}`, result)
     await appendLocalContext({
       command: `/edit ${path}`,
       conversationId: this.conversationId,
@@ -721,20 +914,22 @@ class AilaFullScreenApp {
   private handleRuntimeEvent(event: WorkbenchEvent): void {
     switch (event.type) {
       case 'chat:text-delta':
-        this.appendAssistantDelta(event.data.messageId, event.data.delta)
+        this.appendStreamDelta(event.data.messageId, 'assistant', event.data.delta)
         this.setState({ active: true, status: 'receiving response' })
         break
       case 'chat:reasoning-delta':
+        this.appendStreamDelta(event.data.messageId, 'reasoning', event.data.delta)
         this.setState({ active: true, status: 'thinking' })
         break
       case 'chat:tool-call-start':
+        this.streamSegments.delete(event.data.messageId)
         this.toolNames.set(event.data.toolCallId, event.data.name)
         this.toolArgs.set(event.data.toolCallId, event.data.arguments)
         this.upsertEntry(
           `tool:${event.data.toolCallId}`,
           'tool',
           event.data.name,
-          displayPreview(event.data.arguments, 2000),
+          event.data.arguments,
         )
         this.setState({ active: true, status: `tool: ${event.data.name}` })
         break
@@ -742,7 +937,7 @@ class AilaFullScreenApp {
         const next = `${this.toolArgs.get(event.data.toolCallId) ?? ''}${event.data.delta}`
         this.toolArgs.set(event.data.toolCallId, next)
         const name = this.toolNames.get(event.data.toolCallId) ?? event.data.toolCallId
-        this.upsertEntry(`tool:${event.data.toolCallId}`, 'tool', name, displayPreview(next, 2000))
+        this.upsertEntry(`tool:${event.data.toolCallId}`, 'tool', name, next)
         break
       }
       case 'chat:tool-call-result': {
@@ -752,19 +947,22 @@ class AilaFullScreenApp {
           `tool:${event.data.toolCallId}`,
           event.data.isError ? 'error' : 'tool',
           `${name} (${status})`,
-          displayPreview(formatToolResultForDisplay(name, event.data.result), 3000),
+          formatToolResultForDisplay(name, event.data.result),
         )
         this.setState({ active: true, status: `tool ${status}: ${name}` })
         break
       }
       case 'chat:image-block':
+        this.streamSegments.delete(event.data.messageId)
         this.addEntry('image', 'image block', event.data.block.url)
         break
       case 'chat:done':
-        this.setState({ active: false, status: 'done', usage: event.data.usage })
+        this.finishStream(event.data.messageId)
+        this.setState({ active: false, status: 'ready', usage: event.data.usage })
         this.completions.get(event.data.messageId)?.()
         break
       case 'chat:error':
+        this.finishStream(event.data.messageId)
         this.addEntry('error', 'agent error', event.data.error)
         this.setState({ active: false, status: 'error' })
         this.completions.get(event.data.messageId)?.()
@@ -777,6 +975,7 @@ class AilaFullScreenApp {
               ? String(nextAction.type)
               : 'unknown'
           this.addEntry('system', 'run paused', `next=${nextType}`)
+          this.finishStream(event.data.messageId)
           this.setState({ active: false, status: `paused: ${nextType}` })
           this.completions.get(event.data.messageId)?.()
         } else if (event.data.type === 'turn.interrupted') {
@@ -785,6 +984,7 @@ class AilaFullScreenApp {
               ? event.data.data.reason
               : 'Interrupted'
           this.addEntry('error', 'interrupted', reason)
+          this.finishStream(event.data.messageId)
           this.setState({ active: false, status: 'interrupted' })
           this.completions.get(event.data.messageId)?.()
         }
@@ -795,14 +995,31 @@ class AilaFullScreenApp {
     this.requestRender()
   }
 
-  private appendAssistantDelta(messageId: string, delta: string): void {
-    const id = `assistant:${messageId}`
-    const current = this.entries.find((item) => item.id === id)
-    if (current) {
-      current.body += delta
-      return
+  private appendStreamDelta(
+    messageId: string,
+    kind: 'assistant' | 'reasoning',
+    delta: string,
+  ): void {
+    if (!delta) return
+    const segment = this.streamSegments.get(messageId)
+    if (segment?.kind === kind) {
+      const current = this.entries.find((item) => item.id === segment.id)
+      if (current) {
+        current.body += delta
+        return
+      }
     }
-    this.entries.push({ body: delta, id, kind: 'assistant', title: 'response' })
+
+    const count = (this.streamSegmentCounts.get(messageId) ?? 0) + 1
+    const id = `stream:${messageId}:${count}`
+    this.streamSegmentCounts.set(messageId, count)
+    this.streamSegments.set(messageId, { id, kind })
+    this.entries.push({ body: delta, id, kind, title: '' })
+  }
+
+  private finishStream(messageId: string): void {
+    this.streamSegments.delete(messageId)
+    this.streamSegmentCounts.delete(messageId)
   }
 
   private upsertEntry(
@@ -837,16 +1054,55 @@ class AilaFullScreenApp {
     this.ui.requestRender()
   }
 
-  private async loadHistory(maxMessages = 8): Promise<void> {
+  private welcomeBody(resumed = false): string {
+    const selection = this.session.selection
+    const connected = selection && resolveApiKey(selection.providerId, loadSettings())
+    return [
+      `Workspace: ${process.cwd()}`,
+      `Conversation: ${this.conversationId}${resumed ? ' (resumed)' : ''}`,
+      `Model: ${selection ? modelLabel(selection) : 'not connected'}`,
+      `Mode: ${this.session.mode}`,
+      '',
+      connected
+        ? 'Write a message to begin. Type `/` to browse commands.'
+        : 'Run `/setup` to connect a provider, or write your first message and Aila will guide you before sending it.',
+    ].join('\n')
+  }
+
+  private refreshWelcome(): void {
+    const welcome = this.entries.find((item) => item.kind === 'welcome')
+    if (welcome) welcome.body = this.welcomeBody()
+  }
+
+  private async loadHistory(): Promise<void> {
     const record = await this.runtime.getConversation(this.conversationId)
     if (record.messages.length === 0) return
-    for (const message of record.messages.slice(-maxMessages)) {
+    for (const message of record.messages) {
       const status = message.status === 'done' ? '' : ` (${message.status})`
-      this.addEntry(
-        message.role === 'assistant' ? 'assistant' : 'user',
-        `${message.role}${status}`,
-        blockPreview(message),
-      )
+      if (message.role === 'user') {
+        this.addEntry('user', status.trim(), persistedMessageBody(message))
+        continue
+      }
+      if (message.blocks.length === 0) {
+        this.addEntry('assistant', status.trim(), '[empty message]')
+        continue
+      }
+      for (const block of message.blocks) {
+        switch (block.type) {
+          case 'text':
+            this.addEntry('assistant', status.trim(), block.content)
+            break
+          case 'reasoning':
+            this.addEntry('reasoning', '', block.content)
+            break
+          case 'tool_call':
+            this.addEntry('tool', `${block.name} (${block.status})`)
+            break
+          case 'image':
+            this.addEntry('image', 'image block', block.url)
+            break
+        }
+      }
     }
     const last = record.messages.at(-1)
     if (last?.role === 'user') {
@@ -865,10 +1121,24 @@ function slashCommands() {
     { name: 'exit', description: 'Quit Aila TUI' },
     { name: 'abort', description: 'Abort active response' },
     { name: 'retry', description: 'Retry a dangling user turn' },
+    { name: 'runs', description: 'List persisted agent runs' },
+    { name: 'inspect-run', description: 'Inspect a persisted run', argumentHint: '<id>' },
+    { name: 'step-run', description: 'Execute one pending run action', argumentHint: '<id>' },
+    { name: 'continue-run', description: 'Continue a paused run', argumentHint: '<id>' },
+    { name: 'abort-run', description: 'Cancel a persisted run', argumentHint: '<id>' },
+    { name: 'fork-run', description: 'Fork a persisted run', argumentHint: '<id>' },
     { name: 'sessions', description: 'Open saved conversation picker' },
     { name: 'extensions', description: 'Show extension manifests', argumentHint: '[reload]' },
+    { name: 'setup', description: 'Connect a provider and choose a model' },
+    {
+      name: 'approval',
+      description: 'Show or change tool approval mode',
+      argumentHint: '[safe|yolo]',
+    },
+    { name: 'yolo', description: 'Run future tools without confirmation' },
+    { name: 'safe', description: 'Require confirmation for risky tools' },
     { name: 'model', description: 'Show or switch model', argumentHint: '[provider:model]' },
-    { name: 'mode', description: 'Show or switch runtime mode', argumentHint: '[agent|chat]' },
+    { name: 'mode', description: 'Show or switch runtime mode', argumentHint: '[agent|plan|chat]' },
     { name: 'read', description: 'Read file into context', argumentHint: '<path>' },
     { name: 'run', description: 'Run shell command', argumentHint: '<command>' },
     { name: 'write', description: 'Write file', argumentHint: '<path> <content>' },

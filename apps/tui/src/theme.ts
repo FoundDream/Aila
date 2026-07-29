@@ -26,14 +26,24 @@ export const AILA_TUI_COLORS: AilaTuiColors = {
   warning: '#f4bf75',
 }
 
+const ANSI_STYLE_SEQUENCE = /\x1b\[[0-9;]*m/g
+
+function visibleStyleText(text: string): string {
+  return text.replace(ANSI_STYLE_SEQUENCE, '')
+}
+
 export function createMarkdownTheme(colors = AILA_TUI_COLORS): MarkdownTheme {
   return {
-    heading: (text) => chalk.bold.hex(colors.textStrong)(text),
+    heading: (text) =>
+      /^#{3,6} $/.test(visibleStyleText(text)) ? '' : chalk.bold.hex(colors.textStrong)(text),
     link: (text) => chalk.underline.hex(colors.accent)(text),
     linkUrl: (text) => chalk.hex(colors.dim)(text),
     code: (text) => chalk.hex(colors.warning)(text),
     codeBlock: (text) => text,
-    codeBlockBorder: (text) => chalk.hex(colors.border)(text),
+    codeBlockBorder: (text) => {
+      const language = text.startsWith('```') ? text.slice(3).trim() : ''
+      return language ? chalk.hex(colors.dim)(`  ${language}`) : ''
+    },
     quote: (text) => chalk.hex(colors.dim)(text),
     quoteBorder: (text) => chalk.hex(colors.border)(text),
     hr: (text) => chalk.hex(colors.border)(text),

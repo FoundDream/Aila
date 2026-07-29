@@ -10,6 +10,7 @@
   "dependencies": {
     "@aila/agent": "workspace:*",
     "@aila/agent-node": "workspace:*",
+    "@earendil-works/pi-tui": "0.80.10",
     "chalk": "5.4.1",
     "cli-highlight": "2.1.11",
     "dotenv": "^16.4.5"

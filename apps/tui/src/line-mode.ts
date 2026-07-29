@@ -32,6 +32,7 @@ import {
   getDataDir,
   getExtensionReport,
   loadSettings,
+  saveSettings,
 } from '@aila/agent-node/app'
 import * as dotenv from 'dotenv'
 
@@ -44,7 +45,7 @@ export interface CliOptions {
   limit: number
   model?: ModelSelection
   mode: AilaExecutionMode
-  approvalMode: ToolApprovalMode
+  approvalMode?: ToolApprovalMode
   retryLast: boolean
   resumeLatest: boolean
   showHistory: boolean
@@ -58,19 +59,22 @@ export interface PromptReader {
 export interface TuiSessionState {
   selection: ModelSelection
   mode: AilaExecutionMode
+  approvalMode: ToolApprovalMode
 }
 
 export interface TuiRuntimeInput {
   approvalMode?: ToolApprovalMode
+  getApprovalMode?: () => ToolApprovalMode
   onEvent?: (event: WorkbenchEvent) => void
   onToolApproval?: (request: ToolApprovalRequest) => Promise<boolean>
 }
 
 export function createTuiRuntime(input: TuiRuntimeInput = {}): Workbench {
   let runtime: Workbench
+  const getApprovalMode = input.getApprovalMode ?? (() => input.approvalMode ?? 'safe')
   runtime = createPersistedWorkbench({
     host: {
-      onToolPolicy: createToolPolicy(input.approvalMode ?? 'safe'),
+      onToolPolicy: (request) => createToolPolicy(getApprovalMode())(request),
       ...(input.onEvent ? { onEvent: input.onEvent } : {}),
       ...(input.onToolApproval
         ? {
@@ -100,8 +104,8 @@ export function usage(): string {
     '  --list                  List saved conversations and exit',
     '  --limit <n>             Limit rows for --list (default: 20)',
     '  --model <provider:id>   Override model, e.g. openai:gpt-5.4',
-    '  --mode <mode>           Runtime mode: agent or chat (default: agent)',
-    '  --approval-mode <mode>  Tool execution mode: safe or yolo (default: safe)',
+    '  --mode <mode>           Runtime mode: agent, plan, or chat (default: agent)',
+    '  --approval-mode <mode>  Override tool mode: safe or yolo',
     '  --safe                  Use safe tool mode',
     '  --yolo                  Run tools without approval prompts',
     '  --resume                Continue the most recently updated conversation',
@@ -122,8 +126,10 @@ export function usage(): string {
     '  /retry                  Retry the last failed or dangling user turn',
     '  /sessions               List saved conversations',
     '  /extensions [reload]    List extension manifests, optionally refresh runtime caches',
+    '  /setup                  Connect a provider and choose a default model (full-screen)',
+    '  /approval [safe|yolo]   Show or change tool approval mode',
     '  /model [provider:id]    Show or switch the active model',
-    '  /mode [agent|chat]      Show or switch runtime mode',
+    '  /mode [agent|plan|chat] Show or switch runtime mode',
     '  /read <path>            Read a workspace file and attach it as context',
     '  /run <command>          Run an approved shell command and attach output',
     '  /write <path> <content> Write a file after approval',
@@ -148,7 +154,6 @@ export function parseModel(value: string): ModelSelection {
 
 export function parseArgs(argv: string[]): CliOptions {
   const options: CliOptions = {
-    approvalMode: 'safe',
     list: false,
     limit: 20,
     mode: 'agent',
@@ -241,6 +246,15 @@ function parseExecutionMode(value: string): AilaExecutionMode {
 }
 
 export function resolveSelection(explicit?: ModelSelection): ModelSelection {
+  const selection = resolveSelectionOrNull(explicit)
+  if (selection) return selection
+
+  throw new Error(
+    'No model configured. Set a default model in Desktop, pass --model, or provide an API key in env.',
+  )
+}
+
+export function resolveSelectionOrNull(explicit?: ModelSelection): ModelSelection | null {
   if (explicit) return explicit
 
   const settings = loadSettings()
@@ -252,9 +266,7 @@ export function resolveSelection(explicit?: ModelSelection): ModelSelection {
     if (entry) return { providerId: entry.providerId, modelId: entry.modelId }
   }
 
-  throw new Error(
-    'No model configured. Set a default model in Desktop, pass --model, or provide an API key in env.',
-  )
+  return null
 }
 
 export function modelLabel(selection: ModelSelection): string {
@@ -385,8 +397,10 @@ export function commandHelp(): string {
     '  /retry                  Retry a dangling last user turn',
     '  /sessions               List saved conversations',
     '  /extensions [reload]    List extension manifests, optionally refresh runtime caches',
+    '  /setup                  Connect a provider and choose a default model (full-screen)',
+    '  /approval [safe|yolo]   Show or change tool approval mode',
     '  /model [provider:id]    Show or switch the active model',
-    '  /mode [agent|chat]      Show or switch runtime mode',
+    '  /mode [agent|plan|chat] Show or switch runtime mode',
     '  /read <path>            Read a workspace file and attach it as context',
     '  /run <command>          Run an approved shell command and attach output',
     '  /write <path> <content> Write a file after approval',
@@ -617,9 +631,32 @@ export async function handleSlashCommand(input: {
           writeLine(`[mode] ${session.mode}`)
           return 'handled'
         }
-        if (words.length > 1) throw new Error('usage: /mode [agent|chat]')
+        if (words.length > 1) throw new Error('usage: /mode [agent|plan|chat]')
         session.mode = parseExecutionMode(words[0])
         writeLine(`[mode] ${session.mode}`)
+        return 'handled'
+      }
+      case 'approval':
+      case 'safe':
+      case 'yolo': {
+        const words = splitShellWords(rest)
+        const requested = name === 'approval' ? words[0] : name
+        if (!requested) {
+          writeLine(`[approval] ${session.approvalMode}`)
+          return 'handled'
+        }
+        if (words.length > (name === 'approval' ? 1 : 0) || !isToolApprovalMode(requested)) {
+          throw new Error('usage: /approval [safe|yolo]')
+        }
+        session.approvalMode = requested
+        const settings = loadSettings()
+        settings.approvalMode = requested
+        saveSettings(settings)
+        writeLine(
+          requested === 'yolo'
+            ? '[approval] yolo — future tools run without confirmation'
+            : '[approval] safe — risky tools require confirmation',
+        )
         return 'handled'
       }
       case 'read': {
@@ -726,15 +763,17 @@ export async function waitForManagedRun(runtime: Workbench, runId: string): Prom
 export async function runLineMode(argv: string[] = process.argv.slice(2)): Promise<void> {
   const options = parseArgs(argv)
   configureDataDir(options.dataDir ?? defaultDataDir())
+  const approvalMode = options.approvalMode ?? loadSettings().approvalMode ?? 'safe'
 
   if (options.list) {
-    await printConversationList(createTuiRuntime({ approvalMode: options.approvalMode }), {
+    await printConversationList(createTuiRuntime({ approvalMode }), {
       limit: options.limit,
     })
     return
   }
 
   const session: TuiSessionState = {
+    approvalMode,
     selection: resolveSelection(options.model),
     mode: options.mode,
   }
@@ -745,7 +784,7 @@ export async function runLineMode(argv: string[] = process.argv.slice(2)): Promi
   let startedAssistantText = false
   const prompt = createPromptReader()
   const runtime = createTuiRuntime({
-    approvalMode: options.approvalMode,
+    getApprovalMode: () => session.approvalMode,
     onEvent: (event) => {
       handleRuntimeEvent(event, {
         completions,
