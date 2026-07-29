@@ -230,9 +230,7 @@ export function createDurableRunExecutor(
       if (runBoundaryPersisted) return
       runBoundaryPersisted = true
       const timestamp = Date.now()
-      const loop = cloneAgentValue(
-        runSnapshot?.loop ?? createRunCursor<ModelCallToolCall>(run, loopMode),
-      )
+      const loop = cloneAgentValue(runSnapshot?.loop ?? createRunCursor(run, loopMode))
       if (!runSnapshot) {
         const started: RunTransition = {
           type: 'run.started',
@@ -377,9 +375,9 @@ export function createDurableRunExecutor(
       )
       let snapshotRevision = runSnapshot?.revision ?? 0
       const snapshotCreatedAt = runSnapshot?.createdAt ?? Date.now()
-      let latestLoopSnapshot: RunCursor<ModelCallToolCall> | undefined
+      let latestLoopSnapshot: RunCursor | undefined
       const persistRunSnapshot = async (
-        loop: RunCursor<ModelCallToolCall>,
+        loop: RunCursor,
         _messageStatus: 'streaming' | 'done' | 'error' = 'streaming',
         _messageError?: string,
       ): Promise<void> => {
@@ -456,7 +454,7 @@ export function createDurableRunExecutor(
         }
       }
 
-      const loopResult = await defaultAgentRuntime.run<ParsedModelToolCall, ChatMessage[]>({
+      const loopResult = await defaultAgentRuntime.run<ChatMessage[]>({
         identity: run,
         signal,
         maxToolSteps,

@@ -1,4 +1,5 @@
 import type { RunEvent } from './agent-protocol'
+import type { ModelCallToolCall } from './model-call'
 
 type MaybePromise<T> = T | Promise<T>
 
@@ -132,9 +133,9 @@ export type RunTransition =
       reason: string
     }
 
-export interface RunModelResult<TToolCall> {
+export interface RunModelResult {
   outcome: 'completed' | 'failed' | 'cancelled'
-  toolCalls: readonly TToolCall[]
+  toolCalls: readonly ModelCallToolCall[]
   error?: string
   nextAction?: Extract<RunNextAction, { type: 'compact' }>
 }
@@ -156,28 +157,28 @@ export interface RunCompactResult {
 
 export type RunPolicyDecision = 'continue' | 'pause' | 'complete'
 
-export interface RunPolicy<TToolCall> {
+export interface RunPolicy {
   mode: RunMode
   afterModel?: (input: {
     identity: RunIdentity
     step: RunStep
-    toolCalls: readonly TToolCall[]
+    toolCalls: readonly ModelCallToolCall[]
   }) => MaybePromise<RunPolicyDecision>
   afterTools?: (input: {
     identity: RunIdentity
     step: RunStep
-    toolCalls: readonly TToolCall[]
+    toolCalls: readonly ModelCallToolCall[]
   }) => MaybePromise<'continue' | 'pause'>
 }
 
-export interface RunMachineOptions<TToolCall> {
+export interface RunMachineOptions {
   identity: RunIdentity
   signal: AbortSignal
-  initialSnapshot?: RunCursor<TToolCall>
+  initialSnapshot?: RunCursor
   /** Maximum number of tool batches before one final tool-free model step. */
   maxToolSteps: number
   initialReason?: RunContinuationReason
-  policy?: RunPolicy<TToolCall>
+  policy?: RunPolicy
   now?: () => number
   createStepId?: (input: { identity: RunIdentity; index: number; kind: RunStepKind }) => string
   prepareModelStep?: (input: {
@@ -194,10 +195,10 @@ export interface RunMachineOptions<TToolCall> {
     toolsEnabled: boolean
     reason: RunContinuationReason
     signal: AbortSignal
-  }) => Promise<RunModelResult<TToolCall>>
+  }) => Promise<RunModelResult>
   prepareToolStep?: (input: {
     identity: RunIdentity
-    toolCall: TToolCall
+    toolCall: ModelCallToolCall
     toolCallIndex: number
     toolCallCount: number
     modelStepIndex: number
@@ -207,7 +208,7 @@ export interface RunMachineOptions<TToolCall> {
   executeToolStep: (input: {
     identity: RunIdentity
     step: RunStep
-    toolCall: TToolCall
+    toolCall: ModelCallToolCall
     toolCallIndex: number
     toolCallCount: number
     modelStepIndex: number
@@ -223,10 +224,10 @@ export interface RunMachineOptions<TToolCall> {
   handleToolBudgetExhausted?: (input: {
     identity: RunIdentity
     step: RunStep
-    toolCalls: readonly TToolCall[]
+    toolCalls: readonly ModelCallToolCall[]
   }) => MaybePromise<void>
   onTransition?: (transition: RunTransition) => MaybePromise<void>
-  onSnapshot?: (snapshot: RunCursor<TToolCall>) => MaybePromise<void>
+  onSnapshot?: (snapshot: RunCursor) => MaybePromise<void>
 }
 
 export interface RunMachineResult {
@@ -239,26 +240,26 @@ export interface RunMachineResult {
  * execution data belongs in a run checkpoint, while this snapshot is enough to
  * decide and execute exactly one next action.
  */
-export interface RunCursor<TToolCall> {
+export interface RunCursor {
   state: RunState
   nextStepIndex: number
   modelStepIndex: number
   completedToolBatches: number
-  pendingToolCalls: TToolCall[]
+  pendingToolCalls: ModelCallToolCall[]
   /** Original calls for the active model response; retained while calls complete one by one. */
-  toolBatchCalls?: TToolCall[]
+  toolBatchCalls?: ModelCallToolCall[]
 }
 
-export interface AdvanceRunOptions<TToolCall> extends RunMachineOptions<TToolCall> {
-  snapshot?: RunCursor<TToolCall>
+export interface AdvanceRunOptions extends RunMachineOptions {
+  snapshot?: RunCursor
 }
 
-export interface AdvanceRunResult<TToolCall> extends RunMachineResult {
-  snapshot: RunCursor<TToolCall>
+export interface AdvanceRunResult extends RunMachineResult {
+  snapshot: RunCursor
   executedAction?: RunNextAction
 }
 
-const CONTINUOUS_POLICY: RunPolicy<unknown> = {
+const CONTINUOUS_POLICY: RunPolicy = {
   mode: 'continuous',
   afterModel: () => 'continue',
   afterTools: () => 'continue',
@@ -277,10 +278,7 @@ export function createRunState(identity: RunIdentity, mode: RunMode = 'continuou
   }
 }
 
-export function createRunCursor<TToolCall>(
-  identity: RunIdentity,
-  mode: RunMode = 'continuous',
-): RunCursor<TToolCall> {
+export function createRunCursor(identity: RunIdentity, mode: RunMode = 'continuous'): RunCursor {
   return {
     state: createRunState(identity, mode),
     nextStepIndex: 0,
@@ -644,17 +642,15 @@ export function assertRunStateInvariant(state: RunState): void {
   }
 }
 
-export async function advanceRun<TToolCall>(
-  options: AdvanceRunOptions<TToolCall>,
-): Promise<AdvanceRunResult<TToolCall>> {
+export async function advanceRun(options: AdvanceRunOptions): Promise<AdvanceRunResult> {
   const now = options.now ?? Date.now
   const createStepId = options.createStepId ?? defaultStepId
-  const policy = (options.policy ?? CONTINUOUS_POLICY) as RunPolicy<TToolCall>
+  const policy = (options.policy ?? CONTINUOUS_POLICY) as RunPolicy
   const snapshot = options.snapshot
     ? cloneValue(options.snapshot)
     : options.initialSnapshot
       ? cloneValue(options.initialSnapshot)
-      : createRunCursor<TToolCall>(options.identity, policy.mode)
+      : createRunCursor(options.identity, policy.mode)
 
   if (snapshot.state.identity.runId !== options.identity.runId) {
     throw new Error('run cursor runId does not match the requested run')
@@ -666,7 +662,7 @@ export async function advanceRun<TToolCall>(
     await options.onTransition?.(cloneValue(transition))
     await options.onSnapshot?.(cloneValue(snapshot))
   }
-  const result = (executedAction?: RunNextAction): AdvanceRunResult<TToolCall> => {
+  const result = (executedAction?: RunNextAction): AdvanceRunResult => {
     const state = cloneValue(snapshot.state)
     const nextAction = state.nextAction
     return {
@@ -693,7 +689,7 @@ export async function advanceRun<TToolCall>(
     outcome: 'failed' | 'cancelled',
     error: string,
     action: RunNextAction,
-  ): Promise<AdvanceRunResult<TToolCall>> => {
+  ): Promise<AdvanceRunResult> => {
     if (outcome === 'cancelled') {
       await emit({
         type: 'step.cancelled',
@@ -729,7 +725,7 @@ export async function advanceRun<TToolCall>(
     nextAction: RunNextAction,
     executedAction: RunNextAction,
     wait: RunWait = { reason: 'operator' },
-  ): Promise<AdvanceRunResult<TToolCall>> => {
+  ): Promise<AdvanceRunResult> => {
     await emit({
       type: 'run.paused',
       timestamp: now(),
@@ -845,7 +841,7 @@ export async function advanceRun<TToolCall>(
       nextAction: action,
     })
 
-    let modelResult: RunModelResult<TToolCall>
+    let modelResult: RunModelResult
     try {
       await options.prepareModelStep?.({
         identity: options.identity,
@@ -1117,12 +1113,10 @@ export async function advanceRun<TToolCall>(
   return decision === 'pause' ? pause(nextAction, action) : result(action)
 }
 
-export async function runDurableRun<TToolCall>(
-  options: RunMachineOptions<TToolCall>,
-): Promise<RunMachineResult> {
+export async function runDurableRun(options: RunMachineOptions): Promise<RunMachineResult> {
   let snapshot =
     options.initialSnapshot ??
-    createRunCursor<TToolCall>(options.identity, options.policy?.mode ?? 'continuous')
+    createRunCursor(options.identity, options.policy?.mode ?? 'continuous')
   snapshot = cloneValue(snapshot)
   for (;;) {
     const advanced = await advanceRun({ ...options, snapshot })

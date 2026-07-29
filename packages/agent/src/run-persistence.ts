@@ -1,5 +1,4 @@
 import type { ModelSelection, UsageInfo } from './agent-protocol'
-import type { ModelCallToolCall } from './model-call'
 import { assertRunStateInvariant, type RunCursor, type RunIdentity } from './run-machine'
 import type { BlobRef, RunPayloadKind } from './session-journal'
 
@@ -28,7 +27,7 @@ export interface RunSnapshot {
   selection: ModelSelection
   executionMode: AilaExecutionMode
   maxToolSteps: number
-  loop: RunCursor<ModelCallToolCall>
+  loop: RunCursor
   /** Semantic session branch used to materialize this run's context. */
   sessionLeafId: string
   contextRef: BlobRef
@@ -81,7 +80,7 @@ export function normalizeRunSnapshot(value: unknown): RunSnapshot {
   return snapshot
 }
 
-export function runRecoveryFromCursor(loop: RunCursor<ModelCallToolCall>): RunRecovery {
+export function runRecoveryFromCursor(loop: RunCursor): RunRecovery {
   if (loop.state.currentStep?.kind === 'tool' && loop.state.currentStep.status === 'running') {
     return {
       strategy: 'manual_review',

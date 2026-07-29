@@ -14,9 +14,9 @@ export interface AgentRuntimeInputQueue<TQueuedInput> {
   apply(input: TQueuedInput, kind: 'steer' | 'follow_up'): MaybePromise<void>
 }
 
-export interface AgentRuntimeRunOptions<TToolCall, TQueuedInput = never>
-  extends Omit<RunMachineOptions<TToolCall>, 'policy'> {
-  policy?: RunPolicy<TToolCall>
+export interface AgentRuntimeRunOptions<TQueuedInput = never>
+  extends Omit<RunMachineOptions, 'policy'> {
+  policy?: RunPolicy
   inputQueue?: AgentRuntimeInputQueue<TQueuedInput>
 }
 
@@ -28,8 +28,8 @@ export interface AgentRuntimeRunOptions<TToolCall, TQueuedInput = never>
  * pure Run Machine.
  */
 export class AgentRuntime {
-  async run<TToolCall, TQueuedInput = never>(
-    options: AgentRuntimeRunOptions<TToolCall, TQueuedInput>,
+  async run<TQueuedInput = never>(
+    options: AgentRuntimeRunOptions<TQueuedInput>,
   ): Promise<RunMachineResult> {
     const { inputQueue, policy, ...machine } = options
 
@@ -69,10 +69,7 @@ export class AgentRuntime {
   }
 }
 
-function defaultAfterModel(
-  mode: RunPolicy<unknown>['mode'],
-  toolCallCount: number,
-): RunPolicyDecision {
+function defaultAfterModel(mode: RunPolicy['mode'], toolCallCount: number): RunPolicyDecision {
   if (toolCallCount === 0) return 'complete'
   return mode === 'step' ? 'pause' : 'continue'
 }
