@@ -43,20 +43,13 @@ export interface ToolSpec extends ToolDefinition {
 
 export type ToolHandler = (args: Record<string, unknown>, ctx: ToolContext) => Promise<string>
 
-export interface ToolPackEntry {
+export interface ToolRegistration {
   spec: ToolSpec
   run: ToolHandler
 }
 
-export interface ToolPack {
-  id: string
-  name: string
-  description?: string
-  tools: ToolPackEntry[]
-}
-
 export interface ToolRegistry {
-  toolPacks: ToolPack[]
+  tools: ToolRegistration[]
   specs: ToolSpec[]
   definitions: ToolDefinition[]
   specsByName: Map<string, ToolSpec>
@@ -278,53 +271,12 @@ const BUILTIN_TOOL_HANDLERS: Record<string, ToolHandler> = {
   bash: (args, ctx) => runBash(args, ctx),
 }
 
-const BUILTIN_TOOL_PACK_DEFINITIONS = [
-  {
-    id: 'filesystem',
-    name: 'Filesystem',
-    description: 'Read and modify files inside the workspace.',
-    toolNames: ['read', 'write', 'edit'],
-  },
-  {
-    id: 'web',
-    name: 'Web',
-    description: 'Fetch fresh external information.',
-    toolNames: ['web_search'],
-  },
-  {
-    id: 'image',
-    name: 'Image',
-    description: 'Generate and store images in the local image library.',
-    toolNames: ['generate_image'],
-  },
-  {
-    id: 'shell',
-    name: 'Shell',
-    description: 'Run approved shell commands in the workspace.',
-    toolNames: ['bash'],
-  },
-]
-
-function createBuiltinToolPack(
-  definition: (typeof BUILTIN_TOOL_PACK_DEFINITIONS)[number],
-): ToolPack {
-  const tools = definition.toolNames.map((toolName) => {
-    const spec = BUILTIN_TOOL_SPECS.find((candidate) => candidate.function.name === toolName)
-    const run = BUILTIN_TOOL_HANDLERS[toolName]
-    if (!spec || !run) throw new Error(`builtin tool is not registered: ${toolName}`)
-    return { spec, run }
-  })
-
-  return {
-    id: definition.id,
-    name: definition.name,
-    description: definition.description,
-    tools,
-  }
-}
-
-export const BUILTIN_TOOL_PACKS: ToolPack[] =
-  BUILTIN_TOOL_PACK_DEFINITIONS.map(createBuiltinToolPack)
+export const BUILTIN_TOOLS: ToolRegistration[] = BUILTIN_TOOL_SPECS.map((spec) => {
+  const name = spec.function.name
+  const run = BUILTIN_TOOL_HANDLERS[name]
+  if (!run) throw new Error(`builtin tool is not registered: ${name}`)
+  return { spec, run }
+})
 
 function snapshotToolDefinition(definition: ToolDefinition): ToolDefinition {
   return {
@@ -341,44 +293,39 @@ function snapshotToolSpec(spec: ToolSpec): ToolSpec {
   }
 }
 
-function snapshotToolPack(toolPack: ToolPack): ToolPack {
+function snapshotToolRegistration(tool: ToolRegistration): ToolRegistration {
   return {
-    ...toolPack,
-    tools: toolPack.tools.map((entry) => ({
-      spec: snapshotToolSpec(entry.spec),
-      run: entry.run,
-    })),
+    spec: snapshotToolSpec(tool.spec),
+    run: tool.run,
   }
 }
 
 export function createToolRegistry(
-  toolPacks: readonly ToolPack[] = BUILTIN_TOOL_PACKS,
+  tools: readonly ToolRegistration[] = BUILTIN_TOOLS,
 ): ToolRegistry {
-  const registryToolPacks = toolPacks.map(snapshotToolPack)
+  const registryTools = tools.map(snapshotToolRegistration)
   const specs: ToolSpec[] = []
   const definitions: ToolDefinition[] = []
   const specsByName = new Map<string, ToolSpec>()
   const runnersByName = new Map<string, ToolHandler>()
 
-  for (const pack of registryToolPacks) {
-    for (const entry of pack.tools) {
-      const name = entry.spec.function.name
-      if (entry.spec.metadata.name !== name) {
-        throw new Error(`tool metadata name mismatch in "${pack.id}": ${entry.spec.metadata.name}`)
-      }
-      if (specsByName.has(name)) {
-        throw new Error(`duplicate tool registered: ${name}`)
-      }
-
-      specs.push(entry.spec)
-      definitions.push(snapshotToolDefinition(entry.spec))
-      specsByName.set(name, entry.spec)
-      runnersByName.set(name, entry.run)
+  for (const entry of registryTools) {
+    const name = entry.spec.function.name
+    if (entry.spec.metadata.name !== name) {
+      throw new Error(`tool metadata name mismatch: ${entry.spec.metadata.name}`)
     }
+    if (specsByName.has(name)) {
+      throw new Error(`duplicate tool registered: ${name}`)
+    }
+
+    specs.push(entry.spec)
+    definitions.push(snapshotToolDefinition(entry.spec))
+    specsByName.set(name, entry.spec)
+    runnersByName.set(name, entry.run)
   }
 
   return {
-    toolPacks: registryToolPacks,
+    tools: registryTools,
     specs,
     definitions,
     specsByName,
@@ -386,8 +333,10 @@ export function createToolRegistry(
   }
 }
 
-export function createDefaultToolRegistry(extraToolPacks: readonly ToolPack[] = []): ToolRegistry {
-  return createToolRegistry([...BUILTIN_TOOL_PACKS, ...extraToolPacks])
+export function createDefaultToolRegistry(
+  extraTools: readonly ToolRegistration[] = [],
+): ToolRegistry {
+  return createToolRegistry([...BUILTIN_TOOLS, ...extraTools])
 }
 
 const DEFAULT_TOOL_REGISTRY = createDefaultToolRegistry()

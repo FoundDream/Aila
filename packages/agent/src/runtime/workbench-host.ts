@@ -27,8 +27,8 @@ import type { LoadedSkill } from '../skills'
 import type {
   ToolApprovalRequest,
   ToolContext,
-  ToolPack,
   ToolPolicyDecision,
+  ToolRegistration,
   ToolRegistry,
 } from '../tools'
 import type {
@@ -71,7 +71,7 @@ import type {
   RuntimeSendResult,
   RuntimeSessionAvailability,
   RuntimeStableInstructionsInput,
-  RuntimeToolPackLoadInput,
+  RuntimeToolLoadInput,
   RuntimeTransientContextInput,
   RuntimeWorkspaceResolverInput,
 } from './api-types'
@@ -244,8 +244,8 @@ export interface WorkbenchHost {
   ) => MaybePromise<void>
   cleanupConversationAssets?: (record: ConversationRecord) => MaybePromise<void>
   persistAttachment?: (input: RuntimePersistAttachmentInput) => MaybePromise<RuntimeAttachmentBlock>
-  toolPacks?: readonly ToolPack[]
-  loadToolPacks?: (input?: RuntimeToolPackLoadInput) => Promise<readonly ToolPack[]>
+  tools?: readonly ToolRegistration[]
+  loadTools?: (input?: RuntimeToolLoadInput) => Promise<readonly ToolRegistration[]>
   skills?: readonly LoadedSkill[]
   loadSkills?: () => Promise<readonly LoadedSkill[]>
   loadSettings?: () => MaybePromise<Settings>
@@ -284,7 +284,7 @@ export interface WorkbenchHost {
 export interface WorkbenchOptions extends WorkbenchHost {
   host?: WorkbenchHost
   store?: WorkbenchStore
-  toolPacks?: readonly ToolPack[]
+  tools?: readonly ToolRegistration[]
   skills?: readonly LoadedSkill[]
   abortAllCleanupTimeoutMs?: number
 }
@@ -346,9 +346,9 @@ export interface WorkbenchRunApi {
 }
 
 export interface WorkbenchExtensionApi {
-  getToolRegistry(input?: RuntimeToolPackLoadInput): Promise<ToolRegistry>
+  getToolRegistry(input?: RuntimeToolLoadInput): Promise<ToolRegistry>
   getSkills(): Promise<LoadedSkill[]>
-  reloadToolPacks(): Promise<ToolRegistry>
+  reloadTools(): Promise<ToolRegistry>
   executeTool(input: RuntimeExecuteToolInput): Promise<string>
 }
 
@@ -356,7 +356,7 @@ export interface Workbench extends WorkbenchSessionApi, WorkbenchRunApi, Workben
 
 /**
  * Every WorkbenchHost field must be classified: merged here, or deliberately
- * excluded (`toolPacks` / `skills` flow through resolveStaticToolPacks /
+ * excluded (`tools` / `skills` flow through resolveStaticTools /
  * resolveStaticSkills instead). The exported assertion type below turns an
  * unclassified new field into a compile error.
  */
@@ -371,7 +371,7 @@ const WORKBENCH_HOST_MERGE_KEYS = [
   'onConversationAbort',
   'cleanupConversationAssets',
   'persistAttachment',
-  'loadToolPacks',
+  'loadTools',
   'loadSkills',
   'loadSettings',
   'loadStableInstructions',
@@ -395,8 +395,8 @@ const WORKBENCH_HOST_MERGE_KEYS = [
 ] as const satisfies readonly (keyof WorkbenchHost)[]
 
 type UnmergedHostKeys = Exclude<keyof WorkbenchHost, (typeof WORKBENCH_HOST_MERGE_KEYS)[number]>
-type AssertStaticPacksOnly<T extends 'toolPacks' | 'skills'> = T
-export type _WorkbenchHostUnmergedKeys = AssertStaticPacksOnly<UnmergedHostKeys>
+type AssertStaticExtensionsOnly<T extends 'tools' | 'skills'> = T
+export type _WorkbenchHostUnmergedKeys = AssertStaticExtensionsOnly<UnmergedHostKeys>
 
 export function normalizeRuntimeHost(options: WorkbenchOptions): WorkbenchHost {
   const host: WorkbenchHost = {}

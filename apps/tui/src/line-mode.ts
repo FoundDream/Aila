@@ -598,7 +598,7 @@ export async function handleSlashCommand(input: {
           throw new Error('usage: /extensions [reload]')
         }
         if (action) {
-          const registry = await runtime.reloadToolPacks()
+          const registry = await runtime.reloadTools()
           writeLine(`[extensions] reloaded, ${registry.specs.length} tools available`)
         }
         writeExtensionReport(await getExtensionReport())
@@ -606,7 +606,7 @@ export async function handleSlashCommand(input: {
       }
       case 'reload':
       case 'refresh': {
-        const registry = await runtime.reloadToolPacks()
+        const registry = await runtime.reloadTools()
         writeLine(`[extensions] reloaded, ${registry.specs.length} tools available`)
         return 'handled'
       }

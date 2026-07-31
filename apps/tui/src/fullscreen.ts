@@ -573,7 +573,7 @@ class AilaFullScreenApp {
   }
 
   private async reloadExtensions(): Promise<void> {
-    const registry = await this.runtime.reloadToolPacks()
+    const registry = await this.runtime.reloadTools()
     const message = `reloaded extensions, ${registry.specs.length} tools available`
     this.addEntry('system', 'extensions reloaded', message)
     this.setState({ status: message })

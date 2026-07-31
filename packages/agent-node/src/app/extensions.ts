@@ -4,7 +4,7 @@ import { listIntegrationDefinitions } from './integrations'
 import { type LoadedMcpServerConfig, loadMcpServerConfigs } from './mcp-config'
 import { getMcpConnectionSnapshots } from './mcp-connection-manager'
 import { getMcpOAuthStatus, type PublicMcpOAuthStatus } from './mcp-oauth'
-import { getMcpConnectionScopeKey } from './mcp-tool-pack'
+import { getMcpConnectionScopeKey } from './mcp-tools'
 import { getDataDir, getSkillsDir } from './paths'
 import { loadSkillFromDir, loadSkillsFromDir } from './skill-loader'
 

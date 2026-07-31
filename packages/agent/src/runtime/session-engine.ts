@@ -74,7 +74,7 @@ import type {
   RuntimeSendResult,
   RuntimeSessionAvailability,
   RuntimeStableInstructionsInput,
-  RuntimeToolPackLoadInput,
+  RuntimeToolLoadInput,
   RuntimeTransientContextInput,
 } from './api-types'
 import {
@@ -193,7 +193,7 @@ export class SessionRuntimeEngine {
     this.options = services.options
   }
 
-  async getToolRegistry(input?: RuntimeToolPackLoadInput): Promise<ToolRegistry> {
+  async getToolRegistry(input?: RuntimeToolLoadInput): Promise<ToolRegistry> {
     return this.services.getToolRegistry(input)
   }
 
@@ -201,8 +201,8 @@ export class SessionRuntimeEngine {
     return this.services.getSkills()
   }
 
-  async reloadToolPacks(): Promise<ToolRegistry> {
-    return this.services.reloadToolPacks()
+  async reloadTools(): Promise<ToolRegistry> {
+    return this.services.reloadTools()
   }
 
   async getConversation(conversationId: string): Promise<ConversationRecord> {

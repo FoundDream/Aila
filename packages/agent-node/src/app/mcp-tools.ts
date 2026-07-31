@@ -1,4 +1,4 @@
-import type { ToolPack, ToolPackEntry } from '@aila/agent'
+import type { ToolRegistration } from '@aila/agent'
 import {
   type LoadedMcpServerConfig,
   loadMcpServerConfigs,
@@ -7,14 +7,12 @@ import {
 import type { McpToolDefinition } from './mcp-connection-manager'
 import { callMcpTool, getAllMcpTools, syncMcpConnections } from './mcp-connection-manager'
 
-const MCP_TOOL_PACK_ID = 'mcp'
-const MCP_TOOL_PACK_NAME = 'MCP Servers'
 const MCP_RESULT_MAX_BYTES = 64 * 1024
 const MCP_INLINE_DATA_CHARS = 8192
 
 type McpContentBlock = Record<string, unknown> & { type?: unknown }
 
-export interface LoadMcpToolPackOptions {
+export interface LoadMcpToolsOptions {
   loadResult?: McpConfigLoadResult
   cwd?: string
   scopeKey?: string
@@ -143,7 +141,7 @@ function normalizeMcpCallResult(serverName: string, toolName: string, result: un
   return truncateString(formatted, MCP_RESULT_MAX_BYTES)
 }
 
-function createMcpToolEntry(tool: McpToolDefinition): ToolPackEntry {
+function createMcpTool(tool: McpToolDefinition): ToolRegistration {
   const readOnly = tool.readOnlyHint === true && tool.destructiveHint !== true
   const requiresApproval = tool.approval !== 'auto'
   return {
@@ -181,20 +179,12 @@ export function getMcpConnectionScopeKey(config: Pick<McpConfigLoadResult, 'proj
   return config.projectConfigPath
 }
 
-export async function loadMcpToolPack(
-  options: LoadMcpToolPackOptions = {},
-): Promise<ToolPack | null> {
+export async function loadMcpTools(options: LoadMcpToolsOptions = {}): Promise<ToolRegistration[]> {
   const config = options.loadResult ?? (await loadMcpServerConfigs(options.cwd))
   const scopeKey = options.scopeKey ?? getMcpConnectionScopeKey(config)
   await syncMcpConnections(config.servers, scopeKey)
   const tools = getAllMcpTools(scopeKey)
-  if (tools.length === 0) return null
-  return {
-    id: MCP_TOOL_PACK_ID,
-    name: MCP_TOOL_PACK_NAME,
-    description: 'Tools discovered from configured MCP servers.',
-    tools: tools.map(createMcpToolEntry),
-  }
+  return tools.map(createMcpTool)
 }
 
 export type { LoadedMcpServerConfig }

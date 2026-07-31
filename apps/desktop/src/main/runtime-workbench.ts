@@ -176,7 +176,7 @@ export function createDesktopRuntimeWorkbench(
       await toolApprovals.shutdown()
     },
     async reloadExtensions() {
-      const registry = await runtime.reloadToolPacks()
+      const registry = await runtime.reloadTools()
       return {
         toolCount: registry.specs.length,
       }

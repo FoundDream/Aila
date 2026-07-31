@@ -13,13 +13,13 @@ import {
 } from '@aila/agent'
 import { createDefaultNodeRuntimeHost } from '../node/runtime-host'
 import { saveImage } from './image-store'
-import { loadMcpToolPack } from './mcp-tool-pack'
+import { loadMcpTools } from './mcp-tools'
 import { getDataDir, getImagesDir } from './paths'
 import { getPersistedRuntimeStore } from './runtime-store'
 import { loadSettings } from './settings'
 import { loadSkillsFromDir } from './skill-loader'
 import { webSearch } from './web-search'
-import { WIDGET_TOOL_PACK } from './widget-tool-pack'
+import { WIDGET_TOOL } from './widget-tool'
 
 export interface CreatePersistedWorkbenchInput {
   host?: WorkbenchHost
@@ -89,7 +89,7 @@ function buildDateContext(): ChatMessage[] {
   return [{ role: 'system', content: `Current date: ${formatLocalDate()}` }]
 }
 
-function resolveToolPackCwd(input: Parameters<NonNullable<WorkbenchHost['loadToolPacks']>>[0]) {
+function resolveToolCwd(input: Parameters<NonNullable<WorkbenchHost['loadTools']>>[0]) {
   const path = input?.record?.meta.workspace?.path
   return path?.trim() ? path : undefined
 }
@@ -109,10 +109,10 @@ export function createDefaultRuntimeHost(overrides: WorkbenchHost = {}): Workben
     }),
     loadSettings,
     onToolPolicy: (request) => createToolPolicy(loadSettings().approvalMode)(request),
-    loadToolPacks: async (input) => {
-      const cwd = resolveToolPackCwd(input)
-      const mcpToolPack = await loadMcpToolPack({ cwd })
-      return [WIDGET_TOOL_PACK, ...(mcpToolPack ? [mcpToolPack] : [])]
+    loadTools: async (input) => {
+      const cwd = resolveToolCwd(input)
+      const mcpTools = await loadMcpTools({ cwd })
+      return [WIDGET_TOOL, ...mcpTools]
     },
     loadSkills: async () => (await loadSkillsFromDir()).skills,
     persistAttachment: persistRuntimeAttachment,

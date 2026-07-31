@@ -42,7 +42,7 @@ import type {
   RuntimeSendInput,
   RuntimeSendResult,
   RuntimeSessionAvailability,
-  RuntimeToolPackLoadInput,
+  RuntimeToolLoadInput,
 } from './api-types'
 import { ConversationCatalog } from './catalog'
 import { cloneRuntimeValue } from './clone'
@@ -98,7 +98,7 @@ export class WorkbenchRuntime implements Workbench {
     }
   }
 
-  async getToolRegistry(input?: RuntimeToolPackLoadInput): Promise<ToolRegistry> {
+  async getToolRegistry(input?: RuntimeToolLoadInput): Promise<ToolRegistry> {
     if (!input?.conversationId) return this.services.getToolRegistry(input)
     const engine = this.getEngine(input.conversationId)
     const record = input.record ?? (await engine.getConversation(input.conversationId))
@@ -109,8 +109,8 @@ export class WorkbenchRuntime implements Workbench {
     return this.services.getSkills()
   }
 
-  async reloadToolPacks(): Promise<ToolRegistry> {
-    return this.services.reloadToolPacks()
+  async reloadTools(): Promise<ToolRegistry> {
+    return this.services.reloadTools()
   }
 
   async createConversation(

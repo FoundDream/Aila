@@ -19,7 +19,7 @@ import type {
 } from '../session-journal'
 import type { AilaExecutionMode } from '../tool-policy'
 
-export interface RuntimeToolPackLoadInput {
+export interface RuntimeToolLoadInput {
   conversationId?: string
   record?: ConversationRecord
 }

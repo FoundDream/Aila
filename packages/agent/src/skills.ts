@@ -1,5 +1,5 @@
 /**
- * Agent Skills loader and the `skill` tool pack.
+ * Agent Skills loader and the `skill` tool.
  *
  * Implements the Agent Skills format: each skill is a directory containing a
  * SKILL.md file with YAML frontmatter (`name`, `description`, optional
@@ -15,7 +15,7 @@
  */
 
 import matter from 'gray-matter'
-import type { ToolPack } from './tools'
+import type { ToolRegistration } from './tools'
 
 export const AILA_SKILL_FILE = 'SKILL.md'
 export const SKILL_TOOL_NAME = 'skill'
@@ -194,59 +194,52 @@ function buildSkillToolDescription(skills: readonly LoadedSkill[]): string {
   return lines.join('\n')
 }
 
-export function createSkillToolPack(skills: readonly LoadedSkill[]): ToolPack | null {
+export function createSkillTool(skills: readonly LoadedSkill[]): ToolRegistration | null {
   if (skills.length === 0) return null
 
   const skillsByName = new Map(skills.map((skill) => [skill.definition.name, skill]))
 
   return {
-    id: 'skills',
-    name: 'Skills',
-    description: 'Load packaged skill instructions on demand.',
-    tools: [
-      {
-        spec: {
-          type: 'function',
-          function: {
-            name: SKILL_TOOL_NAME,
-            description: buildSkillToolDescription(skills),
-            parameters: {
-              type: 'object',
-              properties: {
-                name: {
-                  type: 'string',
-                  enum: [...skillsByName.keys()],
-                  description: 'Name of the skill to load.',
-                },
-              },
-              required: ['name'],
-              additionalProperties: false,
+    spec: {
+      type: 'function',
+      function: {
+        name: SKILL_TOOL_NAME,
+        description: buildSkillToolDescription(skills),
+        parameters: {
+          type: 'object',
+          properties: {
+            name: {
+              type: 'string',
+              enum: [...skillsByName.keys()],
+              description: 'Name of the skill to load.',
             },
           },
-          metadata: {
-            name: SKILL_TOOL_NAME,
-            readOnly: true,
-            destructive: false,
-            requiresApproval: false,
-            access: ['read'],
-            scope: ['workspace'],
-          },
-        },
-        run: async (args) => {
-          const name = args.name
-          if (typeof name !== 'string' || name.trim().length === 0) {
-            throw new Error('`name` must be a non-empty string')
-          }
-          const skill = skillsByName.get(name)
-          if (!skill) {
-            throw new Error(
-              `unknown skill: "${name}". Available skills: ${[...skillsByName.keys()].join(', ')}`,
-            )
-          }
-
-          return renderSkillInvocation(skill)
+          required: ['name'],
+          additionalProperties: false,
         },
       },
-    ],
+      metadata: {
+        name: SKILL_TOOL_NAME,
+        readOnly: true,
+        destructive: false,
+        requiresApproval: false,
+        access: ['read'],
+        scope: ['workspace'],
+      },
+    },
+    run: async (args) => {
+      const name = args.name
+      if (typeof name !== 'string' || name.trim().length === 0) {
+        throw new Error('`name` must be a non-empty string')
+      }
+      const skill = skillsByName.get(name)
+      if (!skill) {
+        throw new Error(
+          `unknown skill: "${name}". Available skills: ${[...skillsByName.keys()].join(', ')}`,
+        )
+      }
+
+      return renderSkillInvocation(skill)
+    },
   }
 }

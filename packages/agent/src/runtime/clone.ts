@@ -10,25 +10,27 @@ import type {
 import type { Settings } from '../settings-types'
 import type { LoadedSkill } from '../skills'
 import { type AilaExecutionMode, isReadOnlyToolMetadata } from '../tool-policy'
-import { createToolRegistry, type ToolContext, type ToolPack, type ToolRegistry } from '../tools'
-import type { RuntimeAttachmentBlock, RuntimeToolPackLoadInput } from './api-types'
+import {
+  createToolRegistry,
+  type ToolContext,
+  type ToolRegistration,
+  type ToolRegistry,
+} from '../tools'
+import type { RuntimeAttachmentBlock, RuntimeToolLoadInput } from './api-types'
 
 export function cloneRuntimeValue<T>(value: T): T {
   return structuredClone(value)
 }
 
-export function cloneRuntimeToolPack(toolPack: ToolPack): ToolPack {
+export function cloneRuntimeTool(tool: ToolRegistration): ToolRegistration {
   return {
-    ...toolPack,
-    tools: toolPack.tools.map((entry) => ({
-      run: entry.run,
-      spec: cloneRuntimeValue(entry.spec),
-    })),
+    run: tool.run,
+    spec: cloneRuntimeValue(tool.spec),
   }
 }
 
 export function cloneRuntimeToolRegistry(registry: ToolRegistry): ToolRegistry {
-  return createToolRegistry(registry.toolPacks.map(cloneRuntimeToolPack))
+  return createToolRegistry(registry.tools.map(cloneRuntimeTool))
 }
 
 export function filterRuntimeToolRegistryForMode(
@@ -36,13 +38,9 @@ export function filterRuntimeToolRegistryForMode(
   mode: AilaExecutionMode,
 ): ToolRegistry {
   if (mode === 'agent') return cloneRuntimeToolRegistry(registry)
-  const toolPacks = registry.toolPacks
-    .map((toolPack) => ({
-      ...toolPack,
-      tools: toolPack.tools.filter((entry) => isReadOnlyToolMetadata(entry.spec.metadata)),
-    }))
-    .filter((toolPack) => toolPack.tools.length > 0)
-  return createToolRegistry(toolPacks)
+  return createToolRegistry(
+    registry.tools.filter((tool) => isReadOnlyToolMetadata(tool.spec.metadata)),
+  )
 }
 
 export function cloneRuntimeSettings(settings: Settings): Settings {
@@ -112,9 +110,9 @@ export function cloneRuntimeConversationRecord(record: ConversationRecord): Conv
   return cloneRuntimeValue(record)
 }
 
-export function cloneRuntimeToolPackLoadInput(
-  input: RuntimeToolPackLoadInput | undefined,
-): RuntimeToolPackLoadInput | undefined {
+export function cloneRuntimeToolLoadInput(
+  input: RuntimeToolLoadInput | undefined,
+): RuntimeToolLoadInput | undefined {
   if (!input) return undefined
   return {
     ...(input.conversationId && { conversationId: input.conversationId }),

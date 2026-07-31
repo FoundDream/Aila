@@ -1,25 +1,25 @@
 import type { ConversationRecord, PersistedRunEvent } from '../conversation-core'
-import { createSkillToolPack, type LoadedSkill } from '../skills'
+import { createSkillTool, type LoadedSkill } from '../skills'
 import { createExecutionModeToolPolicy, normalizeAilaExecutionMode } from '../tool-policy'
 import {
   createDefaultToolRegistry,
   executeTool as executeRegisteredTool,
   type ToolContext,
-  type ToolPack,
+  type ToolRegistration,
   type ToolRegistry,
 } from '../tools'
 import type { WorkbenchEvent } from '../workbench-events'
 import type {
   RuntimeExecuteToolInput,
-  RuntimeToolPackLoadInput,
+  RuntimeToolLoadInput,
   RuntimeWorkspaceResolverInput,
 } from './api-types'
 import {
   cloneRuntimeSettings,
   cloneRuntimeSkill,
   cloneRuntimeSkills,
-  cloneRuntimeToolPack,
-  cloneRuntimeToolPackLoadInput,
+  cloneRuntimeTool,
+  cloneRuntimeToolLoadInput,
   cloneRuntimeToolRegistry,
   cloneRuntimeValue,
   cloneRuntimeWorkspaceRoots,
@@ -113,17 +113,17 @@ export class LifecycleDispatcher {
   }
 }
 
-export function resolveStaticToolPacks(options: WorkbenchOptions): readonly ToolPack[] {
-  return (options.host?.toolPacks ?? options.toolPacks ?? []).map(cloneRuntimeToolPack)
+export function resolveStaticTools(options: WorkbenchOptions): readonly ToolRegistration[] {
+  return (options.host?.tools ?? options.tools ?? []).map(cloneRuntimeTool)
 }
 
 export function resolveStaticSkills(options: WorkbenchOptions): readonly LoadedSkill[] {
   return (options.host?.skills ?? options.skills ?? []).map(cloneRuntimeSkill)
 }
 
-export function createRuntimeSkillToolPacks(skills: readonly LoadedSkill[]): ToolPack[] {
-  const pack = createSkillToolPack(skills)
-  return pack ? [pack] : []
+export function createRuntimeSkillTools(skills: readonly LoadedSkill[]): ToolRegistration[] {
+  const tool = createSkillTool(skills)
+  return tool ? [tool] : []
 }
 
 export class WorkbenchServices {
@@ -135,7 +135,7 @@ export class WorkbenchServices {
   readonly createRunId: () => string
   readonly createEventId: () => string
   readonly now: () => number
-  private readonly staticToolPacks: readonly ToolPack[]
+  private readonly staticTools: readonly ToolRegistration[]
   private readonly staticSkills: readonly LoadedSkill[]
   private readonly fallbackToolRegistry: ToolRegistry
   private toolRegistryLoad: Promise<ToolRegistry> | null = null
@@ -156,11 +156,11 @@ export class WorkbenchServices {
       })
     this.logger = this.host.logger ?? console
     this.lifecycle = new LifecycleDispatcher(this.host.hooks, this.logger)
-    this.staticToolPacks = resolveStaticToolPacks(options)
+    this.staticTools = resolveStaticTools(options)
     this.staticSkills = resolveStaticSkills(options)
     this.fallbackToolRegistry = createDefaultToolRegistry([
-      ...this.staticToolPacks,
-      ...createRuntimeSkillToolPacks(this.staticSkills),
+      ...this.staticTools,
+      ...createRuntimeSkillTools(this.staticSkills),
     ])
   }
 
@@ -168,8 +168,8 @@ export class WorkbenchServices {
     this.host.onEvent?.(cloneRuntimeValue(event))
   }
 
-  async getToolRegistry(input?: RuntimeToolPackLoadInput): Promise<ToolRegistry> {
-    if (!this.host.loadToolPacks && !this.host.loadSkills) {
+  async getToolRegistry(input?: RuntimeToolLoadInput): Promise<ToolRegistry> {
+    if (!this.host.loadTools && !this.host.loadSkills) {
       return cloneRuntimeToolRegistry(this.fallbackToolRegistry)
     }
     if (input) return cloneRuntimeToolRegistry(await this.loadToolRegistry(input))
@@ -183,7 +183,7 @@ export class WorkbenchServices {
     return cloneRuntimeSkills(await this.skillsLoad)
   }
 
-  async reloadToolPacks(): Promise<ToolRegistry> {
+  async reloadTools(): Promise<ToolRegistry> {
     this.toolRegistryLoad = null
     this.skillsLoad = null
     return this.getToolRegistry()
@@ -295,20 +295,17 @@ export class WorkbenchServices {
     return typeof cwd === 'function' ? cwd(cloneRuntimeValue(input)) : cwd
   }
 
-  private async loadToolRegistry(input?: RuntimeToolPackLoadInput): Promise<ToolRegistry> {
+  private async loadToolRegistry(input?: RuntimeToolLoadInput): Promise<ToolRegistry> {
     try {
-      const loaded = await this.host.loadToolPacks?.(cloneRuntimeToolPackLoadInput(input))
+      const loaded = await this.host.loadTools?.(cloneRuntimeToolLoadInput(input))
       const skills = await this.getSkills()
       return createDefaultToolRegistry([
-        ...this.staticToolPacks,
-        ...(loaded ?? []).map(cloneRuntimeToolPack),
-        ...createRuntimeSkillToolPacks(skills),
+        ...this.staticTools,
+        ...(loaded ?? []).map(cloneRuntimeTool),
+        ...createRuntimeSkillTools(skills),
       ])
     } catch (error) {
-      this.logger.warn(
-        '[runtime] tool-pack load failed; continuing with built-in/static tools:',
-        error,
-      )
+      this.logger.warn('[runtime] tool load failed; continuing with built-in/static tools:', error)
       return this.fallbackToolRegistry
     }
   }

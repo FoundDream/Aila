@@ -12,7 +12,7 @@ import {
   getTokenUsageStats,
   installSkillFromDirectory,
   listIntegrationDefinitions,
-  loadMcpToolPack,
+  loadMcpTools,
   loadSettings,
   type SaveIntegrationRequest,
   type Settings,
@@ -270,7 +270,7 @@ void app
     // doesn't pay the cold spawn + handshake cost inline. syncMcpConnections is
     // idempotent and skips already-connected servers, so the first send reuses
     // these instead of blocking on connect()/listTools().
-    void loadMcpToolPack().catch((error) => {
+    void loadMcpTools().catch((error) => {
       console.warn('[startup] MCP connection warm-up failed:', error)
     })
 
