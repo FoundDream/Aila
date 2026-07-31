@@ -6,7 +6,6 @@
     "strict": true,
     "skipLibCheck": true,
     "types": ["node"],
-    "baseUrl": ".",
     "paths": {
       "@aila/agent/host": ["../../packages/agent/src/host.ts"],
       "@aila/agent": ["../../packages/agent/src/index.ts"],
