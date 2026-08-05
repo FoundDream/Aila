@@ -57,9 +57,15 @@ export function createDefaultNodeRuntimeHost(
   const dataDir = input.dataDir ?? defaultAilaDataDir()
   const cwd = input.cwd ?? process.cwd()
   const loadSettings = input.loadSettings ?? (() => input.settings ?? loadNodeSettings(input))
+  const initialSettings = input.settings ?? loadSettings()
   const modelRegistry =
     input.modelRegistry ??
-    createModelRegistry(input.modelRegistryOptions ?? { providers: input.providers })
+    createModelRegistry(
+      input.modelRegistryOptions ?? {
+        providers: input.providers,
+        connections: initialSettings.connections,
+      },
+    )
   const imageStore =
     input.enableImages === false
       ? null
@@ -95,7 +101,7 @@ export function createDefaultNodeRuntimeHost(
     ...(imageStore
       ? {
           saveImage: imageStore.saveImage,
-          generateImage: createNodeImageGenerator(input),
+          generateImage: createNodeImageGenerator({ ...input, modelRegistry }),
           cleanupConversationAssets: imageStore.cleanupConversationImages,
         }
       : {}),

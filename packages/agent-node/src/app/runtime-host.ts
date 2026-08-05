@@ -11,7 +11,10 @@ import {
   WorkbenchRuntime,
   type WorkbenchStore,
 } from '@aila/agent'
-import { createDefaultNodeRuntimeHost } from '../node/runtime-host'
+import {
+  type CreateDefaultNodeRuntimeHostInput,
+  createDefaultNodeRuntimeHost,
+} from '../node/runtime-host'
 import { saveImage } from './image-store'
 import { loadMcpTools } from './mcp-tools'
 import { getDataDir, getImagesDir } from './paths'
@@ -25,6 +28,10 @@ export interface CreatePersistedWorkbenchInput {
   host?: WorkbenchHost
   options?: Omit<WorkbenchOptions, 'host' | 'store'>
   store?: WorkbenchStore
+  runtime?: Omit<
+    CreateDefaultNodeRuntimeHostInput,
+    'dataDir' | 'host' | 'imageDir' | 'loadSettings'
+  >
 }
 
 async function persistRuntimeAttachment(
@@ -94,7 +101,10 @@ function resolveToolCwd(input: Parameters<NonNullable<WorkbenchHost['loadTools']
   return path?.trim() ? path : undefined
 }
 
-export function createDefaultRuntimeHost(overrides: WorkbenchHost = {}): WorkbenchHost {
+export function createDefaultRuntimeHost(
+  overrides: WorkbenchHost = {},
+  runtime: CreatePersistedWorkbenchInput['runtime'] = {},
+): WorkbenchHost {
   const overrideStableInstructions = overrides.loadStableInstructions
   const overrideTransientContext = overrides.loadTransientContext
   const hostOverrides = { ...overrides }
@@ -103,6 +113,7 @@ export function createDefaultRuntimeHost(overrides: WorkbenchHost = {}): Workben
 
   return {
     ...createDefaultNodeRuntimeHost({
+      ...runtime,
       dataDir: getDataDir(),
       imageDir: getImagesDir(),
       loadSettings,
@@ -136,6 +147,6 @@ export function createPersistedWorkbench(
   return new WorkbenchRuntime({
     ...(input.options ?? {}),
     store: input.store ?? getPersistedRuntimeStore(),
-    host: createDefaultRuntimeHost(input.host),
+    host: createDefaultRuntimeHost(input.host, input.runtime),
   })
 }

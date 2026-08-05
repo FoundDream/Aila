@@ -37,6 +37,7 @@ export type RunNextAction =
   | { type: 'model'; reason: RunContinuationReason }
   | { type: 'tools'; toolCallIds: string[] }
   | { type: 'compact'; reason: 'preflight' | 'provider_overflow' }
+  | { type: 'finalize'; outcome: 'completed' | 'failed' | 'cancelled'; error?: string }
 
 export type RunWaitReason = 'operator' | 'approval' | 'user_input'
 
@@ -131,6 +132,7 @@ export type RunTransition =
       identity: RunIdentity
       step: RunStep
       reason: string
+      nextAction?: RunNextAction
     }
 
 export interface RunModelResult {
@@ -416,12 +418,12 @@ export function reduceRunTransition(state: RunState, transition: RunTransition):
       }))
       return {
         ...state,
-        status: 'cancelled',
+        status: transition.nextAction ? 'running' : 'cancelled',
         currentStep: undefined,
         steps,
-        nextAction: undefined,
+        nextAction: transition.nextAction ? cloneValue(transition.nextAction) : undefined,
         wait: undefined,
-        error: transition.reason,
+        error: transition.nextAction ? undefined : transition.reason,
       }
     }
   }
@@ -441,7 +443,9 @@ function eventNextAction(event: RunEvent): RunNextAction | undefined {
   const value = event.data?.nextAction
   if (!value || typeof value !== 'object') return undefined
   const type = (value as { type?: unknown }).type
-  if (type !== 'model' && type !== 'tools' && type !== 'compact') return undefined
+  if (type !== 'model' && type !== 'tools' && type !== 'compact' && type !== 'finalize') {
+    return undefined
+  }
   return cloneValue(value as RunNextAction)
 }
 
@@ -572,6 +576,7 @@ function transitionFromRunEvent(event: RunEvent): RunTransition | null {
         identity,
         step: identityStep,
         reason: eventString(event, 'reason') ?? 'Agent step cancelled',
+        nextAction: eventNextAction(event),
       }
     }
     default:
@@ -690,6 +695,7 @@ export async function advanceRun(options: AdvanceRunOptions): Promise<AdvanceRun
     error: string,
     action: RunNextAction,
   ): Promise<AdvanceRunResult> => {
+    const nextAction: RunNextAction = { type: 'finalize', outcome, error }
     if (outcome === 'cancelled') {
       await emit({
         type: 'step.cancelled',
@@ -697,12 +703,7 @@ export async function advanceRun(options: AdvanceRunOptions): Promise<AdvanceRun
         identity: options.identity,
         step,
         reason: error,
-      })
-      await emit({
-        type: 'run.cancelled',
-        timestamp: now(),
-        identity: options.identity,
-        reason: error,
+        nextAction,
       })
     } else {
       await emit({
@@ -711,12 +712,7 @@ export async function advanceRun(options: AdvanceRunOptions): Promise<AdvanceRun
         identity: options.identity,
         step,
         error,
-      })
-      await emit({
-        type: 'run.failed',
-        timestamp: now(),
-        identity: options.identity,
-        error,
+        nextAction,
       })
     }
     return result(action)
@@ -761,6 +757,28 @@ export async function advanceRun(options: AdvanceRunOptions): Promise<AdvanceRun
   ) {
     return result()
   }
+  const action = snapshot.state.nextAction
+  if (!action) throw new Error('running agent run is missing its next action')
+  if (action.type === 'finalize') {
+    if (action.outcome === 'completed') {
+      await emit({ type: 'run.completed', timestamp: now(), identity: options.identity })
+    } else if (action.outcome === 'cancelled') {
+      await emit({
+        type: 'run.cancelled',
+        timestamp: now(),
+        identity: options.identity,
+        reason: action.error ?? 'Agent run cancelled',
+      })
+    } else {
+      await emit({
+        type: 'run.failed',
+        timestamp: now(),
+        identity: options.identity,
+        error: action.error ?? 'Agent run failed',
+      })
+    }
+    return result(action)
+  }
   if (options.signal.aborted) {
     await emit({
       type: 'run.cancelled',
@@ -771,8 +789,6 @@ export async function advanceRun(options: AdvanceRunOptions): Promise<AdvanceRun
     return result()
   }
 
-  const action = snapshot.state.nextAction
-  if (!action) throw new Error('running agent run is missing its next action')
   if (action.type === 'compact') {
     const step = createStep('compact')
     await emit({
@@ -906,16 +922,16 @@ export async function advanceRun(options: AdvanceRunOptions): Promise<AdvanceRun
           toolCalls: snapshot.pendingToolCalls,
         })) ?? 'complete'
       const nextAction: RunNextAction = { type: 'model', reason: 'follow_up' }
+      const completedAction: RunNextAction = { type: 'finalize', outcome: 'completed' }
       await emit({
         type: 'step.completed',
         timestamp: now(),
         identity: options.identity,
         step: modelStep,
-        ...(decision === 'complete' ? {} : { nextAction }),
+        nextAction: decision === 'complete' ? completedAction : nextAction,
       })
       if (decision === 'pause') return pause(nextAction, action)
       if (decision === 'continue') return result(action)
-      await emit({ type: 'run.completed', timestamp: now(), identity: options.identity })
       return result(action)
     }
     if (!toolsEnabled) {
@@ -931,8 +947,8 @@ export async function advanceRun(options: AdvanceRunOptions): Promise<AdvanceRun
         timestamp: now(),
         identity: options.identity,
         step: modelStep,
+        nextAction: { type: 'finalize', outcome: 'completed' },
       })
-      await emit({ type: 'run.completed', timestamp: now(), identity: options.identity })
       return result(action)
     }
 
@@ -950,8 +966,8 @@ export async function advanceRun(options: AdvanceRunOptions): Promise<AdvanceRun
         timestamp: now(),
         identity: options.identity,
         step: modelStep,
+        nextAction: { type: 'finalize', outcome: 'completed' },
       })
-      await emit({ type: 'run.completed', timestamp: now(), identity: options.identity })
       return result(action)
     }
     await emit({

@@ -1,6 +1,6 @@
 import { findModel, MODEL_CATALOG } from '@shared/models'
 import { useCallback, useMemo, useRef } from 'react'
-import type { ModelSelection, ProviderId, Settings } from '../../types'
+import type { ModelSelection, ProviderConnectionSnapshot, ProviderId, Settings } from '../../types'
 
 export interface ModelSelectionApi {
   selection: ModelSelection | null
@@ -12,12 +12,19 @@ export interface ModelSelectionApi {
 function pickInitialSelection(
   settings: Settings | null,
   configured: ProviderId[],
+  connections: ProviderConnectionSnapshot[],
 ): ModelSelection | null {
   if (!settings) return null
   const def = settings.defaultModel
   if (def && configured.includes(def.providerId)) return def
   const first = configured[0]
   if (!first) return null
+  const connection = connections.find((candidate) => candidate.profile.id === first)
+  const connectionModel =
+    connection?.profile.defaultModel ??
+    connection?.profile.enabledModelIds?.[0] ??
+    connection?.profile.models?.[0]?.id
+  if (connectionModel) return { providerId: first, modelId: connectionModel }
   const fallback = MODEL_CATALOG.find((m) => m.providerId === first)
   return fallback ? { providerId: first, modelId: fallback.modelId } : null
 }
@@ -28,11 +35,12 @@ function pickInitialSelection(
 export function useModelSelection(
   settings: Settings | null,
   configuredProviders: ProviderId[],
+  connections: ProviderConnectionSnapshot[],
   onUpdateSettings: (settings: Settings) => Promise<void>,
 ): ModelSelectionApi {
   const selection = useMemo(
-    () => pickInitialSelection(settings, configuredProviders),
-    [settings, configuredProviders],
+    () => pickInitialSelection(settings, configuredProviders, connections),
+    [settings, configuredProviders, connections],
   )
   const selectionRef = useRef<ModelSelection | null>(selection)
   selectionRef.current = selection
@@ -40,8 +48,15 @@ export function useModelSelection(
   const contextLength = useMemo(() => {
     if (!selection) return null
     const meta = findModel(selection.providerId, selection.modelId)
-    return meta?.contextLength ? meta.contextLength : null
-  }, [selection])
+    if (meta?.contextLength) return meta.contextLength
+    const connection = connections.find(
+      (candidate) => candidate.profile.id === selection.providerId,
+    )
+    return (
+      connection?.profile.models?.find((model) => model.id === selection.modelId)?.contextLength ??
+      null
+    )
+  }, [selection, connections])
 
   const handleSelectionChange = useCallback(
     (next: ModelSelection) => {

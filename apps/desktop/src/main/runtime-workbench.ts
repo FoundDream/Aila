@@ -28,6 +28,7 @@ import {
   ToolApprovalStore,
   type Workbench,
 } from '@aila/agent'
+import type { CreatePersistedWorkbenchInput } from '@aila/agent-node/app'
 import { createPersistedWorkbench } from '@aila/agent-node/app'
 import type { IpcMain } from 'electron'
 import {
@@ -93,6 +94,7 @@ export interface DesktopRuntimeWorkbench {
 export interface CreateDesktopRuntimeWorkbenchInput {
   emit: DesktopRuntimeEmitter
   logger?: Pick<Console, 'error' | 'warn'>
+  runtime?: CreatePersistedWorkbenchInput['runtime']
 }
 
 export function createDesktopRuntimeWorkbench(
@@ -122,6 +124,7 @@ export function createDesktopRuntimeWorkbench(
   }
 
   runtime = createPersistedWorkbench({
+    runtime: input.runtime,
     host: {
       onEvent: (event) => input.emit(event.type, event.data),
       onToolApproval: requestToolApproval,

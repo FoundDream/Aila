@@ -14,6 +14,14 @@ export interface ToolCall {
   id: string
   type: 'function'
   function: { name: string; arguments: string }
+  providerOptions?: ProviderMessageOptions
+}
+
+export type ProviderMessageOptions = Record<string, Record<string, unknown>>
+
+export interface AssistantReasoningPart {
+  text: string
+  providerOptions?: ProviderMessageOptions
 }
 
 /** Multimodal user content. Image urls are aila-image:// references resolved by the host stream. */
@@ -24,8 +32,20 @@ export type UserContentPart =
 export type ChatMessage =
   | { role: 'system'; content: string }
   | { role: 'user'; content: string | UserContentPart[] }
-  | { role: 'assistant'; content: string; tool_calls?: ToolCall[] }
-  | { role: 'tool'; tool_call_id: string; content: string }
+  | {
+      role: 'assistant'
+      content: string
+      tool_calls?: ToolCall[]
+      reasoning?: AssistantReasoningPart[]
+      providerOptions?: ProviderMessageOptions
+    }
+  | {
+      role: 'tool'
+      tool_call_id: string
+      content: string
+      providerOptions?: ProviderMessageOptions
+      toolResultProviderOptions?: ProviderMessageOptions
+    }
 
 export interface ToolCallEvent {
   conversationId: string

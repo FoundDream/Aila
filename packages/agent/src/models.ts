@@ -6,7 +6,22 @@
  * Catalog snapshot date: 2026-05-02 (sourced from OpenRouter live /models).
  */
 
-export type KnownProviderId = 'anthropic' | 'openai' | 'google' | 'deepseek' | 'openrouter'
+export type KnownProviderId =
+  | 'anthropic'
+  | 'openai'
+  | 'google'
+  | 'deepseek'
+  | 'openrouter'
+  | 'kimi-coding-plan'
+  | 'minimax-coding-plan'
+  | 'zai-coding-plan'
+  | 'tencent-coding-plan'
+  | 'volcengine-coding-plan'
+  | 'alibaba-coding-plan-cn'
+  | 'alibaba-coding-plan'
+  | 'claude-subscription'
+  | 'openai-codex'
+  | 'github-copilot'
 
 export type ProviderId = KnownProviderId | (string & {})
 
@@ -51,6 +66,10 @@ export interface ModelPricing {
 }
 
 export interface ModelDescriptor {
+  /** Connection identity used by settings and credentials. Defaults to provider. */
+  connectionId?: ProviderId
+  /** Provider implementation selected by the connection. Defaults to provider. */
+  providerType?: string
   provider: ProviderId
   modelId: string
   api: ModelApi
@@ -186,6 +205,90 @@ export const MODEL_CATALOG: ModelEntry[] = [
     contextLength: 1_048_576,
     tags: ['cheap', 'fast'],
   },
+
+  // Coding plans and account-backed providers. Credentials may be API keys or
+  // OAuth access tokens; the Node credential resolver owns that distinction.
+  {
+    providerId: 'kimi-coding-plan',
+    modelId: 'k3',
+    displayName: 'Kimi K3',
+    contextLength: 262_144,
+    tags: ['coding', 'reasoning'],
+    api: 'anthropic-messages',
+    capabilities: { tools: true, reasoning: true },
+  },
+  {
+    providerId: 'kimi-coding-plan',
+    modelId: 'kimi-for-coding',
+    displayName: 'Kimi for Coding',
+    contextLength: 262_144,
+    tags: ['coding'],
+    api: 'anthropic-messages',
+    capabilities: { tools: true },
+  },
+  {
+    providerId: 'claude-subscription',
+    modelId: 'claude-sonnet-4-5-20250929',
+    displayName: 'Claude Sonnet 4.5',
+    contextLength: 200_000,
+    tags: ['coding'],
+    api: 'anthropic-messages',
+    capabilities: { tools: true, reasoning: true, vision: true },
+  },
+  {
+    providerId: 'claude-subscription',
+    modelId: 'claude-opus-4-1-20250805',
+    displayName: 'Claude Opus 4.1',
+    contextLength: 200_000,
+    tags: ['coding', 'reasoning'],
+    api: 'anthropic-messages',
+    capabilities: { tools: true, reasoning: true, vision: true },
+  },
+  {
+    providerId: 'openai-codex',
+    modelId: 'gpt-5.5',
+    displayName: 'GPT-5.5 Codex',
+    contextLength: 400_000,
+    tags: ['coding', 'reasoning'],
+    api: 'openai-responses',
+    capabilities: { tools: true, reasoning: true, vision: true },
+  },
+  {
+    providerId: 'openai-codex',
+    modelId: 'gpt-5.4',
+    displayName: 'GPT-5.4 Codex',
+    contextLength: 400_000,
+    tags: ['coding', 'reasoning'],
+    api: 'openai-responses',
+    capabilities: { tools: true, reasoning: true, vision: true },
+  },
+  {
+    providerId: 'openai-codex',
+    modelId: 'gpt-5.4-mini',
+    displayName: 'GPT-5.4 mini Codex',
+    contextLength: 400_000,
+    tags: ['coding', 'fast'],
+    api: 'openai-responses',
+    capabilities: { tools: true, reasoning: true, vision: true },
+  },
+  {
+    providerId: 'openai-codex',
+    modelId: 'gpt-5.3-codex-spark',
+    displayName: 'GPT-5.3 Codex Spark',
+    contextLength: 400_000,
+    tags: ['coding', 'fast'],
+    api: 'openai-responses',
+    capabilities: { tools: true, reasoning: true },
+  },
+  {
+    providerId: 'github-copilot',
+    modelId: 'gpt-5.4',
+    displayName: 'GPT-5.4',
+    contextLength: 400_000,
+    tags: ['coding'],
+    api: 'openai-chat-completions',
+    capabilities: { tools: true, reasoning: true, vision: true },
+  },
 ]
 
 // Vision-only helper choices used by the fallback bridge. These are not shown
@@ -282,6 +385,16 @@ export const PROVIDER_ORDER: ProviderId[] = [
   'google',
   'deepseek',
   'openrouter',
+  'kimi-coding-plan',
+  'minimax-coding-plan',
+  'zai-coding-plan',
+  'tencent-coding-plan',
+  'volcengine-coding-plan',
+  'alibaba-coding-plan-cn',
+  'alibaba-coding-plan',
+  'claude-subscription',
+  'openai-codex',
+  'github-copilot',
 ]
 
 export const PROVIDER_LABELS: Record<KnownProviderId, string> = {
@@ -290,6 +403,16 @@ export const PROVIDER_LABELS: Record<KnownProviderId, string> = {
   google: 'Google',
   deepseek: 'DeepSeek',
   openrouter: 'OpenRouter',
+  'kimi-coding-plan': 'Kimi Coding Plan',
+  'minimax-coding-plan': 'MiniMax Coding Plan',
+  'zai-coding-plan': 'Z.AI Coding Plan',
+  'tencent-coding-plan': 'Tencent Coding Plan',
+  'volcengine-coding-plan': 'Volcengine Ark Coding Plan',
+  'alibaba-coding-plan-cn': 'Alibaba Coding Plan (China)',
+  'alibaba-coding-plan': 'Alibaba Coding Plan',
+  'claude-subscription': 'Claude Subscription',
+  'openai-codex': 'ChatGPT / Codex',
+  'github-copilot': 'GitHub Copilot',
 }
 
 export const PROVIDER_DEFAULT_API: Record<KnownProviderId, ModelApi> = {
@@ -298,6 +421,16 @@ export const PROVIDER_DEFAULT_API: Record<KnownProviderId, ModelApi> = {
   google: 'google-generative-ai',
   deepseek: 'openai-chat-completions',
   openrouter: 'openai-chat-completions',
+  'kimi-coding-plan': 'anthropic-messages',
+  'minimax-coding-plan': 'anthropic-messages',
+  'zai-coding-plan': 'openai-chat-completions',
+  'tencent-coding-plan': 'openai-chat-completions',
+  'volcengine-coding-plan': 'openai-chat-completions',
+  'alibaba-coding-plan-cn': 'openai-chat-completions',
+  'alibaba-coding-plan': 'openai-chat-completions',
+  'claude-subscription': 'anthropic-messages',
+  'openai-codex': 'openai-responses',
+  'github-copilot': 'openai-chat-completions',
 }
 
 export function providerLabel(providerId: ProviderId): string {

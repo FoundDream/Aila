@@ -36,6 +36,7 @@ export type ModelCallStreamEvent =
   | { type: 'tool-error'; toolCallId: string; toolName: string; error: unknown }
   | { type: 'finish-step'; usage?: ModelCallUsage }
   | { type: 'finish'; totalUsage?: ModelCallUsage }
+  | { type: 'response-messages'; messages: ChatMessage[] }
   | { type: 'abort' }
   | { type: 'error'; error: unknown }
 
@@ -75,6 +76,7 @@ export interface ModelCallResult {
   resolvedToolResults: ModelCallResolvedToolResult[]
   stepUsage: ModelCallUsage[]
   totalUsage?: ModelCallUsage
+  responseMessages?: ChatMessage[]
   error?: string
 }
 

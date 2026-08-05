@@ -1,4 +1,5 @@
 export type {
+  AssistantReasoningPart,
   ChatMessage,
   DeltaEvent,
   DoneEvent,
@@ -7,6 +8,7 @@ export type {
   ImageBlockEvent,
   ModelInfo,
   ModelSelection,
+  ProviderMessageOptions,
   RunEvent,
   RunEventSink,
   RunEventType,
@@ -146,6 +148,20 @@ export {
   providerLabel,
   VISION_MODEL_CATALOG,
 } from './models'
+export type {
+  ConnectionCredentialStatus,
+  ConnectionModel,
+  ConnectionModelDiscoveryResult,
+  ConnectionProfile,
+  ConnectionTestErrorClass,
+  ConnectionTestResult,
+  ProviderAuthKind,
+  ProviderConnectionSnapshot,
+  ProviderDefinition,
+  ProviderModelDiscovery,
+  ProviderRuntimeAdapter,
+  ResolvedProviderCredential,
+} from './provider-types'
 export type { RunIdentity } from './run-machine'
 export {
   AILA_RUN_PAYLOAD_SCHEMA_VERSION,

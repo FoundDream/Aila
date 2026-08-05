@@ -34,7 +34,8 @@ import {
   reduceRunTransition,
 } from '@aila/agent/internal'
 import { AssistantMessageBuilder } from './assistant-message-builder'
-import { MissingApiKeyError, type NodeAuthInput, requireApiKey } from './auth'
+import type { NodeAuthInput } from './auth'
+import { type CredentialResolver, createCredentialResolver } from './credential-resolver'
 import { createDefaultModelStreamClient } from './default-model-stream'
 import { createProviderModelCallExecutor } from './model-call-executor'
 import { prepareModelInput } from './model-input-pipeline'
@@ -84,6 +85,8 @@ export interface DurableRunExecutorOptions extends NodeAuthInput {
   protocolRegistry?: ProtocolRegistry
   protocolAdapters?: ProtocolAdapter[]
   modelStreamClient?: ModelStreamClient
+  useNativeProtocols?: boolean
+  credentialResolver?: CredentialResolver
   settings?: Settings
   loadSettings?: () => Settings
   imageDir?: string
@@ -103,14 +106,23 @@ export function createDurableRunExecutor(
 ): DurableRunExecutor {
   const modelRegistry =
     options.modelRegistry ??
-    createModelRegistry(options.modelRegistryOptions ?? { providers: options.providers })
+    createModelRegistry(
+      options.modelRegistryOptions ?? {
+        providers: options.providers,
+        connections: options.settings?.connections,
+      },
+    )
   const protocolRegistry =
     options.protocolRegistry ?? createProtocolRegistry(options.protocolAdapters)
+  const credentialResolver =
+    options.credentialResolver ?? createCredentialResolver({ ...options, modelRegistry })
   const modelStreamClient =
     options.modelStreamClient ??
     createDefaultModelStreamClient({
       protocolRegistry,
+      modelRegistry,
       imageDir: options.imageDir,
+      useNativeProtocols: options.useNativeProtocols,
     })
   const modelCallExecutor = createProviderModelCallExecutor({ modelStreamClient })
   const toolResultStore =
@@ -250,6 +262,9 @@ export function createDurableRunExecutor(
         options.settings ??
         options.loadSettings?.() ?? { apiKeys: {}, defaultModel: null },
     )
+    for (const connection of settings.connections ?? []) {
+      modelRegistry.registerConnection(connection)
+    }
     const descriptor = modelRegistry.resolve(selection)
     if (!runSnapshot) {
       emitRunEvent('turn.started', {
@@ -272,30 +287,6 @@ export function createDurableRunExecutor(
         messageId: assistantMessageId,
         block: imageBlock,
       })
-    }
-
-    let apiKey: string
-    try {
-      apiKey = requireApiKey(descriptor, {
-        ...options,
-        settings,
-      })
-    } catch (err) {
-      const message =
-        err instanceof MissingApiKeyError
-          ? `No API key for ${err.providerId}. Configure an API key and retry.`
-          : err instanceof Error
-            ? err.message
-            : String(err)
-      await persistPreLoopFailure(message)
-      await callAsyncStreamHandler(handlers.onError, {
-        conversationId,
-        messageId: assistantMessageId,
-        error: message,
-        message: builder.build(assistantMessageId, 'error', selection, message),
-      })
-      emitRunEvent('turn.failed', { error: message })
-      return
     }
 
     try {
@@ -352,12 +343,18 @@ export function createDurableRunExecutor(
           text,
         ]),
       )
+      const assistantMessageByModelStep = new Map<
+        number,
+        Extract<ChatMessage, { role: 'assistant' }>
+      >()
+      const responseMessagesByModelStep = new Map<number, ChatMessage[]>()
       const persistRunPayload = async (input: {
         kind: RunPayloadKind
         label: string
         stepId: string
         data: unknown
         modelMessage?: ChatMessage
+        modelMessages?: ChatMessage[]
       }): Promise<void> => {
         if (!appendSessionEntry) return
         const timestamp = Date.now()
@@ -376,6 +373,9 @@ export function createDurableRunExecutor(
             kind: input.kind,
             label: input.label,
             ...(input.modelMessage ? { modelMessage: cloneAgentValue(input.modelMessage) } : {}),
+            ...(input.modelMessages
+              ? { modelMessages: cloneAgentMessages(input.modelMessages) }
+              : {}),
             assistantMessage: builder.build(assistantMessageId, 'streaming', selection),
           },
         })
@@ -525,10 +525,11 @@ export function createDurableRunExecutor(
               ...(settings.promptCache ? { cache: cloneAgentValue(settings.promptCache) } : {}),
             },
           })
+          const credential = await credentialResolver.resolve({ descriptor, settings })
           const result = await modelCallExecutor.execute(
             {
               descriptor,
-              apiKey,
+              apiKey: credential.value,
               conversationId,
               messages: requestMessages,
               ...(contextPlan ? { contextPlan } : {}),
@@ -631,6 +632,7 @@ export function createDurableRunExecutor(
                   break
                 case 'finish-step':
                 case 'finish':
+                case 'response-messages':
                 case 'abort':
                 case 'error':
                   break
@@ -661,18 +663,39 @@ export function createDurableRunExecutor(
 
           assistantTextByModelStep.set(modelStepIndex, result.text)
           const modelCallCompletedAt = Date.now()
-          const responseModelMessage: ChatMessage = {
+          const fallbackResponseModelMessage: Extract<ChatMessage, { role: 'assistant' }> = {
             role: 'assistant',
             content: result.text,
             ...(result.toolCalls.length > 0
               ? { tool_calls: result.toolCalls.map(toChatToolCall) }
               : {}),
           }
+          const responseModelMessages =
+            result.responseMessages && result.responseMessages.length > 0
+              ? cloneAgentMessages(result.responseMessages)
+              : [
+                  fallbackResponseModelMessage,
+                  ...result.resolvedToolResults.map(
+                    (resolved): ChatMessage => ({
+                      role: 'tool',
+                      tool_call_id: resolved.toolCallId,
+                      content: resolved.error ?? stringifyToolOutput(resolved.output),
+                    }),
+                  ),
+                ]
+          const responseModelMessage =
+            responseModelMessages.find(
+              (message): message is Extract<ChatMessage, { role: 'assistant' }> =>
+                message.role === 'assistant',
+            ) ?? fallbackResponseModelMessage
+          assistantMessageByModelStep.set(modelStepIndex, cloneAgentValue(responseModelMessage))
+          responseMessagesByModelStep.set(modelStepIndex, cloneAgentMessages(responseModelMessages))
           await persistRunPayload({
             kind: 'model_response',
             label: `Model response · ${result.outcome}`,
             stepId: step.stepId,
             modelMessage: responseModelMessage,
+            modelMessages: responseModelMessages,
             data: {
               modelStepIndex,
               startedAt: modelCallStartedAt,
@@ -699,14 +722,7 @@ export function createDurableRunExecutor(
                 )
               : []
           if (pendingToolCalls.length === 0) {
-            modelMessages.push(responseModelMessage)
-            for (const resolved of result.resolvedToolResults) {
-              modelMessages.push({
-                role: 'tool',
-                tool_call_id: resolved.toolCallId,
-                content: resolved.error ?? stringifyToolOutput(resolved.output),
-              })
-            }
+            modelMessages.push(...cloneAgentMessages(responseModelMessages))
           }
           toolCallsByModelStep.set(modelStepIndex, cloneAgentValue(pendingToolCalls))
           return {
@@ -788,11 +804,29 @@ export function createDurableRunExecutor(
           activeStepId = step.stepId
           const batchCalls = toolCallsByModelStep.get(modelStepIndex) ?? [toolCall]
           if (toolCallIndex === 0) {
-            modelMessages.push({
-              role: 'assistant',
-              content: assistantTextByModelStep.get(modelStepIndex) ?? '',
-              tool_calls: batchCalls.map(toChatToolCall),
-            })
+            const assistantMessage =
+              assistantMessageByModelStep.get(modelStepIndex) ??
+              ({
+                role: 'assistant',
+                content: assistantTextByModelStep.get(modelStepIndex) ?? '',
+                tool_calls: batchCalls.map(toChatToolCall),
+              } satisfies Extract<ChatMessage, { role: 'assistant' }>)
+            const alreadyPersisted = modelMessages.some(
+              (message) =>
+                message.role === 'assistant' &&
+                message.tool_calls?.some((call) =>
+                  batchCalls.some((batch) => batch.id === call.id),
+                ),
+            )
+            if (!alreadyPersisted) modelMessages.push(cloneAgentValue(assistantMessage))
+            for (const responseMessage of responseMessagesByModelStep.get(modelStepIndex) ?? []) {
+              if (responseMessage.role !== 'tool') continue
+              const existing = modelMessages.some(
+                (message) =>
+                  message.role === 'tool' && message.tool_call_id === responseMessage.tool_call_id,
+              )
+              if (!existing) modelMessages.push(cloneAgentValue(responseMessage))
+            }
           }
           let toolResults = toolResultsByModelStep.get(modelStepIndex)
           if (!toolResults) {
@@ -1145,6 +1179,7 @@ function runTransitionData(transition: RunTransition): Record<string, unknown> |
         attempt: transition.step.attempt,
         ...(transition.step.toolCallId ? { toolCallId: transition.step.toolCallId } : {}),
         reason: transition.reason,
+        ...(transition.nextAction ? { nextAction: transition.nextAction } : {}),
       }
   }
 }

@@ -140,6 +140,7 @@ export function describeNextAction(
       ? '1 pending tool call'
       : `${action.toolCallIds.length} pending tool calls`
   }
+  if (action.type === 'finalize') return `finalize run (${action.outcome})`
   return `context compaction (${action.reason.replaceAll('_', ' ')})`
 }
 

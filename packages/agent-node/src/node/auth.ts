@@ -3,6 +3,8 @@ import type { NodeProviderConfig } from './model-registry'
 
 export interface NodeAuthInput {
   apiKeys?: Partial<Record<ProviderId, string | undefined>>
+  /** Secret values keyed by connection credentialRef or connection id. */
+  credentials?: Record<string, string | undefined>
   settings?: Settings
   providers?: Record<string, Omit<NodeProviderConfig, 'provider'>>
   env?: NodeJS.ProcessEnv
@@ -20,6 +22,16 @@ export const ENV_KEY_BY_PROVIDER: Record<string, string> = {
   google: 'GOOGLE_GENERATIVE_AI_API_KEY',
   deepseek: 'DEEPSEEK_API_KEY',
   openrouter: 'OPENROUTER_API_KEY',
+  'kimi-coding-plan': 'KIMI_CODING_API_KEY',
+  'minimax-coding-plan': 'MINIMAX_CODING_API_KEY',
+  'zai-coding-plan': 'ZAI_CODING_API_KEY',
+  'tencent-coding-plan': 'TENCENT_CODING_API_KEY',
+  'volcengine-coding-plan': 'VOLCENGINE_CODING_API_KEY',
+  'alibaba-coding-plan-cn': 'ALIBABA_CODING_API_KEY',
+  'alibaba-coding-plan': 'ALIBABA_CODING_API_KEY',
+  'claude-subscription': 'CLAUDE_CODE_OAUTH_TOKEN',
+  'openai-codex': 'CODEX_OAUTH_TOKEN',
+  'github-copilot': 'GITHUB_COPILOT_TOKEN',
 }
 
 export function resolveApiKey(

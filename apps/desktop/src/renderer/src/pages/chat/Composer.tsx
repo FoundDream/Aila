@@ -29,6 +29,7 @@ import type {
   ChatAttachmentInput,
   ExtensionSkillReport,
   ModelSelection,
+  ProviderConnectionSnapshot,
   ProviderId,
   Settings,
   UsageInfo,
@@ -45,6 +46,7 @@ interface ComposerProps {
   usage?: UsageInfo | null
   contextLength?: number | null
   configuredProviders: ProviderId[]
+  connections: ProviderConnectionSnapshot[]
   selection: ModelSelection | null
   onSelectionChange: (selection: ModelSelection) => void
   onOpenSettings: () => void
@@ -447,6 +449,7 @@ export function Composer({
   usage,
   contextLength,
   configuredProviders,
+  connections,
   selection,
   onSelectionChange,
   onOpenSettings,
@@ -1032,6 +1035,7 @@ export function Composer({
               )}
               <ModelPicker
                 configuredProviders={configuredProviders}
+                connections={connections}
                 selection={selection}
                 onChange={onSelectionChange}
                 onOpenSettings={onOpenSettings}

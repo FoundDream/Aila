@@ -25,6 +25,7 @@ export function createProviderModelCallExecutor(
       const resolvedToolResults: ModelCallResult['resolvedToolResults'] = []
       const stepUsage: ModelCallResult['stepUsage'] = []
       let totalUsage: ModelCallResult['totalUsage']
+      let responseMessages: ModelCallResult['responseMessages']
 
       try {
         const stream = options.modelStreamClient.stream(toModelStreamInput(input))
@@ -60,6 +61,9 @@ export function createProviderModelCallExecutor(
             case 'finish':
               if (event.totalUsage) totalUsage = structuredClone(event.totalUsage)
               break
+            case 'response-messages':
+              responseMessages = structuredClone(event.messages)
+              break
             case 'abort':
               return result('cancelled', 'abort_signal')
             case 'error':
@@ -83,6 +87,7 @@ export function createProviderModelCallExecutor(
           resolvedToolResults: structuredClone(resolvedToolResults),
           stepUsage: structuredClone(stepUsage),
           ...(totalUsage ? { totalUsage: structuredClone(totalUsage) } : {}),
+          ...(responseMessages ? { responseMessages: structuredClone(responseMessages) } : {}),
           ...(error ? { error } : {}),
         }
       }

@@ -24,6 +24,7 @@ export function getNodeSettingsPath(options: NodeSettingsOptions = {}): string {
 export function emptySettings(): Settings {
   return {
     apiKeys: {},
+    connections: [],
     defaultModel: null,
     defaultImageModel: null,
     defaultVisionModel: null,
@@ -50,6 +51,7 @@ export function loadNodeSettings(options: NodeSettingsOptions = {}): Settings {
     const parsed = JSON.parse(raw) as Partial<Settings>
     return {
       apiKeys: parsed.apiKeys ?? {},
+      connections: parsed.connections ?? [],
       defaultModel: parsed.defaultModel ?? null,
       defaultImageModel: parsed.defaultImageModel ?? null,
       defaultVisionModel: inferDefaultVisionModel(parsed),

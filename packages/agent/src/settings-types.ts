@@ -1,4 +1,5 @@
 import type { ProviderId } from './models'
+import type { ConnectionProfile } from './provider-types'
 import type { ToolApprovalMode } from './tool-policy'
 
 export type VisionFallbackMode = 'auto' | 'ask' | 'disabled'
@@ -38,6 +39,8 @@ export function normalizePromptCacheSettings(value: unknown): PromptCacheSetting
 }
 
 export interface Settings {
+  /** Non-secret provider accounts/endpoints. Secrets remain in apiKeys or a host credential store. */
+  connections?: ConnectionProfile[]
   apiKeys: Partial<Record<ProviderId, string>>
   defaultModel: { providerId: ProviderId; modelId: string } | null
   defaultImageModel?: { providerId: ProviderId; modelId: string } | null

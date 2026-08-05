@@ -1,4 +1,4 @@
-import { findModel, MODEL_CATALOG, PROVIDER_LABELS } from '@shared/models'
+import { findModel } from '@shared/models'
 import {
   ArrowLeftIcon,
   CheckIcon,
@@ -9,21 +9,28 @@ import {
 } from 'lucide-react'
 import { type ReactElement, type ReactNode, useEffect, useMemo, useState } from 'react'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
-import type { ModelSelection, OrCatalog, OrFamily, OrModel, ProviderId } from '../types'
+import type {
+  ModelSelection,
+  OrCatalog,
+  OrFamily,
+  OrModel,
+  ProviderConnectionSnapshot,
+  ProviderId,
+} from '../types'
 import { ProviderLogo } from './ProviderLogo'
 
 interface Props {
   configuredProviders: ProviderId[]
+  connections: ProviderConnectionSnapshot[]
   selection: ModelSelection | null
   onChange: (selection: ModelSelection) => void
   onOpenSettings: () => void
   recentOpenRouterModels: string[]
 }
 
-const NATIVE_PROVIDERS: ProviderId[] = ['anthropic', 'openai', 'google', 'deepseek']
-
 export function ModelPicker({
   configuredProviders,
+  connections,
   selection,
   onChange,
   onOpenSettings,
@@ -34,6 +41,12 @@ export function ModelPicker({
 
   const noProviders = configuredProviders.length === 0
   const selectedMeta = selection ? findModel(selection.providerId, selection.modelId) : null
+  const selectedConnection = selection
+    ? connections.find((connection) => connection.profile.id === selection.providerId)
+    : null
+  const selectedConnectionModel = selection
+    ? selectedConnection?.profile.models?.find((model) => model.id === selection.modelId)
+    : null
 
   // Reset to main view whenever the popover closes.
   useEffect(() => {
@@ -65,9 +78,17 @@ export function ModelPicker({
           type="button"
           className="flex min-w-0 items-center gap-1.5 rounded-lg px-2.5 py-1 text-[12px] text-[var(--text-soft)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
         >
-          {selection ? <ProviderLogo id={selection.providerId} size={12} /> : null}
+          {selection ? (
+            <ProviderLogo
+              id={selectedConnection?.profile.providerType ?? selection.providerId}
+              size={12}
+            />
+          ) : null}
           <span className="truncate">
-            {selectedMeta?.displayName ?? selection?.modelId ?? 'Choose model'}
+            {selectedConnectionModel?.displayName ??
+              selectedMeta?.displayName ??
+              selection?.modelId ??
+              'Choose model'}
           </span>
           <ChevronDownIcon className="size-3 shrink-0 opacity-60" />
         </button>
@@ -81,6 +102,7 @@ export function ModelPicker({
         {view === 'main' ? (
           <MainView
             configuredProviders={configuredProviders}
+            connections={connections}
             selection={selection}
             onPick={pick}
             onOpenOpenRouter={() => setView('openrouter')}
@@ -104,12 +126,14 @@ export function ModelPicker({
 
 function MainView({
   configuredProviders,
+  connections,
   selection,
   onPick,
   onOpenOpenRouter,
   onOpenSettings,
 }: {
   configuredProviders: ProviderId[]
+  connections: ProviderConnectionSnapshot[]
   selection: ModelSelection | null
   onPick: (s: ModelSelection) => void
   onOpenOpenRouter: () => void
@@ -118,34 +142,50 @@ function MainView({
   return (
     <div className="flex max-h-[460px] flex-col">
       <div className="flex-1 overflow-auto p-1">
-        {NATIVE_PROVIDERS.filter((p) => configuredProviders.includes(p)).map((providerId) => (
-          <div key={providerId} className="mb-1 last:mb-0">
-            <div className="flex items-center gap-1.5 px-2 text-[10px] font-medium uppercase tracking-wide text-[var(--text-dim)]">
-              <ProviderLogo id={providerId} size={12} />
-              {PROVIDER_LABELS[providerId]}
-            </div>
-            {MODEL_CATALOG.filter((m) => m.providerId === providerId).map((model) => {
-              const isSelected =
-                selection?.providerId === providerId && selection?.modelId === model.modelId
-              return (
-                <button
-                  key={model.modelId}
-                  type="button"
-                  onClick={() => onPick({ providerId, modelId: model.modelId })}
-                  className={`flex w-full items-center justify-between gap-2 rounded-md px-2 py-1 text-left text-[12px] transition-colors hover:bg-[var(--surface-hover)] ${
-                    isSelected ? 'bg-[var(--surface-hover)]' : ''
-                  }`}
-                >
-                  <span className="min-w-0 flex-1 truncate">{model.displayName}</span>
-                  <span className="shrink-0 text-[10px] tabular-nums text-[var(--text-dim)]">
-                    {formatCtx(model.contextLength)}
-                  </span>
-                  {isSelected ? <CheckIcon className="size-3 shrink-0" /> : null}
-                </button>
-              )
-            })}
-          </div>
-        ))}
+        {connections
+          .filter(
+            (connection) =>
+              configuredProviders.includes(connection.profile.id) &&
+              connection.profile.enabled !== false &&
+              connection.profile.id !== 'openrouter',
+          )
+          .map((connection) => {
+            const providerId = connection.profile.id
+            const enabled = new Set(connection.profile.enabledModelIds ?? [])
+            const models = (connection.profile.models ?? []).filter(
+              (model) => enabled.size === 0 || enabled.has(model.id),
+            )
+            return (
+              <div key={providerId} className="mb-1 last:mb-0">
+                <div className="flex items-center gap-1.5 px-2 text-[10px] font-medium uppercase tracking-wide text-[var(--text-dim)]">
+                  <ProviderLogo id={connection.profile.providerType} size={12} />
+                  {connection.profile.label ?? connection.definition.label}
+                </div>
+                {models.map((model) => {
+                  const isSelected =
+                    selection?.providerId === providerId && selection?.modelId === model.id
+                  return (
+                    <button
+                      key={model.id}
+                      type="button"
+                      onClick={() => onPick({ providerId, modelId: model.id })}
+                      className={`flex w-full items-center justify-between gap-2 rounded-md px-2 py-1 text-left text-[12px] transition-colors hover:bg-[var(--surface-hover)] ${
+                        isSelected ? 'bg-[var(--surface-hover)]' : ''
+                      }`}
+                    >
+                      <span className="min-w-0 flex-1 truncate">
+                        {model.displayName ?? model.id}
+                      </span>
+                      <span className="shrink-0 text-[10px] tabular-nums text-[var(--text-dim)]">
+                        {formatCtx(model.contextLength ?? 0)}
+                      </span>
+                      {isSelected ? <CheckIcon className="size-3 shrink-0" /> : null}
+                    </button>
+                  )
+                })}
+              </div>
+            )
+          })}
         {configuredProviders.includes('openrouter') && (
           <button
             type="button"

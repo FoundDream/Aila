@@ -1,9 +1,7 @@
 import {
   IMAGE_MODEL_CATALOG,
-  MODEL_CATALOG,
   modelSupportsVision,
   PROVIDER_LABELS,
-  PROVIDER_ORDER,
   VISION_MODEL_CATALOG,
 } from '@shared/models'
 import {
@@ -34,7 +32,6 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
-  useMemo,
   useRef,
   useState,
 } from 'react'
@@ -44,32 +41,26 @@ import type {
   ExtensionMcpTestResult,
   ExtensionReport,
   ModelSelection,
-  OrCatalog,
   PromptCacheMode,
   PromptCacheTtl,
+  ProviderConnectionSnapshot,
   ProviderId,
   Settings,
+  SettingsState,
   TokenUsageDay,
   TokenUsageStats,
 } from '../types'
-import { ProviderLogo } from './ProviderLogo'
+import { ProviderConnectionsPanel } from './ProviderConnectionsPanel'
 
 interface Props {
   open: boolean
   onOpenChange: (open: boolean) => void
   settings: Settings
+  connections: ProviderConnectionSnapshot[]
   onSave: (settings: Settings) => Promise<void> | void
+  onProviderStateChange: (state: SettingsState) => void
 }
 
-const API_KEY_PLACEHOLDERS: Record<ProviderId, string> = {
-  anthropic: 'sk-ant-...',
-  openai: 'sk-...',
-  google: 'AIza...',
-  deepseek: 'sk-...',
-  openrouter: 'sk-or-...',
-}
-
-const OPENROUTER_MODELS_TIMEOUT_MS = 20_000
 const EXTENSIONS_REPORT_TIMEOUT_MS = 10_000
 const EXTENSIONS_RELOAD_TIMEOUT_MS = 15_000
 const MCP_TEST_TIMEOUT_MS = 20_000
@@ -126,11 +117,6 @@ const FREE_SEARCH_PROVIDERS: Array<{
   { id: 'arxiv', label: 'arXiv', detail: 'Research paper search' },
   { id: 'stackexchange', label: 'Stack Exchange', detail: 'Technical Q&A search' },
 ]
-
-function formatContext(tokens: number): string {
-  if (tokens >= 1_000_000) return `${parseFloat((tokens / 1_000_000).toFixed(2))}M`
-  return `${Math.round(tokens / 1000)}K`
-}
 
 function formatTokenStat(tokens: number): string {
   if (tokens >= 1_000_000_000) return `${parseFloat((tokens / 1_000_000_000).toFixed(2))}B`
@@ -285,19 +271,18 @@ function formatMcpTestResult(result: ExtensionMcpTestResult): string {
   return `Connected. ${result.tools.length} tool${result.tools.length === 1 ? '' : 's'} found.`
 }
 
-export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): ReactElement {
+export function SettingsModal({
+  open,
+  onOpenChange,
+  settings,
+  connections,
+  onSave,
+  onProviderStateChange,
+}: Props): ReactElement {
   const [draft, setDraft] = useState<Settings>(settings)
   const [saving, setSaving] = useState(false)
   const [tab, setTab] = useState<SettingsTab>('provider')
-  const [selectedProvider, setSelectedProvider] = useState<ProviderId>('anthropic')
-  const [revealKey, setRevealKey] = useState(false)
   const [revealSearchKeys, setRevealSearchKeys] = useState(false)
-  // Live OpenRouter catalog, fetched lazily the first time that detail page
-  // is shown. The static MODEL_CATALOG only carries a couple of curated
-  // OpenRouter entries. The real list comes from the API.
-  const [orCatalog, setOrCatalog] = useState<OrCatalog | null>(null)
-  const [orError, setOrError] = useState<string | null>(null)
-  const [orQuery, setOrQuery] = useState('')
   const [extensionsReport, setExtensionsReport] = useState<ExtensionReport | null>(null)
   const [extensionsError, setExtensionsError] = useState<string | null>(null)
   const [extensionsNotice, setExtensionsNotice] = useState<string | null>(null)
@@ -317,9 +302,7 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
     if (open) {
       setDraft(settings)
       setTab('provider')
-      setRevealKey(false)
       setRevealSearchKeys(false)
-      setOrError(null)
       setExtensionsReport(null)
       setExtensionsError(null)
       setExtensionsNotice(null)
@@ -335,27 +318,6 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
       setGmailRedirectUri('')
     }
   }, [open, settings])
-
-  useEffect(() => {
-    if (!open || tab !== 'provider' || selectedProvider !== 'openrouter' || orCatalog) return
-    let cancelled = false
-    setOrError(null)
-    void (async () => {
-      try {
-        const catalog = await withTimeout(
-          window.api.openrouter.listModels(),
-          OPENROUTER_MODELS_TIMEOUT_MS,
-          'OpenRouter model catalog',
-        )
-        if (!cancelled) setOrCatalog(catalog)
-      } catch (err) {
-        if (!cancelled) setOrError(err instanceof Error ? err.message : String(err))
-      }
-    })()
-    return () => {
-      cancelled = true
-    }
-  }, [open, tab, selectedProvider, orCatalog])
 
   useEffect(() => {
     if (!open || tab !== 'extensions' || extensionsReport || extensionsError) {
@@ -399,32 +361,6 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
     if (!open || tab !== 'usage' || usageStats || usageStatsError || usageStatsLoading) return
     void refreshUsageStats()
   }, [open, tab, usageStats, usageStatsError, usageStatsLoading, refreshUsageStats])
-
-  const orFilteredFamilies = useMemo(() => {
-    if (!orCatalog) return []
-    if (!orQuery.trim()) return orCatalog.families
-    const q = orQuery.toLowerCase()
-    return orCatalog.families
-      .map((f) => ({
-        ...f,
-        models: f.models.filter(
-          (m) =>
-            m.id.toLowerCase().includes(q) ||
-            m.name.toLowerCase().includes(q) ||
-            f.label.toLowerCase().includes(q),
-        ),
-      }))
-      .filter((f) => f.models.length > 0)
-  }, [orCatalog, orQuery])
-
-  const orModelCount = useMemo(
-    () => (orCatalog ? orCatalog.families.reduce((sum, f) => sum + f.models.length, 0) : 0),
-    [orCatalog],
-  )
-
-  const updateKey = (id: ProviderId, value: string): void => {
-    setDraft((prev) => ({ ...prev, apiKeys: { ...prev.apiKeys, [id]: value } }))
-  }
 
   const setDefaultModel = (selection: ModelSelection | null): void => {
     setDraft((prev) => ({ ...prev, defaultModel: selection }))
@@ -482,13 +418,42 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
     showDiagnostics: draft.promptCache?.showDiagnostics === true,
   }
 
-  const configuredInDraft = PROVIDER_ORDER.filter((p) => Boolean(draft.apiKeys[p]?.trim()))
-  const providerConfigured = configuredInDraft.includes(selectedProvider)
-  const providerModels = MODEL_CATALOG.filter((m) => m.providerId === selectedProvider)
-  const providerImageModels = IMAGE_MODEL_CATALOG.filter((m) => m.providerId === selectedProvider)
-  const visionModels = [...MODEL_CATALOG, ...VISION_MODEL_CATALOG].filter(
-    (m) => configuredInDraft.includes(m.providerId) && modelSupportsVision(m),
+  const configuredInDraft = connections
+    .filter((connection) => connection.configured && connection.profile.enabled !== false)
+    .map((connection) => connection.profile.id)
+  const configuredConnections = connections.filter(
+    (connection) => connection.configured && connection.profile.enabled !== false,
   )
+  const chatModelOptions = configuredConnections.flatMap((connection) => {
+    const enabled = new Set(connection.profile.enabledModelIds ?? [])
+    return (connection.profile.models ?? [])
+      .filter((model) => enabled.size === 0 || enabled.has(model.id))
+      .map((model) => ({
+        providerId: connection.profile.id,
+        providerLabel: connection.profile.label ?? connection.definition.label,
+        modelId: model.id,
+        displayName: model.displayName ?? model.id,
+        contextLength: model.contextLength ?? 0,
+        capabilities: model.capabilities,
+      }))
+  })
+  const visionModels = [
+    ...chatModelOptions.filter((model) =>
+      modelSupportsVision({
+        provider: model.providerId,
+        modelId: model.modelId,
+        capabilities: model.capabilities,
+      }),
+    ),
+    ...VISION_MODEL_CATALOG.filter((model) => configuredInDraft.includes(model.providerId)).map(
+      (model) => ({
+        ...model,
+        providerLabel:
+          connections.find((connection) => connection.profile.id === model.providerId)?.profile
+            .label ?? PROVIDER_LABELS[model.providerId],
+      }),
+    ),
+  ]
   const gmailIntegration = extensionsReport?.integrations.find(
     (integration) => integration.id === 'gmail',
   )
@@ -771,7 +736,7 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
       if (next.defaultModel && !configuredInDraft.includes(next.defaultModel.providerId)) {
         const first = configuredInDraft[0]
         if (first) {
-          const firstModel = MODEL_CATALOG.find((m) => m.providerId === first)
+          const firstModel = chatModelOptions.find((model) => model.providerId === first)
           next = {
             ...next,
             defaultModel: firstModel ? { providerId: first, modelId: firstModel.modelId } : null,
@@ -844,224 +809,10 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
             </div>
 
             {tab === 'provider' && (
-              <div className="flex min-h-0 flex-1">
-                {/* Provider list */}
-                <div className="flex w-44 shrink-0 flex-col gap-1 overflow-y-auto border-r border-[var(--border)] bg-[var(--bg-soft)]/60 p-2">
-                  {PROVIDER_ORDER.map((id) => {
-                    const configured = configuredInDraft.includes(id)
-                    return (
-                      <button
-                        key={id}
-                        type="button"
-                        onClick={() => {
-                          setSelectedProvider(id)
-                          setRevealKey(false)
-                        }}
-                        className={`flex h-8 items-center gap-2 rounded-lg px-2 text-left text-[12px] transition-colors ${
-                          selectedProvider === id
-                            ? 'bg-[var(--surface)] font-medium text-[var(--text)] shadow-[var(--shadow-xs)]'
-                            : 'text-[var(--text-soft)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]'
-                        }`}
-                      >
-                        <ProviderLogo id={id} size={14} />
-                        <span className="min-w-0 flex-1 truncate">{PROVIDER_LABELS[id]}</span>
-                        <span
-                          title={configured ? 'Configured' : 'Not configured'}
-                          className={`size-1.5 shrink-0 rounded-full ${
-                            configured ? 'bg-[var(--success)]' : 'bg-[var(--border-strong)]'
-                          }`}
-                        />
-                      </button>
-                    )
-                  })}
-                </div>
-
-                {/* Provider detail */}
-                <div className="min-w-0 flex-1 overflow-y-auto px-5 py-4">
-                  <div className="mb-4 flex items-center gap-2.5">
-                    <ProviderLogo id={selectedProvider} size={22} />
-                    <span className="text-[15px] font-semibold text-[var(--text)]">
-                      {PROVIDER_LABELS[selectedProvider]}
-                    </span>
-                    <span
-                      className={`rounded-full px-2 py-0.5 text-[10.5px] font-medium ${
-                        providerConfigured
-                          ? 'bg-[var(--success-soft)] text-[var(--success)]'
-                          : 'bg-[var(--surface-hover)] text-[var(--text-dim)]'
-                      }`}
-                    >
-                      {providerConfigured ? 'Configured' : 'Not configured'}
-                    </span>
-                  </div>
-
-                  <section className="mb-5">
-                    <SectionTitle>API Key</SectionTitle>
-                    <div className="relative">
-                      <input
-                        type={revealKey ? 'text' : 'password'}
-                        value={draft.apiKeys[selectedProvider] ?? ''}
-                        onChange={(e) => updateKey(selectedProvider, e.target.value)}
-                        placeholder={API_KEY_PLACEHOLDERS[selectedProvider]}
-                        className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-soft)] py-1.5 pl-2 pr-8 text-[12px] outline-none focus:border-[var(--border-strong)]"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setRevealKey((v) => !v)}
-                        aria-label={revealKey ? 'Hide API key' : 'Show API key'}
-                        className="absolute right-1.5 top-1/2 grid size-5 -translate-y-1/2 place-items-center rounded text-[var(--text-dim)] hover:text-[var(--text)]"
-                      >
-                        {revealKey ? (
-                          <EyeOffIcon className="size-3.5" />
-                        ) : (
-                          <EyeIcon className="size-3.5" />
-                        )}
-                      </button>
-                    </div>
-                    <DialogPrimitive.Description className="mt-1.5 text-[11px] text-[var(--text-dim)]">
-                      Stored unencrypted in <code>settings.json</code> in your user data directory.
-                      Leave empty to fall back to .env variables.
-                    </DialogPrimitive.Description>
-                  </section>
-
-                  {selectedProvider === 'openrouter' ? (
-                    <section>
-                      <div className="mb-1.5 flex items-center gap-2">
-                        <h3 className="text-[11px] font-medium uppercase tracking-wide text-[var(--text-dim)]">
-                          Models
-                        </h3>
-                        {orCatalog && (
-                          <span className="rounded-full bg-[var(--surface-hover)] px-1.5 py-px text-[10px] tabular-nums text-[var(--text-dim)]">
-                            {orModelCount}
-                          </span>
-                        )}
-                        <div className="ml-auto flex w-48 items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-soft)] px-2 py-1">
-                          <SearchIcon className="size-3 shrink-0 text-[var(--text-dim)]" />
-                          <input
-                            type="text"
-                            value={orQuery}
-                            onChange={(e) => setOrQuery(e.target.value)}
-                            placeholder="Filter models..."
-                            className="min-w-0 flex-1 bg-transparent text-[11px] outline-none placeholder:text-[var(--text-dim)]"
-                          />
-                        </div>
-                      </div>
-
-                      {orError && (
-                        <p className="rounded-md border border-[var(--border)] px-2.5 py-2 text-[12px] text-[var(--error)]">
-                          Failed to load OpenRouter models: {orError}
-                        </p>
-                      )}
-                      {!orCatalog && !orError && (
-                        <p className="rounded-md border border-[var(--border)] px-2.5 py-2 text-[12px] text-[var(--text-dim)]">
-                          Loading models…
-                        </p>
-                      )}
-
-                      {orCatalog && orFilteredFamilies.length === 0 && (
-                        <p className="rounded-md border border-[var(--border)] px-2.5 py-2 text-[12px] text-[var(--text-dim)]">
-                          No models match “{orQuery}”.
-                        </p>
-                      )}
-
-                      {orFilteredFamilies.map((family) => (
-                        <div key={family.family} className="mb-3">
-                          <h4 className="mb-1 text-[11px] font-medium text-[var(--text-soft)]">
-                            {family.label}
-                          </h4>
-                          <ul className="divide-y divide-[var(--border)] rounded-md border border-[var(--border)]">
-                            {family.models.map((m) => (
-                              <li key={m.id} className="flex items-center gap-2 px-2.5 py-1.5">
-                                <div className="min-w-0 flex-1">
-                                  <div className="flex items-center gap-1.5">
-                                    <span className="truncate text-[12px] text-[var(--text)]">
-                                      {m.name}
-                                    </span>
-                                    {m.tags.map((tag) => (
-                                      <span
-                                        key={tag}
-                                        className="rounded bg-[var(--surface-hover)] px-1 py-px text-[9.5px] uppercase tracking-wide text-[var(--text-dim)]"
-                                      >
-                                        {tag}
-                                      </span>
-                                    ))}
-                                  </div>
-                                  <div className="truncate font-mono text-[10.5px] text-[var(--text-dim)]">
-                                    {m.id}
-                                  </div>
-                                </div>
-                                {m.promptPricePerMTok !== null && (
-                                  <span className="shrink-0 text-[10.5px] tabular-nums text-[var(--text-dim)]">
-                                    ${m.promptPricePerMTok}/M
-                                  </span>
-                                )}
-                                <span className="w-14 shrink-0 text-right text-[10.5px] tabular-nums text-[var(--text-dim)]">
-                                  {formatContext(m.contextLength)} ctx
-                                </span>
-                              </li>
-                            ))}
-                          </ul>
-                        </div>
-                      ))}
-                    </section>
-                  ) : (
-                    <section>
-                      <SectionTitle>Models</SectionTitle>
-                      <ul className="divide-y divide-[var(--border)] rounded-md border border-[var(--border)]">
-                        {providerModels.map((m) => (
-                          <li key={m.modelId} className="flex items-center gap-2 px-2.5 py-1.5">
-                            <div className="min-w-0 flex-1">
-                              <div className="flex items-center gap-1.5">
-                                <span className="truncate text-[12px] text-[var(--text)]">
-                                  {m.displayName}
-                                </span>
-                                {m.tags?.map((tag) => (
-                                  <span
-                                    key={tag}
-                                    className="rounded bg-[var(--surface-hover)] px-1 py-px text-[9.5px] uppercase tracking-wide text-[var(--text-dim)]"
-                                  >
-                                    {tag}
-                                  </span>
-                                ))}
-                              </div>
-                              <div className="truncate font-mono text-[10.5px] text-[var(--text-dim)]">
-                                {m.modelId}
-                              </div>
-                            </div>
-                            <span className="shrink-0 text-[10.5px] tabular-nums text-[var(--text-dim)]">
-                              {formatContext(m.contextLength)} ctx
-                            </span>
-                          </li>
-                        ))}
-                        {providerModels.length === 0 && (
-                          <li className="px-2.5 py-2 text-[12px] text-[var(--text-dim)]">
-                            No chat models on this provider.
-                          </li>
-                        )}
-                      </ul>
-
-                      {providerImageModels.length > 0 && (
-                        <>
-                          <h4 className="mb-1.5 mt-3 text-[11px] font-medium uppercase tracking-wide text-[var(--text-dim)]">
-                            Image
-                          </h4>
-                          <ul className="divide-y divide-[var(--border)] rounded-md border border-[var(--border)]">
-                            {providerImageModels.map((m) => (
-                              <li key={m.modelId} className="px-2.5 py-1.5">
-                                <div className="truncate text-[12px] text-[var(--text)]">
-                                  {m.displayName}
-                                </div>
-                                <div className="truncate font-mono text-[10.5px] text-[var(--text-dim)]">
-                                  {m.modelId}
-                                </div>
-                              </li>
-                            ))}
-                          </ul>
-                        </>
-                      )}
-                    </section>
-                  )}
-                </div>
-              </div>
+              <ProviderConnectionsPanel
+                connections={connections}
+                onStateChange={onProviderStateChange}
+              />
             )}
 
             {tab === 'models' && (
@@ -1100,13 +851,14 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
                         className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-soft)] px-2 py-1.5 text-[12px] outline-none focus:border-[var(--border-strong)]"
                       >
                         <option value="">(none)</option>
-                        {PROVIDER_ORDER.filter((p) => configuredInDraft.includes(p)).flatMap((p) =>
-                          MODEL_CATALOG.filter((m) => m.providerId === p).map((m) => (
-                            <option key={`${p}:${m.modelId}`} value={`${p}:${m.modelId}`}>
-                              {PROVIDER_LABELS[p]}, {m.displayName}
-                            </option>
-                          )),
-                        )}
+                        {chatModelOptions.map((model) => (
+                          <option
+                            key={`${model.providerId}:${model.modelId}`}
+                            value={`${model.providerId}:${model.modelId}`}
+                          >
+                            {model.providerLabel}, {model.displayName}
+                          </option>
+                        ))}
                       </select>
                       <p className="mt-1 text-[11px] text-[var(--text-dim)]">
                         Used for new conversations.
@@ -1146,7 +898,7 @@ export function SettingsModal({ open, onOpenChange, settings, onSave }: Props): 
                             key={`${m.providerId}:${m.modelId}`}
                             value={`${m.providerId}:${m.modelId}`}
                           >
-                            {PROVIDER_LABELS[m.providerId]}, {m.displayName}
+                            {m.providerLabel}, {m.displayName}
                           </option>
                         ))}
                       </select>

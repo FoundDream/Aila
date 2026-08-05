@@ -1,6 +1,11 @@
 import { FlaskConicalIcon, RefreshCwIcon } from 'lucide-react'
 import { type ReactElement, useCallback, useEffect, useMemo } from 'react'
-import type { ConversationRecord, ProviderId, Settings } from '../../types'
+import type {
+  ConversationRecord,
+  ProviderConnectionSnapshot,
+  ProviderId,
+  Settings,
+} from '../../types'
 import type { ChatStreamsApi } from '../chat/useChatStreams'
 import { useModelSelection } from '../chat/useModelSelection'
 import { ContextPanel } from './ContextPanel'
@@ -15,6 +20,7 @@ interface DebugPageProps {
   streams: ChatStreamsApi
   settings: Settings | null
   configuredProviders: ProviderId[]
+  connections: ProviderConnectionSnapshot[]
   onUpdateSettings: (settings: Settings) => Promise<void>
   onOpenSettings: () => void
 }
@@ -29,6 +35,7 @@ export function DebugPage({
   streams,
   settings,
   configuredProviders,
+  connections,
   onUpdateSettings,
   onOpenSettings,
 }: DebugPageProps): ReactElement {
@@ -36,6 +43,7 @@ export function DebugPage({
   const { selection, selectionRef, handleSelectionChange } = useModelSelection(
     settings,
     configuredProviders,
+    connections,
     onUpdateSettings,
   )
   const api = usePlayground(conversationId)
@@ -160,6 +168,7 @@ export function DebugPage({
         overrideActive={state.injected.mode !== 'default'}
         selection={selection}
         configuredProviders={configuredProviders}
+        connections={connections}
         recentOpenRouterModels={settings?.recentOpenRouterModels ?? []}
         onSelectionChange={handleSelectionChange}
         onOpenSettings={onOpenSettings}

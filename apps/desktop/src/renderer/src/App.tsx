@@ -148,6 +148,10 @@ export default function App(): ReactElement {
     setSettingsState(saved)
   }, [])
 
+  const applySettingsState = useCallback((next: SettingsState) => {
+    setSettingsState(next)
+  }, [])
+
   const resolveToolApproval = useCallback((requestId: string, approved: boolean): void => {
     window.api.tools.sendApprovalResponse({ requestId, approved })
     setToolApprovalsState((current) => resolveToolApprovalState(current, requestId))
@@ -291,6 +295,7 @@ export default function App(): ReactElement {
                   streams={chatStreams}
                   settings={settingsState?.settings ?? null}
                   configuredProviders={settingsState?.configuredProviders ?? ([] as ProviderId[])}
+                  connections={settingsState?.connections ?? []}
                   onUpdateSettings={updateSettings}
                   onOpenSettings={() => setSettingsOpen(true)}
                 />
@@ -302,6 +307,7 @@ export default function App(): ReactElement {
                   streams={chatStreams}
                   settings={settingsState?.settings ?? null}
                   configuredProviders={settingsState?.configuredProviders ?? ([] as ProviderId[])}
+                  connections={settingsState?.connections ?? []}
                   onUpdateSettings={updateSettings}
                   onOpenSettings={() => setSettingsOpen(true)}
                 />
@@ -336,7 +342,9 @@ export default function App(): ReactElement {
             open={settingsOpen}
             onOpenChange={setSettingsOpen}
             settings={settingsState.settings}
+            connections={settingsState.connections}
             onSave={updateSettings}
+            onProviderStateChange={applySettingsState}
           />
         )}
         <ToolApprovalDialog

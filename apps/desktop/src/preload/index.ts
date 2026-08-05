@@ -3,6 +3,9 @@ import type {
   BlobGarbageCollectionResult,
   DoneEvent as ChatDoneEvent,
   ErrorEvent as ChatErrorEvent,
+  ConnectionModelDiscoveryResult,
+  ConnectionProfile,
+  ConnectionTestResult,
   ConversationRecord,
   ConversationRuntimeStateSnapshot,
   ConversationSummary,
@@ -11,6 +14,7 @@ import type {
   ModelInfo,
   PersistedMessage,
   PersistedRunEvent,
+  ProviderConnectionSnapshot,
   ProviderId,
   RunPayload,
   RunSnapshot,
@@ -51,6 +55,12 @@ export type {
   BlobGarbageCollectionResult,
   ChatAttachmentInput,
   ChatMessage,
+  ConnectionCredentialStatus,
+  ConnectionModel,
+  ConnectionModelDiscoveryResult,
+  ConnectionProfile,
+  ConnectionTestErrorClass,
+  ConnectionTestResult,
   ConversationActivity,
   ConversationActivityState,
   ConversationCompactArtifact,
@@ -88,6 +98,8 @@ export type {
   PromptCacheMode,
   PromptCacheSettings,
   PromptCacheTtl,
+  ProviderConnectionSnapshot,
+  ProviderDefinition,
   ProviderId,
   RunEventType,
   RunPayload,
@@ -160,6 +172,28 @@ export interface ToolApprovalResponse {
 export interface SettingsState {
   settings: Settings
   configuredProviders: ProviderId[]
+  connections: ProviderConnectionSnapshot[]
+}
+
+export interface SaveProviderConnectionRequest {
+  profile: ConnectionProfile
+  credential?: string
+  clearCredential?: boolean
+}
+
+export interface ProviderConnectionEffectRequest {
+  profile: ConnectionProfile
+  credential?: string
+  modelId?: string
+}
+
+export interface ProviderModelDiscoveryResponse extends SettingsState {
+  result: ConnectionModelDiscoveryResult
+}
+
+export interface ProviderAccountImportResponse extends SettingsState {
+  source: string
+  discoveredModels: number
 }
 
 export interface RuntimeAppendMessageRequest {
@@ -311,6 +345,21 @@ const api = {
     get: (): Promise<SettingsState> => ipcRenderer.invoke('settings:get'),
     set: (settings: Settings): Promise<SettingsState> =>
       ipcRenderer.invoke('settings:set', settings),
+  },
+  providers: {
+    save: (request: SaveProviderConnectionRequest): Promise<SettingsState> =>
+      ipcRenderer.invoke('providers:save', request),
+    remove: (connectionId: ProviderId): Promise<SettingsState> =>
+      ipcRenderer.invoke('providers:remove', connectionId),
+    importAccount: (
+      connectionId: ProviderId,
+      providerType: string,
+    ): Promise<ProviderAccountImportResponse> =>
+      ipcRenderer.invoke('providers:import-account', connectionId, providerType),
+    test: (request: ProviderConnectionEffectRequest): Promise<ConnectionTestResult> =>
+      ipcRenderer.invoke('providers:test', request),
+    discover: (request: ProviderConnectionEffectRequest): Promise<ProviderModelDiscoveryResponse> =>
+      ipcRenderer.invoke('providers:discover', request),
   },
   workspaces: {
     pickDirectory: (): Promise<ConversationWorkspaceRef | null> =>

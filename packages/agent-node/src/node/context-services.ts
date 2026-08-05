@@ -14,7 +14,8 @@ import {
   normalizeConversationCompactArtifact,
   type PersistedMessage,
 } from '@aila/agent'
-import { MissingApiKeyError, type NodeAuthInput, requireApiKey } from './auth'
+import { MissingApiKeyError, type NodeAuthInput } from './auth'
+import { type CredentialResolver, createCredentialResolver } from './credential-resolver'
 import { createDefaultModelStreamClient } from './default-model-stream'
 import {
   type CreateModelRegistryInput,
@@ -39,6 +40,8 @@ export interface NodeContextServiceOptions extends NodeAuthInput {
   protocolRegistry?: ProtocolRegistry
   protocolAdapters?: ProtocolAdapter[]
   modelStreamClient?: ModelStreamClient
+  useNativeProtocols?: boolean
+  credentialResolver?: CredentialResolver
   settings?: Settings
   loadSettings?: () => Settings
   fetch?: Fetch
@@ -50,14 +53,32 @@ export function createNodeContextTokenCounter(
   const fetchImpl = options.fetch ?? fetch
   const modelRegistry =
     options.modelRegistry ??
-    createModelRegistry(options.modelRegistryOptions ?? { providers: options.providers })
+    createModelRegistry(
+      options.modelRegistryOptions ?? {
+        providers: options.providers,
+        connections: options.settings?.connections,
+      },
+    )
+  const credentialResolver =
+    options.credentialResolver ?? createCredentialResolver({ ...options, modelRegistry })
 
   return async (input): Promise<RuntimeContextTokenCountResult> => {
-    const descriptor = modelRegistry.resolve(input.selection)
     const settings = options.settings ?? options.loadSettings?.()
+    for (const connection of settings?.connections ?? []) {
+      modelRegistry.registerConnection(connection)
+    }
+    const descriptor = modelRegistry.resolve(input.selection)
     try {
-      const apiKey = requireApiKey(descriptor, { ...options, settings })
-      if (descriptor.api === 'anthropic-messages') {
+      const { value: apiKey } = await credentialResolver.resolve({
+        descriptor,
+        settings: settings ?? { apiKeys: {}, defaultModel: null },
+      })
+      const providerType = descriptor.providerType ?? descriptor.provider
+      if (
+        descriptor.api === 'anthropic-messages' &&
+        providerType !== 'claude-subscription' &&
+        providerType !== 'github-copilot'
+      ) {
         const inputTokens = await countAnthropicTokens(
           descriptor,
           apiKey,
@@ -107,21 +128,39 @@ export function createNodeSemanticCompactGenerator(
 ) => Promise<RuntimeContextCompactArtifactResult | null> {
   const modelRegistry =
     options.modelRegistry ??
-    createModelRegistry(options.modelRegistryOptions ?? { providers: options.providers })
+    createModelRegistry(
+      options.modelRegistryOptions ?? {
+        providers: options.providers,
+        connections: options.settings?.connections,
+      },
+    )
   const protocolRegistry =
     options.protocolRegistry ?? createProtocolRegistry(options.protocolAdapters)
+  const credentialResolver =
+    options.credentialResolver ?? createCredentialResolver({ ...options, modelRegistry })
   const modelStreamClient =
     options.modelStreamClient ??
     createDefaultModelStreamClient({
       protocolRegistry,
+      modelRegistry,
+      fetch: options.fetch,
+      useNativeProtocols: options.useNativeProtocols,
     })
 
   return async (input): Promise<RuntimeContextCompactArtifactResult | null> => {
-    const descriptor = modelRegistry.resolve(input.selection)
     const settings = options.settings ?? options.loadSettings?.()
+    for (const connection of settings?.connections ?? []) {
+      modelRegistry.registerConnection(connection)
+    }
+    const descriptor = modelRegistry.resolve(input.selection)
     let apiKey: string
     try {
-      apiKey = requireApiKey(descriptor, { ...options, settings })
+      apiKey = (
+        await credentialResolver.resolve({
+          descriptor,
+          settings: settings ?? { apiKeys: {}, defaultModel: null },
+        })
+      ).value
     } catch (error) {
       if (error instanceof MissingApiKeyError) return null
       throw error

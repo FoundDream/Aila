@@ -1,7 +1,7 @@
 import { SendIcon, StepForwardIcon } from 'lucide-react'
 import { type KeyboardEvent, type ReactElement, useCallback, useState } from 'react'
 import { ModelPicker } from '@/components/ModelPicker'
-import type { ModelSelection, ProviderId } from '../../types'
+import type { ModelSelection, ProviderConnectionSnapshot, ProviderId } from '../../types'
 import type { PlaygroundLoopMode } from './playgroundState'
 
 interface DebugComposerProps {
@@ -14,6 +14,7 @@ interface DebugComposerProps {
   overrideActive: boolean
   selection: ModelSelection | null
   configuredProviders: ProviderId[]
+  connections: ProviderConnectionSnapshot[]
   recentOpenRouterModels: string[]
   onSelectionChange: (next: ModelSelection) => void
   onOpenSettings: () => void
@@ -32,6 +33,7 @@ export function DebugComposer({
   overrideActive,
   selection,
   configuredProviders,
+  connections,
   recentOpenRouterModels,
   onSelectionChange,
   onOpenSettings,
@@ -76,6 +78,7 @@ export function DebugComposer({
             <div className="flex items-center gap-2">
               <ModelPicker
                 configuredProviders={configuredProviders}
+                connections={connections}
                 selection={selection}
                 onChange={onSelectionChange}
                 onOpenSettings={onOpenSettings}

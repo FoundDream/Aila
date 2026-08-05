@@ -4,7 +4,6 @@ import { fileURLToPath } from 'node:url'
 import type { ConversationWorkspaceRef, ProviderId } from '@aila/agent'
 import {
   configureDataDir,
-  configuredProviders,
   disposeMcpConnections,
   getDataDir,
   getExtensionReport,
@@ -18,7 +17,6 @@ import {
   type Settings,
   saveImage,
   saveIntegrationMcpServerConfig,
-  saveSettings,
 } from '@aila/agent-node/app'
 import { is } from '@electron-toolkit/utils'
 import * as dotenv from 'dotenv'
@@ -45,6 +43,13 @@ import {
   testMcpServerDraft,
 } from './mcp-management'
 import { getOpenRouterCatalog } from './openrouter-catalog'
+import { ProviderCredentialStore } from './provider-credential-store'
+import {
+  createProviderManagement,
+  type ProviderConnectionEffectRequest,
+  type ProviderManagement,
+  type SaveProviderConnectionInput,
+} from './provider-management'
 import {
   createDesktopRuntimeWorkbench,
   registerRuntimeWorkbenchIpcHandlers,
@@ -155,9 +160,23 @@ async function pickSkillDirectory(): Promise<string | null> {
 }
 
 let runtimeWorkbench: ReturnType<typeof createDesktopRuntimeWorkbench> | null = null
+let providerManagement: ProviderManagement | null = null
+
+function getProviderManagement(): ProviderManagement {
+  if (!providerManagement) throw new Error('Provider management is not initialized')
+  return providerManagement
+}
 
 function initRuntimeWorkbench(): ReturnType<typeof createDesktopRuntimeWorkbench> {
-  runtimeWorkbench ??= createDesktopRuntimeWorkbench({ emit: send, logger: console })
+  const providers = getProviderManagement()
+  runtimeWorkbench ??= createDesktopRuntimeWorkbench({
+    emit: send,
+    logger: console,
+    runtime: {
+      modelRegistry: providers.modelRegistry,
+      credentialResolver: providers.credentialResolver,
+    },
+  })
   return runtimeWorkbench
 }
 
@@ -193,14 +212,28 @@ function registerIpcHandlers(): void {
     getModelInfo(providerId, modelId),
   )
 
-  function packSettings(settings: Settings): {
-    settings: Settings
-    configuredProviders: ProviderId[]
-  } {
-    return { settings, configuredProviders: configuredProviders(settings) }
-  }
+  const packSettings = (settings: Settings) => getProviderManagement().state(settings)
   ipcMain.handle('settings:get', () => packSettings(loadSettings()))
-  ipcMain.handle('settings:set', (_event, next: Settings) => packSettings(saveSettings(next)))
+  ipcMain.handle('settings:set', (_event, next: Settings) =>
+    getProviderManagement().updateSettings(next),
+  )
+  ipcMain.handle('providers:save', (_event, input: SaveProviderConnectionInput) =>
+    getProviderManagement().save(input),
+  )
+  ipcMain.handle('providers:remove', (_event, connectionId: ProviderId) =>
+    getProviderManagement().remove(connectionId),
+  )
+  ipcMain.handle(
+    'providers:import-account',
+    (_event, connectionId: ProviderId, providerType: string) =>
+      getProviderManagement().importAccount(connectionId, providerType),
+  )
+  ipcMain.handle('providers:test', (_event, input: ProviderConnectionEffectRequest) =>
+    getProviderManagement().test(input),
+  )
+  ipcMain.handle('providers:discover', (_event, input: ProviderConnectionEffectRequest) =>
+    getProviderManagement().discover(input),
+  )
   ipcMain.handle('runtime:token-usage-stats', () => getTokenUsageStats())
   ipcMain.handle('workspaces:pick-directory', () => pickWorkspaceDirectory())
   ipcMain.handle('openrouter:list-models', () => getOpenRouterCatalog())
@@ -251,6 +284,10 @@ void app
   .then(async () => {
     configureDataDir(is.dev ? DEV_DATA_DIR : app.getPath('userData'))
     console.log('[storage] data dir =', getDataDir())
+    providerManagement = createProviderManagement(
+      new ProviderCredentialStore(join(getDataDir(), 'provider-credentials.json')),
+    )
+    providerManagement.migrateLegacySecrets()
     const runtimeWorkbench = initRuntimeWorkbench()
     const recovered = await runtimeWorkbench
       .recoverInterruptedActivities('app restarted before this turn finished')

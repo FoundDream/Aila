@@ -964,7 +964,9 @@ export class SessionRuntimeEngine {
     let assistantMessage: PersistedMessage | undefined
 
     for (const payload of payloads) {
-      if (payload.data.modelMessage) {
+      if (payload.data.modelMessages && payload.data.modelMessages.length > 0) {
+        messages.push(...cloneRuntimeValue(payload.data.modelMessages))
+      } else if (payload.data.modelMessage) {
         messages.push(cloneRuntimeValue(payload.data.modelMessage))
       }
       if (payload.data.assistantMessage) {

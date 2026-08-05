@@ -1,48 +1,53 @@
 import {
+  type ConnectionProfile,
   findModelDescriptor,
   MODEL_CATALOG,
   type ModelApi,
   type ModelDescriptor,
   modelEntryToDescriptor,
+  type ProviderDefinition,
   type ProviderId,
   VISION_MODEL_CATALOG,
 } from '@aila/agent'
+import { createProviderRegistry, type ProviderRegistry } from './provider-registry'
 
 export interface NodeProviderConfig {
+  /** Connection id selected by callers. */
   provider: ProviderId
+  /** Provider implementation. Defaults to the connection id. */
+  providerType?: string
   api: ModelApi
   baseUrl?: string
   apiKey?: string
+  credentialRef?: string
   headers?: Record<string, string>
   models?: Record<string, Partial<Omit<ModelDescriptor, 'provider' | 'modelId'>>>
 }
 
 export interface CreateModelRegistryInput {
   builtinModels?: boolean
+  providerRegistry?: ProviderRegistry
+  connections?: ConnectionProfile[]
   providers?: Record<string, Omit<NodeProviderConfig, 'provider'>>
   models?: ModelDescriptor[]
 }
 
-const BUILTIN_PROVIDER_CONFIGS: NodeProviderConfig[] = [
-  {
-    provider: 'openrouter',
-    api: 'openai-chat-completions',
-    baseUrl: 'https://openrouter.ai/api/v1',
-  },
-  {
-    provider: 'deepseek',
-    api: 'openai-chat-completions',
-    baseUrl: 'https://api.deepseek.com',
-  },
-]
-
 export class ModelRegistry {
+  private readonly providerRegistry: ProviderRegistry
   private readonly providers = new Map<ProviderId, NodeProviderConfig>()
   private readonly models = new Map<string, ModelDescriptor>()
 
   constructor(input: CreateModelRegistryInput = {}) {
+    this.providerRegistry = input.providerRegistry ?? createProviderRegistry()
     if (input.builtinModels !== false) {
-      for (const provider of BUILTIN_PROVIDER_CONFIGS) this.registerProvider(provider)
+      for (const definition of this.providerRegistry.list()) {
+        this.registerProvider({
+          provider: definition.id,
+          providerType: definition.id,
+          api: definition.defaultApi,
+          ...(definition.defaultBaseUrl ? { baseUrl: definition.defaultBaseUrl } : {}),
+        })
+      }
       for (const entry of MODEL_CATALOG) this.registerModel(modelEntryToDescriptor(entry))
       for (const entry of VISION_MODEL_CATALOG) this.registerModel(modelEntryToDescriptor(entry))
     }
@@ -50,15 +55,26 @@ export class ModelRegistry {
     for (const [provider, config] of Object.entries(input.providers ?? {})) {
       this.registerProvider({ provider, ...config })
     }
+    for (const connection of input.connections ?? []) this.registerConnection(connection)
     for (const model of input.models ?? []) this.registerModel(model)
   }
 
   registerProvider(config: NodeProviderConfig): void {
     const previous = this.providers.get(config.provider)
-    const merged = { ...previous, ...config }
+    const providerType = config.providerType ?? previous?.providerType ?? config.provider
+    const definition = this.providerRegistry.resolve(providerType)
+    const merged: NodeProviderConfig = {
+      ...(definition.defaultBaseUrl ? { baseUrl: definition.defaultBaseUrl } : {}),
+      ...previous,
+      ...config,
+      providerType,
+      api: config.api ?? previous?.api ?? definition.defaultApi,
+    }
     this.providers.set(config.provider, merged)
     for (const [modelId, model] of Object.entries(config.models ?? {})) {
       this.registerModel({
+        connectionId: config.provider,
+        providerType,
         provider: config.provider,
         modelId,
         api: model.api ?? merged.api,
@@ -69,10 +85,42 @@ export class ModelRegistry {
     }
   }
 
+  registerConnection(connection: ConnectionProfile): void {
+    const definition = this.providerRegistry.resolve(connection.providerType)
+    this.registerProvider({
+      provider: connection.id,
+      providerType: connection.providerType,
+      api: definition.defaultApi,
+      ...(connection.baseUrl ? { baseUrl: connection.baseUrl } : {}),
+      ...(connection.headers ? { headers: connection.headers } : {}),
+      ...(connection.credentialRef ? { credentialRef: connection.credentialRef } : {}),
+      ...(connection.models
+        ? {
+            models: Object.fromEntries(
+              connection.models.map((model) => [
+                model.id,
+                {
+                  ...(model.displayName ? { displayName: model.displayName } : {}),
+                  ...(model.api ? { api: model.api } : {}),
+                  ...(model.contextLength !== undefined
+                    ? { contextLength: model.contextLength }
+                    : {}),
+                  ...(model.maxTokens !== undefined ? { maxTokens: model.maxTokens } : {}),
+                  ...(model.capabilities ? { capabilities: model.capabilities } : {}),
+                },
+              ]),
+            ),
+          }
+        : {}),
+    })
+  }
+
   registerModel(model: ModelDescriptor): void {
     const provider = this.providers.get(model.provider)
     const next: ModelDescriptor = {
       ...model,
+      connectionId: model.connectionId ?? model.provider,
+      providerType: model.providerType ?? provider?.providerType ?? model.provider,
       api: model.api ?? provider?.api ?? 'openai-chat-completions',
       ...((model.baseUrl ?? provider?.baseUrl)
         ? { baseUrl: model.baseUrl ?? provider?.baseUrl }
@@ -99,6 +147,8 @@ export class ModelRegistry {
       throw new Error(`No model registered for ${selection.providerId}:${selection.modelId}`)
     }
     return this.withProviderDefaults({
+      connectionId: selection.providerId,
+      providerType: provider.providerType ?? selection.providerId,
       provider: selection.providerId,
       modelId: selection.modelId,
       api: provider.api,
@@ -122,11 +172,23 @@ export class ModelRegistry {
     return Array.from(this.models.values())
   }
 
+  getProviderConfig(providerId: ProviderId): NodeProviderConfig | undefined {
+    const provider = this.providers.get(providerId)
+    return provider ? structuredClone(provider) : undefined
+  }
+
+  getProviderDefinition(providerId: ProviderId, providerType?: string): ProviderDefinition {
+    const provider = this.providers.get(providerId)
+    return this.providerRegistry.resolve(provider?.providerType ?? providerType ?? providerId)
+  }
+
   private withProviderDefaults(model: ModelDescriptor): ModelDescriptor {
     const provider = this.providers.get(model.provider)
     if (!provider) return model
     return {
       ...model,
+      connectionId: model.connectionId ?? model.provider,
+      providerType: model.providerType ?? provider.providerType ?? model.provider,
       ...((model.baseUrl ?? provider.baseUrl)
         ? { baseUrl: model.baseUrl ?? provider.baseUrl }
         : {}),

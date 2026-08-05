@@ -1,5 +1,7 @@
 import type { ImageGenerateRequest, ImageResult, Settings } from '@aila/agent'
 import { MissingApiKeyError, type NodeAuthInput, resolveApiKey } from './auth'
+import type { CredentialResolver } from './credential-resolver'
+import type { ModelRegistry } from './model-registry'
 
 const OPENROUTER_ENDPOINT = 'https://openrouter.ai/api/v1/chat/completions'
 
@@ -18,9 +20,21 @@ interface OpenRouterResponse {
   error?: { message?: string }
 }
 
-export function createNodeImageGenerator(input: NodeAuthInput = {}) {
+interface NodeImageGeneratorInput extends NodeAuthInput {
+  credentialResolver?: CredentialResolver
+  modelRegistry?: ModelRegistry
+}
+
+export function createNodeImageGenerator(input: NodeImageGeneratorInput = {}) {
   return async (req: ImageGenerateRequest, settings: Settings): Promise<ImageResult> => {
-    const apiKey = resolveApiKey(req.providerId, { ...input, settings })
+    const descriptor = input.modelRegistry?.resolve({
+      providerId: req.providerId,
+      modelId: req.modelId,
+    })
+    const apiKey =
+      descriptor && input.credentialResolver
+        ? (await input.credentialResolver.resolve({ descriptor, settings })).value
+        : resolveApiKey(req.providerId, { ...input, settings })
     if (!apiKey) throw new MissingApiKeyError(req.providerId)
 
     switch (req.providerId) {

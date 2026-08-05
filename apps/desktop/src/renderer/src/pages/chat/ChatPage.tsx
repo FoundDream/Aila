@@ -5,6 +5,7 @@ import type {
   ConversationRecord,
   ConversationSummary,
   ConversationWorkspaceRef,
+  ProviderConnectionSnapshot,
   ProviderId,
   Settings,
 } from '../../types'
@@ -22,6 +23,7 @@ interface ChatPageProps {
   streams: ChatStreamsApi
   settings: Settings | null
   configuredProviders: ProviderId[]
+  connections: ProviderConnectionSnapshot[]
   onUpdateSettings: (settings: Settings) => Promise<void>
   onOpenSettings: () => void
 }
@@ -33,12 +35,14 @@ export function ChatPage({
   streams,
   settings,
   configuredProviders,
+  connections,
   onUpdateSettings,
   onOpenSettings,
 }: ChatPageProps): ReactElement {
   const { selection, selectionRef, contextLength, handleSelectionChange } = useModelSelection(
     settings,
     configuredProviders,
+    connections,
     onUpdateSettings,
   )
   const [submitScrollKey, setSubmitScrollKey] = useState(0)
@@ -149,6 +153,7 @@ export function ChatPage({
       usage={usage}
       contextLength={contextLength}
       configuredProviders={configuredProviders}
+      connections={connections}
       selection={selection}
       onSelectionChange={handleSelectionChange}
       onOpenSettings={onOpenSettings}

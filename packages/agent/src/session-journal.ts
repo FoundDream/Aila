@@ -49,6 +49,7 @@ export interface RunPayloadData {
   kind: RunPayloadKind
   label: string
   modelMessage?: ChatMessage
+  modelMessages?: ChatMessage[]
   assistantMessage?: PersistedMessage
 }
 
