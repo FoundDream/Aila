@@ -6,7 +6,6 @@ import type { RunContinuationReason, RunIdentity } from './run-machine'
 import type { RunSnapshot } from './run-persistence'
 import type { BlobRef, SessionEntry, SessionEntryInput } from './session-journal'
 import type { Settings } from './settings-types'
-import type { AilaExecutionMode } from './tool-policy'
 import type { ToolContext, ToolRegistry } from './tools'
 
 type MaybePromise<T> = T | Promise<T>
@@ -204,7 +203,6 @@ export interface RunRequest {
   getSteeringMessages?: () => MaybePromise<ChatMessage[]>
   /** Messages injected only after the run would otherwise finish. */
   getFollowUpMessages?: () => MaybePromise<ChatMessage[]>
-  mode?: AilaExecutionMode
   selection: ModelSelection
   signal: AbortSignal
   onRunEvent?: RunEventSink

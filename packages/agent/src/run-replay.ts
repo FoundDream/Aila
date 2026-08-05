@@ -10,13 +10,12 @@ import {
   sessionRunEvents,
   sessionRunPayloads,
 } from './session-journal'
-import { normalizeAilaExecutionMode } from './tool-policy'
 
 /**
  * Rebuilds RunSnapshot views from the journal — the journal is the single
  * source of truth; snapshots are computed on demand, never persisted.
  *
- * Every producer stamps selection / executionMode / maxToolSteps /
+ * Every producer stamps selection / maxToolSteps /
  * sessionLeafId onto the run's opening event, so a run missing them is not
  * reconstructible and rebuilds to null rather than to invented defaults.
  */
@@ -89,7 +88,6 @@ export async function rebuildRunSnapshot(
     identity: structuredClone(state.identity),
     assistantMessageId: events[0]?.messageId ?? state.identity.turnId,
     selection: meta.selection,
-    executionMode: normalizeAilaExecutionMode(meta.executionMode),
     maxToolSteps: meta.maxToolSteps,
     loop,
     sessionLeafId: meta.sessionLeafId,
@@ -120,7 +118,6 @@ function groupEventsByRun(entries: readonly SessionEntry[]): Map<string, Persist
 
 interface RunMetaFields {
   selection?: ModelSelection
-  executionMode?: string
   maxToolSteps?: number
   sessionLeafId?: string
 }
@@ -136,9 +133,6 @@ function metaFromEvents(events: readonly PersistedRunEvent[]): RunMetaFields {
       typeof data.modelId === 'string'
     ) {
       meta.selection = { providerId: data.providerId, modelId: data.modelId }
-    }
-    if (meta.executionMode === undefined && typeof data.executionMode === 'string') {
-      meta.executionMode = data.executionMode
     }
     if (meta.maxToolSteps === undefined && typeof data.maxToolSteps === 'number') {
       meta.maxToolSteps = data.maxToolSteps

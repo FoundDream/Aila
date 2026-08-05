@@ -4,8 +4,6 @@ import type { BlobRef, RunPayloadKind } from './session-journal'
 
 export type { RunPayloadKind } from './session-journal'
 
-import type { AilaExecutionMode } from './tool-policy'
-
 export const AILA_RUN_PAYLOAD_SCHEMA_VERSION = 1
 
 export type RunRecoveryStrategy = 'automatic' | 'manual_review'
@@ -24,7 +22,6 @@ export interface RunSnapshot {
   identity: RunIdentity
   assistantMessageId: string
   selection: ModelSelection
-  executionMode: AilaExecutionMode
   maxToolSteps: number
   loop: RunCursor
   /** Semantic session branch used to materialize this run's context. */

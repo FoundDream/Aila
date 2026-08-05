@@ -9,7 +9,6 @@ import type {
 } from '../conversation-core'
 import type { Settings } from '../settings-types'
 import type { LoadedSkill } from '../skills'
-import { type AilaExecutionMode, isReadOnlyToolMetadata } from '../tool-policy'
 import {
   createToolRegistry,
   type ToolContext,
@@ -31,16 +30,6 @@ export function cloneRuntimeTool(tool: ToolRegistration): ToolRegistration {
 
 export function cloneRuntimeToolRegistry(registry: ToolRegistry): ToolRegistry {
   return createToolRegistry(registry.tools.map(cloneRuntimeTool))
-}
-
-export function filterRuntimeToolRegistryForMode(
-  registry: ToolRegistry,
-  mode: AilaExecutionMode,
-): ToolRegistry {
-  if (mode === 'agent') return cloneRuntimeToolRegistry(registry)
-  return createToolRegistry(
-    registry.tools.filter((tool) => isReadOnlyToolMetadata(tool.spec.metadata)),
-  )
 }
 
 export function cloneRuntimeSettings(settings: Settings): Settings {

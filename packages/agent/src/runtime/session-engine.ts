@@ -38,7 +38,6 @@ import {
   sessionRunPayloads,
 } from '../session-journal'
 import type { LoadedSkill } from '../skills'
-import { type AilaExecutionMode, normalizeAilaExecutionMode } from '../tool-policy'
 import type { ToolContext, ToolRegistry } from '../tools'
 import {
   createWorkbenchEvent,
@@ -87,7 +86,6 @@ import {
   cloneRuntimeSettings,
   cloneRuntimeValue,
   cloneRuntimeWorkspaceRoots,
-  filterRuntimeToolRegistryForMode,
   prepareRuntimeModelStepMessages,
 } from './clone'
 import type { WorkbenchStore } from './repositories'
@@ -132,7 +130,6 @@ export interface RuntimeToolContextInput {
   record?: ConversationRecord
   messageId?: string
   toolCallId?: string
-  mode?: AilaExecutionMode
   signal?: AbortSignal
 }
 
@@ -606,8 +603,6 @@ export class SessionRuntimeEngine {
   async send(input: RuntimeSendInput): Promise<RuntimeSendResult> {
     return this.turns.withStartLock(async (turnStartLock) => {
       const { conversationId, userText, selection, attachments, transientContext } = input
-      const mode = normalizeAilaExecutionMode(input.mode)
-
       this.assertCanStartTurn(conversationId)
 
       // Wait for any prior stream on this conversation to finish its persistence
@@ -643,7 +638,6 @@ export class SessionRuntimeEngine {
         userMessage,
         record,
         selection,
-        mode,
         loopMode: input.loopMode ?? 'continuous',
         transientContext,
         source: 'send',
@@ -655,8 +649,6 @@ export class SessionRuntimeEngine {
   async retryLastUserMessage(input: RuntimeRetryLastInput): Promise<RuntimeSendResult> {
     return this.turns.withStartLock(async (turnStartLock) => {
       const { conversationId, selection, transientContext } = input
-      const mode = normalizeAilaExecutionMode(input.mode)
-
       this.assertCanStartTurn(conversationId)
       const previous = this.turns.get()
       if (previous) await this.waitForPriorStreamBeforeNextTurn(conversationId, previous)
@@ -680,7 +672,6 @@ export class SessionRuntimeEngine {
         userMessage: retry.userMessage,
         record: retry.record,
         selection,
-        mode,
         loopMode: input.loopMode ?? 'continuous',
         transientContext,
         source: 'retry',
@@ -796,7 +787,6 @@ export class SessionRuntimeEngine {
         mode: source.loop.state.mode,
         providerId: source.selection.providerId,
         modelId: source.selection.modelId,
-        executionMode: source.executionMode,
         maxToolSteps: source.maxToolSteps,
         sessionLeafId: sessionTree.leafId,
       },
@@ -885,18 +875,15 @@ export class SessionRuntimeEngine {
       }
       const resumeState = await this.loadRunResumeState(savedCheckpoint)
 
-      const mode = savedCheckpoint.executionMode
       const assistantMessageId = savedCheckpoint.assistantMessageId
-      const baseToolRegistry = await this.getToolRegistry({
+      const toolRegistry = await this.getToolRegistry({
         conversationId: input.conversationId,
         record,
       })
-      const toolRegistry = filterRuntimeToolRegistryForMode(baseToolRegistry, mode)
       const toolContext = await this.buildToolContext({
         conversationId: input.conversationId,
         record,
         messageId: assistantMessageId,
-        mode,
       })
 
       const controller = new AbortController()
@@ -927,7 +914,6 @@ export class SessionRuntimeEngine {
         contextPlan: cloneRuntimeValue(resumeState.contextPlan),
         toolContext,
         toolRegistry,
-        mode,
         loopMode: input.loopMode ?? 'continuous',
         runSnapshot: savedCheckpoint,
         sessionLeafId: savedCheckpoint.sessionLeafId,
@@ -1016,7 +1002,6 @@ export class SessionRuntimeEngine {
     userMessage: PersistedMessage
     record: ConversationRecord
     selection: ModelSelection
-    mode: AilaExecutionMode
     loopMode?: 'continuous' | 'step'
     transientContext?: ChatMessage[]
     source: RuntimeTransientContextInput['source']
@@ -1026,7 +1011,6 @@ export class SessionRuntimeEngine {
       conversationId,
       userMessage,
       record,
-      mode,
       loopMode = 'continuous',
       transientContext,
       source,
@@ -1079,7 +1063,6 @@ export class SessionRuntimeEngine {
         record,
         selection,
         source,
-        mode,
       }
       const inputTransientContext = cloneRuntimeChatMessages(transientContext)
       const [resolvedStableInstructions, hostTransientContext] = await Promise.all([
@@ -1126,13 +1109,11 @@ export class SessionRuntimeEngine {
           contextPlan: cloneRuntimeValue(contextPlan),
         } satisfies RunContextBlobData,
       })
-      const baseToolRegistry = await this.getToolRegistry({ conversationId, record })
-      toolRegistry = filterRuntimeToolRegistryForMode(baseToolRegistry, mode)
+      toolRegistry = await this.getToolRegistry({ conversationId, record })
       toolContext = await this.buildToolContext({
         conversationId,
         record,
         messageId: assistantMessageId,
-        mode,
       })
       if (!this.acceptsStreamEvents(conversationId, controller)) {
         return { userMessage, assistantMessageId, turnId: run.turnId, runId: run.runId }
@@ -1181,7 +1162,6 @@ export class SessionRuntimeEngine {
       contextPlan,
       toolContext,
       toolRegistry,
-      mode,
       loopMode,
       sessionLeafId,
       runContextRef,
@@ -2225,7 +2205,6 @@ export class SessionRuntimeEngine {
     contextPlan: AgentContextPlan
     toolContext: ToolContext
     toolRegistry: ToolRegistry
-    mode: AilaExecutionMode
     loopMode: 'continuous' | 'step'
     runContextRef: BlobRef
     sessionLeafId: string
@@ -2248,7 +2227,6 @@ export class SessionRuntimeEngine {
       contextPlan,
       toolContext,
       toolRegistry,
-      mode,
       loopMode,
       runContextRef,
       sessionLeafId,
@@ -2311,7 +2289,6 @@ export class SessionRuntimeEngine {
           }),
           getSteeringMessages: () => this.drainQueuedInputs('steering'),
           getFollowUpMessages: () => this.drainQueuedInputs('followUp'),
-          mode,
           // Hosts may mutate the request object; the engine's selection must
           // stay isolated (contract-verified).
           selection: cloneRuntimeValue(selection),

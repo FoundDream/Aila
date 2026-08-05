@@ -1,25 +1,12 @@
 import type {
-  ToolMetadata,
   ToolPolicyDecision,
   ToolPolicyEvaluator,
   ToolPolicyRequest,
 } from './tools'
 
-export const AILA_EXECUTION_MODES = ['chat', 'agent'] as const
-
-export type AilaExecutionMode = (typeof AILA_EXECUTION_MODES)[number]
-
 export const TOOL_APPROVAL_MODES = ['safe', 'yolo'] as const
 
 export type ToolApprovalMode = (typeof TOOL_APPROVAL_MODES)[number]
-
-export function isAilaExecutionMode(value: unknown): value is AilaExecutionMode {
-  return typeof value === 'string' && AILA_EXECUTION_MODES.includes(value as AilaExecutionMode)
-}
-
-export function normalizeAilaExecutionMode(value: unknown): AilaExecutionMode {
-  return isAilaExecutionMode(value) ? value : 'agent'
-}
 
 export function isToolApprovalMode(value: unknown): value is ToolApprovalMode {
   return typeof value === 'string' && TOOL_APPROVAL_MODES.includes(value as ToolApprovalMode)
@@ -45,39 +32,6 @@ export function evaluateToolApprovalMode(
     return { action: 'ask', reason: 'safe mode' }
   }
   return { action: 'allow', reason: 'safe mode' }
-}
-
-export function isReadOnlyToolMetadata(metadata: ToolMetadata): boolean {
-  return (
-    metadata.readOnly === true &&
-    metadata.destructive !== true &&
-    !metadata.access.includes('write') &&
-    !metadata.access.includes('shell') &&
-    !metadata.access.includes('image')
-  )
-}
-
-export function evaluateExecutionModeToolPolicy(
-  mode: AilaExecutionMode,
-  request: ToolPolicyRequest,
-): ToolPolicyDecision | undefined {
-  if (mode === 'agent') return undefined
-  if (isReadOnlyToolMetadata(request.metadata)) return undefined
-  return {
-    action: 'deny',
-    reason: `${mode} mode only allows read-only tools`,
-  }
-}
-
-export function createExecutionModeToolPolicy(
-  mode: AilaExecutionMode = 'agent',
-  next?: ToolPolicyEvaluator,
-): ToolPolicyEvaluator {
-  return async (request) => {
-    const executionDecision = evaluateExecutionModeToolPolicy(mode, request)
-    if (executionDecision) return executionDecision
-    return next?.(request)
-  }
 }
 
 export function createToolPolicy(mode: ToolApprovalMode = 'safe'): ToolPolicyEvaluator {

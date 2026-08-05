@@ -1,6 +1,5 @@
 import type { ConversationRecord, PersistedRunEvent } from '../conversation-core'
 import { createSkillTool, type LoadedSkill } from '../skills'
-import { createExecutionModeToolPolicy, normalizeAilaExecutionMode } from '../tool-policy'
 import {
   createDefaultToolRegistry,
   executeTool as executeRegisteredTool,
@@ -190,7 +189,6 @@ export class WorkbenchServices {
   }
 
   async executeTool(input: RuntimeExecuteToolInput, record?: ConversationRecord): Promise<string> {
-    const mode = normalizeAilaExecutionMode(input.mode)
     const registry = await this.getToolRegistry(
       record && input.conversationId ? { conversationId: input.conversationId, record } : undefined,
     )
@@ -202,7 +200,6 @@ export class WorkbenchServices {
         ...(record ? { record } : {}),
         ...(input.messageId ? { messageId: input.messageId } : {}),
         ...(input.toolCallId ? { toolCallId: input.toolCallId } : {}),
-        mode,
         ...(input.signal ? { signal: input.signal } : {}),
       }),
       registry,
@@ -216,12 +213,8 @@ export class WorkbenchServices {
       path: skill.directory,
       label: `Skill: ${skill.definition.name}`,
     }))
-    const mode = normalizeAilaExecutionMode(input.mode)
-    const composedToolPolicy =
-      mode === 'agent' && !this.host.onToolPolicy
-        ? undefined
-        : createExecutionModeToolPolicy(mode, this.host.onToolPolicy)
-    const onToolPolicy = composedToolPolicy && this.observeToolPolicy(composedToolPolicy)
+    const onToolPolicy =
+      this.host.onToolPolicy && this.observeToolPolicy(this.host.onToolPolicy)
     return {
       settings: cloneRuntimeSettings((await this.host.loadSettings?.()) ?? EMPTY_RUNTIME_SETTINGS),
       ...(input.conversationId ? { conversationId: input.conversationId } : {}),

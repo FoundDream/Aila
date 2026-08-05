@@ -17,8 +17,6 @@ import type {
   SessionExtensionMessageData,
   SessionPhase,
 } from '../session-journal'
-import type { AilaExecutionMode } from '../tool-policy'
-
 export interface RuntimeToolLoadInput {
   conversationId?: string
   record?: ConversationRecord
@@ -46,7 +44,6 @@ export interface RuntimeSendInput {
   conversationId: string
   userText: string
   selection: ModelSelection
-  mode?: AilaExecutionMode
   loopMode?: 'continuous' | 'step'
   attachments?: ChatAttachmentInput[]
   transientContext?: ChatMessage[]
@@ -55,7 +52,6 @@ export interface RuntimeSendInput {
 export interface RuntimeRetryLastInput {
   conversationId: string
   selection: ModelSelection
-  mode?: AilaExecutionMode
   loopMode?: 'continuous' | 'step'
   transientContext?: ChatMessage[]
 }
@@ -85,7 +81,6 @@ export interface RuntimeTransientContextInput {
   record: ConversationRecord
   selection: ModelSelection
   source: 'send' | 'retry'
-  mode?: AilaExecutionMode
 }
 
 export type RuntimeStableInstructionsInput = RuntimeTransientContextInput
@@ -262,7 +257,6 @@ export interface RuntimeAppendSessionCustomMessageInput extends SessionExtension
 export interface RuntimeExecuteToolInput {
   name: string
   args: Record<string, unknown>
-  mode?: AilaExecutionMode
   conversationId?: string
   messageId?: string
   toolCallId?: string

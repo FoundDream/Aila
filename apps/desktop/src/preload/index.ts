@@ -48,7 +48,6 @@ import type { OrCatalog } from '../shared/openrouter'
 
 export type {
   ActiveAssistantTurn,
-  AilaExecutionMode,
   BlobGarbageCollectionResult,
   ChatAttachmentInput,
   ChatMessage,

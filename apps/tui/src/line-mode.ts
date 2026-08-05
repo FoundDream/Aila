@@ -6,11 +6,9 @@ import { join, resolve } from 'node:path'
 import { stdin as input, stdout as output } from 'node:process'
 import { createInterface } from 'node:readline/promises'
 import {
-  type AilaExecutionMode,
   type ConversationSummary,
   createToolPolicy,
   findModel,
-  isAilaExecutionMode,
   isToolApprovalMode,
   MODEL_CATALOG,
   type ModelSelection,
@@ -44,7 +42,6 @@ export interface CliOptions {
   list: boolean
   limit: number
   model?: ModelSelection
-  mode: AilaExecutionMode
   approvalMode?: ToolApprovalMode
   retryLast: boolean
   resumeLatest: boolean
@@ -58,7 +55,6 @@ export interface PromptReader {
 
 export interface TuiSessionState {
   selection: ModelSelection
-  mode: AilaExecutionMode
   approvalMode: ToolApprovalMode
 }
 
@@ -104,10 +100,9 @@ export function usage(): string {
     '  --list                  List saved conversations and exit',
     '  --limit <n>             Limit rows for --list (default: 20)',
     '  --model <provider:id>   Override model, e.g. openai:gpt-5.4',
-    '  --mode <mode>           Runtime mode: agent, plan, or chat (default: agent)',
-    '  --approval-mode <mode>  Override tool mode: safe or yolo',
-    '  --safe                  Use safe tool mode',
-    '  --yolo                  Run tools without approval prompts',
+    '  --approval-mode <mode>  Override approval mode: safe or yolo',
+    '  --safe                  Use safe approval mode',
+    '  --yolo                  Approve tool calls without prompts',
     '  --resume                Continue the most recently updated conversation',
     '  --retry-last            Retry the last failed or dangling user turn without duplicating it',
     '  --no-history            Do not print recent history when resuming',
@@ -129,7 +124,6 @@ export function usage(): string {
     '  /setup                  Connect a provider and choose a default model (full-screen)',
     '  /approval [safe|yolo]   Show or change tool approval mode',
     '  /model [provider:id]    Show or switch the active model',
-    '  /mode [agent|plan|chat] Show or switch runtime mode',
     '  /read <path>            Read a workspace file and attach it as context',
     '  /run <command>          Run an approved shell command and attach output',
     '  /write <path> <content> Write a file after approval',
@@ -156,7 +150,6 @@ export function parseArgs(argv: string[]): CliOptions {
   const options: CliOptions = {
     list: false,
     limit: 20,
-    mode: 'agent',
     retryLast: false,
     resumeLatest: false,
     showHistory: true,
@@ -184,9 +177,6 @@ export function parseArgs(argv: string[]): CliOptions {
         break
       case '--model':
         options.model = parseModel(requireValue(argv, ++i, arg))
-        break
-      case '--mode':
-        options.mode = parseExecutionMode(requireValue(argv, ++i, arg))
         break
       case '--approval-mode':
         options.approvalMode = parseApprovalMode(requireValue(argv, ++i, arg))
@@ -238,11 +228,6 @@ function parseLimit(value: string): number {
 function parseApprovalMode(value: string): ToolApprovalMode {
   if (isToolApprovalMode(value)) return value
   throw new Error('--approval-mode must be safe or yolo')
-}
-
-function parseExecutionMode(value: string): AilaExecutionMode {
-  if (isAilaExecutionMode(value)) return value
-  throw new Error('--mode must be agent, plan, or chat')
 }
 
 export function resolveSelection(explicit?: ModelSelection): ModelSelection {
@@ -400,7 +385,6 @@ export function commandHelp(): string {
     '  /setup                  Connect a provider and choose a default model (full-screen)',
     '  /approval [safe|yolo]   Show or change tool approval mode',
     '  /model [provider:id]    Show or switch the active model',
-    '  /mode [agent|plan|chat] Show or switch runtime mode',
     '  /read <path>            Read a workspace file and attach it as context',
     '  /run <command>          Run an approved shell command and attach output',
     '  /write <path> <content> Write a file after approval',
@@ -625,17 +609,6 @@ export async function handleSlashCommand(input: {
         writeLine(`[model] ${modelLabel(session.selection)}`)
         return 'handled'
       }
-      case 'mode': {
-        const words = splitShellWords(rest)
-        if (words.length === 0) {
-          writeLine(`[mode] ${session.mode}`)
-          return 'handled'
-        }
-        if (words.length > 1) throw new Error('usage: /mode [agent|plan|chat]')
-        session.mode = parseExecutionMode(words[0])
-        writeLine(`[mode] ${session.mode}`)
-        return 'handled'
-      }
       case 'approval':
       case 'safe':
       case 'yolo': {
@@ -775,7 +748,6 @@ export async function runLineMode(argv: string[] = process.argv.slice(2)): Promi
   const session: TuiSessionState = {
     approvalMode,
     selection: resolveSelection(options.model),
-    mode: options.mode,
   }
 
   let activeConversationId: string | null = null
@@ -820,7 +792,6 @@ export async function runLineMode(argv: string[] = process.argv.slice(2)): Promi
   writeLine(`Data: ${getDataDir()}`)
   writeLine(`Conversation: ${conversationId}${isExisting ? ' (resumed)' : ''}`)
   writeLine(`Model: ${modelLabel(session.selection)}`)
-  writeLine(`Runtime mode: ${session.mode}`)
   writeLine('Type /exit to quit. Ctrl+C aborts an active response.')
   if (isExisting && options.showHistory) await printRecentHistory(runtime, conversationId)
 
@@ -834,17 +805,12 @@ export async function runLineMode(argv: string[] = process.argv.slice(2)): Promi
     }
   }
 
-  async function runSendTurn(
-    userText: string,
-    input: { mode?: AilaExecutionMode } = {},
-  ): Promise<void> {
+  async function runSendTurn(userText: string): Promise<void> {
     startedAssistantText = false
-    const mode = input.mode ?? session.mode
     const { assistantMessageId } = await runtime.send({
       conversationId,
       userText,
       selection: session.selection,
-      mode,
     })
     await waitForAssistantTurn(assistantMessageId)
   }
@@ -854,7 +820,6 @@ export async function runLineMode(argv: string[] = process.argv.slice(2)): Promi
     const { assistantMessageId } = await runtime.retryLastUserMessage({
       conversationId,
       selection: session.selection,
-      mode: session.mode,
     })
     await waitForAssistantTurn(assistantMessageId)
   }

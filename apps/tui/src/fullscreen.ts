@@ -1,8 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import {
-  type AilaExecutionMode,
   type ConversationSummary,
-  isAilaExecutionMode,
   MODEL_CATALOG,
   type ModelSelection,
   type PersistedMessage,
@@ -66,7 +64,6 @@ type SlashResult = 'agent' | 'exit' | 'handled'
 
 interface SessionState {
   selection: ModelSelection | null
-  mode: AilaExecutionMode
 }
 
 function entry(kind: TranscriptEntry['kind'], title: string, body = ''): TranscriptEntry {
@@ -129,7 +126,6 @@ export async function runFullScreenTui(argv: string[] = process.argv.slice(2)): 
 
   const session: SessionState = {
     selection: resolveSelectionOrNull(options.model),
-    mode: options.mode,
   }
 
   const app = new AilaFullScreenApp({
@@ -365,10 +361,7 @@ class AilaFullScreenApp {
     await this.sendAgentPrompt(text)
   }
 
-  private async sendAgentPrompt(
-    text: string,
-    input: { mode?: AilaExecutionMode } = {},
-  ): Promise<void> {
+  private async sendAgentPrompt(text: string): Promise<void> {
     if (!(await this.ensureModelConfigured()) || !this.session.selection) {
       this.addEntry('system', 'setup required', 'Configure a model and API key to send messages.')
       this.setState({ status: 'model setup required' })
@@ -376,10 +369,8 @@ class AilaFullScreenApp {
     }
     this.addEntry('user', '', text)
     this.setState({ active: true, status: 'sending prompt' })
-    const mode = input.mode ?? this.session.mode
     const { assistantMessageId } = await this.runtime.send({
       conversationId: this.conversationId,
-      mode,
       selection: this.session.selection,
       userText: text,
     })
@@ -404,7 +395,6 @@ class AilaFullScreenApp {
     try {
       const { assistantMessageId } = await this.runtime.retryLastUserMessage({
         conversationId: this.conversationId,
-        mode: this.session.mode,
         selection: this.session.selection,
       })
       this.activeConversationId = this.conversationId
@@ -465,9 +455,6 @@ class AilaFullScreenApp {
           return 'handled'
         case 'setup':
           await this.startModelSetup(null)
-          return 'handled'
-        case 'mode':
-          this.handleMode(rest)
           return 'handled'
         case 'approval':
         case 'safe':
@@ -714,23 +701,6 @@ class AilaFullScreenApp {
       selection: result.selection,
       status: `ready · ${modelLabel(result.selection)}`,
     })
-  }
-
-  private handleMode(rest: string): void {
-    const words = splitShellWords(rest)
-    if (words.length === 0) {
-      this.addEntry('system', 'runtime mode', this.session.mode)
-      return
-    }
-    if (words.length > 1) throw new Error('usage: /mode [agent|chat]')
-    this.setMode(parseExecutionMode(words[0]))
-  }
-
-  private setMode(mode: AilaExecutionMode): void {
-    this.session = { ...this.session, mode }
-    this.refreshWelcome()
-    this.addEntry('system', 'runtime mode changed', mode)
-    this.setState({ status: `mode: ${mode}` })
   }
 
   private handleApprovalMode(name: string, rest: string): void {
@@ -1061,7 +1031,6 @@ class AilaFullScreenApp {
       `Workspace: ${process.cwd()}`,
       `Conversation: ${this.conversationId}${resumed ? ' (resumed)' : ''}`,
       `Model: ${selection ? modelLabel(selection) : 'not connected'}`,
-      `Mode: ${this.session.mode}`,
       '',
       connected
         ? 'Write a message to begin. Type `/` to browse commands.'
@@ -1138,15 +1107,9 @@ function slashCommands() {
     { name: 'yolo', description: 'Run future tools without confirmation' },
     { name: 'safe', description: 'Require confirmation for risky tools' },
     { name: 'model', description: 'Show or switch model', argumentHint: '[provider:model]' },
-    { name: 'mode', description: 'Show or switch runtime mode', argumentHint: '[agent|plan|chat]' },
     { name: 'read', description: 'Read file into context', argumentHint: '<path>' },
     { name: 'run', description: 'Run shell command', argumentHint: '<command>' },
     { name: 'write', description: 'Write file', argumentHint: '<path> <content>' },
     { name: 'edit', description: 'Edit file', argumentHint: '<path> <old> => <new>' },
   ]
-}
-
-function parseExecutionMode(value: string): AilaExecutionMode {
-  if (isAilaExecutionMode(value)) return value
-  throw new Error('mode must be agent, plan, or chat')
 }

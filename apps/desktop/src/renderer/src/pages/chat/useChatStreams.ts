@@ -16,7 +16,6 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef } from 'react'
 import type {
   ActiveAssistantTurn,
-  AilaExecutionMode,
   ChatAttachmentInput,
   ChatDoneEvent,
   ChatErrorEvent,
@@ -43,14 +42,12 @@ export type QueuedRun =
       text: string
       attachments: ChatAttachmentInput[]
       selection: ModelSelection
-      mode?: AilaExecutionMode
       loopMode?: 'continuous' | 'step'
     }
   | {
       id: string
       kind: 'retryLast'
       selection: ModelSelection
-      mode?: AilaExecutionMode
     }
 
 export interface ConversationStream {
@@ -760,12 +757,11 @@ export interface ChatStreamsApi {
     text: string,
     selection: ModelSelection,
     attachments?: ChatAttachmentInput[],
-    options?: { mode?: AilaExecutionMode; loopMode?: 'continuous' | 'step' },
+    options?: { loopMode?: 'continuous' | 'step' },
   ) => void
   enqueueRetryLast: (
     id: string,
     selection: ModelSelection,
-    options?: { mode?: AilaExecutionMode },
   ) => void
   compact: (id: string, selection: ModelSelection) => Promise<RuntimeCompactConversationResult>
   clearQueue: (id: string) => void
@@ -801,14 +797,12 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
               conversationId: id,
               userText: queued.text,
               selection: queued.selection,
-              ...(queued.mode ? { mode: queued.mode } : {}),
               ...(queued.loopMode ? { loopMode: queued.loopMode } : {}),
               attachments: queued.attachments,
             })
           : await window.api.runtime.retryLast({
               conversationId: id,
               selection: queued.selection,
-              ...(queued.mode ? { mode: queued.mode } : {}),
             })
     } catch (err) {
       const errorText = err instanceof Error ? err.message : String(err)
@@ -904,7 +898,6 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
       selection: ModelSelection,
       attachments: ChatAttachmentInput[] = [],
       options: {
-        mode?: AilaExecutionMode
         loopMode?: 'continuous' | 'step'
       } = {},
     ): void => {
@@ -922,7 +915,6 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
           text: trimmed,
           attachments,
           selection,
-          ...(options.mode ? { mode: options.mode } : {}),
           ...(options.loopMode ? { loopMode: options.loopMode } : {}),
         },
       })
@@ -931,7 +923,7 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
   )
 
   const enqueueRetryLast = useCallback(
-    (id: string, selection: ModelSelection, options: { mode?: AilaExecutionMode } = {}): void => {
+    (id: string, selection: ModelSelection): void => {
       dispatch({
         type: 'ENQUEUE',
         conversationId: id,
@@ -939,7 +931,6 @@ export function useChatStreams(options: UseChatStreamsOptions = {}): ChatStreams
           id: crypto.randomUUID(),
           kind: 'retryLast',
           selection,
-          ...(options.mode ? { mode: options.mode } : {}),
         },
       })
     },

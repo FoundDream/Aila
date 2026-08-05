@@ -6,11 +6,9 @@ import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { stdin as input, stdout as output, stderr } from 'node:process'
 import {
-  type AilaExecutionMode,
   type ConversationSummary,
   createToolPolicy,
   findModel,
-  isAilaExecutionMode,
   isToolApprovalMode,
   MODEL_CATALOG,
   type ModelSelection,
@@ -46,7 +44,6 @@ interface CliOptions {
   list: boolean
   limit: number
   model?: ModelSelection
-  mode: AilaExecutionMode
   prompt?: string
   retryLast: boolean
   resumeLatest: boolean
@@ -79,7 +76,6 @@ function usage(): string {
     '  --list                  List saved conversations and exit',
     '  --limit <n>             Limit rows for --list (default: 20)',
     '  --model <provider:id>   Override model, e.g. openai:gpt-5.4',
-    '  --mode <mode>           Runtime mode: agent or chat (default: agent)',
     '  --resume                Continue the most recently updated conversation',
     '  --retry-last            Retry the last failed or dangling user turn without duplicating it',
     '  --inspect-run <id>      Print a persisted run, its events, and payloads',
@@ -90,9 +86,9 @@ function usage(): string {
     '  --fork-run <id>         Fork a persisted run at its latest snapshot',
     '  --json                  Print a final JSON result instead of streaming text',
     '  --events                Print runtime events as NDJSON instead of streaming text',
-    '  --approval-mode <mode>  Tool execution mode: safe or yolo (default: safe)',
-    '  --safe                  Use safe tool mode',
-    '  --yolo, --yes           Run tools without approval prompts',
+    '  --approval-mode <mode>  Tool approval mode: safe or yolo (default: safe)',
+    '  --safe                  Use safe approval mode',
+    '  --yolo, --yes           Approve tool calls without prompts',
     '  -h, --help              Show this help',
   ].join('\n')
 }
@@ -105,7 +101,6 @@ function parseArgs(argv: string[]): CliOptions {
     json: false,
     list: false,
     limit: 20,
-    mode: 'agent',
     retryLast: false,
     resumeLatest: false,
   }
@@ -146,9 +141,6 @@ function parseArgs(argv: string[]): CliOptions {
         break
       case '--model':
         options.model = parseModel(requireValue(argv, ++i, arg))
-        break
-      case '--mode':
-        options.mode = parseExecutionMode(requireValue(argv, ++i, arg))
         break
       case '--approval-mode':
         options.approvalMode = parseApprovalMode(requireValue(argv, ++i, arg))
@@ -255,11 +247,6 @@ function parseLimit(value: string): number {
 function parseApprovalMode(value: string): ToolApprovalMode {
   if (isToolApprovalMode(value)) return value
   throw new Error('--approval-mode must be safe or yolo')
-}
-
-function parseExecutionMode(value: string): AilaExecutionMode {
-  if (isAilaExecutionMode(value)) return value
-  throw new Error('--mode must be agent, plan, or chat')
 }
 
 function parseModel(value: string): ModelSelection {
@@ -597,7 +584,6 @@ async function main(): Promise<void> {
     stderr.write(`Data: ${getDataDir()}\n`)
     stderr.write(`Conversation: ${conversationId}${isExisting ? ' (resumed)' : ''}\n`)
     stderr.write(`Model: ${modelLabel(selection)}\n`)
-    stderr.write(`Runtime mode: ${options.mode}\n`)
     stderr.write(`Tool approval: ${options.approvalMode}\n`)
   }
 
@@ -606,13 +592,11 @@ async function main(): Promise<void> {
       ? await runtime.retryLastUserMessage({
           conversationId,
           selection,
-          mode: options.mode,
         })
       : await runtime.send({
           conversationId,
           userText: prompt ?? '',
           selection,
-          mode: options.mode,
         })
     const { assistantMessageId } = result
     process.on('SIGINT', () => {
@@ -637,7 +621,6 @@ async function main(): Promise<void> {
           conversationId,
           dataDir: getDataDir(),
           model: selection,
-          mode: options.mode,
           status: completed.status,
           text: completed.assistantText,
           error: completed.error,

@@ -2,7 +2,6 @@
 // to dig into ../../preload paths.
 export type {
   ActiveAssistantTurn,
-  AilaExecutionMode,
   BlobGarbageCollectionResult,
   ChatAttachmentInput,
   ChatDoneEvent,

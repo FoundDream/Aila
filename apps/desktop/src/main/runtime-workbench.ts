@@ -139,7 +139,6 @@ export function createDesktopRuntimeWorkbench(
         conversationId: input.conversationId,
         userText: input.userText,
         selection: input.selection,
-        ...(input.mode ? { mode: input.mode } : {}),
         ...(input.loopMode ? { loopMode: input.loopMode } : {}),
         ...(input.attachments && input.attachments.length > 0
           ? { attachments: input.attachments }

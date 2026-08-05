@@ -259,7 +259,6 @@ export function createDurableRunExecutor(
         api: descriptor.api,
         inputMessageCount: messages.length,
         // Stamped so run snapshots can be rebuilt from the journal alone.
-        executionMode: req.mode ?? 'agent',
         maxToolSteps,
         sessionLeafId,
       })
